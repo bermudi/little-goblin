@@ -41,6 +41,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
+import { promptHasProject } from "./prompt.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import {
@@ -138,14 +139,17 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		const epoch = conv.epoch;
 		// Narrowed once so the handover closures below type-check as
 		// project-bound.
-		const projectId = conv.projectId;
+		const snapshot = store.promptSnapshot(conv.id);
+		const toolProjectId =
+			snapshot === null || promptHasProject(snapshot) ? conv.projectId : null;
+		const projectId = toolProjectId;
 		const { mail, desktops, responsibility: responsibilityOwner, agents } = deps;
 		// One gate for every executor that can link work to what goblin owes.
 		const checkResponsibility =
-			conv.projectId !== null && responsibilityOwner !== null
+			toolProjectId !== null && responsibilityOwner !== null
 				? (id: string) => {
 						const resp = responsibilityOwner.resps.get(id);
-						if (resp === null || resp.projectId !== conv.projectId)
+						if (resp === null || resp.projectId !== toolProjectId)
 							return `responsibility ${id} not found in this project`;
 						if (resp.status !== "active" && resp.status !== "paused")
 							return `responsibility ${id} is ${resp.status} — resume it before linking a run`;
@@ -153,11 +157,11 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 					}
 				: undefined;
 		const sendAuthority =
-			conv.projectId !== null && responsibilityOwner !== null
+			toolProjectId !== null && responsibilityOwner !== null
 				? (responsibilityId: string): WorkerSendRefusal | null => {
 						if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
 						const resp = responsibilityOwner.resps.get(responsibilityId);
-						if (resp !== null && resp.projectId !== conv.projectId) return "outside-project";
+						if (resp !== null && resp.projectId !== toolProjectId) return "outside-project";
 						return workerSendRefusal(resp);
 					}
 				: undefined;
@@ -169,6 +173,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// relative-path anchor, and delegation's workspaceDir — a
 		// vanished dir throws here and the turn fails at admission.
 		const workdir = projectWorkdir(projects, conv);
+		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
 		const delegate = delegateDeps(conv, workdir);
 		// A child conversation's bound desktop (computer type) — the
 		// engine's row is the source; null for parents and other types.
@@ -176,6 +181,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			conv.agentType !== null ? (agents?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
 			cwd: workdir,
+			bashDescriptionCwd,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),
 			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
 			voice:
@@ -207,10 +213,10 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 					? {
 							programs,
 							target: targetOf(conv),
-							...(conv.projectId !== null && responsibilityOwner !== null
+							...(toolProjectId !== null && responsibilityOwner !== null
 								? {
 										project: {
-											projectId: conv.projectId,
+											projectId: toolProjectId,
 											resps: responsibilityOwner.resps,
 										},
 									}

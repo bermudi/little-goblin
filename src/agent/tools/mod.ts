@@ -77,6 +77,7 @@ export function toolNames(tools: Tools): string[] {
 
 export interface MakeToolsOptions {
 	cwd: string;
+	bashDescriptionCwd?: string;
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
 	file?: FileToolDeps | undefined;
@@ -117,6 +118,7 @@ export interface MakeToolsOptions {
 export function makeTools(options: MakeToolsOptions): Tools {
 	const {
 		cwd,
+		bashDescriptionCwd = cwd,
 		voice,
 		program,
 		file,
@@ -144,7 +146,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		read_file: readFileTool(cwd, vision !== undefined, onRead, contextFill),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
-		bash: bashTool(cwd),
+		bash: bashTool(cwd, bashDescriptionCwd),
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),

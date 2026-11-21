@@ -13,6 +13,7 @@ import { setLogFile, setLogWriter } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { NoteStore } from "../notes.ts";
+import { openNotes } from "../notes.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { openProjects, type ProjectStore } from "../projects.ts";
 import { openResponsibilities } from "../responsibilities.ts";
@@ -36,6 +37,7 @@ import {
 } from "./models-dev.ts";
 import { policyOf } from "./tool-policy.ts";
 import { storeFence } from "../testkit/store-fence.ts";
+import { persistableToolSet } from "../turn/ai-sdk-tools.ts";
 
 setLogFile(null);
 
@@ -155,6 +157,7 @@ describe(`${engineName(make)}: turn-tools responsibility composition`, () => {
 		calls: ScriptCall[],
 		agents: T3Thread[] = [AGENT],
 		delegateDeps?: (conv: Conversation, workdir: string) => DelegateToolDeps | undefined,
+		bindProject = true,
 	) {
 		const home = useHome(`goblin-tt-${tmpDir().slice(-6)}-`);
 		mkdirSync(join(home, "state"), { recursive: true });
@@ -165,7 +168,8 @@ describe(`${engineName(make)}: turn-tools responsibility composition`, () => {
 			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
 			project.dir,
 		);
-		store.bindProject(conv.id, project.id);
+		if (bindProject) store.bindProject(conv.id, project.id);
+		const notes = openNotes(store, { projects });
 		const resps = openResponsibilities(store.db);
 		const wakes = openWakeStore(store.db);
 		const programs = openPrograms(join(home, "state", "programs.sqlite"));
@@ -184,7 +188,7 @@ describe(`${engineName(make)}: turn-tools responsibility composition`, () => {
 			auth: {} as unknown as AuthStore,
 			store,
 			projects,
-			notes: {} as unknown as NoteStore,
+			notes,
 			programs,
 			sendPrivate: async () => {},
 			memory: null,
@@ -208,8 +212,88 @@ describe(`${engineName(make)}: turn-tools responsibility composition`, () => {
 			buildStep: () => edge.step(),
 		});
 		runtime.mount({ makeTools: toolsFor });
-		return { store, conv, project, projects, resps, runtime, toolsFor, configRef, service };
+		return { store, conv, project, projects, notes, resps, runtime, toolsFor, configRef, service };
 	}
+
+	test("project-shaped tool surfaces follow the frozen prompt until its snapshot is cleared", async () => {
+		const delegateDeps = (_conv: Conversation, workspaceDir: string): DelegateToolDeps =>
+			({
+				config: { harnesses: {} },
+				workspaceDir,
+				pin: () => ({ address: { chatId: 0, threadId: null } }),
+			}) as unknown as DelegateToolDeps;
+		const f = rig([], [AGENT], delegateDeps, false);
+		f.store.savePromptSnapshot(f.conv.id, "frozen unbound prompt", ["SOUL.md"]);
+		const before = f.toolsFor(f.conv, undefined, undefined, undefined, undefined);
+		const beforePersisted = await persistableToolSet(before);
+		if ("unpersistable" in beforePersisted) throw new Error(beforePersisted.unpersistable);
+		f.store.bindProject(f.conv.id, f.project.id);
+		const moved = f.store.get(f.conv.id)!;
+		const during = f.toolsFor(moved, undefined, undefined, undefined, undefined);
+		const duringPersisted = await persistableToolSet(during);
+		if ("unpersistable" in duringPersisted) throw new Error(duringPersisted.unpersistable);
+		expect(duringPersisted.json).toBe(beforePersisted.json);
+		expect("responsibility" in during).toBe(false);
+		const frozenDelegate = JSON.parse(duringPersisted.json) as {
+			name: string;
+			inputSchema: { properties?: Record<string, unknown> };
+		}[];
+		expect(frozenDelegate.find((tool) => tool.name === "delegate")?.inputSchema.properties)
+			.not.toHaveProperty("responsibility");
+		const program = during.program;
+		if (program === undefined || !("execute" in program))
+			throw new Error("program tool is not executable");
+		expect(
+			await program.execute({
+				action: "create",
+				name: "check lane",
+				charter: "A harmless test.",
+				responsibilityId: "missing",
+			}, { toolCallId: "program-check" }),
+		).toEqual({ error: "responsibility destinations exist only on project turns" });
+
+		f.store.clearPromptSnapshot(f.conv.id);
+		const refreshed = f.toolsFor(f.store.get(f.conv.id)!, undefined, undefined, undefined, undefined);
+		const refreshedPersisted = await persistableToolSet(refreshed);
+		if ("unpersistable" in refreshedPersisted) throw new Error(refreshedPersisted.unpersistable);
+		expect("responsibility" in refreshed).toBe(true);
+		const refreshedDelegate = JSON.parse(refreshedPersisted.json) as {
+			name: string;
+			inputSchema: { properties?: Record<string, unknown> };
+		}[];
+		expect(refreshedDelegate.find((tool) => tool.name === "delegate")?.inputSchema.properties)
+			.toHaveProperty("responsibility");
+		const refreshedProgram = refreshed.program;
+		if (refreshedProgram === undefined || !("execute" in refreshedProgram))
+			throw new Error("program tool is not executable");
+		expect(
+			await refreshedProgram.execute({
+				action: "create",
+				name: "check lane",
+				charter: "A harmless test.",
+				responsibilityId: "missing",
+			}, { toolCallId: "program-check" }),
+		).toEqual({ error: "no such responsibility in this project" });
+		await f.runtime.shutdown();
+		f.store.close();
+	});
+
+	test("a project conversation gets the responsibility tool before its first snapshot", async () => {
+		const f = rig([reply("ready")], [AGENT]);
+		try {
+			const sink = new HeadlessSink();
+			f.runtime.submit(f.store.get(f.conv.id)!, userMessage([{ type: "text", text: "start" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			const tools = f.store.lastTurnTools(f.conv.id)?.tools ?? [];
+			const names = tools.map((tool) =>
+				typeof tool === "object" && tool !== null && "name" in tool ? tool.name : undefined,
+			);
+			expect(names).toContain("responsibility");
+		} finally {
+			await f.runtime.shutdown();
+			f.store.close();
+		}
+	});
 
 	test("worker send authority checks project, status, and the captured turn epoch", async () => {
 		let responsibilityId = "";
@@ -913,7 +997,7 @@ describe("hosted web_search mount", () => {
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
+			store: { promptSnapshot: () => null } as unknown as ConversationStore,
 			projects: {} as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -974,7 +1058,7 @@ describe("agent tool mount", () => {
 		makeTurnTools({
 			configRef: { current: {} as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
+			store: { promptSnapshot: () => null } as unknown as ConversationStore,
 			projects: {} as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -1046,7 +1130,7 @@ describe("computer child mount", () => {
 			// screenshot capability gate fails closed (issue #606).
 			configRef: { current: { providers: {} } as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
+			store: { promptSnapshot: () => null } as unknown as ConversationStore,
 			projects: {} as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,

@@ -2270,6 +2270,7 @@ describe("app projects surface", () => {
 	let conflictPatch: boolean;
 	// Conversation creation control: POST /api/app/conversations 500s.
 	let failCreate: boolean;
+	let movePatchFail: boolean;
 	// Focus-refresh controls: the note GET fails, or answers with a
 	// remote version newer than the fixture row.
 	let noteGetFail: boolean;
@@ -2374,6 +2375,7 @@ describe("app projects surface", () => {
 		stored = [];
 		conflictPatch = false;
 		failCreate = false;
+		movePatchFail = false;
 		noteGetFail = false;
 		noteGetOverride = null;
 		patchCalls = 0;
@@ -2462,6 +2464,18 @@ describe("app projects surface", () => {
 					return Promise.resolve(jsonResponse(project, 201));
 				}
 				return Promise.resolve(jsonResponse({ projects: projs }));
+			}
+			const conversationPatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
+			if (conversationPatch !== null && method === "PATCH") {
+				posts.push({ url, body });
+				if (movePatchFail) return Promise.resolve(jsonResponse({ error: "move refused" }, 409));
+				const id = `app/${decodeURIComponent(conversationPatch[1]!)}`;
+				const conversation = convs.find((item) => item.id === id);
+				if (conversation === undefined)
+					return Promise.resolve(jsonResponse({ error: "no such conversation" }, 404));
+				const request = body as { projectId?: string };
+				if (request.projectId !== undefined) conversation.projectId = request.projectId;
+				return Promise.resolve(jsonResponse({}));
 			}
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: attentionItems, unavailable: [] }));
@@ -2797,6 +2811,99 @@ describe("app projects surface", () => {
 		expect(details!.textContent).toContain("Archived projects (1)");
 		expect((details as HTMLDetailsElement).open).toBe(false);
 		expect(details!.textContent).toContain("Old Stuff");
+	});
+
+	test("only a loose parent conversation offers the move action", async () => {
+		convs = [
+			convRow("loose chat", { id: "app/loose" }),
+			convRow("bound chat", { id: "app/bound", projectId: "p-goblin" }),
+			convRow("child chat", { id: "app/child", parentId: "app/loose" }),
+		];
+		projs = [projRow("Goblin Work", { id: "p-goblin" })];
+		await mount();
+		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
+		expect(container.querySelector('[aria-label="Move to project"]')).not.toBeNull();
+
+		await click(container.querySelector('.conv-main[href="/app/c/child"]'));
+		expect(container.querySelector('[aria-label="Move to project"]')).toBeNull();
+
+		win.history.replaceState(null, "", "/app/c/bound");
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		expect(container.querySelector('[aria-label="Move to project"]')).toBeNull();
+	});
+
+	test("moving into an existing project patches the same chat and refreshes its crumb", async () => {
+		convs = [convRow("loose chat", { id: "app/loose" })];
+		projs = [projRow("Goblin Work", { id: "p-goblin" })];
+		await mount();
+		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
+		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Goblin Work",
+			),
+		);
+		expect(posts).toContainEqual({
+			url: "/api/app/conversations/loose",
+			body: { projectId: "p-goblin" },
+		});
+		expect(win.location.pathname).toBe("/app/c/loose");
+		expect(container.querySelector(".crumb")?.textContent).toBe("Goblin Work");
+	});
+
+	test("the Move to project menu has its own popover class", async () => {
+		convs = [convRow("loose chat", { id: "app/loose" })];
+		projs = [projRow("Goblin Work", { id: "p-goblin" })];
+		await mount();
+		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
+		await click(container.querySelector('[aria-label="Move to project"]'));
+		expect(container.querySelector('[role="menu"].move-menu')).not.toBeNull();
+	});
+
+	test("creating a project from the move menu moves the chat and stays on its route", async () => {
+		convs = [convRow("loose chat", { id: "app/loose" })];
+		await mount();
+		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
+		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "New project…",
+			),
+		);
+		const form = container.querySelector<HTMLFormElement>(".msheet form");
+		expect(form).not.toBeNull();
+		await typeInto(form!.querySelector("input")!, "Side Hustle", win.HTMLInputElement.prototype);
+		await act(async () => {
+			form!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+		expect(posts.findIndex((post) => post.url === "/api/app/projects")).toBeLessThan(
+			posts.findIndex((post) => post.url === "/api/app/conversations/loose"),
+		);
+		expect(posts).toContainEqual({
+			url: "/api/app/conversations/loose",
+			body: { projectId: "p-new" },
+		});
+		expect(win.location.pathname).toBe("/app/c/loose");
+		expect(container.querySelector(".crumb")?.textContent).toBe("Side Hustle");
+	});
+
+	test("a refused move displays the server error in the header alert", async () => {
+		convs = [convRow("loose chat", { id: "app/loose" })];
+		projs = [projRow("Goblin Work", { id: "p-goblin" })];
+		movePatchFail = true;
+		await mount();
+		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
+		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Goblin Work",
+			),
+		);
+		expect(container.querySelector('[role="alert"]')?.textContent).toBe("move refused");
 	});
 
 	test("the create dialog posts its fields and lands on the new project's page", async () => {

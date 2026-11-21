@@ -11,6 +11,7 @@ import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import { PendingInputs, type PendingInputMode } from "./pending-input.ts";
+import { type Bump, runFence } from "./fence.ts";
 import { log } from "./log.ts";
 import {
 	activeExchangeExcluded,
@@ -133,6 +134,13 @@ export interface RuntimeDeps {
 export interface RuntimeMount {
 	makeTools: TurnToolMaker;
 	runOwnership?: RunOwnershipHooks;
+}
+
+export interface Cancellation {
+	stopped: boolean;
+	settled: Promise<void>;
+	reviewsCancelled: number;
+	active: Promise<void>;
 }
 
 export class FencedError extends Error {
@@ -362,12 +370,7 @@ export class Runtime {
 		await Promise.all(drains);
 	}
 
-	stop(convId: string): {
-		stopped: boolean;
-		settled: Promise<void>;
-		reviewsCancelled: number;
-		active: Promise<void>;
-	} {
+	stop(convId: string): Cancellation {
 		const epoch = this.deps.store.bumpEpochIfPresent(convId);
 		if (epoch === null) {
 			log.info("stop — conversation already gone", { conversation: convId });
@@ -381,10 +384,17 @@ export class Runtime {
 		return this.cancelFenced(convId, epoch);
 	}
 
-	cancelFenced(
-		convId: string,
-		epoch: number,
-	): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number; active: Promise<void> } {
+	fence<T>(work: (bump: Bump) => T): { result: T; cancelled: Map<string, Cancellation> } {
+		return runFence(this.deps.store, work, (convId, epoch) => {
+			const cancellation = this.cancelFenced(convId, epoch);
+			cancellation.settled.catch((err: unknown) =>
+				log.error("fence settle failed", err, { conversation: convId, epoch }),
+			);
+			return cancellation;
+		});
+	}
+
+	private cancelFenced(convId: string, epoch: number): Cancellation {
 		if (
 			!Number.isSafeInteger(epoch) ||
 			epoch <= 0 ||

@@ -11,6 +11,7 @@ import { makeResponsibilityService } from "./responsibility-service.ts";
 import { fireScheduled, type SchedulerDeps } from "./scheduler.ts";
 import { tmpDb, useHome } from "./testkit.ts";
 import { openWakeStore, type DevelopmentInput } from "./wake-store.ts";
+import { storeFence } from "./testkit/store-fence.ts";
 
 setLogFile(null);
 const closers: (() => void)[] = [];
@@ -41,6 +42,7 @@ function rig() {
 		wakes,
 		programs,
 		conversations: store,
+		fence: storeFence(store),
 		pump() {},
 	});
 	const { responsibility: resp } = svc.accept({

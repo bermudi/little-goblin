@@ -112,8 +112,10 @@ apply next turn without interrupting the current answer.
   `as_file` forces documents (sendPhoto re-encodes; documents byte-exact;
   GIFs documented — sendPhoto strips animation). Capped at the local
   bot-api's 2GB upload ceiling.
-- **Voice mode**: `/voice` toggles per conversation — a settings command, so
-  a turn never switches medium mid-flight. The record keeps the text, so
+- **Voice mode**: `/voice` toggles per conversation — a flag write that
+  applies to the next reply, never a fence (ruling 2026-11-20, #820). A
+  reply already streaming keeps the medium it started in, so a turn never
+  switches medium mid-flight. The record keeps the text, so
   toggling off loses nothing and "what did you say verbatim" stays
   answerable; with transcription, a voice-mode topic is ears-in-ears-out.
   A failed transcription keeps the attachment (the model sees the file)

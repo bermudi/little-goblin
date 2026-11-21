@@ -65,7 +65,6 @@ function testDeps(configRef: ConfigRef): BotDeps {
 			submitPersisted: () => {},
 			busy: () => false,
 			stop: () => ({ stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 }),
-			cancelFenced: () => ({ stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 }),
 		} as unknown as Runtime,
 		titleFor: () => Promise.resolve(null),
 		transcribe: () => Promise.resolve(null),

@@ -13,6 +13,7 @@ import { makeResponsibilityService } from "../responsibility-service.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 import type { AppAttentionResponse } from "./app-wire.ts";
+import { storeFence } from "../testkit/store-fence.ts";
 
 const proposal: ProgramProposal = {
 	id: 7,
@@ -302,6 +303,7 @@ describe("app attention", () => {
 						wakes,
 						programs,
 						conversations: ctx.store,
+						fence: storeFence(ctx.store),
 						pump: () => {},
 					}),
 					listThreads: () => Promise.resolve([]),

@@ -27,6 +27,18 @@ histories.
 
 ## The authority rule
 
+### Epochs move only by cancellation
+
+A turn captures its conversation's epoch at admission; a later epoch fences
+it. Only a cancellation bumps the epoch — `/stop`, `/new` and navigation, a
+guest persona change, a responsibility correction — and it ends the live
+turn in the same call ([`Runtime.fence`](src/runtime.ts),
+[`Runtime.stop`](src/runtime.ts)), on both engines. Settings such as
+`/voice` and `/memory on|off` are flag writes: they apply to the next reply,
+and a streaming reply finishes in the mode it started in (operator,
+2026-11-20, #820). [`module-boundaries.test.ts`](src/module-boundaries.test.ts)
+keeps bare store bumps out of every other production file.
+
 ### Authority at action time
 
 State read before an asynchronous operation may no longer authorize an action.

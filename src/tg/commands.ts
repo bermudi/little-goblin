@@ -83,14 +83,6 @@ function listingsFor(db: Database): ForgetListings {
 	return listings;
 }
 
-function apply(
-	deps: CommandDeps,
-	conv: Conversation,
-	patch: Parameters<ConversationStore["setMeta"]>[1],
-): void {
-	deps.store.applySettings(conv.id, patch);
-}
-
 export function handleCommand(deps: CommandDeps, conv: Conversation, text: string): boolean {
 	const parsed = parseCommand(text, deps.botUsername);
 	if (parsed === null) return false;
@@ -155,7 +147,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				return true;
 			}
 			const enabled = !conv.voice;
-			apply(deps, conv, { voice: enabled });
+			deps.store.setMeta(conv.id, { voice: enabled });
 			log.info("voice mode changed", { conversation: conv.id, enabled });
 			reply(deps, conv, `voice replies → ${enabled ? "on" : "off"}`);
 			return true;

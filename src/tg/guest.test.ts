@@ -29,6 +29,7 @@ import {
 import { sharedChatPart } from "./turn-input.ts";
 import { log } from "../log.ts";
 import { tmpDb } from "../testkit.ts";
+import { type Bump, runFence } from "../fence.ts";
 
 const baseConfig = (over: Partial<Config> = {}): Config =>
 	({
@@ -528,8 +529,15 @@ function makeEnv(over: { busy?: boolean; guest?: boolean } = {}) {
 	const store: ConversationStore = db;
 	const guestStore = openGuestStore(db.db);
 	const submitted: Submitted[] = [];
+	const cancelled = () => ({
+		stopped: false,
+		settled: Promise.resolve(),
+		reviewsCancelled: 0,
+		active: Promise.resolve(),
+	});
 	const runtime = {
 		hasActiveTurn: (_id: string) => over.busy === true,
+		fence: <T>(work: (bump: Bump) => T) => runFence(db, work, cancelled),
 		submit: (conv: Conversation, message: GoblinMessage, sink: TurnSink) => {
 			submitted.push({ conv, message, sink });
 			return true;
@@ -759,22 +767,22 @@ describe("handleGuestUpdate", () => {
 			const done = sink.onDone({ kind: "completed" });
 			env.runtime.hasActiveTurn = () => true;
 			const stopped: string[] = [];
-			env.runtime.stop = (id) => {
-				stopped.push(id);
-				store.bumpEpoch(id);
-				return {
-					stopped: true,
-					settled: Promise.resolve(),
-					reviewsCancelled: 0,
-					active: Promise.resolve(),
-				};
-			};
+			env.runtime.fence = (work) =>
+				runFence(store, work, (id) => {
+					stopped.push(id);
+					return {
+						stopped: true,
+						settled: Promise.resolve(),
+						reviewsCancelled: 0,
+						active: Promise.resolve(),
+					};
+				});
 			try {
 				const demoted = ensurePersonaClass(env, store.get(conv.id)!, "guest", true);
 				expect(demoted.epoch).toBeGreaterThan(epoch);
 				expect(demoted.persona).toBe("guest");
 				expect(store.history(conv.id)).toEqual([]);
-				expect(stopped).toEqual([conv.id]);
+				expect(stopped).toEqual([conv.id, conv.id]);
 			} finally {
 				release.resolve();
 				await done;

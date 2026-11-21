@@ -1128,20 +1128,31 @@ describe("turn authority", () => {
 		}
 	});
 
-	test("post-commit cancellation requires the committed fence and does not advance it again", async () => {
+	test("fence bumps inside the caller's transaction and cancels the lane after commit, once", async () => {
 		const script = sdkScript();
 		const held = heldText(script, "a");
 		const r = rig({ script });
 		const sink = submit(r, "hi");
 		await held.entered;
 		await sink.firstDelta;
-		expect(() => r.runtime.cancelFenced(r.conv.id, 0)).toThrow("committed epoch");
-		expect(() => r.runtime.cancelFenced(r.conv.id, 1)).toThrow("committed epoch");
-		const epoch = r.store.bumpEpoch(r.conv.id);
-		expect(r.runtime.cancelFenced(r.conv.id, epoch).stopped).toBe(true);
+		const before = r.store.get(r.conv.id)!.epoch;
+		expect(() =>
+			r.runtime.fence((bump) => {
+				bump(r.conv.id);
+				throw new Error("caller write failed");
+			}),
+		).toThrow("caller write failed");
+		expect(r.store.get(r.conv.id)?.epoch).toBe(before);
+		expect(() => r.store.db.transaction(() => r.runtime.fence((bump) => bump(r.conv.id)))()).toThrow(
+			"must not run inside a transaction",
+		);
+		expect(r.store.get(r.conv.id)?.epoch).toBe(before);
+		const { result: epoch, cancelled } = r.runtime.fence((bump) => bump(r.conv.id));
+		expect(epoch).toBe(before + 1);
+		expect(cancelled.get(r.conv.id)?.stopped).toBe(true);
 		expect(r.store.get(r.conv.id)?.epoch).toBe(epoch);
-		held.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
+		held.release();
 		await r.runtime.shutdown();
 		expect(roles(r)).toEqual(["user"]);
 		r.store.close();
@@ -2691,7 +2702,7 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
-	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
+	test("an epoch advance fences an in-flight compaction — no pointer, snapshot kept", async () => {
 		const started = deferred<void>();
 		const gate = deferred<string>();
 		let summarizeCalls = 0;
@@ -2722,7 +2733,7 @@ describe("cache stability", () => {
 		expect(await sink.done).toEqual({ kind: "completed" });
 		await started.promise;
 		const barrier = submit(r, "follow-up");
-		r.store.applySettings(r.conv.id, { memoryExcluded: true });
+		r.store.bumpEpoch(r.conv.id);
 		expect(r.store.get(r.conv.id)?.epoch).toBe(1);
 		gate.resolve("the folded era");
 		expect(await barrier.done).toEqual({ kind: "completed" });
@@ -2736,7 +2747,7 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
-	test("a settings epoch change fences a manual /compact mid-summary — it rejects, no pointer", async () => {
+	test("an epoch advance fences a manual /compact mid-summary — it rejects, no pointer", async () => {
 		const started = deferred<void>();
 		const gate = deferred<string>();
 		const r = rig({
@@ -2756,7 +2767,7 @@ describe("cache stability", () => {
 		seedExchanges(r.store, r.conv.id);
 		const compacted = r.runtime.compact(r.conv);
 		await started.promise;
-		r.store.applySettings(r.conv.id, { memoryExcluded: true });
+		r.store.bumpEpoch(r.conv.id);
 		gate.resolve("the folded era");
 		await expect(compacted).rejects.toThrow("turn fenced");
 		await r.runtime.shutdown();
@@ -3065,10 +3076,9 @@ describe("skill reviewer hook", () => {
 		);
 		const sink = submit(r, "hi");
 		await held.entered;
-		r.store.bumpEpoch(r.conv.id);
-		if (make === claudeScript) held.release();
+		r.runtime.fence((bump) => bump(r.conv.id));
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		if (make === sdkScript) held.release();
+		held.release();
 		await sleep(50);
 		expect(gated).toBe(false);
 		r.store.close();

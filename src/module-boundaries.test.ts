@@ -304,6 +304,10 @@ function repoPath(file: string): string {
 // pinning its argv) outside src/t3.ts means a second wire owner.
 const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
+const BARE_EPOCH_BUMP = /\.bumpEpoch(?:IfPresent)?\b|["']bumpEpoch(?:IfPresent)?["']/;
+const EPOCH_BUMPERS = new Set(["fence.ts", "runtime.ts"]);
+const TEST_SUPPORT = /^(?:testkit|test-helpers)\//;
+
 // hc's JSON-RPC socket contract has one owner; domain modules use its
 // adapter, never their own socket client.
 const HC_SOCKET_IMPORT = /from\s+["']node:net["']/;
@@ -413,6 +417,15 @@ describe("module boundaries", () => {
 			.filter((name) => !name.endsWith(".test.ts"))
 			.filter((name) => HC_SOCKET_IMPORT.test(readFileSync(join(ROOT, name), "utf8")));
 		expect(offenders).toEqual(["src/hc.ts"]);
+	});
+
+	test("only Runtime.fence / Runtime.stop bump a conversation epoch", () => {
+		const offenders = walk(SRC)
+			.filter((file) => !/\.test\.tsx?$/.test(file) && !TEST_SUPPORT.test(rel(file)))
+			.filter((file) => !EPOCH_BUMPERS.has(rel(file)))
+			.filter((file) => BARE_EPOCH_BUMP.test(readFileSync(file, "utf8")))
+			.map(rel);
+		expect(offenders).toEqual([]);
 	});
 
 	test("grammy is imported only under src/tg", () => {

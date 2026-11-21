@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { formatAddress, parseAddress } from "../conversation-address.ts";
+import { FenceCancelError } from "../fence.ts";
 import { log } from "../log.ts";
 import type { Runtime } from "../runtime.ts";
 
@@ -35,7 +36,7 @@ export interface DmNavigationResult extends Receipt {
 }
 interface CommittedNavigation {
 	result: DmNavigationResult;
-	fence: { outgoingId: string; epoch: number } | null;
+	fence: { outgoingId: string } | null;
 }
 const storedSchema = z.object({
 	update_id: inputSchema.shape.updateId,
@@ -57,7 +58,7 @@ function assertScope(id: string | null, chatId: number): void {
 export function navigateDm(
 	deps: {
 		store: ConversationStore;
-		runtime: Pick<Runtime, "cancelFenced">;
+		runtime: Pick<Runtime, "fence">;
 		inbox: ReturnType<typeof openTelegramInbox>;
 	},
 	input: { chatId: number; updateId: number; messageId: number; command: "new" | "back" },
@@ -68,7 +69,7 @@ export function navigateDm(
 		const valid = inputSchema.parse(input);
 		const { store, runtime, inbox } = deps;
 		const db = store.db;
-		const navigation = db.transaction((): CommittedNavigation => {
+		const fenced = runtime.fence((bump): CommittedNavigation => {
 			phase = "receipt_lookup";
 			db.run(`CREATE TABLE IF NOT EXISTS tg_dm_navigation (
 				update_id INTEGER PRIMARY KEY,
@@ -152,7 +153,8 @@ export function navigateDm(
 					assertScope(outgoing.id, valid.chatId);
 					if (current !== null) {
 						phase = "fence";
-						fence = { outgoingId: current.id, epoch: store.bumpEpoch(current.id) };
+						bump(current.id);
+						fence = { outgoingId: current.id };
 					}
 					phase = "archive_pending";
 					archivedInputs = inbox.archivePendingBefore(laneKey, valid.updateId, outgoing.id);
@@ -190,14 +192,12 @@ export function navigateDm(
 				},
 				fence,
 			};
-		})();
+		});
 		committed = true;
-		const { result, fence } = navigation;
-		// Cancellation is irreversible. Fence durably with the pin/receipt,
-		// then cancel synchronously before any other work can enter the lane.
+		const { result, fence } = fenced.result;
 		if (fence !== null) {
-			phase = "cancel_fenced";
-			const cancelled = runtime.cancelFenced(fence.outgoingId, fence.epoch);
+			const cancelled = fenced.cancelled.get(fence.outgoingId);
+			if (cancelled === undefined) throw new Error("DM navigation fence cancelled no lane");
 			result.stopped = cancelled.stopped;
 			result.reviewsCancelled = cancelled.reviewsCancelled;
 		}
@@ -217,6 +217,10 @@ export function navigateDm(
 		});
 		return result;
 	} catch (err) {
+		if (err instanceof FenceCancelError) {
+			committed = true;
+			phase = "cancel_fenced";
+		}
 		// Never log exception messages/stacks here: validation and SQLite
 		// exceptions may contain persisted input. The caller gets the original error.
 		const safe = inputSchema.safeParse(input);

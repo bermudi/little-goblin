@@ -222,7 +222,7 @@ describe("project store", () => {
 		const project = projects.create({ name: "vault" });
 		const byOperator = store.resolve(appAddress("op"), "/w");
 		store.bindProject(byOperator.id, project.id);
-		store.applySettings(byOperator.id, { memoryExcluded: true });
+		store.setMeta(byOperator.id, { memoryExcluded: true });
 		const byGate = store.resolve(appAddress("gate"), "/w");
 		store.bindProject(byGate.id, project.id);
 
@@ -279,7 +279,7 @@ describe("project store", () => {
 		const project = projects.create({ name: "vault" });
 		const conv = store.resolve(appAddress("inside"), "/w");
 		store.bindProject(conv.id, project.id);
-		store.applySettings(conv.id, { memoryExcluded: true });
+		store.setMeta(conv.id, { memoryExcluded: true });
 		const epochBefore = store.get(conv.id)!.epoch;
 		projects.patch(project.id, { memory: "off" });
 		expect(store.get(conv.id)!.epoch).toBe(epochBefore);

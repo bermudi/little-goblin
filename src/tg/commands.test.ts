@@ -7,9 +7,15 @@ import { openStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { startMemoryWorker } from "../memory/mod.ts";
-import type { Runtime } from "../runtime.ts";
+import type { Conversation } from "../conversation-read.ts";
+import { Runtime, userMessage } from "../runtime.ts";
+import { fakeApi } from "../testkit/fake-api.ts";
+import { claudeScript } from "../testkit/turn-script-claude.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
+import type { TurnDone } from "../turn/sink.ts";
+import { makeConversationDeliverySink } from "./turn-input.ts";
 
-import { tmpDb, waitUntil } from "../testkit.ts";
+import { deferred, tmpDb, waitUntil } from "../testkit.ts";
 import { COMMAND_RE, type CommandDeps, handleCommand } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 
@@ -125,17 +131,80 @@ describe("commands", () => {
 		store.close();
 	});
 
-	test("/voice toggles voice replies and bumps the epoch", () => {
+	test("/voice toggles voice replies without bumping the epoch", () => {
 		const { store, conv, deps } = setup();
 		deps.configRef.current = { ...config, tts: { kind: "edge", voice: "en-US-AriaNeural" } };
 		expect(handleCommand(deps, conv, "/voice")).toBe(true);
 		const after = store.get(conv.id)!;
 		expect(after.voice).toBe(true);
-		expect(after.epoch).toBe(1);
+		expect(after.epoch).toBe(0);
 		handleCommand(deps, after, "/voice");
 		expect(store.get(conv.id)!.voice).toBe(false);
 		store.close();
 	});
+
+	for (const make of [claudeScript, sdkScript]) {
+		test(`${make === claudeScript ? "claude-code" : "ai-sdk"}: /voice mid-turn neither fences nor holds the turn; the next reply speaks`, async () => {
+			const store = openStore(tmpDb("goblin-cmd-voice-"));
+			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const script = make();
+			const runtime = new Runtime({ engines: script.engines, store, buildStep: () => script.step() });
+			runtime.mount({ makeTools: () => ({}) });
+			const { api, calls, texts } = fakeApi();
+			const configRef = {
+				current: {
+					...config,
+					tts: { kind: "edge" as const, voice: "en-US-AriaNeural" },
+					telegram: { ...config.telegram, richReplies: false },
+				},
+				ttsDown: false,
+			};
+			const spoken: string[] = [];
+			const sinkDeps = {
+				configRef,
+				store,
+				synthesize: async (text: string) => {
+					spoken.push(text);
+					return [new Uint8Array([1])];
+				},
+			};
+			const deps: CommandDeps = { api, configRef, store, runtime, botUsername: "goblin" };
+			const turn = (c: Conversation, text: string) => {
+				const sink = makeConversationDeliverySink(api, c, sinkDeps);
+				const done = deferred<TurnDone>();
+				const onDone = sink.onDone.bind(sink);
+				sink.onDone = async (d) => {
+					await onDone(d);
+					done.resolve(d);
+				};
+				runtime.submit(c, userMessage([{ type: "text", text }]), sink);
+				return done.promise;
+			};
+			try {
+				const entered = deferred<void>();
+				const gate = deferred<void>();
+				script.script(
+					{ kind: "hold", parts: [{ type: "text", text: "first reply" }], gate: gate.promise, entered: () => entered.resolve() },
+					{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+				);
+				const first = turn(store.get(conv.id)!, "hi");
+				await entered.promise;
+				expect(handleCommand(deps, store.get(conv.id)!, "/voice")).toBe(true);
+				gate.resolve();
+				expect(await first).toEqual({ kind: "completed" });
+				expect(store.get(conv.id)).toMatchObject({ voice: true, epoch: 0 });
+				expect(texts.some((t) => t.includes("first reply"))).toBe(true);
+				expect(spoken).toEqual([]);
+				expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
+				expect(await turn(store.get(conv.id)!, "again")).toEqual({ kind: "completed" });
+				expect(spoken).toEqual(["second reply"]);
+				expect(calls.filter((c) => c.method === "sendVoice")).toHaveLength(1);
+			} finally {
+				await runtime.shutdown();
+				store.close();
+			}
+		});
+	}
 
 	test("/voice refuses to enable when tts is explicitly off", () => {
 		const { store, conv, sent, deps } = setup();

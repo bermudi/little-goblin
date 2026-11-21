@@ -50,6 +50,12 @@ record consistent across engines. See the
 [engine contract](../src/turn/engine.ts), [rule tests](../src/turn/engine-rules.test.ts)
 and [conformance tests](../src/turn/engine.conformance.test.ts).
 
+A fence settles through the turn's abort on both engines: the bump and the
+cancel are one call, so no engine waits for its vendor stream to end before
+it reports `fenced`. A bare bump once left a claude-code turn open until the
+CLI query ended while ai-sdk settled at once (#820). See the
+[epoch rule](../DESIGN.md#epochs-move-only-by-cancellation).
+
 Historical system events stay system events on disk, but reach the model as
 bracketed user-role notes. This keeps history out of the system instructions
 and avoids passing a system-role message where the SDK rejects it.

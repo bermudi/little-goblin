@@ -23,9 +23,9 @@ an explicit rename.
 ## The six commands
 
 Commands are settings and controls, not conversations. The settings ones are
-per-topic (the topic you're in), and every settings change interrupts
-whatever that topic is currently doing, so a reply always reflects the
-current settings — never a mix.
+per-topic (the topic you're in), and a settings change applies to the next
+reply. A reply already in progress finishes the way it started, so a reply
+never mixes settings.
 
 | Command | What it does |
 |---|---|

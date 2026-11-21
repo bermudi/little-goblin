@@ -150,42 +150,60 @@ describe("followTarget", () => {
 });
 
 describe("endTurnFollow", () => {
-	test("a finished short reply switches to tail before a remote turn", () => {
-		const el = transcript(`${asked}${reply}`, {
+	test("remembers turn end until a short reply mounts, then follows later turns at the end", () => {
+		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
+		const waiting = transcript(`${asked}${shimmer}`, {
+			scrollHeight: 2000,
+			clientHeight: 800,
+			scrollTop: 1200,
+		});
+		const ended = endTurnFollow(following, false);
+		expect(ended).toEqual({ ...following, ended: true });
+		expect(followTarget(waiting, ended)?.next).toBe(ended);
+		const shortReply = transcript(`${asked}${reply}`, {
 			scrollHeight: 2000,
 			clientHeight: 800,
 			scrollTop: 1200,
 			headTop: 1500,
 		});
-		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
-		expect(followTarget(el, following)?.next).toBe(following);
-		const next = endTurnFollow(el, following);
-		expect(next).toEqual({ kind: "tail" });
+		const resolved = followTarget(shortReply, ended);
+		expect(resolved).toEqual({ top: 1200, next: { kind: "tail" } });
 		const remote = transcript(
 			`${asked}${reply}<div class="msg user" data-outline-anchor="u2">remote</div>${reply}`,
-			{ scrollHeight: 2200, clientHeight: 800, scrollTop: 1200, headTop: 2100 },
+			{ scrollHeight: 3000, clientHeight: 800, scrollTop: 1200, headTop: 2500 },
 		);
-		expect(followTarget(remote, next)?.top).toBe(1400);
+		expect(followTarget(remote, resolved!.next)?.top).toBe(2200);
 	});
 
-	test("no reply head, free, and tail modes are unchanged", () => {
-		const noHead = transcript(`${asked}${shimmer}`, {
-			scrollHeight: 2000,
+	test("a long reply mounting after turn-end still holds its head", () => {
+		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
+		const ended = endTurnFollow(following, false);
+		const el = transcript(`${asked}${reply}`, {
+			scrollHeight: 3000,
 			clientHeight: 800,
-			scrollTop: 1200,
+			scrollTop: 1100,
+			headTop: 1500,
 		});
-		const waiting = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
-		expect(endTurnFollow(noHead, waiting)).toBe(waiting);
+		expect(followTarget(el, ended)).toEqual({
+			top: 1500 - REPLY_HEAD_GAP_PX,
+			next: { kind: "free" },
+		});
+	});
+
+	test("queued turns and non-reply modes are unchanged; an open short reply stays armed", () => {
+		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
+		expect(endTurnFollow(following, true)).toBe(following);
+		const free = { kind: "free" } as const;
+		const tail = { kind: "tail" } as const;
+		expect(endTurnFollow(free, false)).toBe(free);
+		expect(endTurnFollow(tail, false)).toBe(tail);
 		const el = transcript(`${asked}${reply}`, {
 			scrollHeight: 2000,
 			clientHeight: 800,
 			scrollTop: 1200,
 			headTop: 1500,
 		});
-		const free = { kind: "free" } as const;
-		const tail = { kind: "tail" } as const;
-		expect(endTurnFollow(el, free)).toBe(free);
-		expect(endTurnFollow(el, tail)).toBe(tail);
+		expect(followTarget(el, following)?.next).toBe(following);
 	});
 });
 

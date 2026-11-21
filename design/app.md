@@ -253,6 +253,8 @@ shrinks (the "…" row unmounting), and that is not the operator's input.
 Content growth re-sticks in the same frame through a ResizeObserver, not
 an effect a frame late. Replies already below the asked message when the
 follow starts are never its head.
+Turn-end is remembered in reply-follow state, so the follow resolves when
+the reply head appears even if it mounts later.
 The transcript turns the browser's scroll anchoring off
 (`overflow-anchor: none`, as t3code's timeline does): the follow and the
 older-page restore own the scroll position, and anchoring kept the view

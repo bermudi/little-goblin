@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 
 export type Follow =
 	| { kind: "tail" }
-	| { kind: "reply"; after: string; stale: ReadonlySet<Element> }
+	| { kind: "reply"; after: string; stale: ReadonlySet<Element>; ended?: boolean }
 	| { kind: "free" };
 
 export type ScrollDirection = "up" | "down";
@@ -55,7 +55,8 @@ export function followTarget(
 	const headTop =
 		head.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
 	const holdAt = headTop - REPLY_HEAD_GAP_PX;
-	return holdAt < end ? { top: holdAt, next: { kind: "free" } } : { top: end, next: follow };
+	if (holdAt < end) return { top: holdAt, next: { kind: "free" } };
+	return { top: end, next: follow.ended ? { kind: "tail" } : follow };
 }
 
 export function afterUserScroll(
@@ -66,10 +67,9 @@ export function afterUserScroll(
 	return move.to < move.from - 1 ? { kind: "free" } : follow;
 }
 
-export function endTurnFollow(scroller: Element, follow: Follow): Follow {
-	if (follow.kind !== "reply" || replyHead(scroller, follow.after, follow.stale) === null)
-		return follow;
-	return { kind: "tail" };
+export function endTurnFollow(follow: Follow, nextTurnQueued: boolean): Follow {
+	if (follow.kind !== "reply" || nextTurnQueued) return follow;
+	return { ...follow, ended: true };
 }
 
 export function useTranscriptFollow(
@@ -114,14 +114,10 @@ export function useTranscriptFollow(
 		[scrollRef, stick],
 	);
 
-	const endTurn = useCallback(() => {
-		const el = scrollRef.current;
-		if (el === null) return;
-		const next = endTurnFollow(el, follow.current);
-		if (next === follow.current) return;
-		follow.current = next;
+	const endTurn = useCallback((nextTurnQueued: boolean) => {
+		follow.current = endTurnFollow(follow.current, nextTurnQueued);
 		stick();
-	}, [scrollRef, stick]);
+	}, [stick]);
 
 	const jumpToEnd = useCallback(() => {
 		const el = scrollRef.current;

@@ -625,7 +625,7 @@ function Chat({
         if (!activeReader) resumeFromEvents();
       } else if (event.type === "turn-end") {
         setSettledTailId(null);
-        follow.endTurn();
+        follow.endTurn(pendingItems.length > 0);
         gate.serverLive = false;
         setEventsLive(false);
         setSubmitPending(false);

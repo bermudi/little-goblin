@@ -1079,6 +1079,7 @@ header h1 {
 .transcript {
 	flex: 1;
 	overflow-y: auto;
+	overflow-anchor: none;
 	padding: 1.5rem 1rem 1rem;
 	display: flex;
 	flex-direction: column;

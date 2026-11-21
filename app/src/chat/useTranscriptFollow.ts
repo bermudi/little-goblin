@@ -105,7 +105,7 @@ export function useTranscriptFollow(
 			};
 			stick();
 		},
-		[stick],
+		[scrollRef, stick],
 	);
 
 	const jumpToEnd = useCallback(() => {

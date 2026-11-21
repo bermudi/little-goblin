@@ -253,6 +253,10 @@ shrinks (the "…" row unmounting), and that is not the operator's input.
 Content growth re-sticks in the same frame through a ResizeObserver, not
 an effect a frame late. Replies already below the asked message when the
 follow starts (the old reply a retry replaces) are never its head.
+The transcript turns the browser's scroll anchoring off
+(`overflow-anchor: none`, as t3code's timeline does): the follow and the
+older-page restore own the scroll position, and anchoring kept the view
+at the end while a retried reply grew, so its head never held.
 See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
 One assistant card per reply: the "…" waiting row shows only until the
 reply has a part to draw (#415).

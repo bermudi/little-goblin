@@ -256,6 +256,18 @@ uses a folder-plus glyph so it never reads as New conversation. Which folders
 are open is a per-device preference, like the chat width: when storage is
 unavailable the rail only forgets it.
 
+## [Rolling chat](../GLOSSARY.md#rolling-chat) (ruling 2026-11-21, #840)
+
+The chat list keeps all existing chats and adds one Rolling chat entry. The
+DM's quiet-gap routing rule is shared in `src/rolling.ts` (`routeLane`). Each
+[roll](../GLOSSARY.md#roll) is an ordinary `app/` conversation tracked in
+`app_rolls`, but it is hidden from the ordinary chat list. The gap reuses
+`telegram.dmGapMinutes`. A roll starts a fresh conversation; it does not
+rewrite the previous conversation's events or prompt prefix. The client shows
+one roll at a time with a link to the previous one. Stitched scrolling across
+rolls is a follow-up, not part of this work. The Telegram DM and the app
+Rolling chat never share a current-conversation pointer.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

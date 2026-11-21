@@ -9,7 +9,7 @@ import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
 import { MemoryQueue } from "./memory/queue.ts";
-import { channelOf, type ConversationAddress, formatAddress } from "./conversation-address.ts";
+import { appAddress, channelOf, type ConversationAddress, formatAddress } from "./conversation-address.ts";
 import { paths } from "./home-layout.ts";
 import { type CompactionWrite, flatLine, parseEvent } from "./conversation-events.ts";
 import {
@@ -21,6 +21,7 @@ import { makeConversationCompaction } from "./conversation-compaction.ts";
 import { makeConversationDelete } from "./conversation-delete.ts";
 import { makeConversationFork } from "./conversation-fork.ts";
 import { makeConversationRolling } from "./conversation-rolling.ts";
+import { makeConversationAppRolling } from "./conversation-app-rolling.ts";
 import { type MessageEdit, makeConversationTranscript } from "./conversation-transcript.ts";
 import { prepareConversationQueries, type Row } from "./conversation-queries.ts";
 import { ensureConversationSchema } from "./conversation-schema.ts";
@@ -59,9 +60,9 @@ export function prepareAppSettingsForConfig(
 	previous: Config,
 	next: Config,
 ): void {
-	const rows = store.listAppConversations().map((conv) => ({
-		id: conv.id,
-		model: store.get(conv.id)!.model ?? previous.model,
+	const rows = store.listAppConversationIds().map((id) => ({
+		id,
+		model: store.get(id)!.model ?? previous.model,
 	}));
 	z.array(z.object({ id: z.string(), model: z.string() }))
 		.superRefine((selections, ctx) => {
@@ -102,6 +103,9 @@ export interface ConversationStore extends ConversationReads {
 	// to the selected source, selected atomically. n is a creation
 	// high-water, never rewound by /back.
 	rollDm(chatId: number, defaultCwd: string): Conversation;
+	currentAppRoll(): Conversation | null;
+	rollApp(config: Config): Conversation;
+	appRollChain(limit: number): AppConversationSummary[];
 	// Atomically select the predecessor and reset the quiet-gap clock;
 	// null = no state change. No history replays; the caller owns logs
 	// and pending input.
@@ -304,6 +308,62 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const deletion = makeConversationDelete(db, queries, memoryQueue, coordinationAnchors);
 
+	function resolveConversation(
+		addr: ConversationAddress,
+		defaultCwd: string,
+		defaults?: ModelSettings,
+	): Conversation {
+		return db.transaction(() => {
+			const id = formatAddress(addr);
+			const existing = qGet.get(id);
+			if (existing) {
+				if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
+				return toConversation(qGet.get(id)!);
+			}
+			// Fillers — channelOf routes on the prefix, never these columns.
+			qInsertConv.run(
+				id,
+				addr.chatId,
+				addr.kind === "topic" ? addr.threadId : null,
+				defaultCwd,
+				new Date().toISOString(),
+			);
+			if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
+			const created = qGet.get(id);
+			if (!created) throw new Error(`conversation ${id} insert failed`);
+			return toConversation(created);
+		})();
+	}
+
+	function summarizeAppConversation(id: string): AppConversationSummary | null {
+		const row = qGet.get(id);
+		if (row === null) return null;
+		const last = qLastAppEvent.get(id);
+		const message = last === null ? null : parseEvent(id, last.seq, last.role, last.data);
+		return {
+			id,
+			title: row.title === null ? null : flatLine(row.title) || null,
+			createdAt: row.created_at,
+			updatedAt: last?.created_at ?? row.created_at,
+			preview: message === null ? "" : flatLine(messageText(message)).slice(0, 200),
+			archivedAt: row.archived_at,
+			pinnedAt: row.pinned_at,
+			projectId: row.project_id,
+			parentId: row.parent_conversation_id,
+		};
+	}
+
+	const appRolling = makeConversationAppRolling<Conversation, AppConversationSummary, Config>(
+		db,
+		queries,
+		(id) => {
+			const row = qGet.get(id);
+			return row ? toConversation(row) : null;
+		},
+		(id, config) => resolveConversation(appAddress(id), paths.workspace(), config),
+		summarizeAppConversation,
+	);
+
 	return {
 		db,
 		memoryQueue,
@@ -313,28 +373,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 		...compaction,
 
-		resolve(addr, defaultCwd, defaults) {
-			return db.transaction(() => {
-				const id = formatAddress(addr);
-				const existing = qGet.get(id);
-				if (existing) {
-					if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
-					return toConversation(qGet.get(id)!);
-				}
-				// Fillers — channelOf routes on the prefix, never these columns.
-				qInsertConv.run(
-					id,
-					addr.chatId,
-					addr.kind === "topic" ? addr.threadId : null,
-					defaultCwd,
-					new Date().toISOString(),
-				);
-				if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
-				const created = qGet.get(id);
-				if (!created) throw new Error(`conversation ${id} insert failed`);
-				return toConversation(created);
-			})();
-		},
+		resolve: resolveConversation,
 
 		get(id) {
 			const row = qGet.get(id);
@@ -355,6 +394,7 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		...rolling,
+		...appRolling,
 
 		lastActivityAt(id) {
 			const conv = qGet.get(id);
@@ -558,6 +598,10 @@ export function openStore(dbPath: string): ConversationStore {
 			return [...pinned, ...out.filter((r) => r.pinnedAt === null)].map(
 				({ activity: _activity, ...summary }) => summary,
 			);
+		},
+
+		listAppConversationIds() {
+			return queries.qListAppIds.all().map((row) => row.id);
 		},
 
 		bindProject(id, projectId) {

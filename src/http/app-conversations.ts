@@ -264,8 +264,14 @@ export async function handleConversationsRoute(
 
 	if (path === "/api/app/conversations") {
 		if (req.method === "GET") {
-			const body: AppConversationList = { conversations: store.listAppConversations() };
-			log.debug("app conversation list served", { count: body.conversations.length });
+			const body: AppConversationList = {
+				conversations: store.listAppConversations(),
+				rolling: { chain: store.appRollChain(50) },
+			};
+			log.debug("app conversation list served", {
+				count: body.conversations.length,
+				rolling: body.rolling.chain.length,
+			});
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "POST") {

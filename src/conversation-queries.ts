@@ -333,7 +333,27 @@ export function prepareConversationQueries(db: Database) {
 		[]
 	>(
 		`SELECT id, title, created_at, archived_at, pinned_at, project_id, parent_conversation_id FROM conversations
-			WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
+			WHERE id LIKE 'app/%' AND NOT EXISTS (
+				SELECT 1 FROM app_rolls WHERE app_rolls.conversation_id = conversations.id
+			) ORDER BY created_at, rowid`,
+	);
+	const qListAppIds = db.query<{ id: string }, []>(
+		"SELECT id FROM conversations WHERE id LIKE 'app/%' ORDER BY created_at, rowid",
+	);
+	const qAppRollCurrent = db.query<{ n: number; conversation_id: string }, []>(
+		"SELECT n, conversation_id FROM app_rolls ORDER BY n DESC LIMIT 1",
+	);
+	const qAppRollChain = db.query<{ n: number; conversation_id: string }, [number]>(
+		"SELECT n, conversation_id FROM app_rolls ORDER BY n DESC LIMIT ?",
+	);
+	const qAppRollHighwater = db.query<{ n: number }, []>(
+		"SELECT n FROM app_roll_highwater WHERE id = 1",
+	);
+	const qAppRollHighwaterUpsert = db.query(
+		"INSERT INTO app_roll_highwater (id, n) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET n = MAX(app_roll_highwater.n, excluded.n)",
+	);
+	const qInsertAppRoll = db.query(
+		"INSERT INTO app_rolls (n, conversation_id, created_at) VALUES (?, ?, ?)",
 	);
 	const qProjectConvs = db.query<{ id: string }, [string]>(
 		"SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at, rowid",
@@ -441,6 +461,12 @@ export function prepareConversationQueries(db: Database) {
 		qSearch,
 		qContext,
 		qListApp,
+		qListAppIds,
+		qAppRollCurrent,
+		qAppRollChain,
+		qAppRollHighwater,
+		qAppRollHighwaterUpsert,
+		qInsertAppRoll,
 		qProjectConvs,
 		qLastAppEvent,
 		qDeleteEvents,

@@ -50,6 +50,14 @@
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
 - **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
+- **Roll:** a fresh app conversation made when the Rolling chat treats a
+  message as a new subject. For example, after a quiet gap and a new-subject
+  check, Goblin starts an empty conversation instead of adding the message to
+  the old one.
+- **Rolling chat:** the one chat-list entry that routes app messages to the
+  current app conversation and starts a fresh one when the quiet-gap rule says
+  to. For example, the second message inside the gap stays in the same
+  conversation.
 - **Wake:** a durable queued trigger that asks a conversation to start a turn. `wake-store.ts` and `wake-dispatcher.ts` own it.
 - **Attachment:** the durable row that binds a conversation to one delegated agent session, keyed by terminal and agent session.
 - **Binding:** the link between a conversation and a delegated agent session. The attachment row is its durable record.

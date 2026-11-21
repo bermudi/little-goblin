@@ -198,6 +198,7 @@ export interface ConversationReads {
 	eventContext(id: string, seq: number, window: number): HistoryContextRow[];
 	// The app channel's own pool, most recently active first.
 	listAppConversations(): AppConversationSummary[];
+	listAppConversationIds(): string[];
 	// Ids bound to one project — the memory-off propagation walks them.
 	listProjectConversationIds(projectId: string): string[];
 	// All guest conversations in a chat — closing guest access fences

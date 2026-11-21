@@ -98,6 +98,7 @@ export function makeConversationDelete(
 			// dm_roll_highwater and rollDm re-mints the lane (the reset
 			// flow calls it immediately).
 			db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
+			db.run("DELETE FROM app_rolls WHERE conversation_id = ?", [id]);
 			// Record the final epoch before the row goes — a recreated id
 			// must not collide with a token this generation issued.
 			const gone = qGet.get(id);

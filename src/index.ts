@@ -222,7 +222,7 @@ async function boot() {
 		// next turn completion retries.
 		log.warn("boot curator pass failed — retried after the next settled turn", err, {});
 	}
-	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
+	for (const id of store.listAppConversationIds()) store.initializeAppSettings(id, config);
 	const programs = openPrograms(paths.db());
 	programs.rePinDmTopics();
 	// The outbox opens unconditionally — drafts stay readable and
@@ -759,6 +759,7 @@ async function boot() {
 				notes,
 				auth,
 				configRef,
+				gate: () => system1Gate ?? undefined,
 				onConfigWritten,
 				// Same seams the mini-app door reads — app-channel mounts
 				// them under /api/app/* with the bearer/trust gate.

@@ -45,6 +45,17 @@ export interface RollResult {
 	probability?: number;
 }
 
+export interface RollLane {
+	current(): Conversation | null;
+	mint(): Conversation;
+	logs: {
+		rolled: string;
+		continued: string;
+		fields: Record<string, unknown>;
+		rolledFields: Record<string, unknown>;
+	};
+}
+
 export interface RollDeps {
 	store: ConversationStore;
 	runtime: Pick<Runtime, "busy">;
@@ -87,38 +98,39 @@ class RollDeadlineError extends Error {
 	}
 }
 
-function roll(
-	deps: RollDeps,
-	chatId: number,
+function laneRoll(
+	lane: RollLane,
 	from: Conversation | null,
 	decidedBy: RollDecidedBy,
 	gapMinutes: number | null,
 	probability?: number,
 ): RollResult {
-	const conv = deps.store.rollDm(chatId, paths.workspace());
-	log.info("dm rolled", {
-		address: formatAddress({ kind: "dm", chatId }),
+	const conv = lane.mint();
+	const fields = {
 		from: from?.id ?? null,
 		to: conv.id,
 		gapMinutes,
 		decidedBy,
 		...(probability !== undefined ? { probability } : {}),
-	});
+	};
+	log.info(lane.logs.rolled, { ...lane.logs.rolledFields, ...fields });
 	return { conv, rolled: true, decidedBy, ...(probability !== undefined ? { probability } : {}) };
 }
 
-function continued(
+function laneContinued(
+	lane: RollLane,
 	conv: Conversation,
 	decidedBy: RollDecidedBy,
 	gapMinutes: number,
 	probability?: number,
 ): RollResult {
-	log.info("dm continued past gap", {
+	const fields = {
 		conversation: conv.id,
 		gapMinutes,
 		decidedBy,
 		...(probability !== undefined ? { probability } : {}),
-	});
+	};
+	log.info(lane.logs.continued, fields);
 	return { conv, rolled: false, decidedBy, ...(probability !== undefined ? { probability } : {}) };
 }
 
@@ -180,13 +192,13 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 // Synchronous triggers never run the check — they roll or join by rule.
-export function routeDm(
+export function routeLane(
 	deps: RollDeps,
-	chatId: number,
+	lane: RollLane,
 	trigger: "reply" | "command" | "fire" | "current",
 ): RollResult {
-	const current = deps.store.currentDm(chatId);
-	if (current === null) return roll(deps, chatId, null, "first", null);
+	const current = lane.current();
+	if (current === null) return laneRoll(lane, null, "first", null);
 	if (deps.runtime.busy(current.id)) return { conv: current, rolled: false, decidedBy: "busy" };
 	const elapsed = elapsedMs(deps, current);
 	const gapMinutes = Math.floor(elapsed / 60_000);
@@ -195,26 +207,26 @@ export function routeDm(
 	}
 	switch (trigger) {
 		case "reply":
-			return continued(current, "reply", gapMinutes);
+			return laneContinued(lane, current, "reply", gapMinutes);
 		case "command":
-			return roll(deps, chatId, current, "command", gapMinutes);
+			return laneRoll(lane, current, "command", gapMinutes);
 		case "fire":
-			return roll(deps, chatId, current, "fire", gapMinutes);
+			return laneRoll(lane, current, "fire", gapMinutes);
 		case "current":
-			return continued(current, "gap", gapMinutes);
+			return laneContinued(lane, current, "gap", gapMinutes);
 	}
 }
 
 // Check failures fail open into current (the message still needs an
 // answer); anything that isn't a System1Error or the deadline propagates.
-export async function routeDmMessage(
+export async function routeLaneMessage(
 	deps: RollDeps,
-	chatId: number,
+	lane: RollLane,
 	burstText: string,
 	stillRouteable: () => boolean = () => true,
 ): Promise<RollResult> {
-	const current = deps.store.currentDm(chatId);
-	if (current === null) return roll(deps, chatId, null, "first", null);
+	const current = lane.current();
+	if (current === null) return laneRoll(lane, null, "first", null);
 	if (deps.runtime.busy(current.id)) return { conv: current, rolled: false, decidedBy: "busy" };
 	const elapsed = elapsedMs(deps, current);
 	const gapMinutes = Math.floor(elapsed / 60_000);
@@ -226,18 +238,18 @@ export async function routeDmMessage(
 	// second "— new conversation —" marker. Cheap one-row probe first;
 	// the full history is only needed once a reply exists to judge.
 	if (deps.store.lastEntry(current.id, "assistant") === null) {
-		return continued(current, "unanswered", gapMinutes);
+		return laneContinued(lane, current, "unanswered", gapMinutes);
 	}
 	const history = deps.store.history(current.id);
 	const gate = deps.gate?.();
 	if (gate === undefined) {
 		log.warn("follow-up check", {
-			chat: chatId,
+			...lane.logs.fields,
 			conversation: current.id,
 			ms: 0,
 			kind: "no gate",
 		});
-		return continued(current, "fallback", gapMinutes);
+		return laneContinued(lane, current, "fallback", gapMinutes);
 	}
 	const started = Date.now();
 	let decision: System1Decision;
@@ -251,40 +263,39 @@ export async function routeDmMessage(
 	} catch (err) {
 		if (!(err instanceof System1Error) && !(err instanceof RollDeadlineError)) throw err;
 		log.warn("follow-up check", {
-			chat: chatId,
+			...lane.logs.fields,
 			conversation: current.id,
 			ms: Date.now() - started,
 			kind: err instanceof System1Error ? err.kind : "deadline",
 		});
 		if (!stillRouteable()) {
 			// Navigation may have moved the pin while the check ran.
-			const pinned = deps.store.currentDm(chatId);
+			const pinned = lane.current();
 			return { conv: pinned ?? current, rolled: false, decidedBy: "command" };
 		}
 		// The address can still have rolled while the failed check ran
 		// — join the new current rather than answering the superseded one.
-		const pinned = deps.store.currentDm(chatId);
+		const pinned = lane.current();
 		if (pinned !== null && pinned.id !== current.id) {
-			return continued(pinned, "gap", gapMinutes);
+			return laneContinued(lane, pinned, "gap", gapMinutes);
 		}
-		return continued(current, "fallback", gapMinutes);
+		return laneContinued(lane, current, "fallback", gapMinutes);
 	}
 	const probability = decision.answers["follow_up"] ?? 1;
 	if (!stillRouteable()) {
 		log.info("follow-up check superseded by navigation", {
-			chat: chatId,
+			...lane.logs.fields,
 			conversation: current.id,
 			probability,
 			ms: Date.now() - started,
 			inputTokens: decision.inputTokens,
 			cost: decision.cost,
 		});
-		const pinned2 = deps.store.currentDm(chatId);
-		return { conv: pinned2 ?? current, rolled: false, decidedBy: "command", probability };
+		return { conv: lane.current() ?? current, rolled: false, decidedBy: "command", probability };
 	}
 	const fresh = probability < FRESH_BELOW;
 	log.info("follow-up check", {
-		chat: chatId,
+		...lane.logs.fields,
 		conversation: current.id,
 		probability,
 		ms: Date.now() - started,
@@ -294,24 +305,50 @@ export async function routeDmMessage(
 	});
 	// A fire/command/burst can roll the address while the check ran —
 	// join wherever the pin points now, never roll twice.
-	const pinned = deps.store.currentDm(chatId);
+	const pinned = lane.current();
 	if (pinned !== null && pinned.id !== current.id) {
-		return continued(pinned, "gap", gapMinutes, probability);
+		return laneContinued(lane, pinned, "gap", gapMinutes, probability);
 	}
 	// The pin didn't move, but the conversation may have gone busy or
 	// absorbed fresh activity mid-check — a roll now would strand that
 	// exchange on a stale fork.
 	if (deps.runtime.busy(current.id)) {
-		return {
-			conv: current,
-			rolled: false,
-			decidedBy: "busy",
-			...(probability !== undefined ? { probability } : {}),
-		};
+		return { conv: current, rolled: false, decidedBy: "busy", probability };
 	}
 	if (elapsedMs(deps, current) < deps.gapMinutes() * 60_000) {
-		return continued(current, "gap", gapMinutes, probability);
+		return laneContinued(lane, current, "gap", gapMinutes, probability);
 	}
-	if (fresh) return roll(deps, chatId, current, "check", gapMinutes, probability);
-	return continued(current, "check", gapMinutes, probability);
+	return fresh
+		? laneRoll(lane, current, "check", gapMinutes, probability)
+		: laneContinued(lane, current, "check", gapMinutes, probability);
+}
+
+function dmLane(deps: RollDeps, chatId: number): RollLane {
+	return {
+		current: () => deps.store.currentDm(chatId),
+		mint: () => deps.store.rollDm(chatId, paths.workspace()),
+		logs: {
+			rolled: "dm rolled",
+			continued: "dm continued past gap",
+			fields: { chat: chatId },
+			rolledFields: { address: formatAddress({ kind: "dm", chatId }) },
+		},
+	};
+}
+
+export function routeDm(
+	deps: RollDeps,
+	chatId: number,
+	trigger: "reply" | "command" | "fire" | "current",
+): RollResult {
+	return routeLane(deps, dmLane(deps, chatId), trigger);
+}
+
+export async function routeDmMessage(
+	deps: RollDeps,
+	chatId: number,
+	burstText: string,
+	stillRouteable: () => boolean = () => true,
+): Promise<RollResult> {
+	return routeLaneMessage(deps, dmLane(deps, chatId), burstText, stillRouteable);
 }

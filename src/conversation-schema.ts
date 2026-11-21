@@ -343,6 +343,17 @@ export function ensureConversationSchema(db: Database): void {
 				chat_id INTEGER PRIMARY KEY,
 				n INTEGER NOT NULL
 			)`);
+	db.run(`
+			CREATE TABLE IF NOT EXISTS app_rolls (
+				n INTEGER PRIMARY KEY,
+				conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id),
+				created_at TEXT NOT NULL
+			)`);
+	db.run(`
+			CREATE TABLE IF NOT EXISTS app_roll_highwater (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				n INTEGER NOT NULL
+			)`);
 	// Manual DM navigation is additive. The presence of the link column
 	// is the one-time migration marker: never rebuild links on later boots,
 	// or a /back → /new branch would silently become chronological again.

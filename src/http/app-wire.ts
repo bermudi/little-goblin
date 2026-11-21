@@ -9,6 +9,7 @@ import type { DiffLine } from "../line-diff.ts";
 
 export interface AppConversationList {
 	conversations: AppConversationSummary[];
+	rolling: { chain: AppConversationSummary[] };
 }
 
 export interface AppConversationCreate {
@@ -146,10 +147,24 @@ export interface AppReplyRatingResponse {
 	rating: AppRatedReply;
 }
 
-export interface AppChatRequest {
-	conversationId: string;
-	message: Message;
-}
+export type AppChatRequest =
+	| {
+			conversationId: string;
+			message: Message;
+			whenBusy?: "steer" | "followUp";
+			editMessageId?: string;
+	  }
+	| { conversationId: string; retry: true; whenBusy?: "steer" | "followUp" }
+	| { rolling: true; message: Message; whenBusy?: "steer" | "followUp" };
+
+export type AppChatResponse =
+	| { submitted: true; pendingId?: string }
+	| {
+			submitted: true;
+			conversationId: string;
+			rolled: boolean;
+			pendingId?: string;
+	  };
 
 export interface AppAttachmentResponse {
 	ref: AttachmentRef;

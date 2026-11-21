@@ -1514,7 +1514,7 @@ test("settings saves freeze untouched legacy app settings before updating defaul
 	const store = openStore(":memory:");
 	const legacy = store.resolve(appAddress("untouched"), "/work");
 	const { http, post, configRef } = setup(undefined, (previous) => {
-		for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, previous);
+		for (const id of store.listAppConversationIds()) store.initializeAppSettings(id, previous);
 	});
 	try {
 		expect((await post({ model: "zai/future", thinking: "low", publicUrl: "" })).status).toBe(200);

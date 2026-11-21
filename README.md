@@ -7,10 +7,7 @@ channel. One operator, one process, running on your own machine. Talk to it in
 the app or a Telegram chat; it answers, runs shell commands, reads and writes
 files, handles photos and voice notes, and can speak replies back as voice notes.
 
-Built on the Vercel AI SDK. [DIRECTION.md](DIRECTION.md) records the product
-aspiration: Goblin as Chief of Staff, carrying work while the operator stays
-in the outer loop. [ROADMAP.md](ROADMAP.md) charts the next acceptance targets;
-[DESIGN.md](DESIGN.md) points to the code and explains design choices.
+Built on the Vercel AI SDK.
 
 It runs in one place: g7; `bun scripts/release.ts` builds a commit into an
 immutable release, flips the live symlink, and restarts locally, and
@@ -96,23 +93,16 @@ systemctl --user restart goblin  # restart
 
 ## Developing
 
-- Start product/roadmap work with [`DIRECTION.md`](DIRECTION.md) and
-  [`ROADMAP.md`](ROADMAP.md): settled intent, the inspected baseline, and the
-  next acceptance target. Check current source before treating either as
-  evidence of shipped behavior.
 - `bun test` runs the suite, `bun run typecheck` typechecks (both tsc
   programs). Both should pass
   before committing.
-- Read `AGENTS.md` for the working rules. Use `DESIGN.md` to find the owning
-  source and tests, and `design/` to understand the choices behind them.
-  `docs/` is for operators.
+- Read [`AGENTS.md`](AGENTS.md) for project scope and working rules.
+  Check the source and tests for what ships, and the design notes for why.
 - Only `src/tg/` knows about Telegram internals; everything else is plain
   domain code. Tests live next to the files they cover.
 
 ## Docs map
 
-- [`DIRECTION.md`](DIRECTION.md) — the product aspiration and settled operator intent
-- [`ROADMAP.md`](ROADMAP.md) — current baseline, recommended build order, and acceptance targets
 - [`docs/setup.md`](docs/setup.md) — install, first boot, what gets created where
 - [`docs/configuration.md`](docs/configuration.md) — every config knob and secret
 - [`docs/usage.md`](docs/usage.md) — topics, commands, media, the mini app
@@ -121,4 +111,4 @@ systemctl --user restart goblin  # restart
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
 - [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
 - [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in
-- [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — source map and design rationale
+- [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — design rules and rationale

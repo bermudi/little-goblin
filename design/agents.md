@@ -48,8 +48,7 @@ model catalog**.
   description tells goblin to write a self-contained task.
 - **Model.** The agent type's `model` (a configured model reference),
   else the parent's model. All of goblin's providers work, including the
-  claude-code subscription engine (DIRECTION.md → Inference Is A Core
-  Constraint).
+  [Claude Code subscription engine](model.md#the-claude-code-engine--a-second-turn-engine).
 - **Tools.** The agent type's allowlist, limited to the tools the parent
   turn has. A child never gets `agent` (depth 1), `delegate` (only the
   operator starts a harness run, and a child does not hear the operator),
@@ -87,10 +86,9 @@ System prompt for this agent type.
   replaces a built-in type.
 - Types are read at turn start, like skills. A changed file applies on
   the next turn and needs no restart.
-- Less-trusted models get bounded tools (DIRECTION.md → cheap/free
-  workers): a type that names such a model also names a narrow `tools`
-  list, for example the sandbox only. The type file is the control, not a
-  runtime gate.
+- Less-trusted models get bounded tools: a type that names such a model
+  also names a narrow `tools` list, for example the sandbox only.
+  The type file is the control, not a runtime gate.
 
 ### Verbs
 

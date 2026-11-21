@@ -59,9 +59,7 @@ import { startAgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
-import { makeIssueStore, makeReadinessObserver } from "./responsibility-readiness.ts";
 import { fileAgentChildReport, fileDelegationReport } from "./responsibility-runs.ts";
-import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
 import { wireReviewer } from "./reviewer-wiring.ts";
 import { Runtime } from "./runtime.ts";
@@ -638,23 +636,11 @@ async function boot() {
 		pump: () => delivery.dispatcher.pump(),
 		show: (threadId) => t3.showThread(threadId, 1),
 	});
-	const readinessObserver = makeReadinessObserver({
-		db: store.db,
-		resps: responsibilities,
-		wakes: wakeStore,
-		issues: makeIssueStore(store.db),
-		pump: () => delivery.dispatcher.pump(),
-		read: makeGithubReadiness(),
-		now: wallClock,
-	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {
 		responsibilityObserver
 			.observe()
 			.catch((err) => log.error("responsibility observe tick failed", err));
-		readinessObserver
-			.observe()
-			.catch((err) => log.error("pr readiness observe tick failed", err));
 	}, OBSERVE_MS);
 	observerTicker.unref();
 	const stopObserverTicker = () => clearInterval(observerTicker);

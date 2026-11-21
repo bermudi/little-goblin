@@ -81,39 +81,12 @@ it rides on media — the attachment wins.
 Files up to 2 GB work if you're running the self-hosted Telegram bot API
 (`telegram.apiRoot`); on the cloud API the usual Telegram limits apply.
 
-## Issue builds and PR readiness
+## Issue work
 
-Hand Goblin an issue in a project conversation and it starts the inner loop
-at once: one T3 Code thread (Claude on Opus 5.5 unless `innerLoop` says
-otherwise) in a new worktree from the repo's default branch, on branch
-`issue/<N>`. The responsibility links the explicit issue
-(`issue:{repository:"owner/repo",number:N}`). Code then checks the closing
-PR, its current head SHA, the verifier comment, and CI on that SHA. Each
-change files a worker report with the sources and wakes Goblin; it is not
-the worker's claim. No passing evidence means **not ready**.
-
-The verifier's comment must open with `PASS`, `PASS+NOTES`, or `FAIL`, and
-include exactly one standalone line:
-
-```text
-Checked-SHA: <full 40-character lowercase commit SHA>
-```
-
-After a push, the old verdict cannot make the new head ready. `PASS+NOTES`
-still needs judgment on its notes. Readiness is never permission to merge.
-Code checks for changes once a minute, with no model turns spent on
-unchanged CI. Paused or closed work is not monitored. Responsibilities
-accepted without an explicit issue are not adopted.
-
-To inspect the same GitHub evidence without starting Goblin or a model:
-
-```sh
-bun --no-env-file scripts/pr-readiness.ts bermudi/little-goblin 406
-```
-
-This uses your existing `gh` login, reads GitHub only, and writes JSON to
-stdout with diagnostics on stderr. Unavailable or partial evidence is
-reported explicitly, never treated as green.
+Use the operator's issue-workflow skill to hand off and run issue work.
+Goblin can drive T3 Code with its `t3` CLI through `bash`; the workflow
+and its checks live in that skill. Goblin's code does not start issue
+builds.
 
 ## The Settings mini app
 
@@ -125,8 +98,8 @@ transcription, allowed users, URLs, providers, log level. Use this editor for
 routine configuration. Supported settings apply live; boot-pinned settings
 still need an approved restart. The Telegram mini app won't let you save a
 config that removes your own Telegram user id. Delegation has its own
-section: the coding agents (name, T3 provider and model) and the role
-defaults the delegate tool uses when a call names no harness. Gmail and
+section for coding harnesses. The operator must name the harness in a
+delegate request. Gmail and
 the skill reviewer have no
 controls yet: configure them during bootstrap/recovery, validate with
 Doctor, and use an approved restart. A delegation change is boot-pinned —

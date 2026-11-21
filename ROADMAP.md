@@ -70,17 +70,15 @@ The first two stages below serve this same target. A representative pilot is
 the proving ground throughout, not a ceremony after building everything.
 Re-use actual pilot evidence if it already exists.
 
-Issue builds run as one inner loop per issue on T3 Code (operator,
-2026-11-20, #745; design/delegation.md → An issue build is one inner loop
-on T3 Code): goblin starts a Claude Opus 5.5 thread in a new worktree from
-the default branch as soon as the operator hands an issue over. The pilot:
-the operator hands over one real issue, and it ends merged with a verifier
-verdict on the PR, without the operator relaying between agents. Code
-observes the closing PR, SHA-bound verifier verdict and CI on the
-responsibility itself, for any worker, once the issue is linked at accept
-(#406, design/delegation.md → PR readiness). Unchanged CI polls do not wake
-a model; notes and operator-facing judgment still do. The `lead` delegate
-role is gone. The full issue pilot remains unverified.
+Goblin is a loop with tools and connectors (operator, 2026-11-21, #842).
+Code no longer starts issue builds or watches PRs: Goblin drives T3 Code
+with the `t3` CLI through `bash`, and how it builds, picks a model, a base
+and a branch lives in the operator's skill. Delegation roles and the
+`delegation.defaults` table are gone; every `delegate` call names its
+harness. Next (#844): one general wake tool (a T3 thread, a PR's checks, a
+time) replaces responsibilities. The pilot: the operator hands over one
+real issue from Telegram, and it ends merged with a verifier verdict on the
+PR, without the operator relaying between agents. It remains unverified.
 
 ## 1. Make Follow-Through Deliberate
 

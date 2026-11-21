@@ -4,7 +4,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentNameFor, openDelegations } from "./delegations.ts";
-import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 
 describe("agentNameFor", () => {
 	test("slugifies into herdr's name charset, capped at 32", () => {
@@ -27,24 +26,39 @@ function tmpdirPath(): string {
 }
 
 describe("delegations store", () => {
-	test("a lead-era row with issue and readiness columns still opens", () => {
+	test("legacy role and readiness columns are preserved and remain insert-compatible", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
-		const first = openDelegations(path);
-		const row = first.create({
-			name: "lead", harness: "codex", role: "lead", cwd: "/w", task: "build",
-			address: { chatId: 0, threadId: null }, responsibilityId: "r1",
-		});
-		first.close();
 		const db = new Database(path);
-		db.run(
-			"UPDATE delegations SET issue_json = ?, readiness_json = ?, readiness_version = 3 WHERE id = ?",
-			[JSON.stringify({ repository: "owner/repo", number: 7 }), JSON.stringify(prReadinessFixture("green")), row.id],
-		);
+		db.exec(`CREATE TABLE delegations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, harness TEXT NOT NULL,
+			cwd TEXT NOT NULL, task TEXT NOT NULL, chat_id INTEGER NOT NULL, thread_id INTEGER,
+			agent_name TEXT NOT NULL, workspace_id TEXT NOT NULL, pane_id TEXT NOT NULL,
+			status TEXT NOT NULL, baseline_seq INTEGER, prompted_at TEXT NOT NULL,
+			created_at TEXT NOT NULL, finished_at TEXT, app_conversation TEXT,
+			prompt_pending INTEGER NOT NULL DEFAULT 0, responsibility_id TEXT,
+			responsibility_revision INTEGER, role TEXT NOT NULL DEFAULT 'default',
+			issue_json TEXT, readiness_json TEXT, readiness_notified_key TEXT,
+			readiness_version INTEGER NOT NULL DEFAULT 0, readiness_pending_verdict TEXT
+		)`);
+		db.exec(`INSERT INTO delegations
+			(name,harness,cwd,task,chat_id,agent_name,workspace_id,pane_id,status,baseline_seq,prompted_at,created_at,role,readiness_json)
+			VALUES ('legacy','codex','/w','build',0,'g1-legacy','w','p','done',7,'x','x','lead','{"state":"old"}')`);
 		db.close();
-		const second = openDelegations(path);
+		const store = openDelegations(path);
 		try {
-			expect(second.get(row.id)).toMatchObject({ role: "lead", name: "lead", responsibilityId: "r1" });
-		} finally { second.close(); }
+			expect(store.get(1)).toMatchObject({ name: "legacy", harness: "codex", baselineSeq: 7 });
+			const created = store.create({
+				name: "new", harness: "pi", cwd: "/w", task: "new task",
+				address: { chatId: 0, threadId: null },
+			});
+			expect(created.name).toBe("new");
+		} finally { store.close(); }
+		const check = new Database(path);
+		const columns = check.query<{ name: string }, []>("PRAGMA table_info(delegations)").all().map((c) => c.name);
+		expect(columns).toContain("role");
+		expect(columns).toContain("readiness_json");
+		expect(check.query<{ readiness_json: string }, [number]>("SELECT readiness_json FROM delegations WHERE id = ?").get(1)?.readiness_json).toBe('{"state":"old"}');
+		check.close();
 	});
 
 	// baseline_seq went nullable — NULL is the baseline-pending posture (a
@@ -82,7 +96,6 @@ describe("delegations store", () => {
 		try {
 			expect(store.get(1)!.baselineSeq).toBe(3);
 			expect(store.get(1)).toMatchObject({
-				role: "default",
 				responsibilityId: "r-old", responsibilityRevision: 2,
 			});
 			const d = store.create({

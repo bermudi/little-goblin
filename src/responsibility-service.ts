@@ -27,8 +27,6 @@ import {
 import type { WakeStore } from "./wake-store.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
-import type { GithubIssue } from "./pr-readiness.ts";
-import { makeIssueStore } from "./responsibility-readiness.ts";
 
 export interface ServiceDeps {
 	db: Database;
@@ -56,7 +54,6 @@ export interface HandoverInput {
 		baseline: unknown;
 		cursor?: unknown;
 	}[];
-	issue?: GithubIssue | undefined;
 }
 
 export type ManagedSend = (
@@ -179,7 +176,6 @@ export function makeManagedSendEdge(t3: Pick<T3, "sendThread">): ManagedSend {
 
 export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityService {
 	const { db, resps, wakes, pump } = deps;
-	const issues = makeIssueStore(db);
 	// Operations with a live in-process dispatch — reconcile refuses
 	// them while their settlement is still owed.
 	const inflight = new Set<string>();
@@ -378,7 +374,6 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 						origin: "operator",
 						responsibilityId: responsibility.responsibilityId,
 					});
-					if (input.issue !== undefined) issues.link(responsibility.responsibilityId, input.issue);
 					// The unarmed baseline — durable inside the commit so a
 					// post-commit link failure (or a crash between them)
 					// still names why follow-through is off. ensureFollowup

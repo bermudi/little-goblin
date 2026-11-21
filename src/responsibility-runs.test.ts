@@ -108,7 +108,6 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 	id: 9,
 	name: "fix it",
 	harness: "codex",
-	role: "default",
 	cwd: "/w",
 	task: "t",
 	chatId: 0,

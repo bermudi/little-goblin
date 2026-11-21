@@ -118,14 +118,10 @@ second in-turn reader.
 ### Only when the operator asks
 
 `delegate` runs a harness that the operator names: "have codex do X",
-"an opencode run" — the operator's direction (2026-11-18) says to make
-the required binary available and install the right hooks at execution.
-The operator can also ask with a standing
-instruction. Issue builds do not use `delegate`: they run as the
-[inner loop](../GLOSSARY.md) on T3 Code (design/delegation.md → An issue
-build is one inner loop on T3 Code). Goblin
-never chooses `delegate` on its own judgment. Work goblin decides to
-hand off goes to `agent`.
+"an opencode run". Goblin never chooses `delegate` on its own judgment.
+Work Goblin decides to hand off goes to `agent`. For issue work, Goblin
+drives T3 Code with the `t3` CLI through `bash`; the workflow lives in
+the operator's skill.
 
 ### Transport: pinned herdr-core (`hc`)
 
@@ -141,8 +137,7 @@ before the error returns, and the next successful setup removes it: the
 failure leaves no other trace, and doctor's `delegation.hc` needs one to
 tell "never ran" from "broken" (design/doctor.md, #739).
 
-- **Harnesses stay config** as `{kind, args?, askFirst?}` plus
-  `delegation.defaults`. The retired T3 shape is rejected at boot with a
+- **Harnesses stay config** as `{kind, args?, askFirst?}`. The retired T3 shape is rejected at boot with a
   fix-naming message. Goblin never guesses a model.
 - **Hooks report lifecycle through OSC 7501.** Shared assets are copied
   durably to `$GOBLIN_HOME/bin/hc-hooks/`; hooks only report when
@@ -231,8 +226,7 @@ settlement files, and the check every send passes.
 
 ## Handover: T3 Code threads
 
-Handover and responsibility stay on T3 Code — "to communicate with
-inner loop. that's it." (operator, 2026-11-18). "Take over this" binds a
+Handover and responsibility stay on T3 Code. "Take over this" binds a
 responsibility to T3 thread ids:
 
 - discovery is `t3 thread list`;

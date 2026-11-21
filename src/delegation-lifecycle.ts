@@ -43,7 +43,6 @@ export interface LaunchInput {
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
 	responsibilityId?: string;
-	role?: string;
 }
 
 export type LaunchOutcome =

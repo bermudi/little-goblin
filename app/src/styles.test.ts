@@ -60,3 +60,12 @@ describe("composer box separation", () => {
 		expect(rule).not.toMatch(/var\(--app-border\)/);
 	});
 });
+
+describe("transcript scroll anchoring", () => {
+	const rule = /(?:^|\n)\.transcript \{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+	test("the transcript turns browser scroll anchoring off", () => {
+		expect(rule).not.toBe("");
+		expect(rule).toMatch(/overflow-anchor:\s*none/);
+	});
+});

@@ -13,6 +13,7 @@
 
 import type { UIMessage } from "ai";
 import { type KeyboardEvent, type RefObject, useEffect, useMemo, useState } from "react";
+import { AT_END_PX, type ScrollDirection } from "./chat/useTranscriptFollow.ts";
 
 // The outline entry for one operator message: the first line of text, or
 // the staged chip kind when the send carried media only.
@@ -63,9 +64,11 @@ function forwardWheel(event: WheelEvent, el: HTMLElement) {
 export function Outline({
 	messages,
 	scrollRef,
+	onGesture,
 }: {
 	messages: readonly UIMessage[];
 	scrollRef: RefObject<HTMLDivElement | null>;
+	onGesture?: ((direction: ScrollDirection) => void) | undefined;
 }) {
 	// Sections are the operator's own messages — one dash each, in
 	// transcript order. Assistant turns belong to the section above them.
@@ -119,7 +122,7 @@ export function Outline({
 			}
 			if (
 				el.scrollHeight > el.clientHeight &&
-				el.scrollHeight - el.scrollTop - el.clientHeight < 48
+				el.scrollHeight - el.scrollTop - el.clientHeight < AT_END_PX
 			) {
 				found = last;
 			}
@@ -148,9 +151,9 @@ export function Outline({
 			(n) => n.dataset.outlineAnchor === id,
 		);
 		if (node === undefined) return;
-		// Near the top with a little headroom. The scroll event re-runs the
-		// spy, and follow-mode unpins exactly the way any upward scroll does.
-		el.scrollTop += node.getBoundingClientRect().top - el.getBoundingClientRect().top - 12;
+		const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - 12;
+		onGesture?.(delta < 0 ? "up" : "down");
+		el.scrollTop += delta;
 	};
 
 	const count = anchors.length;
@@ -159,11 +162,13 @@ export function Outline({
 		if (rail === null) return;
 		const onWheel = (e: WheelEvent) => {
 			const el = scrollRef.current;
-			if (el !== null) forwardWheel(e, el);
+			if (el === null) return;
+			if (e.deltaY !== 0 && !e.ctrlKey) onGesture?.(e.deltaY < 0 ? "up" : "down");
+			forwardWheel(e, el);
 		};
 		rail.addEventListener("wheel", onWheel, { passive: false });
 		return () => rail.removeEventListener("wheel", onWheel);
-	}, [rail, scrollRef]);
+	}, [rail, scrollRef, onGesture]);
 
 	if (count === 0) return null;
 	const shown = active !== null && active < count ? active : null;

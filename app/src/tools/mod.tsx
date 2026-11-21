@@ -48,7 +48,6 @@ export function partFailed(part: ToolUIPart | DynamicToolUIPart): boolean {
 
 interface PartFace {
   face: Face;
-  open: boolean;
   stateLabel: string | null;
 }
 
@@ -70,7 +69,6 @@ function faceFor(
         face:
           view.done(part.input, part.output) ??
           genericView.done(part.input, part.output)!,
-        open: false,
         stateLabel: null,
       };
     case "output-error": {
@@ -88,7 +86,6 @@ function faceFor(
           ),
           failed: true,
         },
-        open: true,
         stateLabel: null,
       };
     }
@@ -103,7 +100,6 @@ function faceFor(
           ),
           failed: true,
         },
-        open: true,
         stateLabel: null,
       };
     default: {
@@ -132,7 +128,6 @@ function faceFor(
             </div>
           ),
         },
-        open: running,
         stateLabel: running
           ? "running"
           : stranded
@@ -163,10 +158,10 @@ export function ToolRun({
 }) {
   const name = getToolName(part);
   const view = VIEWS[name] ?? genericView;
-  const { face, open, stateLabel } = faceFor(part, ended);
+  const { face, stateLabel } = faceFor(part, ended);
   return (
     <li>
-      <details className="tool-run" open={open}>
+      <details className="tool-run">
         <summary>
           <span className="tool-ic">{view.icon}</span>
           <span className="tool-name">{name}</span>

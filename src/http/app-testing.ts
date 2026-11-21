@@ -33,6 +33,7 @@ export function setup(
 		speak?: AppChannelDeps["speak"];
 		workdirs?: string[];
 		titleFor?: AppChannelDeps["titleFor"];
+		gate?: AppChannelDeps["gate"];
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
 		approvals?: AppChannelDeps["approvals"];
@@ -119,6 +120,7 @@ export function setup(
 		notes,
 		auth,
 		configRef,
+		...(opts.gate !== undefined ? { gate: opts.gate } : {}),
 		windowCapture,
 		onConfigWritten: () => {
 			configWrites.count += 1;

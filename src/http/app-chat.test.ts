@@ -138,6 +138,87 @@ describe("app chat", () => {
 		}
 	});
 
+	test("rolling chat mints, joins, and starts a fresh app conversation after a new-subject check", async () => {
+		const model = sdkScript();
+		model.script(
+			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "third reply" }] },
+		);
+		const gateCalls: string[] = [];
+		const { http, call, store, configRef } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+			gate: () => ({
+				decide: async (state) => {
+					gateCalls.push(JSON.stringify(state));
+					return { answers: { follow_up: 0.1 }, inputTokens: 1, cost: 0 };
+				},
+			}),
+		});
+		configRef.current.telegram.dmGapMinutes = 0;
+		const send = (id: string, text: string) =>
+			call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					rolling: true,
+					message: { id, role: "user", parts: [{ type: "text", text }] },
+				}),
+			});
+		try {
+			const first = await send("roll-1", "private first roll text");
+			expect(first.status).toBe(202);
+			const firstBody = await first.json() as { submitted: boolean; conversationId: string; rolled: boolean };
+			expect(firstBody).toMatchObject({ submitted: true, rolled: true });
+			expect(firstBody.conversationId).toMatch(/^app\//);
+			await waitUntil(() => store.history(firstBody.conversationId).length === 2, "first rolling reply");
+			configRef.current.telegram.dmGapMinutes = 45;
+			const second = await send("roll-2", "inside quiet gap");
+			const secondBody = await second.json() as { conversationId: string; rolled: boolean; submitted: boolean };
+			expect(second.status).toBe(202);
+			expect(secondBody).toEqual({ conversationId: firstBody.conversationId, rolled: false, submitted: true });
+			await waitUntil(() => store.history(firstBody.conversationId).length === 4, "second rolling reply");
+			const beforeRoll = JSON.stringify(store.history(firstBody.conversationId));
+
+			configRef.current.telegram.dmGapMinutes = 0;
+			const third = await send("roll-3", "unrelated new topic");
+			const thirdBody = await third.json() as { conversationId: string; rolled: boolean };
+			expect(third.status).toBe(202);
+			expect(thirdBody.rolled).toBe(true);
+			expect(thirdBody.conversationId).not.toBe(firstBody.conversationId);
+			await waitUntil(() => store.history(thirdBody.conversationId).length === 2, "third rolling reply");
+			expect(JSON.stringify(store.history(firstBody.conversationId))).toBe(beforeRoll);
+			expect(gateCalls).toHaveLength(1);
+			expect(model.requests()).toHaveLength(3);
+			expect(model.requests()[2]).not.toContain("private first roll text");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rolling chat refuses a conversation id, retry, edit, or missing message", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		const message = { id: "invalid-roll", role: "user", parts: [{ type: "text", text: "hi" }] };
+		try {
+			for (const body of [
+				{ rolling: true, conversationId: "app/one", message },
+				{ rolling: true, retry: true, message },
+				{ rolling: true, editMessageId: "x", message },
+				{ rolling: true },
+			]) {
+				const res = await call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(body),
+				});
+				expect(res.status).toBe(422);
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
 	for (const make of adapters) test(`${engineName(make)}: a failed mid-stream turn reports an error finish reason`, async () => {
 		const model = make();
 		model.script({

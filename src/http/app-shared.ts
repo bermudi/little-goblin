@@ -11,6 +11,7 @@ import type { ModelSettings } from "../conversation-settings.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
+import type { System1Client } from "../system1.ts";
 
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
@@ -69,6 +70,7 @@ export interface AppChannelDeps {
 	notes: NoteStore;
 	auth: Pick<AuthStore, "resolve">;
 	configRef: ConfigRef;
+	gate?: () => Pick<System1Client, "decide"> | undefined;
 	onConfigWritten(): void;
 	transcribe?: (file: SpeechFile) => Promise<string | null>;
 	speak?: (text: string) => Promise<Uint8Array[] | null>;

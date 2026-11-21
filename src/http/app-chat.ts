@@ -16,6 +16,7 @@ import type { TurnDone } from "../turn/sink.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { noteSkillUse } from "../skill-usage.ts";
 import { paths } from "../home-layout.ts";
+import { projectRollText, routeLaneMessage, type RollLane, type RollDeps } from "../rolling.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { appConversationSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
@@ -26,7 +27,8 @@ const conversationIdSchema = z
 
 const chatBody = z
 	.object({
-		conversationId: conversationIdSchema,
+		conversationId: conversationIdSchema.optional(),
+		rolling: z.literal(true).optional(),
 		whenBusy: z.enum(["steer", "followUp"]).optional(),
 		retry: z.literal(true).optional(),
 		// Edit-in-place: the durable user event this message replaces. The
@@ -108,6 +110,24 @@ const chatBody = z
 			.optional(),
 	})
 	.superRefine((d, ctx) => {
+		if (d.rolling === true) {
+			if (d.conversationId !== undefined) {
+				ctx.addIssue({ code: "custom", path: ["conversationId"], message: "rolling takes no conversationId" });
+			}
+			if (d.retry === true) {
+				ctx.addIssue({ code: "custom", path: ["retry"], message: "rolling takes no retry" });
+			}
+			if (d.editMessageId !== undefined) {
+				ctx.addIssue({ code: "custom", path: ["editMessageId"], message: "rolling takes no edit" });
+			}
+			if (d.message === undefined) {
+				ctx.addIssue({ code: "custom", path: ["message"], message: "rolling requires a message" });
+			}
+			return;
+		}
+		if (d.conversationId === undefined) {
+			ctx.addIssue({ code: "custom", path: ["conversationId"], message: "conversationId is required" });
+		}
 		if (d.retry === true && d.message !== undefined) {
 			ctx.addIssue({ code: "custom", message: "retry takes no message" });
 		}
@@ -240,9 +260,11 @@ export async function handleChatRoute(
 			});
 			return Response.json({ error }, { status: 400, headers: NO_STORE });
 		}
-		const convId = parsed.data.conversationId;
-		const conv = store.get(convId);
-		if (conv === null) {
+		const rolling = parsed.data.rolling === true;
+		let convId = parsed.data.conversationId ?? "";
+		let conv = convId === "" ? null : store.get(convId);
+		const logTarget = rolling ? { rolling: true } : { conversation: convId };
+		if (!rolling && conv === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
 		if (!runtime.accepting()) {
@@ -256,6 +278,7 @@ export async function handleChatRoute(
 				? undefined
 				: async (done: TurnDone) => {
 						if (!runtime.turnHadWatchersAtEnd(convId)) {
+							if (conv === null) throw new Error(`conversation ${convId} disappeared`);
 							await deps.push!.notifyDone(conv, done, "foreground");
 						}
 					};
@@ -264,6 +287,9 @@ export async function handleChatRoute(
 				store.append(convId, messages, opts),
 		};
 		if (parsed.data.retry === true) {
+			if (conv === null) {
+				return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+			}
 			if (runtime.busy(convId)) {
 				return Response.json(
 					{ error: "a turn is already running" },
@@ -318,7 +344,7 @@ export async function handleChatRoute(
 			const rest = m[1] ?? "";
 			part.text = buildLearnPrompt(rest);
 			log.info("app /learn intercept", {
-				conversation: convId,
+				...logTarget,
 				fromConversation: rest.trim() === "",
 			});
 			break;
@@ -329,6 +355,9 @@ export async function handleChatRoute(
 		const editId = parsed.data.editMessageId;
 		let editTarget: { seq: number; role: string } | null = null;
 		if (editId !== undefined) {
+			if (conv === null) {
+				return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+			}
 			if (runtime.busy(convId)) {
 				return Response.json(
 					{ error: "a turn is already running — wait for it to finish, then edit" },
@@ -363,14 +392,14 @@ export async function handleChatRoute(
 					if (transcript !== null) {
 						part.data = { ...ref.data, transcript };
 						log.info("app speech transcribed", {
-							conversation: convId,
+							...logTarget,
 							filename: ref.data.filename,
 							chars: transcript.length,
 						});
 					}
 				} catch (err) {
 					log.warn("app speech transcription failed — attachment kept", err, {
-						conversation: convId,
+						...logTarget,
 						filename: ref.data.filename,
 					});
 					part.data = {
@@ -402,7 +431,7 @@ export async function handleChatRoute(
 				projectId: note.projectId,
 			};
 			log.info("note attached", {
-				conversation: convId,
+				...logTarget,
 				note: note.id,
 				rev: note.rev,
 				bytes: Buffer.byteLength(note.body),
@@ -410,6 +439,7 @@ export async function handleChatRoute(
 		}
 
 		if (editId !== undefined && editTarget !== null) {
+			if (conv === null) throw new Error(`conversation ${convId} disappeared`);
 			// Prep above awaited (transcription). A turn admitted in that
 			// window would be cut by the rewind — re-check the lane with no
 			// await before the store write.
@@ -448,6 +478,40 @@ export async function handleChatRoute(
 			log.info("app edit submitted", { conversation: convId, message: editId });
 			return Response.json({ submitted: true }, { status: 202, headers: NO_STORE });
 		}
+
+		let rolled = false;
+		if (rolling) {
+			const lane: RollLane = {
+				current: () => store.currentAppRoll(),
+				mint: () => store.rollApp(deps.configRef.current),
+				logs: {
+					rolled: "app lane rolled",
+					continued: "app lane continued past gap",
+					fields: {},
+					rolledFields: {},
+				},
+			};
+			const rollDeps: RollDeps = {
+				store,
+				runtime,
+				gapMinutes: () => deps.configRef.current.telegram.dmGapMinutes,
+				...(deps.gate !== undefined ? { gate: deps.gate } : {}),
+			};
+			const result = await routeLaneMessage(
+				rollDeps,
+				lane,
+				projectRollText(message.parts as Message["parts"]),
+			);
+			convId = result.conv.id;
+			conv = result.conv;
+			rolled = result.rolled;
+			log.info("app rolling send", {
+				conversation: convId,
+				rolled,
+				decidedBy: result.decidedBy,
+			});
+		}
+		if (conv === null) throw new Error(`rolling route did not resolve a conversation`);
 
 		if (deps.titleFor !== undefined && conv.title === null) {
 			const firstText = message.parts
@@ -490,7 +554,11 @@ export async function handleChatRoute(
 				);
 				bumpSkillUsage(convId, message.parts);
 				return Response.json(
-					{ submitted: true, pendingId },
+					{
+						submitted: true,
+						pendingId,
+						...(rolling ? { conversationId: convId, rolled } : {}),
+					},
 					{ status: 202, headers: NO_STORE },
 				);
 			}
@@ -504,7 +572,10 @@ export async function handleChatRoute(
 		}
 		bumpSkillUsage(convId, message.parts);
 		log.info("app submitted", { conversation: convId, message: message.id });
-		return Response.json({ submitted: true }, { status: 202, headers: NO_STORE });
+		return Response.json(
+			{ submitted: true, ...(rolling ? { conversationId: convId, rolled } : {}) },
+			{ status: 202, headers: NO_STORE },
+		);
 	}
 
 	return null;

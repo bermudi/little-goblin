@@ -20,6 +20,18 @@ import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+const roll = (id: string, preview = id): AppConversationList["rolling"]["chain"][number] => ({
+	id: `app/${id}`,
+	title: null,
+	preview,
+	createdAt: "2026-10-23T00:00:00Z",
+	updatedAt: "2026-10-23T00:00:00Z",
+	archivedAt: null,
+	pinnedAt: null,
+	projectId: null,
+	parentId: null,
+});
+
 const SETTINGS = parseConfig({
 	providers: {
 		main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "fixture" },
@@ -52,6 +64,12 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let projects: AppProject[];
 	let patches: { id: string; body: Record<string, unknown> }[];
 	let threadMessages: AppMessageList["messages"];
+	let rollingChain: AppConversationList["rolling"]["chain"];
+	let rollingHistories: Map<string, AppMessageList["messages"]>;
+	let rollingRequests: { body: { rolling?: boolean; conversationId?: unknown; message?: { parts?: { text?: string }[] } } }[];
+	let rollingReply: { status: number; conversationId: string; rolled: boolean; chain: AppConversationList["rolling"]["chain"] } | null;
+	let holdRollingList = false;
+	let rollingListResolvers: Array<() => void> = [];
 	let settings: typeof SETTINGS;
 	const realFetch = globalThis.fetch;
 
@@ -70,6 +88,12 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		projects = [];
 		patches = [];
 		threadMessages = [];
+		rollingChain = [];
+		rollingHistories = new Map();
+		rollingRequests = [];
+		rollingReply = null;
+		holdRollingList = false;
+		rollingListResolvers = [];
 		settings = SETTINGS;
 		conversations = [
 			{
@@ -143,7 +167,12 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 				return Promise.resolve(
 					json({ id: "app/created", title: null, createdAt: "2026-10-10T00:00:00Z" }),
 				);
-			if (url === "/api/app/conversations") return Promise.resolve(json({ conversations }));
+			if (url === "/api/app/conversations") {
+				const response = () => json({ conversations, rolling: { chain: rollingChain } });
+				if (holdRollingList && rollingRequests.length > 0)
+					return new Promise<Response>((resolve) => rollingListResolvers.push(() => resolve(response())));
+				return Promise.resolve(response());
+			}
 			if (url === "/api/app/projects") return Promise.resolve(json({ projects }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(json({ notes: [], truncated: false }));
@@ -167,13 +196,30 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),
 				);
-			if (url === "/api/app/conversations/fixture/messages")
+			const rollMessages = /^\/api\/app\/conversations\/([^/]+)\/messages$/.exec(url);
+			if (rollMessages !== null)
 				return Promise.resolve(
-					json({ messages: threadMessages, ratings: [], rateableMessageIds: [] }),
+					json({
+						messages:
+							rollMessages[1] === "fixture"
+								? threadMessages
+								: (rollingHistories.get(`app/${rollMessages[1]}`) ?? []),
+						start: 0,
+						olderCursor: null,
+						ratings: [],
+						rateableMessageIds: [],
+						compactions: [],
+					}),
 				);
-			if (url === "/api/app/conversations/fixture/stream")
+			if (/^\/api\/app\/conversations\/[^/]+\/stream$/.test(url))
 				return Promise.resolve(new Response(null, { status: 204 }));
-			if (url === "/api/app/conversations/fixture/window")
+			if (/^\/api\/app\/conversations\/[^/]+\/events$/.test(url))
+				return Promise.resolve(
+					new Response('data: {"type":"state","live":false}\n\n', {
+						headers: { "content-type": "text/event-stream" },
+					}),
+				);
+			if (/^\/api\/app\/conversations\/fixture\/window$/.test(url))
 				return Promise.resolve(
 					json({
 						model: "main/test",
@@ -211,6 +257,44 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 						delegations: null,
 					}),
 				);
+			if (url === "/api/app/chat" && method === "POST") {
+				const body = JSON.parse(String(init?.body)) as {
+					rolling?: boolean;
+					conversationId?: unknown;
+					message?: { id?: string; parts?: { type: string; text?: string }[] };
+				};
+				rollingRequests.push({ body });
+				const reply = rollingReply ?? {
+					status: 202,
+					conversationId: "app/new",
+					rolled: true,
+					chain: [],
+				};
+				if (reply.status !== 202) return Promise.resolve(json({ error: "scripted failure" }, reply.status));
+				const summary = {
+					id: reply.conversationId,
+					title: null,
+					preview: body.message?.parts?.map((part) => part.text ?? "").join("") ?? "",
+					createdAt: "2026-10-23T00:00:00Z",
+					updatedAt: "2026-10-23T00:00:00Z",
+					archivedAt: null,
+					pinnedAt: null,
+					projectId: null,
+					parentId: null,
+				};
+				rollingHistories.set(reply.conversationId, [
+					...(rollingHistories.get(reply.conversationId) ?? []),
+					{
+						id: body.message?.id ?? "sent-message",
+						role: "user",
+						parts: body.message?.parts ?? [],
+					} as AppMessageList["messages"][number],
+				]);
+				rollingChain = reply.chain.length > 0 ? reply.chain : [summary, ...rollingChain];
+				return Promise.resolve(
+					json({ submitted: true, conversationId: reply.conversationId, rolled: reply.rolled }, 202),
+				);
+			}
 			return Promise.resolve(
 				json({
 					model: "main/test",
@@ -294,6 +378,19 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		});
 		await settle();
 	};
+	const typeDraft = async (value: string) => {
+		const el = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]');
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el!.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(el, value);
+			el!.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el!.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
 	// The leave ask is a sheet in the app chrome — answering is a click
 	// on its buttons, like the operator.
 	const answerConfirm = async (ok: boolean) => {
@@ -309,6 +406,18 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		});
 		await waitFor(() => container.querySelector(".chatlist-screen") !== null, "chats screen");
 	};
+	const openRolling = async () => {
+		await mount();
+		await click(container.querySelector('.rolling-row a[href="/app/rolling"]'));
+		await waitFor(() => win.location.pathname === "/app/rolling", "Rolling chat route");
+	};
+	const releaseRollingLists = async () => {
+		holdRollingList = false;
+		await act(async () => {
+			for (const release of rollingListResolvers.splice(0)) release();
+		});
+		await settle();
+	};
 	const tab = (label: string) =>
 		[...container.querySelectorAll<HTMLElement>(".tabbar .tab")].find(
 			(b) => b.textContent?.trim() === label,
@@ -320,12 +429,206 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		const rows = [...container.querySelectorAll(".chatlist-screen .conv-title")].map(
 			(el) => el.textContent,
 		);
-		expect(rows).toEqual(["fixture chat", "second chat"]);
+		expect(rows).toEqual(["Rolling chat", "fixture chat", "second chat"]);
 		expect(container.querySelectorAll(".tabbar .tab").length).toBe(5);
 		expect(tab("Chats")?.getAttribute("aria-current")).toBe("page");
 		// The list screen replaces the composer as the chat surface — the
 		// empty-state composer is not in this screen.
 		expect(container.querySelector(".chatlist-screen .composer")).toBeNull();
+	});
+
+	test("Rolling chat is first, opens its page, and has no hold actions", async () => {
+		await mount();
+		const row = container.querySelector(".chatlist-screen .rolling-row");
+		expect(row?.querySelector(".conv-title")?.textContent).toBe("Rolling chat");
+		expect(row?.querySelectorAll("button")).toHaveLength(0);
+		await hold(row!.querySelector("a")!, "touch");
+		expect(container.querySelector('[role="dialog"]')).toBeNull();
+		await click(row!.querySelector("a"));
+		await waitFor(() => win.location.pathname === "/app/rolling", "Rolling chat route");
+	});
+
+	test("T2: a populated rolling chain stays first without hiding ordinary chats", async () => {
+		rollingChain = [roll("current", "latest rolling preview")];
+		await mount();
+		const rows = [...container.querySelectorAll(".chatlist-screen .conv")];
+		expect(rows.map((row) => row.querySelector(".conv-title")?.textContent)).toEqual([
+			"Rolling chat",
+			"fixture chat",
+			"second chat",
+		]);
+		expect(rows[0]?.textContent).toContain("latest rolling preview");
+		expect(rows[0]?.querySelectorAll("button")).toHaveLength(0);
+	});
+
+	test("T3: empty-chain send routes through rolling and loads the new conversation", async () => {
+		await openRolling();
+		expect(container.querySelector('textarea[aria-label="Message draft"]')).toBeTruthy();
+		holdRollingList = true;
+		let sawEarlier = false;
+		const observer = new win.MutationObserver(() => {
+			if (container.textContent?.includes("Earlier conversation")) sawEarlier = true;
+		});
+		observer.observe(win.document.body, { childList: true, subtree: true, characterData: true });
+		await typeDraft("first rolling message");
+		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("first rolling message");
+		await click(container.querySelector('button[aria-label="Send"]'));
+		expect(rollingRequests).toHaveLength(1);
+		await waitFor(() => rollingListResolvers.length > 0, "held list refresh");
+		await settle();
+		expect(sawEarlier).toBe(false);
+		await releaseRollingLists();
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("first rolling message") === true,
+			"new roll history",
+		);
+		observer.disconnect();
+		expect(rollingRequests).toHaveLength(1);
+		expect(rollingRequests[0]!.body.rolling).toBe(true);
+		expect(rollingRequests[0]!.body).not.toHaveProperty("conversationId");
+		expect(rollingRequests[0]!.body.message?.parts?.[0]?.text).toBe("first rolling message");
+		expect(win.location.pathname).toBe("/app/rolling");
+		expect(sawEarlier).toBe(false);
+	});
+
+	test("T4: a same-roll send keeps the transcript mounted and renders once", async () => {
+		rollingChain = [roll("current")];
+		rollingReply = { status: 202, conversationId: "app/current", rolled: false, chain: [roll("current")] };
+		await openRolling();
+		const transcript = container.querySelector(".transcript");
+		expect(transcript).toBeTruthy();
+		await typeDraft("same conversation");
+		await click(container.querySelector('button[aria-label="Send"]'));
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("same conversation") === true,
+			"same-roll message",
+		);
+		expect(container.querySelector(".transcript")).toBe(transcript);
+		expect([...container.querySelectorAll(".transcript p")].filter((p) => p.textContent === "same conversation")).toHaveLength(1);
+		expect(container.textContent).not.toContain("Earlier conversation");
+	});
+
+	test("T4: a new routed roll switches once without an earlier bar flash", async () => {
+		rollingChain = [roll("current")];
+		rollingReply = {
+			status: 202,
+			conversationId: "app/newer",
+			rolled: true,
+			chain: [roll("newer"), roll("current")],
+		};
+		await openRolling();
+		holdRollingList = true;
+		let sawEarlier = false;
+		const observer = new win.MutationObserver(() => {
+			if (container.textContent?.includes("Earlier conversation")) sawEarlier = true;
+		});
+		observer.observe(win.document.body, { childList: true, subtree: true, characterData: true });
+		await typeDraft("[new topic] fresh message");
+		await click(container.querySelector('button[aria-label="Send"]'));
+		await waitFor(() => rollingListResolvers.length > 0, "held list refresh");
+		await settle();
+		expect(sawEarlier).toBe(false);
+		await releaseRollingLists();
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("[new topic] fresh message") === true,
+			"new routed roll",
+		);
+		observer.disconnect();
+		expect([...container.querySelectorAll(".transcript p")].filter((p) => p.textContent === "[new topic] fresh message")).toHaveLength(1);
+		expect(sawEarlier).toBe(false);
+	});
+
+	test("T5: three rolls link backward at every level and return to latest", async () => {
+		rollingChain = [roll("newest"), roll("middle"), roll("oldest")];
+		for (const id of ["newest", "middle", "oldest"]) rollingHistories.set(`app/${id}`, []);
+		await openRolling();
+		expect(container.textContent).toContain("— new conversation —");
+		await click(
+			[...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
+				button.textContent?.includes("Previous conversation"),
+			),
+		);
+		expect(container.textContent).toContain("Earlier conversation");
+		expect(container.textContent).toContain("— new conversation —");
+		const previous = [...container.querySelectorAll("button")].find((button) =>
+			button.textContent?.includes("Previous conversation"),
+		);
+		expect(previous).toBeTruthy();
+		await click(previous);
+		expect(container.textContent).toContain("Earlier conversation");
+		expect(container.textContent).not.toContain("— new conversation —");
+		expect(container.textContent).not.toContain("Previous conversation");
+		await click([...container.querySelectorAll("button")].find((button) => button.textContent === "Back to latest"));
+		expect(container.textContent).not.toContain("Earlier conversation");
+		expect(container.textContent).toContain("— new conversation —");
+	});
+
+	test("T5: a one-roll chain has no marker or previous link", async () => {
+		rollingChain = [roll("only")];
+		rollingHistories.set("app/only", []);
+		await openRolling();
+		expect(container.textContent).not.toContain("— new conversation —");
+		expect(container.textContent).not.toContain("Previous conversation");
+	});
+
+	test("T6: the lane header is fixed and has no conversation actions", async () => {
+		rollingChain = [roll("current")];
+		rollingHistories.set("app/current", []);
+		await openRolling();
+		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Rolling chat");
+		expect(container.querySelector("main > header .title-trigger")).toBeNull();
+		expect(container.querySelector("main > header [aria-label='Archive']")).toBeNull();
+		expect(container.querySelector("main > header [aria-label='Move']")).toBeNull();
+		expect(container.querySelector("main > header [aria-label='Delete']")).toBeNull();
+		expect(container.querySelector("main > header [aria-label='Rename']")).toBeNull();
+	});
+
+	test("T7: a roll deep link opens it in Rolling chat; an unknown id still normalizes home", async () => {
+		rollingChain = [roll("newest"), roll("older")];
+		rollingHistories.set("app/older", [
+			{ id: "older-message", role: "user", parts: [{ type: "text", text: "older roll text" }] } as AppMessageList["messages"][number],
+		]);
+		win.history.replaceState(null, "", "/app/c/older");
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await waitFor(() => win.location.pathname === "/app/rolling", "rolling deep-link normalization");
+		expect(container.querySelector(".transcript")?.textContent).toContain("older roll text");
+
+		await act(async () => {
+			root?.unmount();
+		});
+		root = null;
+		win.history.replaceState(null, "", "/app/c/unknown");
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await waitFor(() => win.location.pathname === "/app/", "unknown-link normalization");
+	});
+
+	test("T8: failed rolling sends keep the draft and show an error on empty and open pages", async () => {
+		rollingReply = { status: 500, conversationId: "app/nope", rolled: false, chain: [] };
+		await openRolling();
+		await typeDraft("keep empty draft");
+		await click(container.querySelector('button[aria-label="Send"]'));
+		await waitFor(() => container.querySelector(".chat .error") !== null, "empty send error");
+		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("keep empty draft");
+
+		rollingChain = [roll("current")];
+		rollingHistories.set("app/current", []);
+		await act(async () => {
+			root?.unmount();
+			root = null;
+			container.replaceChildren();
+			win.history.replaceState(null, "", "/app/");
+		});
+		await openRolling();
+		await typeDraft("keep open draft");
+		await click(container.querySelector('button[aria-label="Send"]'));
+		await waitFor(() => container.querySelector(".chat .error") !== null, "open send error");
+		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("keep open draft");
 	});
 
 	test("touch hold opens row actions without opening the chat; mouse hold does not", async () => {
@@ -638,7 +941,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		// The gate's other side: a sectioned thread in a wide realm does
 		// mount the rail — what keeps it off phones is the gate, not an
 		// empty transcript.
-		await click(container.querySelector(".conv-main"));
+		await click(container.querySelector('.conv-main[href="/app/c/fixture"]'));
 		await waitFor(() => container.querySelector(".outline") !== null, "outline rail");
 	});
 });

@@ -148,6 +148,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 									},
 								]
 							: [],
+						rolling: { chain: [] },
 					}),
 				);
 			}
@@ -331,6 +332,7 @@ describe("rail row actions and the pinned pool", () => {
 							{ ...row(freshTitle, "fresh"), pinnedAt: freshStamp, archivedAt: archived.fresh },
 							{ ...row("pinned chat"), pinnedAt: pinnedStamp, archivedAt: archived.pinned },
 						],
+						rolling: { chain: [] },
 					}),
 				);
 			}
@@ -417,7 +419,9 @@ describe("rail row actions and the pinned pool", () => {
 	};
 
 	const domOrder = (): (string | null)[] =>
-		[...container.querySelectorAll(".conv-title")].map((t) => t.textContent);
+		[...container.querySelectorAll(".conv-title")]
+			.filter((t) => t.textContent !== "Rolling chat")
+			.map((t) => t.textContent);
 
 	const rowActions = async (title: string): Promise<string[]> => {
 		const found = [...container.querySelectorAll(".conv")].find(
@@ -679,6 +683,7 @@ describe("rename editor with the AI button", () => {
 								pinnedAt: null,
 							},
 						],
+						rolling: { chain: [] },
 					}),
 				);
 			}
@@ -977,9 +982,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				const gate = conversationListGate;
 				if (gate !== null) {
 					conversationListGate = null;
-					return gate.then(() => jsonResponse({ conversations: snapshot }));
+					return gate.then(() => jsonResponse({ conversations: snapshot, rolling: { chain: [] } }));
 				}
-				return Promise.resolve(jsonResponse({ conversations: snapshot }));
+				return Promise.resolve(jsonResponse({ conversations: snapshot, rolling: { chain: [] } }));
 			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
@@ -1272,7 +1277,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		if (archived) {
 			await click(container.querySelector(".rail-archived"));
 			await click(container.querySelector(".archive-table a.dt-main"));
-		} else await click(container.querySelector(".conv-main"));
+		} else await click(container.querySelector('.conv-main[href="/app/c/fixture"]'));
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	};
 	// Archive is a rail row action; Delete lives on the Archive page.
@@ -1398,7 +1403,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	test("the conversation row is a real link: plain clicks stay in-app, modified clicks fall through", async () => {
 		seedConversation();
 		await mount();
-		const main = container.querySelector(".conv-main");
+		const main = container.querySelector('.conv-main[href="/app/c/fixture"]');
 		// A declared href is what gives the browser its new-tab, middle-click,
 		// context-menu, and URL-preview affordances; no target, or a plain
 		// click would open a new tab too.
@@ -1417,7 +1422,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// A modifier click must not be intercepted — the browser owns it.
 		const ctrl = new win.MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
 		await act(async () => {
-			container.querySelector(".conv-main")?.dispatchEvent(ctrl as unknown as Event);
+			container.querySelector('.conv-main[href="/app/c/fixture"]')?.dispatchEvent(ctrl as unknown as Event);
 		});
 		await settle();
 		expect(ctrl.defaultPrevented).toBe(false);
@@ -1457,7 +1462,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			}
 			expect(conversations[0]?.archivedAt).not.toBeNull();
 			expect(container.querySelector(".rail-archived")?.textContent).toBe("Archived 1");
-			expect(container.querySelector(".conv")).toBeNull();
+			expect(container.querySelector(".conv:not(.rolling-row)")).toBeNull();
 		});
 	}
 	test("Archive of the open conversation still goes to empty chat", async () => {
@@ -2336,6 +2341,7 @@ describe("app projects surface", () => {
 	let root: Root | null = null;
 	let installed: string[] = [];
 	let convs: AppConversationList["conversations"];
+	let rollingRows: AppConversationList["rolling"]["chain"];
 	let projs: AppProject[];
 	let notes: AppNoteSummary[];
 	let notesTruncated: boolean;
@@ -2370,6 +2376,13 @@ describe("app projects surface", () => {
 	// keeps the reply pending until the test releases it.
 	let searchCalls: string[];
 	let searchScript: Map<string, { fail?: boolean; hold?: Promise<void>; hits?: AppSearchHit[] }>;
+	let rollingReply: { conversationId: string; rolled: boolean } | null;
+	let rollingHistorySnapshots: UIMessage[][];
+	let rollingHistoryTiming: "complete" | "late" | "live";
+	let rollingScrollHeight: number;
+	let rollingEventControl: boolean;
+	let rollingEventsControllers: ReadableStreamDefaultController<Uint8Array>[];
+	let restoreChatLayout: () => void;
 	// A held conversation create answers only once this gate resolves.
 	let createHold: Promise<void> | null;
 	// Same for a note PATCH — the stored row still mutates at request
@@ -2442,6 +2455,7 @@ describe("app projects surface", () => {
 		container = div as unknown as HTMLElement;
 		installed = [];
 		convs = [];
+		rollingRows = [];
 		projs = [];
 		notes = [];
 		notesTruncated = false;
@@ -2464,6 +2478,13 @@ describe("app projects surface", () => {
 		posts = [];
 		searchCalls = [];
 		searchScript = new Map();
+		rollingReply = null;
+		rollingHistorySnapshots = [];
+		rollingHistoryTiming = "complete";
+		rollingScrollHeight = 3000;
+		rollingEventControl = false;
+		rollingEventsControllers = [];
+		restoreChatLayout = () => {};
 		createHold = null;
 		notePatchHold = null;
 		noteCreateHold = null;
@@ -2522,7 +2543,7 @@ describe("app projects surface", () => {
 								);
 					return createHold === null ? reply() : createHold.then(reply);
 				}
-				return Promise.resolve(jsonResponse({ conversations: convs }));
+				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: rollingRows } }));
 			}
 			if (url.startsWith("/api/app/search")) {
 				const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
@@ -2758,20 +2779,67 @@ describe("app projects surface", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages"))
+			if (url.endsWith("/messages")) {
+				const messages = rollingHistorySnapshots.shift() ?? stored;
 				return Promise.resolve(
-					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+					jsonResponse({ messages, ratings: [], rateableMessageIds: [] }),
 				);
+			}
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
-			if (url.endsWith("/events"))
+			if (url.endsWith("/events")) {
+				if (rollingEventControl) {
+					const stream = new ReadableStream<Uint8Array>({
+						start(controller) {
+							rollingEventsControllers.push(controller);
+							controller.enqueue(
+								new TextEncoder().encode('data: {"type":"state","live":false}\n\n'),
+							);
+						},
+					});
+					return Promise.resolve(
+						new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+					);
+				}
 				return Promise.resolve(
 					new Response('data: {"type":"state","live":false}\n\n', {
 						headers: { "content-type": "text/event-stream" },
 					}),
 				);
+			}
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
-				return Promise.resolve(jsonResponse({ submitted: true }, 202));
+				const request = body as { rolling?: unknown; message?: UIMessage };
+				if (request.rolling === true && request.message !== undefined) {
+					const shortReply: UIMessage = {
+						id: "a-rolled",
+						role: "assistant",
+						parts: [{ type: "text", text: "rolled answer" }],
+					};
+					stored = [
+						request.message,
+						shortReply,
+					];
+					rollingHistorySnapshots =
+						rollingHistoryTiming === "late"
+							? [[request.message], [request.message, shortReply]]
+							: rollingHistoryTiming === "live"
+								? [[request.message], [request.message]]
+							: [[request.message, shortReply]];
+					if (rollingReply?.rolled === true) {
+						rollingRows = [
+							convRow("roll two", { id: rollingReply.conversationId }),
+							...rollingRows,
+						];
+					}
+				}
+				return Promise.resolve(
+					jsonResponse(
+						rollingReply === null
+							? { submitted: true }
+							: { submitted: true, ...rollingReply },
+						202,
+					),
+				);
 			}
 			// The composers' config loads and anything else.
 			return Promise.resolve(
@@ -2796,6 +2864,8 @@ describe("app projects surface", () => {
 			});
 			root = null;
 		}
+		restoreChatLayout();
+		restoreChatLayout = () => {};
 		await win.happyDOM.close();
 		globalThis.fetch = realFetch;
 		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
@@ -2807,6 +2877,61 @@ describe("app projects surface", () => {
 		await act(async () => {
 			await new Promise((r) => setTimeout(r, 30));
 		});
+	};
+
+	const installChatLayout = () => {
+		const prototype = win.HTMLElement.prototype;
+		const previous = new Map<string, PropertyDescriptor | undefined>();
+		for (const name of ["scrollHeight", "clientHeight", "scrollTop", "getBoundingClientRect"]) {
+			previous.set(name, Object.getOwnPropertyDescriptor(prototype, name));
+		}
+		const tops = new WeakMap<Element, number>();
+		Object.defineProperty(prototype, "scrollHeight", {
+			configurable: true,
+			get() {
+				return (this as HTMLElement).classList.contains("transcript") ? rollingScrollHeight : 0;
+			},
+		});
+		Object.defineProperty(prototype, "clientHeight", {
+			configurable: true,
+			get() {
+				return (this as HTMLElement).classList.contains("transcript") ? 800 : 0;
+			},
+		});
+		Object.defineProperty(prototype, "scrollTop", {
+			configurable: true,
+			get() {
+				return tops.get(this as Element) ?? 0;
+			},
+			set(value: number) {
+				tops.set(this as Element, value);
+			},
+		});
+		Object.defineProperty(prototype, "getBoundingClientRect", {
+			configurable: true,
+			value(this: HTMLElement) {
+				const scroller = this.closest(".transcript") as HTMLElement | null;
+				const top = this.classList.contains("transcript")
+					? 0
+					: this.matches(".msg.assistant")
+						? 1500 - (scroller?.scrollTop ?? 0)
+						: 0;
+				return {
+					top,
+					right: 800,
+					bottom: top + 800,
+					left: 0,
+					width: 800,
+					height: 800,
+				} as DOMRect;
+			},
+		});
+		restoreChatLayout = () => {
+			for (const [name, descriptor] of previous) {
+				if (descriptor === undefined) Reflect.deleteProperty(prototype, name);
+				else Object.defineProperty(prototype, name, descriptor);
+			}
+		};
 	};
 
 	const mount = async () => {
@@ -4513,6 +4638,154 @@ describe("app projects surface", () => {
 		createdAt: "2026-10-10T00:00:00.000Z",
 	});
 
+	const startRolledView = async (timing: "complete" | "late" | "live") => {
+		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
+		rollingReply = { conversationId: "app/roll-2", rolled: true };
+		rollingHistoryTiming = timing;
+		rollingEventControl = true;
+		rollingScrollHeight = 2000;
+		win.history.replaceState(null, "", "/app/rolling");
+		installChatLayout();
+		await mount();
+		await sendComposer("rolling follow");
+		for (let i = 0; i < 20; i++) {
+			if (
+				timing === "live" ||
+				container.querySelector(".transcript")?.textContent?.includes("rolled answer")
+			)
+				break;
+			await settle();
+		}
+		expect(rollingEventsControllers.length).toBeGreaterThan(1);
+		if (timing !== "live") expect(container.textContent).toContain("rolled answer");
+		else expect(container.textContent).not.toContain("rolled answer");
+	};
+	const publishRollingEvent = async (event: { type: string; live?: boolean }) => {
+		const controller = rollingEventsControllers.at(-1);
+		expect(controller).toBeDefined();
+		await act(async () => {
+			controller!.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+		});
+		await settle();
+	};
+	const addRemoteLongTurn = async () => {
+		const [user, assistant] = stored;
+		stored = [
+			user!,
+			assistant!,
+			{
+				id: "remote-user",
+				role: "user",
+				parts: [{ type: "text", text: "remote turn" }],
+			},
+			{
+				id: "remote-assistant",
+				role: "assistant",
+				parts: [{ type: "text", text: "long remote answer" }],
+			},
+		] as UIMessage[];
+		rollingScrollHeight = 3800;
+		await publishRollingEvent({ type: "turn-start" });
+		await publishRollingEvent({ type: "state", live: true });
+	};
+
+	test("an idle mounted short reply resolves its rolling follow before a remote turn", async () => {
+		await startRolledView("complete");
+		await addRemoteLongTurn();
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(3000);
+	});
+
+	test("a short reply arriving through idle history merge resolves its rolling follow", async () => {
+		await startRolledView("late");
+		await addRemoteLongTurn();
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(3000);
+	});
+
+	test("a live reply that grows past the viewport still holds its head", async () => {
+		await startRolledView("live");
+		await publishRollingEvent({ type: "turn-start" });
+		const [user] = stored;
+		stored = [
+			user!,
+			{
+				id: "a-rolled",
+				role: "assistant",
+				parts: [{ type: "text", text: "short live answer" }],
+			},
+		] as UIMessage[];
+		await publishRollingEvent({ type: "state", live: true });
+		expect(container.textContent).toContain("short live answer");
+		rollingScrollHeight = 3800;
+		stored = [
+			user!,
+			{
+				id: "a-rolled",
+				role: "assistant",
+				parts: [{ type: "text", text: "long live answer grows past the viewport" }],
+			},
+		] as UIMessage[];
+		await publishRollingEvent({ type: "state", live: true });
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(
+			1500 - 24,
+		);
+	});
+
+	test("a rolled send transfers reply-head follow once; a same-roll send stays mounted", async () => {
+		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
+		rollingReply = { conversationId: "app/roll-2", rolled: true };
+		win.history.replaceState(null, "", "/app/rolling");
+		installChatLayout();
+		await mount();
+		await sendComposer("rolling follow");
+		const chatPost = posts.find((post) => post.url === "/api/app/chat");
+		expect(chatPost).toBeDefined();
+		const postedMessageId = (chatPost!.body as { message: UIMessage }).message.id;
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(
+			1500 - 24,
+		);
+
+		await click([...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
+			button.textContent?.includes("Previous conversation"),
+		));
+		await click([...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
+			button.textContent?.includes("Back to latest"),
+		));
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(2200);
+
+		const latestTranscript = container.querySelector(".transcript");
+		rollingReply = { conversationId: "app/roll-2", rolled: false };
+		await sendComposer("same roll");
+		expect(container.querySelector(".transcript")).toBe(latestTranscript);
+		expect(posts.some((post) => {
+			if (post.url !== "/api/app/chat") return false;
+			const message = (post.body as { message?: UIMessage }).message;
+			return message?.id === postedMessageId;
+		})).toBe(true);
+		await click([...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
+			button.textContent?.includes("Previous conversation"),
+		));
+		await click([...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
+			button.textContent?.includes("Back to latest"),
+		));
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(2200);
+	});
+
+	test("the rolling starter transfers reply-head follow into its new conversation", async () => {
+		rollingRows = [];
+		rollingReply = { conversationId: "app/roll-first", rolled: true };
+		rollingHistoryTiming = "complete";
+		rollingScrollHeight = 3000;
+		win.history.replaceState(null, "", "/app/rolling");
+		installChatLayout();
+		await mount();
+		expect(container.textContent).toContain("your rolling chat starts here");
+		await sendComposer("[long] first rolling reply");
+		expect(container.querySelector(".transcript")).not.toBeNull();
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(
+			1500 - 24,
+		);
+	});
+
 	test("a failed rail search reports the error instead of reading as no matches", async () => {
 		convs = [convRow("fixture chat")];
 		searchScript = new Map([["missing", { fail: true }]]);
@@ -4966,7 +5239,9 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		// Probe queued. Answer it (trust mode — gate passes); refresh #1
 		// queues behind the flip.
 		expect(gets.length).toBe(1);
-		await act(async () => gets[0]!.resolve(jsonResponse({ conversations: [] })));
+		await act(async () =>
+			gets[0]!.resolve(jsonResponse({ conversations: [], rolling: { chain: [] } })),
+		);
 		await settle();
 		expect(gets.length).toBe(2);
 		// Send from the empty state: the create resolves, selects the new
@@ -5011,6 +5286,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 							parentId: null,
 						},
 					],
+					rolling: { chain: [] },
 				}),
 			),
 		);
@@ -5132,7 +5408,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 			if (url === "/api/app/push")
 				return Promise.resolve(jsonResponse({ configured: false, subscriptions: [] }));
 			if (url === "/api/app/conversations" && method === "GET") {
-				return Promise.resolve(jsonResponse({ conversations: [convRow] }));
+				return Promise.resolve(jsonResponse({ conversations: [convRow], rolling: { chain: [] } }));
 			}
 			if (url === "/api/app/conversations/fixture" && method === "PATCH") {
 				return Promise.resolve(jsonResponse({ pinned: true }));
@@ -5315,7 +5591,7 @@ describe("chat width selector", () => {
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations")
-				return Promise.resolve(jsonResponse({ conversations: [] }));
+				return Promise.resolve(jsonResponse({ conversations: [], rolling: { chain: [] } }));
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));

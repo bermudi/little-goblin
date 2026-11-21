@@ -8,7 +8,6 @@ import {
 } from "../agent/models-dev.ts";
 import { openStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
-import { openResponsibilities } from "../responsibilities.ts";
 
 import { deferred, sleep, waitUntil } from "../testkit.ts";
 import { claudeScript } from "../testkit/turn-script-claude.ts";
@@ -1303,62 +1302,6 @@ describe("app conversations", () => {
 			// The fence aborted generation — the durable transcript has no
 			// completed assistant reply.
 			expect(store.history("app/chat-01").some((message) => message.role === "assistant")).toBe(false);
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("a refused delete answers 409 with the refusal and never stops the live turn", async () => {
-		const { http, call, store, projects, runtime } = setup({
-			token: APP_TOKEN_NAME,
-			deltas: ["a", "b", "c", "d", "e"],
-			delayMs: 50,
-		});
-		const resps = openResponsibilities(store.db);
-		try {
-			await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "chat-01" }),
-			});
-			const project = projects.create({ name: "anchored" });
-			const { responsibilityId } = resps.create({
-				projectId: project.id,
-				coordinationConversationId: "app/chat-01",
-				handoverKey: "kl",
-				understanding: {
-					outcome: "land the fix",
-					situation: "agent is mid-task",
-					nextAction: "check the diff",
-					checkpoints: ["before the publish step"],
-					completionEvidence: ["ci green"],
-				},
-			}).responsibility;
-			const chat = await call("/api/app/chat", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					conversationId: "app/chat-01",
-					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
-				}),
-			});
-			expect(chat.status).toBe(202);
-			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
-			const stream = await call("/api/app/conversations/chat-01/stream");
-			expect(stream.status).toBe(200);
-			const epoch = store.get("app/chat-01")?.epoch;
-
-			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
-			expect(del.status).toBe(409);
-			const refusal = ((await del.json()) as { error: string }).error;
-			expect(refusal).toContain(responsibilityId);
-			expect(refusal).toContain("resolve them before deleting");
-
-			// The row, the epoch, and the live turn all survive the refusal.
-			expect(store.get("app/chat-01")).not.toBeNull();
-			expect(store.get("app/chat-01")?.epoch).toBe(epoch);
-			expect(streamedText(await stream.text())).toBe("abcde");
-			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
 		} finally {
 			http.stop();
 		}

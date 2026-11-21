@@ -9,7 +9,6 @@ import { pruningReplacement } from "./cache-pruning.ts";
 import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 import type { ParsedAddress } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
-import { DeleteRefused } from "./conversation-delete.ts";
 import { openStore } from "./conversation.ts";
 import {
 	EVENTS_THROUGH_SQL,
@@ -21,8 +20,6 @@ import {
 } from "./conversation-queries.ts";
 import { memoryBoundEntries } from "./memory/mod.ts";
 import { openRatings } from "./reply-ratings.ts";
-import { openProjects } from "./projects.ts";
-import { openResponsibilities } from "./responsibilities.ts";
 import { tmpDb } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
@@ -2491,32 +2488,6 @@ describe("event projections", () => {
 		store.close();
 	});
 
-	test("deleteRefusal is the advisory text of deleteConversation's DeleteRefused", () => {
-		const store = openStore(tmpDb("goblin-test-"));
-		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");
-		expect(store.deleteRefusal(c.id)).toBeNull();
-		const project = openProjects(store).create({ name: "anchored" });
-		const { responsibilityId } = openResponsibilities(store.db).create({
-			projectId: project.id,
-			coordinationConversationId: c.id,
-			handoverKey: "kl",
-			understanding: {
-				outcome: "land the fix",
-				situation: "agent is mid-task",
-				nextAction: "check the diff",
-				checkpoints: ["before the publish step"],
-				completionEvidence: ["ci green"],
-			},
-		}).responsibility;
-		expect(store.deleteRefusal(c.id)).toContain(responsibilityId);
-		expect(() => store.deleteConversation(c.id)).toThrow(DeleteRefused);
-		// The refusal keeps the row; the advisory answer and the throw
-		// carry the same text.
-		expect(store.get(c.id)).not.toBeNull();
-		expect(() => store.deleteConversation(c.id)).toThrow(store.deleteRefusal(c.id));
-		store.close();
-	});
-
 	test("forkToApp copies projections — the fork's model view overlays, history stays original", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
@@ -2606,6 +2577,23 @@ describe("telegram_deliveries", () => {
 		// Editing the user message rewinds the reply event with it.
 		store.editUserMessage(conv.id, "m1", { ...msg("hi again"), id: "m1b" });
 		expect(store.deliveredReplyText(42, 5)).toBeNull();
+		store.close();
+	});
+});
+
+describe("retired tables", () => {
+	test("a database that still has a responsibilities table opens and keeps the table and its rows", () => {
+		const path = tmpDb("goblin-test-");
+		const seed = new Database(path);
+		seed.exec("CREATE TABLE responsibilities (id TEXT PRIMARY KEY, title TEXT NOT NULL)");
+		seed.query("INSERT INTO responsibilities (id, title) VALUES (?, ?)").run("r-1", "old work");
+		seed.close();
+
+		const store = openStore(path);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		expect(store.get(conv.id)?.id).toBe(conv.id);
+		const rows = store.db.query<{ id: string; title: string }, []>("SELECT id, title FROM responsibilities").all();
+		expect(rows).toEqual([{ id: "r-1", title: "old work" }]);
 		store.close();
 	});
 });

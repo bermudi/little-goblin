@@ -16,7 +16,6 @@ import type {
 import { attachHintFor } from "../../hc-delegation.ts";
 import { log } from "../../log.ts";
 import { fenceUntrusted } from "./web.ts";
-import type { WorkerSendRefusal } from "../../responsibility-authority.ts";
 
 export interface DelegationPin {
 	address: { chatId: number; threadId: number | null };
@@ -30,10 +29,6 @@ export interface DelegateToolDeps {
 	config: DelegationConfig;
 	pin(name: string): DelegationPin;
 	workspaceDir: string;
-	/** Project-bound turns only: refuses a responsibility outside this
-	 *  project or already closed; null admits the link. */
-	checkResponsibility?: ((id: string) => string | null) | undefined;
-	sendAuthority?: ((responsibilityId: string) => WorkerSendRefusal | null) | undefined;
 }
 
 function view(d: Delegation, reportPath: string): Record<string, unknown> {
@@ -43,7 +38,6 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 		harness: d.harness,
 		cwd: d.cwd,
 		status: d.status,
-		responsibility: d.responsibilityId ?? undefined,
 		agent_name: d.agentName || undefined,
 		workspace_id: d.workspaceId || undefined,
 		report: reportPath,
@@ -117,12 +111,6 @@ function renderSend(out: SendOutcome): Record<string, unknown> {
 		case "no row":
 			return { error: `no delegation ${out.id}` };
 		case "refused":
-			if (out.why === "responsibility-missing")
-				return { error: `delegation ${out.id}'s responsibility is gone` };
-			if (out.why === "responsibility-inactive")
-				return { error: `delegation ${out.id}'s responsibility is paused or closed — resume it before sending` };
-			if (out.why === "outside-project")
-				return { error: `delegation ${out.id} is linked to another project — send from a conversation in that project` };
 			return {
 				error:
 					out.why === "stopped"
@@ -213,7 +201,6 @@ const startSchema = z.strictObject({
 	task: z.string().min(1),
 	cwd: z.string().min(1).optional(),
 	name: z.string().min(1).max(40).optional(),
-	responsibility: z.string().min(1).optional(),
 });
 const listSchema = z.object({ action: z.literal("list") });
 const readSchema = z.object({
@@ -267,7 +254,6 @@ const delegateInputFields = z.strictObject({
 	task: startSchema.shape.task.optional(),
 	cwd: startSchema.shape.cwd,
 	name: startSchema.shape.name,
-	responsibility: startSchema.shape.responsibility,
 	id: readSchema.shape.id.optional(),
 	lines: readSchema.shape.lines,
 	text: sendSchema.shape.text.optional(),
@@ -283,13 +269,8 @@ function checkedAgainstAction(value: unknown, ctx: z.core.$RefinementCtx<unknown
 }
 
 export const delegateInputSchema = delegateInputFields.superRefine(checkedAgainstAction);
-/** Outside a project no link can succeed, so the model is not offered one. */
-const unlinkableDelegateInputSchema = delegateInputFields
-	.omit({ responsibility: true })
-	.superRefine(checkedAgainstAction);
 
 export const delegateTool = (deps: DelegateToolDeps) => {
-	const linkable = deps.checkResponsibility !== undefined;
 	// askFirst harnesses become a prompt rule in the description: the
 	// model asks, execute stays ungated.
 	const askFirst = Object.entries(deps.config.harnesses)
@@ -301,22 +282,12 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 			? ""
 			: ` Ask-first harnesses (${askFirst.join(", ")}) require the operator's explicit yes for each task.`;
 	return defineTool({
-		description: `Delegate work to an external coding harness — a separate terminal, running full-auto in Goblin's private hc core. Use this tool ONLY when the operator names the harness ("have codex do X", "an opencode run"); work you decide to hand off goes to the agent tool or you do it yourself. Harnesses: ${Object.keys(deps.config.harnesses).join(", ")}.${askFirstLine} Actions — start {harness, task, cwd?, name?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
-		input: (linkable
-			? delegateInputSchema
-			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,
+		description: `Delegate work to an external coding harness — a separate terminal, running full-auto in Goblin's private hc core. Use this tool ONLY when the operator names the harness ("have codex do X", "an opencode run"); work you decide to hand off goes to the agent tool or you do it yourself. Harnesses: ${Object.keys(deps.config.harnesses).join(", ")}.${askFirstLine} Actions — start {harness, task, cwd?, name?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.`,
+		input: delegateInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "start": {
-					// Checked before the pin: a refused link must not spin off.
-					if (input.responsibility !== undefined) {
-						const refused =
-							deps.checkResponsibility === undefined
-								? "responsibility links need a project conversation"
-								: deps.checkResponsibility(input.responsibility);
-						if (refused !== null) return { error: refused };
-					}
 					const harnesses = deps.config.harnesses;
 					const named = input.harness;
 					const h = harnesses[named];
@@ -362,9 +333,6 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 							...(pin.appConversation === undefined
 								? {}
 								: { appConversation: pin.appConversation }),
-							...(input.responsibility === undefined
-								? {}
-								: { responsibilityId: input.responsibility }),
 						});
 					} catch (err) {
 						discard("threw");
@@ -394,7 +362,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 				case "read":
 					return renderRead(await deps.lifecycle.read(input.id, input.lines ?? 60));
 				case "send":
-					return renderSend(await deps.lifecycle.send(input.id, input.text, deps.sendAuthority));
+					return renderSend(await deps.lifecycle.send(input.id, input.text));
 				case "answer":
 					return renderAnswer(await deps.lifecycle.answer(input.id, input.key));
 				case "stop":

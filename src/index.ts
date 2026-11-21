@@ -37,6 +37,9 @@ import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, makeDelegateDeps, wireDelegation } from "./delegation-lifecycle.ts";
 import { makeT3 } from "./t3.ts";
+import { makeGitHub } from "./github.ts";
+import { makeWatches } from "./watches.ts";
+import { makeWatchObserver } from "./watch-observer.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
@@ -57,10 +60,6 @@ import { startProgramOps } from "./program-ops.ts";
 import { openPrograms } from "./programs.ts";
 import { startAgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
-import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
-import { makeResponsibilityObserver } from "./responsibility-observer.ts";
-import { fileAgentChildReport, fileDelegationReport } from "./responsibility-runs.ts";
-import { makeResponsibilityService } from "./responsibility-service.ts";
 import { wireReviewer } from "./reviewer-wiring.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
@@ -154,7 +153,9 @@ async function boot() {
 			},
 		);
 	}
+	const wallClock = (): Date => new Date();
 	const store = openStore(paths.db());
+	const watches = makeWatches(store.db, wallClock);
 	recoverPendingInputs(store);
 	// Browser push is an app-owned device registry. Its VAPID pair is an
 	// auth record generated on first enable, not operator config.
@@ -181,9 +182,6 @@ async function boot() {
 	const turnJournal = openTurnJournal(store.db, {
 		onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
 	});
-	// Durable wakes share the store handle — the trigger append, its
-	// history reference, and the delivery state commit together. The
-	// dispatcher is what responsibility-service developments ride.
 	const wakeStore = openWakeStore(store.db);
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
@@ -254,17 +252,12 @@ async function boot() {
 	// init task starts only after every core service stands.
 	const attach = openTelegramAttach({ telegramEnabled, configRef });
 	const sendPrivate = attach.sendPrivate;
-	// Delegation is boot-fixed like memory — the store, the hc adapter
-	// and the config snapshot are one object, so a live config read can
-	// only hide the delegate tool next turn, never launch on a harness
-	// the boot snapshot lacks (spinoff.ts owns the pin). T3 Code is the
-	// responsibility transport — the observer, managed sends and the
-	// health probe — never the delegate one.
 	const { delegations, hc } = wireDelegation({
 		config: delegationBoot,
 		dbPath: paths.db,
 	});
 	const t3 = makeT3();
+	const github = makeGitHub();
 	// Voice replies and transcription die at runtime without ffmpeg —
 	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
@@ -483,14 +476,6 @@ async function boot() {
 	}
 	if (skillReviewer !== null) runtime.setReviewer(skillReviewer);
 
-	// The shared wake path — program fires and delegation notices submit
-	// through it; wake.ts owns the routing, src/boot/delivery.ts owns the
-	// one wakeDeps identity, the dispatcher (and its boot pump — recovered
-	// wakes enter their lanes ahead of inbound traffic), and the firing
-	// deps laid onto the same object. Responsibilities open first: the
-	// boot pump's commits re-check queued developments' authority against
-	// them, so the store exists before the dispatcher does.
-	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
 	const delivery = wireDelivery({
 		store,
 		runtime,
@@ -501,8 +486,6 @@ async function boot() {
 		push: appPush,
 		gate: system1Gate,
 		programs,
-		responsibilities,
-		telegramApi: () => attach.api(),
 	});
 
 	// The desktop pool constructs empty-handed: no allocation or
@@ -525,7 +508,6 @@ async function boot() {
 	// record seam — both exist only here, past the wire. Boot recovery
 	// runs before any new traffic: a child cut by the restart settles
 	// failed and its parent's wake is durable.
-	const wallClock = (): Date => new Date();
 	const agentChildren = startAgentChildren({
 		store,
 		runtime,
@@ -534,27 +516,8 @@ async function boot() {
 		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
 		now: wallClock,
 		desktops: () => desktops,
-		responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
-		settled: (child, status, result) => fileAgentChildReport(responsibilities, child, status, result),
 	});
 
-	// Project-owned responsibilities — the store the handover service
-	// writes, and the deterministic observer that turns attachment
-	// snapshots into deduped durable developments. The observer's list
-	// seam is the local operator session; (server, session) on each
-	// attachment is the grouping key for when a second target exists.
-	const responsibilityService = makeResponsibilityService({
-		db: store.db,
-		resps: responsibilities,
-		wakes: wakeStore,
-		conversations: store,
-		pump: () => delivery.dispatcher.pump(),
-		programs,
-		// The committed epoch fence cancels the live turn before the
-		// correction wake is admitted — a stale model stream, queued
-		// tool call, or parked preflight can no longer act.
-		fence: (work) => runtime.fence(work).result,
-	});
 	// The delegation lifecycle wakes through the shared wakeDeps — its
 	// closures read delivery/bell live, so a telegram attach mid-run is
 	// visible without a rewire.
@@ -566,8 +529,6 @@ async function boot() {
 					delegationsDir: paths.delegations(),
 					homeDir: homedir(),
 					...delegationWake(delivery.wakeDeps),
-					settled: (d, verdict, body) => fileDelegationReport(responsibilities, d, verdict, body),
-					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
 				})
 			: null;
 	const delegateDeps = makeDelegateDeps({
@@ -581,6 +542,7 @@ async function boot() {
 	// channel/config/boot pin) lives in turn-tools.ts; boot binds the
 	// seams.
 	const makeTurnTools = makeTurnToolsFactory({
+		now: wallClock,
 		configRef,
 		auth,
 		store,
@@ -597,12 +559,13 @@ async function boot() {
 		transcribe: transcribeFile,
 		delegateDeps,
 		t3,
+		watches,
+		github,
 		mail: mailApproval,
 		programApproval,
 		visionDepsFor,
 		sandboxes,
 		desktops,
-		responsibility: { resps: responsibilities, service: responsibilityService },
 		agents: agentChildren,
 		filterGuests: filterGuestTools,
 		// read_file of a catalog SKILL.md is a use — the curator's clock
@@ -617,33 +580,20 @@ async function boot() {
 	// Every tool owner exists past here; the runtime refuses turns before this.
 	runtime.mount({ makeTools: makeTurnTools, runOwnership: delivery.dispatcher.hooks });
 	agentChildren.recoverAtBoot();
-	// Boot sweep: every open responsibility re-verifies its follow-up
-	// Program — a restart (or a deleted program row) re-links here,
-	// never leaves the check-in silently unarmed.
-	for (const r of responsibilities.open()) {
-		try {
-			responsibilityService.ensureFollowup(r.responsibilityId);
-		} catch (err) {
-			log.error("responsibility follow-up relink failed", err, {
-				responsibility: r.responsibilityId,
-			});
-		}
-	}
-	const responsibilityObserver = makeResponsibilityObserver({
-		db: store.db,
-		resps: responsibilities,
+	const watchObserver = makeWatchObserver({
+		watches,
 		wakes: wakeStore,
 		pump: () => delivery.dispatcher.pump(),
-		show: (threadId) => t3.showThread(threadId, 1),
+		showThread: (thread, messages) => t3.showThread(thread, messages),
+		readPr: (repository, number) => github.readPr(repository, number),
+		now: wallClock,
 	});
 	const OBSERVE_MS = 60_000;
-	const observerTicker = setInterval(() => {
-		responsibilityObserver
-			.observe()
-			.catch((err) => log.error("responsibility observe tick failed", err));
+	const watchTicker = setInterval(() => {
+		watchObserver.observe().catch((err) => log.error("watch observe tick failed", err));
 	}, OBSERVE_MS);
-	observerTicker.unref();
-	const stopObserverTicker = () => clearInterval(observerTicker);
+	watchTicker.unref();
+	const stopWatchTicker = () => clearInterval(watchTicker);
 	const stopWakeTicker = delivery.dispatcher.start();
 
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
@@ -754,15 +704,6 @@ async function boot() {
 				approvals: { program: programApproval, mail: mailApproval },
 				programOps,
 				push: appPush,
-				// The project feed + controls — the same stores the
-				// coordination tool drives; record pumps through the
-				// dispatcher so a correction steers the next wake.
-				responsibilities: {
-					feed: { db: store.db, resps: responsibilities, programs },
-					resps: responsibilities,
-					service: responsibilityService,
-					listThreads: (project) => t3.listThreads(project),
-				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
@@ -794,8 +735,6 @@ async function boot() {
 		fire: (program, hits, checkpoint, now) =>
 			fireMail(delivery.firingDeps, program, hits, checkpoint, now),
 		notify: makeMailNoticeRouter({
-			resps: responsibilities,
-			record: (input) => delivery.dispatcher.record(input),
 			sendTelegram: (address, text) => {
 				const api = attach.api();
 				if (api === null) {
@@ -852,9 +791,7 @@ async function boot() {
 		runtime,
 		wakeDispatcher: delivery.dispatcher,
 		stopWakeTicker,
-		responsibilities,
-		responsibilityObserver,
-		stopObserverTicker,
+		stopWatchTicker,
 		// Live over the attach/detach-rebound Telegram adapter — shutdown
 		// joins in-flight taps through it without racing a detach that
 		// happened after boot returned.
@@ -887,7 +824,7 @@ const {
 	runtime,
 	wakeDispatcher,
 	stopWakeTicker,
-	stopObserverTicker,
+	stopWatchTicker,
 	stopTelegram,
 	http,
 	scheduler,
@@ -913,7 +850,7 @@ async function shutdown(signal: string): Promise<void> {
 	scheduler.stop();
 	// Wake retries stop too — open wakes ride to the next boot's pump.
 	stopWakeTicker();
-	stopObserverTicker();
+	stopWatchTicker();
 	// Join any in-flight scan before closing the store; running threads
 	// belong to the T3 Code server and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
@@ -942,7 +879,6 @@ async function shutdown(signal: string): Promise<void> {
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
 	const settled = Promise.allSettled([
-		scheduler.joinReminders(),
 		stopping,
 		drained,
 		delegationScan,

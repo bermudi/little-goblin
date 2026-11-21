@@ -297,9 +297,6 @@ function CandidateBody({ candidate }: { candidate: Candidate }) {
 function CandidateFacts({ candidate, serverTimeZone = "" }: { candidate: Candidate } & ZoneProps) {
 	return (
 		<>
-			{candidate.responsibilityId !== undefined && (
-				<span>Responsibility: {candidate.responsibilityId}</span>
-			)}
 			{candidate.cron !== null && (
 				<span>
 					<Schedule cron={candidate.cron} serverTimeZone={serverTimeZone} />

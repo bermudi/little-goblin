@@ -11,7 +11,6 @@ import { handleProgramRoutes } from "./app-programs.ts";
 import { handleProjectsRoute } from "./app-projects.ts";
 import { handleAppPushRoute } from "./app-push.ts";
 import { handleSearchRoute } from "./app-search.ts";
-import { handleResponsibilitiesRoute } from "./app-responsibilities.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { handleTurnsRoute } from "./app-turns.ts";
 import { handleOperatorRoute } from "./operator.ts";
@@ -98,7 +97,6 @@ export async function handleAppApi(
 		(await handleConversationsRoute(req, url, deps)) ??
 		(await handleTurnsRoute(req, url, deps)) ??
 		(await handleProjectsRoute(req, url, deps)) ??
-		(await handleResponsibilitiesRoute(req, url, deps)) ??
 		(await handleNotesRoute(req, url, deps)) ??
 		(await handleConfigRoute(req, url, deps)) ??
 		(await handleChatRoute(req, url, deps)) ??

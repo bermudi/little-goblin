@@ -6,7 +6,6 @@
 import {
 	type Delegation,
 	type DelegationsStore,
-	type DelegationVerdict,
 	openDelegations,
 } from "./delegations.ts";
 import { makeHcDelegation, type HcDelegation } from "./hc-delegation.ts";
@@ -18,7 +17,6 @@ import type { DelegationConfig } from "./config-schema.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
-import type { WorkerSendRefusal } from "./responsibility-authority.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -28,11 +26,6 @@ export interface DelegationLifecycleDeps {
 	wake(address: { chatId: number; threadId: number | null }, text: string): boolean;
 	wakeApp(conversationId: string, text: string): boolean;
 	homeDir: string;
-	// A linked delegation's settlement lands as a worker report before its
-	// notice wakes the conversation (responsibility-runs.ts). A throw leaves
-	// the row eligible for retry; the report is keyed, so a retry files once.
-	settled?: (d: Delegation, verdict: DelegationVerdict, body: string) => void;
-	responsibilityRevision?: (id: string) => number | null;
 }
 
 export interface LaunchInput {
@@ -42,7 +35,6 @@ export interface LaunchInput {
 	name: string;
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
-	responsibilityId?: string;
 }
 
 export type LaunchOutcome =
@@ -53,7 +45,7 @@ export type LaunchOutcome =
 	// Blocked startup keeps the task owed until its dialog clears.
 	| { kind: "parked"; delegation: Delegation };
 
-export type SendRefusal = "stopped" | "starting" | "never launched" | "task never sent" | WorkerSendRefusal;
+export type SendRefusal = "stopped" | "starting" | "never launched" | "task never sent";
 
 export type SendOutcome =
 	| { kind: "sent"; delegation: Delegation }
@@ -86,7 +78,7 @@ export type ReadOutcome =
 export interface DelegationLifecycle {
 	launch(input: LaunchInput): Promise<LaunchOutcome>;
 	// Follow-up prompts reset the baseline and return the row to running.
-	send(id: number, text: string, authorize?: (responsibilityId: string) => WorkerSendRefusal | null): Promise<SendOutcome>;
+	send(id: number, text: string): Promise<SendOutcome>;
 	// Only the explicitly whitelisted key reaches a blocked agent; the
 	// watcher observes the seq effect and owns every transition.
 	answer(id: number, key: string): Promise<AnswerOutcome>;

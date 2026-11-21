@@ -15,7 +15,6 @@ function programView(program: Program): Record<string, unknown> {
 		max_lateness_minutes: program.maxLatenessMinutes,
 		has_hook: program.hookHash !== null,
 		mail_filter: program.mailFilter,
-		...(program.responsibilityId !== null ? { responsibility_id: program.responsibilityId } : {}),
 		enabled: program.enabled,
 		last_run: program.lastRun,
 		next_run: program.nextRun,
@@ -36,21 +35,9 @@ function proposalView(proposal: ProgramProposal): Record<string, unknown> {
 
 export type ProgramToolDeps = {
 	programs: ProgramsStore;
-	/** The conversation address this tool call runs in — pinned onto
-	 *  staged proposals. Responsibility-destination creates bind the
-	 *  approved program to the project's coordination lane instead. */
 	target?: string;
 	chatId?: number;
 	threadId?: number | null;
-	/** The app/project arm — scopes every verb to programs bound to a
-	 *  responsibility in this project (create validates the binding;
-	 *  the by-id actions enforce it against the row's responsibility).
-	 *  Creates and grant-shaped updates stage on every arm; the project
-	 *  arm scopes verbs and can bind a create to a responsibility. */
-	project?: {
-		projectId: string;
-		resps: { get(id: string): { projectId: string } | null };
-	};
 	publicUrl(): string | undefined;
 	/** Absent when Telegram is disabled: hook grants still stage through
 	 * the shared approval owner, but rotating an existing credential cannot
@@ -97,9 +84,6 @@ const createSchema = z.object({
 	maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 	hook: z.boolean().optional(),
 	mailFilter: z.string().min(1).max(500).optional(),
-	/** Project turns only: bind the approved program to a responsibility's
-	 *  coordination lane instead of the proposal's conversation address. */
-	responsibilityId: z.string().min(1).optional(),
 });
 const updateSchema = z.object({
 	action: z.literal("update"),
@@ -143,7 +127,6 @@ export const programInputSchema = z
 		maxLatenessMinutes: updateSchema.shape.maxLatenessMinutes,
 		hook: createSchema.shape.hook,
 		mailFilter: updateSchema.shape.mailFilter,
-		responsibilityId: createSchema.shape.responsibilityId,
 		id: updateSchema.shape.id.optional(),
 		op: hookSchema.shape.op.optional(),
 	})
@@ -167,30 +150,9 @@ export const programTool = (deps: ProgramToolDeps) => {
 			await deps.requestApproval(proposal, signal);
 		},
 	});
-	// The project arm's boundary: this project's responsibility-bound
-	// rows plus the conversation's own pins — a create without a
-	// responsibilityId stages onto this conversation's target, so its
-	// rows must stay reachable after approval. Another project's lane
-	// is unreachable here — the same line create validates for its
-	// responsibilityId. A deleted responsibility drops its programs
-	// out of scope too (fail closed).
-	const inScope = (program: Program): boolean =>
-		deps.project === undefined ||
-		(deps.target !== undefined && program.target === deps.target) ||
-		(program.responsibilityId !== null &&
-			deps.project.resps.get(program.responsibilityId)?.projectId === deps.project.projectId);
-	// Get + scope in one step: out-of-scope reads identical to absent.
-	const scopedGet = (id: number): Program | null => {
-		const program = deps.programs.get(id);
-		return program !== null && inScope(program) ? program : null;
-	};
-	const inLane = (proposal: ProgramProposal): boolean =>
-		proposal.targetId !== null
-			? scopedGet(proposal.targetId) !== null
-			: deps.target !== undefined && proposal.target === deps.target;
 	return defineTool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. On project turns this holds too: a create bound to a responsibility (responsibilityId) stages the same proposal in this conversation and binds to the responsibility only once approved — a handover grants only the service-owned follow-up clock, never new cron or mail programs. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure. On project turns the tool reaches the programs bound to this project's responsibilities plus the ones pinned to this conversation itself.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure.",
 		input: programInputSchema,
 		execute: async (raw, options) => {
 			const parsed = actionSchema.safeParse(raw);
@@ -214,57 +176,15 @@ export const programTool = (deps: ProgramToolDeps) => {
 			const signal = options?.abortSignal;
 			switch (input.action) {
 				case "list":
-					if (deps.project !== undefined) {
-						return {
-							programs: deps.programs.list().filter(inScope).map(programView),
-							proposals: deps.programs.proposals.pending().filter(inLane).map(proposalView),
-						};
-					}
 					return {
 						programs: deps.programs.list().map(programView),
 						proposals: deps.programs.proposals.pending().map(proposalView),
 					};
 				case "create": {
-					if (input.responsibilityId !== undefined) {
-						// Validate the destination before staging; hooks still
-						// require a private operator delivery lane.
-						if (deps.project === undefined) {
-							return { error: "responsibility destinations exist only on project turns" };
-						}
-						const resp = deps.project.resps.get(input.responsibilityId);
-						if (resp === null || resp.projectId !== deps.project.projectId) {
-							return { error: "no such responsibility in this project" };
-						}
-						if (input.hook === true) {
-							return {
-								error: "hook URLs deliver to the operator DM — not available on project turns",
-							};
-						}
-						if (address === undefined) {
-							return {
-								error: "no destination — this turn has no conversation address to post the approval to",
-							};
-						}
-						return opResult(
-							await ops.create(
-								{
-									name: input.name,
-									charter: input.charter,
-									cron: input.cron ?? null,
-									maxLatenessMinutes: input.maxLatenessMinutes ?? null,
-									hook: false,
-									mailFilter: input.mailFilter ?? null,
-									responsibilityId: input.responsibilityId,
-								},
-								address,
-								signal,
-							),
-						);
-					}
 					if (address === undefined) {
 						return {
 							error:
-								"no destination — this turn has no conversation address and no responsibility destination",
+								"no destination — this turn has no conversation address",
 						};
 					}
 					return opResult(
@@ -276,7 +196,6 @@ export const programTool = (deps: ProgramToolDeps) => {
 								maxLatenessMinutes: input.maxLatenessMinutes ?? null,
 								hook: input.hook === true,
 								mailFilter: input.mailFilter ?? null,
-								responsibilityId: null,
 							},
 							address,
 							signal,
@@ -297,39 +216,16 @@ export const programTool = (deps: ProgramToolDeps) => {
 					if (input.maxLatenessMinutes !== undefined)
 						patch.maxLatenessMinutes = input.maxLatenessMinutes;
 					if (input.mailFilter !== undefined) patch.mailFilter = input.mailFilter;
-					if (deps.project !== undefined && scopedGet(input.id) === null) {
-						return { error: `no program ${input.id}` };
-					}
 					// No address gate here: direct edits apply without a
 					// destination; ops.update refuses only the grant-shaped
 					// patches that would have to stage one.
 					return opResult(await ops.update(input.id, patch, address, signal));
 				}
 				case "delete":
-					if (deps.project !== undefined && scopedGet(input.id) === null) {
-						return { error: `no program ${input.id}` };
-					}
 					return opResult(ops.remove(input.id));
 				case "toggle":
-					if (deps.project !== undefined && scopedGet(input.id) === null) {
-						return { error: `no program ${input.id}` };
-					}
 					return opResult(ops.toggle(input.id));
 				case "hook": {
-					if (deps.project !== undefined) {
-						// The same refusal create applies to responsibility
-						// destinations: enable/rotate would have to deliver a
-						// secret URL the project lane cannot. Disable stays
-						// open for cleanup.
-						const scoped = scopedGet(input.id);
-						if (scoped === null) return { error: `no program ${input.id}` };
-						if (input.op !== "disable") {
-							return {
-								error: "hook URLs deliver to the operator DM — not available on project turns",
-							};
-						}
-						return opResult(await ops.hook(input.id, "disable", address, signal));
-					}
 					const before = deps.programs.get(input.id);
 					if (
 						before !== null &&
@@ -358,19 +254,6 @@ export const programTool = (deps: ProgramToolDeps) => {
 					return { hook: "rotated", url_sent: true };
 				}
 				case "review": {
-					if (deps.project !== undefined) {
-						// A proposal rides this lane only if the grant it asks
-						// for lands in scope — the program it patches, or, on
-						// a create (no target row yet), the conversation its
-						// draft pins as its destination. Foreign lanes read as
-						// absent either way; a staged proposal always pins a
-						// real conversation (validTarget rejects resp:), so
-						// plain address equality is the whole match.
-						const proposal = deps.programs.proposals.get(input.id);
-						if (proposal === null || !inLane(proposal)) {
-							return { error: `no proposal ${input.id}` };
-						}
-					}
 					return reviewResult(await ops.review(input.id, signal));
 				}
 			}

@@ -22,6 +22,23 @@ import { tmpDir, useHome } from "./testkit.ts";
 
 setLogFile(null);
 
+test("responsibility schema does not create or remove retired tables", () => {
+	const r = rig();
+	const tableNames = () =>
+		r.store.db
+			.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+			.all()
+			.map((row) => row.name);
+	expect(tableNames()).not.toContain("inner_loop_starts");
+	expect(tableNames()).not.toContain("responsibility_issues");
+	r.store.db.exec("CREATE TABLE inner_loop_starts (handover_key TEXT PRIMARY KEY, thread_json TEXT NOT NULL)");
+	r.store.db.exec("CREATE TABLE responsibility_issues (responsibility_id TEXT PRIMARY KEY, issue_json TEXT NOT NULL)");
+	openResponsibilities(r.store.db);
+	expect(tableNames()).toContain("inner_loop_starts");
+	expect(tableNames()).toContain("responsibility_issues");
+	r.store.close();
+});
+
 interface Rig {
 	store: ConversationStore;
 	projects: ProjectStore;

@@ -126,20 +126,6 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
-	test("lead is no special role: a linked start carries no issue identity or verifier contract", async () => {
-		const h = harness();
-		try {
-			h.deps.checkResponsibility = () => null;
-			const tool = delegateTool(h.deps);
-			await exec(tool, { action: "start", harness: "codex", role: "lead", task: "build issue",
-				responsibility: "r1", issue: { repository: "owner/repo", number: 7 } });
-			const row = h.store.list()[0]!;
-			expect(row).toMatchObject({ role: "lead", responsibilityId: "r1" });
-			expect(row).not.toHaveProperty("issue");
-			expect(h.prompts[0]).not.toContain("Checked-SHA:");
-		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
-	});
-
 	test("a refused linked send names the delegation", async () => {
 		const h = harness();
 		try {
@@ -167,6 +153,17 @@ describe("delegate tool", () => {
 		expect(wire.required).toContain("action");
 		expect(delegateInputSchema.safeParse({}).success).toBe(false);
 		expect(delegateInputSchema.safeParse({ action: "start" }).success).toBe(false);
+		const role = delegateInputSchema.safeParse({
+			action: "start",
+			role: "review",
+			harness: "codex",
+			task: "do it",
+		});
+		expect(role.success).toBe(false);
+		if (!role.success)
+			expect(role.error.issues.some((issue) => "keys" in issue && issue.keys.includes("role"))).toBe(
+				true,
+			);
 		expect(
 			delegateInputSchema.safeParse({ action: "start", harness: "codex", task: "do it" }).success,
 		).toBe(true);
@@ -193,76 +190,16 @@ describe("delegate tool", () => {
 		expect(out.error).toContain("pi");
 	});
 
-	test("no harness uses the operator's default; the result names it", async () => {
-		const h = harness();
-		h.deps.config.defaults = { default: "pi" };
-		const out = (await exec(h.tool, {
-			action: "start",
-			task: "do it",
-		})) as { id: number; harness: string };
-		expect(out.harness).toBe("pi");
-		expect(h.store.get(out.id)!.harness).toBe("pi");
-	});
-
-	test("a named role picks its agent; an unlisted role falls back to the default", async () => {
-		const h = harness();
-		h.deps.config.harnesses["pi-review"] = { kind: "pi", args: ["--model", "sol"] };
-		h.deps.config.defaults = { default: "pi", review: "pi-review" };
-		const review = (await exec(h.tool, {
-			action: "start",
-			role: "review",
-			task: "review it",
-		})) as { id: number; harness: string };
-		expect(review.harness).toBe("pi-review");
-		const other = (await exec(h.tool, {
-			action: "start",
-			role: "docs",
-			task: "write it",
-		})) as { id: number; harness: string };
-		expect(other.harness).toBe("pi");
-	});
-
-	test("an explicit harness wins over a role", async () => {
-		const h = harness();
-		h.deps.config.defaults = { default: "pi", review: "pi" };
-		const out = (await exec(h.tool, {
-			action: "start",
-			harness: "codex",
-			role: "review",
-			task: "do it",
-		})) as { harness: string };
-		expect(out.harness).toBe("codex");
-	});
-
-	test("no harness and no defaults fails loud, naming the configured agents", async () => {
-		const h = harness();
-		const out = (await exec(h.tool, {
-			action: "start",
-			task: "do it",
-		})) as { error: string };
-		expect(out.error).toContain("no delegation defaults are configured");
-		expect(out.error).toContain("codex");
-		expect(out.error).toContain("pi");
-	});
-
-	test("the description carries the operator's role table, not notes", () => {
-		const h = harness();
-		h.deps.config.defaults = { default: "pi", review: "codex" };
-		const tool = delegateTool(h.deps);
-		expect(tool.description).toContain("review → codex");
-		expect(tool.description).toContain("`pi`");
-	});
-
-	test("the description rules staffing goblin's call and names ask-first harnesses", () => {
+	test("the description requires a named harness and names ask-first harnesses", () => {
 		const h = harness();
 		const plain = delegateTool(h.deps).description;
-		expect(plain).toContain("never ask the operator which one");
+		expect(plain).toContain("ONLY when the operator names the harness");
 		expect(plain).not.toContain("ask-first");
 
 		h.deps.config.harnesses["claude"] = { kind: "claude", askFirst: true };
 		const flagged = delegateTool(h.deps).description;
-		expect(flagged).toContain("ask-first harnesses (claude)");
-		expect(flagged).toContain("ask the operator before each use");
+		expect(flagged).toContain("Ask-first harnesses (claude)");
+		expect(flagged).toContain("explicit yes for each task");
 
 	});
 

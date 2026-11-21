@@ -74,9 +74,9 @@ rather than silently overriding it. `docs/` is for operating Goblin.
   `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
   programs) before committing.
 - **Each external contract is known by one adapter.** Only `src/tg/`
-  knows grammy; the podman, gws, GitHub, T3 Code, cua-driver and
+  knows grammy; the podman, gws, T3 Code, cua-driver and
   Anthropic Agent SDK wire contracts live in
-  `src/{podman,mail-gws,github,t3,desktops,agent/claude-code}`. Domain
+  `src/{podman,mail-gws,t3,desktops,agent/claude-code}`. Domain
   modules see the adapter's
   types, never the vendor's — `module-boundaries.test.ts` enforces the
   importable cases.

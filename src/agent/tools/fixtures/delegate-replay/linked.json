@@ -1,7 +1,7 @@
 {
   "version": 1,
   "model": "gpt-6-luna",
-  "requestHash": "2c7c948d214d7cc0f2e1d3ac940dee3bfb9277e19e889f6c0edc118c2016ca38",
+  "requestHash": "eee7014fa7e0c514f1b2bce335c20ccbdb774977ca783b096d82db336ec2b125",
   "parts": [
     {
       "type": "stream-start",
@@ -9,473 +9,368 @@
     },
     {
       "type": "tool-input-start",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "toolName": "delegate"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "{\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "action"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\":\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "start"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\",\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "h"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "arness"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\":\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "cod"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "ex"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\",\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "task"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\":\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "Investig"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "ate"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " and"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " fix"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " the"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " failing"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " build"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " in"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " this"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " repository"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "."
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " Start"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " by"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " inspecting"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " the"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " project"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " and"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " running"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " the"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " relevant"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " build"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "/tests"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": ","
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " identify"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " the"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " underlying"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " cause"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": ","
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " make"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " a"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " focused"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " fix"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": ","
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " and"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " verify"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " it"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " with"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " appropriate"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " checks"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "."
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " Report"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " changes"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " made"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " and"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " test"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "/build"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " results"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": ";"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " do"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " not"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " ask"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " the"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " operator"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " questions"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " unless"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " blocked"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " by"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " an"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " explicit"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": " choice"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": ".\",\""
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "cwd"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "\":\""
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "app"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "\",\""
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "name"
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "\":\""
-    },
-    {
-      "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "Fix"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " the"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": " failing"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": " build"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "\",\""
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " in"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "respons"
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " this"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
-      "delta": "ibility"
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " repo"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "."
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " Inspect"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " the"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " build"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "/test"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " failures"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": ","
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " make"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " a"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " focused"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " code"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " fix"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": ","
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " and"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " verify"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " with"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " appropriate"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " build"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "/tests"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "."
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " Report"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " what"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " changed"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " and"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " verification"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " results"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": ";"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " do"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " not"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " make"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " unrelated"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " changes"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": ".\",\""
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "cwd"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\":\""
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "app"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "\",\""
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "name"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "\":\""
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "Fix"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " failing"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": " build"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "\",\""
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "respons"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "ibility"
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
+      "delta": "\":\""
+    },
+    {
+      "type": "tool-input-delta",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "r"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "-"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "12"
     },
     {
       "type": "tool-input-delta",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee",
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "delta": "\"}"
     },
     {
       "type": "tool-input-end",
-      "id": "call_e647547bd90a4f33989b98417dd2ccee"
+      "id": "call_9df2c11cfcf4493d93b08d8efee3cc2a"
     },
     {
       "type": "tool-call",
-      "toolCallId": "call_e647547bd90a4f33989b98417dd2ccee",
+      "toolCallId": "call_9df2c11cfcf4493d93b08d8efee3cc2a",
       "toolName": "delegate",
-      "input": "{\"action\":\"start\",\"harness\":\"codex\",\"task\":\"Investigate and fix the failing build in this repository. Start by inspecting the project and running the relevant build/tests, identify the underlying cause, make a focused fix, and verify it with appropriate checks. Report changes made and test/build results; do not ask the operator questions unless blocked by an explicit choice.\",\"cwd\":\"app\",\"name\":\"Fix failing build\",\"responsibility\":\"r-12\"}"
+      "input": "{\"action\":\"start\",\"harness\":\"codex\",\"task\":\"Fix the failing build in this repo. Inspect the build/test failures, make a focused code fix, and verify with appropriate build/tests. Report what changed and verification results; do not make unrelated changes.\",\"cwd\":\"app\",\"name\":\"Fix failing build\",\"responsibility\":\"r-12\"}"
     },
     {
       "type": "finish",

@@ -106,14 +106,10 @@ export interface ConfigPostBody {
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	operators: number[];
 	allowedUsers: number[];
-	// The editable face of delegation: harness definitions and the
-	// role → harness defaults. Each harness names the hc harness kind it
-	// launches plus optional argv; goblin never picks a model itself.
 	delegation?:
 		| ""
 		| {
 				harnesses: Record<string, { kind: string; args?: string[]; askFirst?: boolean }>;
-				defaults?: Record<string, string>;
 		  }
 		| undefined;
 	telegram: {

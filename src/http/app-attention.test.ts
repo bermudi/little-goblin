@@ -137,7 +137,6 @@ describe("app attention", () => {
 							id: 3,
 							name: "worker",
 							harness: "pi",
-							role: "default",
 							cwd: "/tmp",
 							task: "finish the report",
 							chatId: 0,

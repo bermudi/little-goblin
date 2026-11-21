@@ -46,7 +46,6 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		harness: input.harness.name,
 		cwd: input.cwd,
 		task: input.task,
-		role: input.role ?? "default",
 		address: input.address,
 		...(input.appConversation === undefined ? {} : { appConversation: input.appConversation }),
 		...(input.responsibilityId === undefined

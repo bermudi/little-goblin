@@ -107,7 +107,8 @@ cache reuse (#759).
 One operator, one process, one app client and an optional Telegram channel.
 Sandboxed Telegram guests do not make this a multi-user product. No onboarding
 wizard, third channel, plugin SDK, native browser or MCP client, or Kubernetes
-deployment. New background work does not acquire standing authority on its
+deployment. No task-specific workflows in code: how a task gets solved
+belongs in skills ([direction](DIRECTION.md)). New background work does not acquire standing authority on its
 own. Judge additions against [operator direction](DIRECTION.md), not an old
 rollout plan.
 

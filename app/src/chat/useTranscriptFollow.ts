@@ -46,7 +46,7 @@ export function afterUserScroll(
 	follow: Follow,
 	move: { from: number; to: number; atEnd: boolean },
 ): Follow {
-	if (move.atEnd) return { kind: "tail" };
+	if (move.atEnd) return follow.kind === "free" ? { kind: "tail" } : follow;
 	return move.to < move.from - 1 ? { kind: "free" } : follow;
 }
 

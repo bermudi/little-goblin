@@ -106,6 +106,12 @@ describe("followTarget", () => {
 describe("afterUserScroll", () => {
 	const reply = { kind: "reply", after: "u1" } as const;
 
+	test("a clamp at the end while following a reply keeps the reply", () => {
+		const move = { from: 4487, to: 4474, atEnd: true };
+		expect(afterUserScroll(reply, move)).toBe(reply);
+		expect(afterUserScroll({ kind: "tail" }, move)).toEqual({ kind: "tail" });
+	});
+
 	test("reaching the end by hand follows the tail again", () => {
 		expect(afterUserScroll({ kind: "free" }, { from: 900, to: 1200, atEnd: true })).toEqual({
 			kind: "tail",

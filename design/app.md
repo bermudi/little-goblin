@@ -246,8 +246,12 @@ end by hand follows the tail again; any upward scroll lets go.
 The follow mode changes only on the operator's input, a mechanism
 borrowed from t3code's chat scroll: wheel, touch and page keys release it
 at once, and any upward scroll the app did not make is the backstop
-(scrollbar drags, keys outside the transcript). Content growth re-sticks
-in the same frame through a ResizeObserver, not an effect a frame late.
+(scrollbar drags, keys outside the transcript). A scroll event that
+ends at the end is not a reason to switch from following the reply to
+the tail: the browser clamps the scroll position when content above
+shrinks (the "…" row unmounting), and that is not the operator's input.
+Content growth re-sticks in the same frame through a ResizeObserver, not
+an effect a frame late.
 See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
 One assistant card per reply: the "…" waiting row shows only until the
 reply has a part to draw (#415).

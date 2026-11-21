@@ -67,8 +67,8 @@ export function afterUserScroll(
 	return move.to < move.from - 1 ? { kind: "free" } : follow;
 }
 
-export function endTurnFollow(follow: Follow, nextTurnQueued: boolean): Follow {
-	if (follow.kind !== "reply" || nextTurnQueued) return follow;
+export function endTurnFollow(follow: Follow): Follow {
+	if (follow.kind !== "reply") return follow;
 	return { ...follow, ended: true };
 }
 
@@ -114,8 +114,8 @@ export function useTranscriptFollow(
 		[scrollRef, stick],
 	);
 
-	const endTurn = useCallback((nextTurnQueued: boolean) => {
-		follow.current = endTurnFollow(follow.current, nextTurnQueued);
+	const endTurn = useCallback(() => {
+		follow.current = endTurnFollow(follow.current);
 		stick();
 	}, [stick]);
 

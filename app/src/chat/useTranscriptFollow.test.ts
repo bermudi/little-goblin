@@ -157,7 +157,7 @@ describe("endTurnFollow", () => {
 			clientHeight: 800,
 			scrollTop: 1200,
 		});
-		const ended = endTurnFollow(following, false);
+		const ended = endTurnFollow(following);
 		expect(ended).toEqual({ ...following, ended: true });
 		expect(followTarget(waiting, ended)?.next).toBe(ended);
 		const shortReply = transcript(`${asked}${reply}`, {
@@ -177,7 +177,7 @@ describe("endTurnFollow", () => {
 
 	test("a long reply mounting after turn-end still holds its head", () => {
 		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
-		const ended = endTurnFollow(following, false);
+		const ended = endTurnFollow(following);
 		const el = transcript(`${asked}${reply}`, {
 			scrollHeight: 3000,
 			clientHeight: 800,
@@ -190,13 +190,33 @@ describe("endTurnFollow", () => {
 		});
 	});
 
-	test("queued turns and non-reply modes are unchanged; an open short reply stays armed", () => {
+	test("a remote queued turn follows the tail instead of the previous reply head", () => {
 		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
-		expect(endTurnFollow(following, true)).toBe(following);
+		const shortReply = transcript(`${asked}${reply}`, {
+			scrollHeight: 2000,
+			clientHeight: 800,
+			scrollTop: 1200,
+			headTop: 1500,
+		});
+		const ended = endTurnFollow(following);
+		const resolved = followTarget(shortReply, ended);
+		expect(resolved).toEqual({ top: 1200, next: { kind: "tail" } });
+		const remote = transcript(
+			`${asked}${reply}<div class="msg user" data-outline-anchor="u2">remote</div><div class="msg assistant" id="remote">growing reply</div>`,
+			{ scrollHeight: 3800, clientHeight: 800, scrollTop: 1200, headTop: 1500 },
+		);
+		const remoteTarget = followTarget(remote, resolved!.next);
+		expect(remoteTarget?.top).toBe(3000);
+		expect(remoteTarget?.next).toEqual({ kind: "tail" });
+		expect(followTarget(remote, remoteTarget!.next)?.top).toBe(3000);
+	});
+
+	test("non-reply modes are unchanged; an open short reply stays armed", () => {
+		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
 		const free = { kind: "free" } as const;
 		const tail = { kind: "tail" } as const;
-		expect(endTurnFollow(free, false)).toBe(free);
-		expect(endTurnFollow(tail, false)).toBe(tail);
+		expect(endTurnFollow(free)).toBe(free);
+		expect(endTurnFollow(tail)).toBe(tail);
 		const el = transcript(`${asked}${reply}`, {
 			scrollHeight: 2000,
 			clientHeight: 800,

@@ -108,6 +108,9 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -298,6 +301,9 @@ describe("rail row actions and the pinned pool", () => {
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		installGlobal("Element", win.Element);
 		installGlobal("MutationObserver", win.MutationObserver);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
@@ -391,23 +397,15 @@ describe("rail row actions and the pinned pool", () => {
 			(r) => r.querySelector(".conv-title")?.textContent === title,
 		);
 		if (found === undefined) return [];
-		await click(found.querySelector(".conv-menu-trigger"));
-		const actions = [...container.querySelectorAll('[role="menuitem"]')].map(
-			(item) => item.textContent ?? "",
+		return [...found.querySelectorAll('[role="toolbar"] button')].map(
+			(item) => item.getAttribute("aria-label") ?? "",
 		);
-		await act(async () => {
-			container.dispatchEvent(
-				new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event,
-			);
-		});
-		return actions;
 	};
 	const clickRowAction = async (title: string, action: string) => {
 		const found = [...container.querySelectorAll(".conv")].find(
 			(r) => r.querySelector(".conv-title")?.textContent === title,
 		);
-		await click(found?.querySelector(".conv-menu-trigger"));
-		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === action));
+		await click(found?.querySelector(`[role="toolbar"] button[aria-label="${action}"]`));
 	};
 
 	test("a pinned row floats above the activity order, marked and unpin-able", async () => {
@@ -581,6 +579,9 @@ describe("rename editor with the AI button", () => {
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		installGlobal("Element", win.Element);
 		installGlobal("MutationObserver", win.MutationObserver);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
@@ -670,8 +671,7 @@ describe("rename editor with the AI button", () => {
 			root?.render(<App />);
 		});
 		await settle();
-		await clickEl(container.querySelector(".conv-menu-trigger"));
-		await clickEl([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Rename") ?? null);
+		await clickEl(container.querySelector('[role="toolbar"] button[aria-label="Rename"]'));
 		await settle();
 		expect(input()).not.toBeNull();
 	};
@@ -761,8 +761,7 @@ describe("rename editor with the AI button", () => {
 		await keydown(input(), "Escape");
 		expect(input()).toBeNull();
 
-		await clickEl(container.querySelector(".conv-menu-trigger"));
-		await clickEl([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Rename") ?? null);
+		await clickEl(container.querySelector('[role="toolbar"] button[aria-label="Rename"]'));
 		expect(input()!.value).toBe("solo chat");
 		await focusEl(aiButton());
 		// Reopened editor is not stuck busy while the stale request is pending.
@@ -882,6 +881,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -890,6 +892,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		installGlobal("Element", win.Element);
 		installGlobal("MutationObserver", win.MutationObserver);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -1206,8 +1211,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	// Archive is a rail row action; Delete lives on the Archive page.
 	const clickRowAction = async (action: "Archive" | "Delete") => {
 		if (action === "Archive") {
-			await click(container.querySelector(".conv-menu-trigger"));
-			await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Archive"));
+			await click(container.querySelector('[role="toolbar"] button[aria-label="Archive"]'));
 		} else {
 			await click(
 				[...container.querySelectorAll(".archive-table button")].find((b) => b.textContent === "Delete"),
@@ -2020,6 +2024,9 @@ describe("App telegram door", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -2400,6 +2407,9 @@ describe("app projects surface", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -2415,6 +2425,8 @@ describe("app projects surface", () => {
 			"Node",
 			"HTMLElement",
 			"HTMLFieldSetElement",
+			"HTMLInputElement",
+			"HTMLTextAreaElement",
 			"HTMLUnknownElement",
 			"requestAnimationFrame",
 			"cancelAnimationFrame",
@@ -2755,7 +2767,7 @@ describe("app projects surface", () => {
 		await settle();
 	};
 
-	test("the projects pane lists active projects; bound chats leave the chats pane", async () => {
+	test("the chats pane lists active project folders before loose chats", async () => {
 		projs = [
 			projRow("Goblin Work"),
 			projRow("Old Stuff", { archivedAt: "2026-10-09T00:00:00.000Z" }),
@@ -2767,31 +2779,26 @@ describe("app projects surface", () => {
 			(t) => t.textContent,
 		);
 		expect(railTitles).toContain("loose chat");
-		expect(railTitles).not.toContain("inside chat");
-
-		await openPane("Projects");
-		const section = container.querySelector(".rail-projects");
-		expect(section).not.toBeNull();
-		expect(section!.textContent).toContain("Goblin Work");
-		expect(section!.textContent).toContain("New project");
-		// Archived projects wait on the index.
-		expect(section!.textContent).not.toContain("Old Stuff");
-
-		// Bound chats live on the project page.
-		await click(
-			[...section!.querySelectorAll(".proj")].find((b) => b.textContent === "Goblin Work"),
+		const folder = container.querySelector(".proj-folder")!;
+		expect(folder.textContent).toContain("Goblin Work");
+		expect(folder.textContent).not.toContain("Old Stuff");
+		expect(container.querySelector(".rail")!.textContent!.indexOf("Goblin Work")).toBeLessThan(
+			container.querySelector(".rail")!.textContent!.indexOf("loose chat"),
 		);
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
-		expect(container.querySelector("main")!.textContent).toContain("Goblin Work");
-		expect(
-			[...container.querySelectorAll("main .dt-row .dt-main")].map((t) => t.textContent),
-		).toEqual(["inside chat"]);
+		const toggle = folder.querySelector<HTMLButtonElement>(".folder-toggle")!;
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(folder.textContent).not.toContain("inside chat");
+		await click(toggle);
+		expect(folder.textContent).toContain("inside chat");
+		expect(container.querySelectorAll(".proj-folder .conv-title")).toHaveLength(1);
+		expect([...container.querySelectorAll(".rail .conv-title")].map((title) => title.textContent)).toContain(
+			"loose chat",
+		);
 
-		// The index page holds the archived shelf — collapsed by
-		// default, like the rail's archived chats. The panel head
-		// carries the index link now.
-		await click(container.querySelector(".panel-index"));
+		await click(glyph("Projects"));
 		expect(win.location.pathname).toBe("/app/projects");
+		expect(container.querySelector(".proj-folder")).not.toBeNull();
+		expect(container.querySelector("main .tuning")?.textContent).toContain("Archived projects (1)");
 		const details = container.querySelector("main .tuning");
 		expect(details).not.toBeNull();
 		expect(details!.textContent).toContain("Archived projects (1)");
@@ -2799,14 +2806,47 @@ describe("app projects surface", () => {
 		expect(details!.textContent).toContain("Old Stuff");
 	});
 
+	test("folder open state survives an App remount in localStorage", async () => {
+		projs = [projRow("Goblin Work")];
+		convs = [convRow("inside chat", { projectId: "p-goblin" })];
+		await mount();
+		await click(container.querySelector(".folder-toggle"));
+		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
+		await act(async () => {
+			root?.unmount();
+		});
+		root = null;
+		expect(win.localStorage.getItem("goblin.rail-folders.v1")).toContain("p-goblin");
+		await mount();
+		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
+		expect(container.textContent).toContain("inside chat");
+	});
+
+	test("opening a project chat URL reveals its folder and marks the row current", async () => {
+		projs = [projRow("Goblin Work")];
+		convs = [convRow("inside chat", { id: "app/inside", projectId: "p-goblin" })];
+		win.history.replaceState(null, "", "/app/c/inside");
+		await mount();
+		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelector(".proj-folder .conv.current .conv-title")?.textContent).toBe("inside chat");
+		await click(container.querySelector(".folder-toggle"));
+		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("false");
+		await settle();
+		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("false");
+	});
+
+	test("a folder's new-chat button opens that project page", async () => {
+		projs = [projRow("Goblin Work")];
+		await mount();
+		await click(container.querySelector('[aria-label="New chat in Goblin Work"]'));
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+	});
+
 	test("the create dialog posts its fields and lands on the new project's page", async () => {
 		await mount();
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects button")].find((b) =>
-				b.textContent?.endsWith("New project"),
-			),
-		);
+		const newProject = container.querySelector('.panel-action[aria-label="New project"]');
+		expect(newProject?.querySelector('svg path[d^="M3 7"]')).not.toBeNull();
+		await click(newProject);
 		const sheet = container.querySelector(".msheet form");
 		expect(sheet).not.toBeNull();
 		const nameInput = sheet!.querySelector("input")!;
@@ -3035,12 +3075,7 @@ describe("app projects surface", () => {
 		const gate = hold();
 		createHold = gate.promise;
 		await sendComposer("come back to this");
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find(
-				(b) => b.textContent === "Goblin",
-			),
-		);
+		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		gate.resolve();
 		await settle();
 		await click(container.querySelector('nav button[aria-label="New conversation"]'));
@@ -4408,12 +4443,7 @@ describe("app projects surface", () => {
 		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find(
-				(b) => b.textContent === "Goblin",
-			),
-		);
+		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		expect(startAlert()).toBeNull();
 	});
@@ -4464,9 +4494,9 @@ describe("app projects surface", () => {
 		);
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		// Index pages open from the pane head; ops pages from the spine.
 		const railSection = async (label: "Notes" | "Projects") => {
 			await openPane(label);
+			if (label === "Projects") return;
 			await click(container.querySelector(".panel-index"));
 		};
 		await railSection("Notes");
@@ -4524,12 +4554,7 @@ describe("app projects surface", () => {
 		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(true);
 		expect(startAlert()).toBeNull();
 
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find(
-				(b) => b.textContent === "Goblin",
-			),
-		);
+		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		failCreate = true;
 		gate.resolve();
@@ -4567,10 +4592,7 @@ describe("app projects surface", () => {
 			win.HTMLInputElement.prototype,
 		);
 
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
-		);
+		await click(container.querySelector('[aria-label="New chat in Beta"]'));
 		expect(win.location.pathname).toBe("/app/p/p-beta");
 		// B's own fresh state — and nothing of A's on the wire.
 		expect(instr().value).toBe("inst B");
@@ -4692,6 +4714,9 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -4904,6 +4929,9 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		installGlobal("Element", win.Element);
 		installGlobal("MutationObserver", win.MutationObserver);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
@@ -4992,8 +5020,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 	// The pin action on the fixture row rides a PATCH whose success
 	// callback runs the next refresh() — the test-owned refresh trigger.
 	const clickPin = async () => {
-		await click(container.querySelector(".conv-menu-trigger"));
-		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Pin"));
+		await click(container.querySelector('[role="toolbar"] button[aria-label="Pin"]'));
 	};
 
 	test("a failing notes load marks the pane, not a silent empty state", async () => {

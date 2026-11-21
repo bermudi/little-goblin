@@ -101,6 +101,9 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		// The realm's width: the stub is what puts the realm on a phone.
@@ -261,6 +264,12 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		// The list screen replaces the composer as the chat surface — the
 		// empty-state composer is not in this screen.
 		expect(container.querySelector(".chatlist-screen .composer")).toBeNull();
+	});
+
+	test("phone: New project uses the folder-plus glyph, not the new-chat plus", async () => {
+		await mount();
+		const newProject = container.querySelector('.chatlist-bar [aria-label="New project"]');
+		expect(newProject?.querySelector('svg path[d^="M3 7"]')).not.toBeNull();
 	});
 
 	test("phone: opening a conversation stands the bar down; back returns to the list", async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import {
 	afterUserScroll,
+	endTurnFollow,
 	followTarget,
 	REPLY_HEAD_GAP_PX,
 	replyHead,
@@ -145,6 +146,46 @@ describe("followTarget", () => {
 			top: 1500 - REPLY_HEAD_GAP_PX,
 			next: { kind: "free" },
 		});
+	});
+});
+
+describe("endTurnFollow", () => {
+	test("a finished short reply switches to tail before a remote turn", () => {
+		const el = transcript(`${asked}${reply}`, {
+			scrollHeight: 2000,
+			clientHeight: 800,
+			scrollTop: 1200,
+			headTop: 1500,
+		});
+		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
+		expect(followTarget(el, following)?.next).toBe(following);
+		const next = endTurnFollow(el, following);
+		expect(next).toEqual({ kind: "tail" });
+		const remote = transcript(
+			`${asked}${reply}<div class="msg user" data-outline-anchor="u2">remote</div>${reply}`,
+			{ scrollHeight: 2200, clientHeight: 800, scrollTop: 1200, headTop: 2100 },
+		);
+		expect(followTarget(remote, next)?.top).toBe(1400);
+	});
+
+	test("no reply head, free, and tail modes are unchanged", () => {
+		const noHead = transcript(`${asked}${shimmer}`, {
+			scrollHeight: 2000,
+			clientHeight: 800,
+			scrollTop: 1200,
+		});
+		const waiting = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
+		expect(endTurnFollow(noHead, waiting)).toBe(waiting);
+		const el = transcript(`${asked}${reply}`, {
+			scrollHeight: 2000,
+			clientHeight: 800,
+			scrollTop: 1200,
+			headTop: 1500,
+		});
+		const free = { kind: "free" } as const;
+		const tail = { kind: "tail" } as const;
+		expect(endTurnFollow(el, free)).toBe(free);
+		expect(endTurnFollow(el, tail)).toBe(tail);
 	});
 });
 

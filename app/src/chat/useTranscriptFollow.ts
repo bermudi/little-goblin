@@ -66,6 +66,12 @@ export function afterUserScroll(
 	return move.to < move.from - 1 ? { kind: "free" } : follow;
 }
 
+export function endTurnFollow(scroller: Element, follow: Follow): Follow {
+	if (follow.kind !== "reply" || replyHead(scroller, follow.after, follow.stale) === null)
+		return follow;
+	return { kind: "tail" };
+}
+
 export function useTranscriptFollow(
 	scrollRef: RefObject<HTMLDivElement | null>,
 	contentRef: RefObject<HTMLDivElement | null>,
@@ -107,6 +113,15 @@ export function useTranscriptFollow(
 		},
 		[scrollRef, stick],
 	);
+
+	const endTurn = useCallback(() => {
+		const el = scrollRef.current;
+		if (el === null) return;
+		const next = endTurnFollow(el, follow.current);
+		if (next === follow.current) return;
+		follow.current = next;
+		stick();
+	}, [scrollRef, stick]);
 
 	const jumpToEnd = useCallback(() => {
 		const el = scrollRef.current;
@@ -168,5 +183,5 @@ export function useTranscriptFollow(
 		};
 	}, [scrollRef, contentRef, stick, gesture]);
 
-	return { stick, gesture, followReply, jumpToEnd, below };
+	return { stick, gesture, followReply, endTurn, jumpToEnd, below };
 }

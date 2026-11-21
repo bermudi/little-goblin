@@ -341,6 +341,23 @@ describe("replyStarted (issue #415)", () => {
       ]),
     ).toBe(true);
   });
+
+  test("a previous settled assistant does not count as the remote turn reply", () => {
+    const settled = msg("assistant", [{ type: "text", text: "finished" }]);
+    const user = msg("user", []);
+    expect(replyStarted([user, settled])).toBe(true);
+    expect(replyStarted([user, settled], settled.id)).toBe(false);
+    expect(
+      replyStarted([user, settled, { ...settled, id: "a2", parts: [] }], settled.id),
+    ).toBe(false);
+    expect(
+      replyStarted([
+        user,
+        settled,
+        { ...settled, id: "a2", parts: [{ type: "text", text: "new" }] },
+      ], settled.id),
+    ).toBe(true);
+  });
 });
 
 describe("unlanded turn records (issue #408)", () => {
@@ -1256,7 +1273,10 @@ describe("ChatView reload window (issue #79)", () => {
   });
 
   test("an idle turn-start resumes the reader and turn-end reconciles history once", async () => {
-    let stored: UIMessage[] = [];
+    let stored: UIMessage[] = [
+      userMsg("u0", "previous question"),
+      assistantMsg("a0", "finished answer"),
+    ];
     let historyFetches = 0;
     let streamRequests = 0;
     let events!: ReadableStreamDefaultController<Uint8Array>;
@@ -1267,13 +1287,10 @@ describe("ChatView reload window (issue #79)", () => {
         controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
       },
     });
+    let live!: ReadableStreamDefaultController<Uint8Array>;
     const liveStream = new ReadableStream<Uint8Array>({
       start(controller) {
-        for (const chunk of [
-          { type: "start", messageId: "a1" },
-          { type: "text-start", id: "t1" },
-          { type: "text-delta", id: "t1", delta: "live answer" },
-        ]) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        live = controller;
       },
     });
     globalThis.fetch = Object.assign(
@@ -1329,10 +1346,20 @@ describe("ChatView reload window (issue #79)", () => {
     await act(async () => {
       events.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
     });
+    expect(dom.container.querySelector(".msg.pending.shimmer")).not.toBeNull();
     for (let i = 0; i < 100 && streamRequests < 2; i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
     expect(streamRequests).toBe(2);
+    await act(async () => {
+      for (const chunk of [
+        { type: "start", messageId: "a1" },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: "live answer" },
+      ]) live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+    });
+    expect(dom.container.querySelector(".msg.pending.shimmer")).toBeNull();
+    expect(dom.container.querySelectorAll(".msg.assistant.streaming")).toHaveLength(1);
     expect(dom.container.textContent).toContain("live answer");
     await act(async () => {});
     const historyBeforeTurnEnd = historyFetches;

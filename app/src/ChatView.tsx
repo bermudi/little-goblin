@@ -81,9 +81,13 @@ function askNotifyPermission() {
   void Notification.requestPermission().catch(() => {});
 }
 
-export function replyStarted(messages: readonly UIMessage[]): boolean {
+export function replyStarted(
+  messages: readonly UIMessage[],
+  settledTailId?: string,
+): boolean {
   const last = messages.at(-1);
-  return last?.role === "assistant" && last.parts.some((p) => p.type !== "step-start");
+  return last?.role === "assistant" && last.id !== settledTailId &&
+    last.parts.some((p) => p.type !== "step-start");
 }
 
 // Union of the view and durable history by message id — the reconcile
@@ -594,6 +598,7 @@ function Chat({
   const follow = useTranscriptFollow(scrollRef, contentRef);
   const [eventsLive, setEventsLive] = useState(false);
   const [submitPending, setSubmitPending] = useState(false);
+  const [settledTailId, setSettledTailId] = useState<string | null>(null);
   const busy = eventsLive || submitPending || status === "submitted" || status === "streaming";
   const [sendFailure, setSendFailure] = useState<string | null>(null);
   const resumeFromEvents = () => {
@@ -612,11 +617,15 @@ function Chat({
         if (event.live) setSubmitPending(false);
         if (event.live && !activeReader) resumeFromEvents();
       } else if (event.type === "turn-start") {
+        const tail = displayed.at(-1);
+        if (tail?.role === "assistant") setSettledTailId(tail.id);
         gate.serverLive = true;
         setEventsLive(true);
         setSubmitPending(false);
         if (!activeReader) resumeFromEvents();
       } else if (event.type === "turn-end") {
+        setSettledTailId(null);
+        follow.endTurn();
         gate.serverLive = false;
         setEventsLive(false);
         setSubmitPending(false);
@@ -664,6 +673,7 @@ function Chat({
     message: { parts?: UIMessage["parts"]; text?: string },
     whenBusy: "steer" | "followUp" = "steer",
   ) => {
+    setSettledTailId(null);
     setLiveCtx(null);
     setSendFailure(null);
     const optimistic: UIMessage = {
@@ -822,6 +832,7 @@ function Chat({
     }
     editBackup.current = messages;
     setEditing(null);
+    setSettledTailId(null);
     setLiveCtx(null);
     setMessages(messages.slice(0, index));
     const optimistic: UIMessage = {
@@ -1061,6 +1072,7 @@ function Chat({
                       isLastAssistant={m.id === lastAssistantId}
                       busy={busy}
                       onRetry={() => {
+                        setSettledTailId(null);
                         setLiveCtx(null);
                         setSendFailure(null);
                         const lastUserIndex = messages.map((item) => item.role).lastIndexOf("user");
@@ -1103,7 +1115,7 @@ function Chat({
                 </Fragment>
               );
             })}
-            {busy && !replyStarted(displayed) && (
+            {busy && !replyStarted(displayed, settledTailId ?? undefined) && (
               <div className="msg assistant pending shimmer">…</div>
             )}
             {pendingItems.length > 0 && (

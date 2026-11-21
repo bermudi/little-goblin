@@ -4,8 +4,7 @@
 
 `delegate start` launches the named harness in a terminal on a private,
 throwaway hc core. The watcher polls terminal status until the row settles,
-and a notice lands in the conversation. Handover and responsibility stay on
-T3 Code — they are not exercised here (they need a real T3 project).
+and a notice lands in the conversation.
 
 ## How to get to it (user POV)
 
@@ -49,9 +48,6 @@ session, then trashes the instance home.
 - `answer`/`stop`/`send` are exercised by the unit tests
   (`src/delegation-lifecycle.test.ts` uses a fake hc adapter); the live leg
   here is start → watcher → done.
-- `[handover]` cannot run here: `responsibility` mounts only in project
-  conversations bound to T3 threads. Verify handover with the
-  responsibility/T3 tests, not this instance.
 - If Codex shows a first-run prompt, confirm the auth symlink exists in the
   throwaway `CODEX_HOME`; Goblin seeds hooks and trust there.
 - The hc core outlives Goblin by design. Always run

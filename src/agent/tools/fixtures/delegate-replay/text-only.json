@@ -1,7 +1,7 @@
 {
   "version": 1,
   "model": "gpt-6-luna",
-  "requestHash": "4581e18d86b1bb9545944a6d6e346183d21a788bf19145372fd9f99ec04a1e57",
+  "requestHash": "17fbbd9a915284c7fef19ba08cd4873276ba3c0f5cf5c19b6a79be06d62c7d1c",
   "parts": [
     {
       "type": "stream-start",
@@ -9,16 +9,16 @@
     },
     {
       "type": "text-start",
-      "id": "msg_0f2987a74e64ff11016b00fe98374887d19e85646d6cb326a6"
+      "id": "msg_0a0cb8df7812ddea016b0181aaf1cc87d19c84ffd15c1ba2f3"
     },
     {
       "type": "text-delta",
-      "id": "msg_0f2987a74e64ff11016b00fe98374887d19e85646d6cb326a6",
+      "id": "msg_0a0cb8df7812ddea016b0181aaf1cc87d19c84ffd15c1ba2f3",
       "delta": "pong"
     },
     {
       "type": "text-end",
-      "id": "msg_0f2987a74e64ff11016b00fe98374887d19e85646d6cb326a6"
+      "id": "msg_0a0cb8df7812ddea016b0181aaf1cc87d19c84ffd15c1ba2f3"
     },
     {
       "type": "finish",

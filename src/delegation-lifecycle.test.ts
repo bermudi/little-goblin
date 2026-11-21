@@ -25,7 +25,6 @@ import {
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import { HcError, makeHcDelegation, type HcRunInfo, type HcDelegation } from "./hc-delegation.ts";
-import { FencedError } from "./runtime.ts";
 import { makeHc } from "./hc.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { paths } from "./home-layout.ts";
@@ -129,17 +128,6 @@ function runningRow(
 		paneId: agentNameFor(d.id, name),
 	});
 	h.store.markRunning(d.id, seq, new Date(Date.now() - promptedAgoMs));
-	return h.store.get(d.id)!;
-}
-
-function linkedRow(h: Harness): Delegation {
-	const d = h.store.create({
-		name: "linked", harness: "codex", cwd: "/w", task: "build the issue",
-		address: { chatId: 1, threadId: null },
-		responsibilityId: "responsibility-7", responsibilityRevision: 1,
-	});
-	h.store.bindLaunch(d.id, { agentName: agentNameFor(d.id, d.name), workspaceId: "w1", paneId: "w1:p1" });
-	h.store.markRunning(d.id, 1, new Date());
 	return h.store.get(d.id)!;
 }
 
@@ -705,48 +693,6 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).not.toContain("# previous run");
 	});
 
-	test("responsibility-linked sends refuse before archiving or prompting", async () => {
-		const h = harness();
-		const d = linkedRow(h);
-		const dir = join(h.delegationsDir, String(d.id));
-		mkdirSync(dir, { recursive: true });
-		const reportPath = join(dir, "report.md");
-		writeFileSync(reportPath, "# previous report");
-		let prompts = 0;
-		h.deps.hc = { ...h.deps.hc, prompt: async () => { prompts += 1; } };
-		const owner = startDelegationLifecycle(h.deps);
-		const out = await owner.send(d.id, "continue", () => "responsibility-inactive");
-		expect(out).toEqual({ kind: "refused", id: d.id, why: "responsibility-inactive" });
-		expect(prompts).toBe(0);
-		expect(readFileSync(reportPath, "utf8")).toBe("# previous report");
-		expect(readdirSync(dir).filter((name) => name.startsWith("report-"))).toHaveLength(0);
-		await owner.stopTicker();
-	});
-
-	test("responsibility-linked sends without authority refuse, while unlinked sends remain allowed", async () => {
-		const h = harness();
-		const linked = linkedRow(h);
-		let prompts = 0;
-		h.deps.hc = { ...h.deps.hc, prompt: async () => { prompts += 1; } };
-		const owner = startDelegationLifecycle(h.deps);
-		expect(await owner.send(linked.id, "continue")).toEqual({
-			kind: "refused", id: linked.id, why: "outside-project",
-		});
-		const unlinked = runningRow(h, "unlinked");
-		expect((await owner.send(unlinked.id, "continue")).kind).toBe("sent");
-		expect(prompts).toBe(1);
-		await owner.stopTicker();
-	});
-
-	test("a fenced send authority aborts before the prompt", async () => {
-		const h = harness();
-		const d = linkedRow(h);
-		const owner = startDelegationLifecycle(h.deps);
-		await expect(owner.send(d.id, "continue", () => { throw new FencedError("fixture"); }))
-			.rejects.toBeInstanceOf(FencedError);
-		await owner.stopTicker();
-	});
-
 	test("failed follow-up restores the previous report for the watcher", async () => {
 		const h = harness();
 		const d = runningRow(h, "failed follow-up", 5, 1_000);
@@ -937,8 +883,6 @@ describe("delegation watcher", () => {
 		const d = runningRow(h, "bad report", 1);
 		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
 		writeFileSync(h.delegationsDir, "not a directory");
-		const settled: string[] = [];
-		h.deps.settled = (_d, verdict) => settled.push(verdict);
 		const w = startDelegationLifecycle(h.deps);
 		const out = await w.stopByOperator(d.id);
 		await w.stopTicker();
@@ -947,7 +891,6 @@ describe("delegation watcher", () => {
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} bad report · stopped]`);
 		expect(h.wakes[0]).toContain("report unreadable");
-		expect(settled).toEqual(["stopped"]);
 	});
 
 	test("an operator stop on a finished row is cleanup — no notice", async () => {
@@ -1669,49 +1612,6 @@ test("delegation ticker owns its store until shutdown joins, and stopped handles
 	} finally {
 		await w.stopTicker();
 	}
-});
-
-describe("delegation settlement hook", () => {
-	test("the report is filed before the notice wakes, and a failed wake retries with the same row", async () => {
-		const h = harness();
-		const d = runningRow(h, "linked", 1);
-		h.agents.set(d.agentName, agent(d.agentName, "idle", 2));
-		const order: string[] = [];
-		const keys: string[] = [];
-		h.deps.settled = (row, verdict) => {
-			order.push("settled");
-			keys.push(`${row.promptedAt}:${row.baselineSeq}:${verdict}`);
-		};
-		let land = false;
-		h.deps.wake = () => {
-			order.push("wake");
-			return land;
-		};
-		const w = startDelegationLifecycle(h.deps);
-		await w.tick();
-		expect(order).toEqual(["settled", "wake"]);
-		expect(h.store.get(d.id)!.status).toBe("running");
-		land = true;
-		await w.tick();
-		await w.stopTicker();
-		expect(order).toEqual(["settled", "wake", "settled", "wake"]);
-		expect(keys[0]).toBe(keys[1]!);
-		expect(h.store.get(d.id)!.status).toBe("done");
-	});
-
-	test("a throwing hook holds the notice back for the next scan", async () => {
-		const h = harness();
-		const d = runningRow(h, "linked", 1);
-		h.agents.set(d.agentName, agent(d.agentName, "idle", 2));
-		h.deps.settled = () => {
-			throw new Error("store busy");
-		};
-		const w = startDelegationLifecycle(h.deps);
-		await w.tick();
-		await w.stopTicker();
-		expect(h.wakes).toEqual([]);
-		expect(h.store.get(d.id)!.status).toBe("running");
-	});
 });
 
 describe("hc unreachable", () => {

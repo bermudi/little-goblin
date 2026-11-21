@@ -18,9 +18,9 @@ import { memorySearchTool } from "./memory.ts";
 import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
+import { type WatchToolDeps, watchTool } from "./watch.ts";
 import { readFileTool } from "./read.ts";
 import type { ContextFill } from "./read.ts";
-import { type ResponsibilityToolDeps, responsibilityTool } from "./responsibility.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -66,7 +66,6 @@ export type {
 	ImageToolDeps,
 	MailToolDeps,
 	NoteToolDeps,
-	ResponsibilityToolDeps,
 	SandboxToolDeps,
 	VisionToolDeps,
 };
@@ -80,6 +79,7 @@ export interface MakeToolsOptions {
 	bashDescriptionCwd?: string;
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
+	watch?: WatchToolDeps | undefined;
 	file?: FileToolDeps | undefined;
 	artifact?: ArtifactToolDeps | undefined;
 	memory?: MemoryToolDeps | undefined;
@@ -99,8 +99,6 @@ export interface MakeToolsOptions {
 	// turn never carries them.
 	computer?: ComputerToolDeps | undefined;
 	askOperator?: AskOperatorToolDeps | undefined;
-	// Project conversations only — the handover/coordination surface.
-	responsibility?: ResponsibilityToolDeps | undefined;
 	ui?: boolean | undefined;
 	// Codex conversations mount the backend's hosted web_search instead of
 	// the local search tool — the mode only decides external_web_access.
@@ -121,6 +119,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		bashDescriptionCwd = cwd,
 		voice,
 		program,
+		watch,
 		file,
 		artifact,
 		memory,
@@ -137,7 +136,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		desktop,
 		computer,
 		askOperator,
-		responsibility,
 		ui,
 		onRead,
 		contextFill,
@@ -154,6 +152,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
+		...(watch ? { watch: watchTool(watch) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
@@ -189,9 +188,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
 		...(computer ? computerTools(computer) : {}),
 		...(askOperator ? { ask_operator: askOperatorTool(askOperator) } : {}),
-		// The responsibility tool mounts for project-bound turns only —
-		// the caller decides; nothing here reaches for conv state.
-		...(responsibility ? { responsibility: responsibilityTool(responsibility) } : {}),
 		...(ui === true ? { ui: uiTool() } : {}),
 	};
 }

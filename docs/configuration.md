@@ -364,23 +364,18 @@ resource caps; disk is not capped (reaping bounds it).
 ### Delegation
 
 Off when unset. With a `delegation` block, the bot gets a `delegate`
-tool: it hands work to another coding harness (Codex, Claude, pi, devin,
-opencode, …) on Goblin's private hc core. The named terminal and core
-survive Goblin restarts; inspect a run through hc or the app's Delegations
-page. Settings →
-Delegation edits the harness list and the role defaults; the block is
-boot-pinned, so a change applies after an approved restart.
+tool for named coding harnesses on Goblin's private hc core. The operator
+must name the harness in the request. The named terminal and core survive
+Goblin restarts; inspect a run through hc or the app's Delegations page.
+Settings → Delegation edits the harness list; the block is boot-pinned,
+so a change applies after an approved restart.
 
 ```json5
 delegation: {
   harnesses: {
     pi: { kind: "pi" },
-    "pi-review": { kind: "pi", args: ["--model", "<review-model-slug>"] },
     claude: { kind: "claude", args: ["--dangerously-skip-permissions"], askFirst: true },
   },
-  // Role → harness name. `default` is what a call with no role uses;
-  // a named role with no entry also falls back to `default`.
-  defaults: { default: "pi", build: "pi", review: "pi-review" },
 },
 ```
 
@@ -389,28 +384,11 @@ goes in `args` when the agent needs one; goblin never invents either.
 OpenCode's TUI has no model flag: write `--model <provider/model>` in its
 `args` anyway, and goblin passes it to OpenCode through the run's config.
 Don't use `opencode mini`, which can't report status to goblin.
-A default naming an undeclared harness is a config error. An explicit
-harness in a `delegate` call always wins over a role. `askFirst: true`
-on a harness makes goblin ask you before each use — the delegate tool
-carries it as a prompt rule, editable in Settings → Delegation;
-choosing the harness itself stays goblin's call. The old T3 shape
+`askFirst: true` on a harness makes goblin ask you before each use — the
+delegate tool carries it as a prompt rule, editable in Settings → Delegation.
+The old T3 shape
 (`provider`/`model`/`options`) and any `machines` block are rejected at
 boot with a message naming this shape.
-
-### Inner loop
-
-The T3 Code provider and model for an issue build's [inner
-loop](../GLOSSARY.md) thread (design/delegation.md → An issue build is
-one inner loop on T3 Code). Unset means Claude on Opus 5.5 — the
-operator's 2026-11-20 ruling. Live-read: the next `responsibility
-accept` with `start` uses a change. Hand-edited only.
-
-```json5
-innerLoop: { provider: "claudeAgent", model: "claude-opus-5-5", options: { effort: "high" } },
-```
-
-`provider` is a T3 provider instance id and `model` its model slug;
-`options` become `--option id=value` flags.
 
 ### Desktops
 

@@ -135,9 +135,6 @@ interface Rig {
 function createRig(opts: {
 	maxRunning?: number;
 	desktops?: Desktops | null;
-	responsibilityRevision?: (id: string) => number | null;
-	settled?: (child: AgentChild, status: AgentChild["status"], result: string | null) => void;
-	events?: string[];
 }, make: (typeof adapters)[number]): Rig {
 	useHome("goblin-agent-children-");
 	const store = openStore(tmpDb("goblin-agent-children-"));
@@ -163,7 +160,7 @@ function createRig(opts: {
 	});
 	runtime.mount({ makeTools: () => ({}) });
 	const recorded: DevelopmentInput[] = [];
-	const events = opts.events ?? [];
+	const events: string[] = [];
 	const quiet: TurnSink = {
 		delivery: "headless",
 		onTextDelta() {},
@@ -183,10 +180,6 @@ function createRig(opts: {
 		maxRunning: () => opts.maxRunning ?? 3,
 		now: () => new Date("2026-11-16T00:00:00.000Z"),
 		...(opts.desktops !== undefined ? { desktops: () => opts.desktops ?? null } : {}),
-		...(opts.responsibilityRevision !== undefined
-			? { responsibilityRevision: opts.responsibilityRevision }
-			: {}),
-		...(opts.settled !== undefined ? { settled: opts.settled } : {}),
 	});
 	return { store, parent, runtime, engine, recorded, events, queue };
 }
@@ -234,43 +227,7 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 		expect(r.engine.allowlistFor(r.parent.id)).toBeNull();
 	});
 
-	test("spawn persists an explicit responsibility and its link-time revision", async () => {
-		const r = rig({ responsibilityRevision: (id) => (id === "resp-1" ? 7 : null) });
-		r.queue.push(reply("linked"), reply("unlinked"));
-		const linked = (await r.engine.spawn({
-			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "linked", tools: ["read_file"],
-			responsibilityId: "resp-1",
-		})).child;
-		await r.engine.awaitSettlement(linked.conversationId);
-		expect(linked).toMatchObject({ responsibilityId: "resp-1", responsibilityRevision: 7 });
-		const unlinked = (await r.engine.spawn({
-			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "unlinked", tools: ["read_file"],
-		})).child;
-		await r.engine.awaitSettlement(unlinked.conversationId);
-		expect(unlinked).toMatchObject({ responsibilityId: null, responsibilityRevision: null });
-	});
-
-	test("settlement files before its wake, including needs-input", async () => {
-		const reports: Array<{ child: AgentChild; status: AgentChild["status"]; result: string | null }> = [];
-		const events: string[] = [];
-		const r = rig({
-			settled: (child, status, result) => {
-				events.push("settled");
-				reports.push({ child, status, result });
-			},
-			events,
-		});
-		r.queue.push(reply("REPORT ME"), reply("unused"));
-		const child = (await r.engine.spawn({
-			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "report", tools: ["read_file"],
-		})).child;
-		await r.engine.awaitSettlement(child.conversationId);
-		expect(reports).toHaveLength(1);
-		expect(reports[0]).toMatchObject({ status: "done", result: "REPORT ME" });
-		expect(r.events).toEqual(["settled", "record"]);
-	});
-
-	test("old agent_children schemas gain responsibility columns idempotently", async () => {
+	test("an agent_children table that still has responsibility columns spawns and sends", async () => {
 		const r = rig();
 		r.store.db.run("DROP TABLE agent_children");
 		r.store.db.run(`
@@ -280,44 +237,21 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 				type TEXT NOT NULL, status TEXT NOT NULL, task TEXT NOT NULL,
 				tools_json TEXT NOT NULL, settlements INTEGER NOT NULL DEFAULT 0,
 				created_at TEXT NOT NULL, started_at TEXT, settled_at TEXT,
-				desktop TEXT, pending_ask TEXT
+				desktop TEXT, pending_ask TEXT,
+				responsibility_id TEXT, responsibility_revision INTEGER
 			)
 		`);
 		const { ensureAgentChildrenSchema } = await import("./agent-children.ts");
 		ensureAgentChildrenSchema(r.store.db);
-		ensureAgentChildrenSchema(r.store.db);
+		r.queue.push(reply("first"), reply("follow-up"));
+		const child = (await r.engine.spawn({
+			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "old table", tools: ["read_file"],
+		})).child;
+		await r.engine.awaitSettlement(child.conversationId);
+		expect("error" in r.engine.send(child.conversationId, "continue")).toBe(false);
+		expect((await r.engine.awaitSettlement(child.conversationId)).result).toBe("follow-up");
 		const cols = r.store.db.query<{ name: string }, []>("PRAGMA table_info(agent_children)").all();
 		expect(cols.map((col) => col.name)).toContain("responsibility_id");
-		expect(cols.map((col) => col.name)).toContain("responsibility_revision");
-	});
-
-	test("linked child sends require authority; authorized and unlinked sends still submit", async () => {
-		const r = rig();
-		r.queue.push(
-			reply("first"),
-			reply("authorized follow-up"),
-			reply("unlinked spawn"),
-			reply("unlinked follow-up"),
-		);
-		const linked = (await r.engine.spawn({
-			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "linked", tools: ["read_file"],
-			responsibilityId: "resp-send",
-		})).child;
-		await r.engine.awaitSettlement(linked.conversationId);
-		const noAuthority = r.engine.send(linked.conversationId, "refused");
-		expect(noAuthority).toMatchObject({ error: expect.stringContaining("another project") });
-		expect(r.engine.get(linked.conversationId)?.status).toBe("done");
-		const inactive = r.engine.send(linked.conversationId, "refused", () => "responsibility-inactive");
-		expect(inactive).toMatchObject({ error: expect.stringContaining("paused or closed") });
-		expect(r.engine.get(linked.conversationId)?.status).toBe("done");
-		expect("error" in r.engine.send(linked.conversationId, "continue", () => null)).toBe(false);
-		expect((await r.engine.awaitSettlement(linked.conversationId)).result).toBe("authorized follow-up");
-		const unlinked = (await r.engine.spawn({
-			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "unlinked", tools: ["read_file"],
-		})).child;
-		await r.engine.awaitSettlement(unlinked.conversationId);
-		expect("error" in r.engine.send(unlinked.conversationId, "continue")).toBe(false);
-		expect((await r.engine.awaitSettlement(unlinked.conversationId)).result).toBe("unlinked follow-up");
 	});
 
 	test("over maxRunning the spawn queues; a freed slot pumps it", async () => {
@@ -524,11 +458,7 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 
 	test("ask_operator parks the child needs-input, releases the desktop, and send resumes it", async () => {
 		const fake = fakeDesktops();
-		const reports: Array<{ status: AgentChild["status"]; result: string | null }> = [];
-		const r = rig({
-			desktops: fake.desktops,
-			settled: (_child, status, result) => reports.push({ status, result }),
-		});
+		const r = rig({ desktops: fake.desktops });
 		const gate = gated("never reached");
 		r.queue.push(gate.calls, reply("DONE AFTER ANSWER"));
 		const { child } = await r.engine.spawn({
@@ -548,7 +478,6 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 		// needs-input: the question is the result the parent must answer.
 		expect(settlement.child.status).toBe("needs-input");
 		expect(settlement.result).toBe("which button should I click?");
-		expect(reports).toEqual([{ status: "needs-input", result: "which button should I click?" }]);
 		const wake = r.recorded[0]!;
 		expect(wake.text).toContain("[agent: computer · needs-input]");
 		expect(wake.text).toContain("which button should I click?");

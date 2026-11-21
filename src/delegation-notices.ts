@@ -95,7 +95,6 @@ export async function notify(
 	opts: { extra?: string } = {},
 ): Promise<boolean> {
 	const body = await reportBody(deps, d, verdict === "done");
-	deps.settled?.(d, verdict, body);
 	const extra = opts.extra;
 	// Fence delegated output so it cannot close its event wrapper or gain tool authority;
 	// the header remains trusted outside the fence.

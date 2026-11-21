@@ -1118,18 +1118,9 @@ export async function handleConversationsRoute(
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "DELETE") {
-			// Ask before fencing: a refused delete must not abort a live
-			// turn, and the refusal is the operator's to read, not a 500.
-			// The ask is advisory — an anchor minted after it (the turn
-			// taking a responsibility before the fence lands) still
-			// refuses inside the delete; that answer carries the message
-			// too, after the fence.
 			const refusal = store.deleteRefusal(convId.id);
 			if (refusal !== null) {
-				log.warn("app conversation delete refused", {
-					conversation: convId.id,
-					refusal,
-				});
+				log.warn("app conversation delete refused", { conversation: convId.id, refusal });
 				return Response.json({ error: refusal }, { status: 409, headers: NO_STORE });
 			}
 			const { stopped } = runtime.stop(convId.id);

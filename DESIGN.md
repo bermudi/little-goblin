@@ -1,18 +1,8 @@
 # Goblin design notes
 
 **Code defines shipped behavior.** Tests pin what must not change.
-[DIRECTION.md](DIRECTION.md) records operator intent;
-[ROADMAP.md](ROADMAP.md) tracks unbuilt work and acceptance evidence.
-These notes explain choices and trade-offs. [Docs](docs/) are for operating
-Goblin.
-
-| Looking for | Start with |
-| --- | --- |
-| Conversation identity, history, settings | [`conversation-address.ts`](src/conversation-address.ts), [`conversation.ts`](src/conversation.ts), [`config-schema.ts`](src/config-schema.ts) |
-| Request lifecycle, persistence, recovery | [`runtime.ts`](src/runtime.ts), [`turn-journal.ts`](src/turn-journal.ts), [runtime rationale](design/runtime-turn.md) |
-| Client and Telegram | [`app/src`](app/src/), [`src/http`](src/http/), [`src/tg`](src/tg/) |
-| Scheduled work and division of work between agents | [`programs.ts`](src/programs.ts), [`responsibility-service.ts`](src/responsibility-service.ts), [`agent-children.ts`](src/agent-children.ts) |
-| Memory and conversation summarization | [`src/memory`](src/memory/), [`compaction.ts`](src/agent/compaction.ts) |
+[the scope set in AGENTS.md](AGENTS.md#goblin-is-a-loop-with-tools-and-connectors-thats-it).
+[Docs](docs/) are for operating Goblin.
 
 Area notes live in [`design/`](design/). Non-obvious decisions with no
 existing home get a short [architecture decision record](design/decisions/).
@@ -31,7 +21,7 @@ histories.
 
 A turn captures its conversation's epoch at admission; a later epoch fences
 it. Only a cancellation bumps the epoch — `/stop`, `/new` and navigation, a
-guest persona change, a responsibility correction — and it ends the live
+guest persona change — and it ends the live
 turn in the same call ([`Runtime.fence`](src/runtime.ts),
 [`Runtime.stop`](src/runtime.ts)), on both engines. Settings such as
 `/voice` and `/memory on|off` are flag writes: they apply to the next reply,
@@ -45,14 +35,12 @@ State read before an asynchronous operation may no longer authorize an action.
 Re-check at the effect, inside the transaction for writes. Test the race by
 making the competing change while the first action is waiting, not just by
 checking the end state. See the
-[delivery](src/runtime.test.ts) and [queued work](src/responsibility-authority.test.ts)
-regression tests.
+[delivery](src/runtime.test.ts) regression tests.
 
 A crashed call may already have acted. Preserve evidence, not permission to
 retry. For an external effect, record intent before acting and outcome after.
 The recovery policy depends on which failure is acceptable: an uncertain
-[mail send](src/mail-approval.crash.test.ts) or
-[send to a worker](src/responsibility-service.crash.test.ts) is not retried
+[mail send](src/mail-approval.crash.test.ts) is not retried
 automatically; a [restart notice](src/tg/turn-notice.crash.test.ts) may repeat
 rather than disappear. See [the journal](design/runtime-turn.md#the-turn-journal).
 
@@ -106,10 +94,7 @@ cache reuse (#759).
 
 One operator, one process, one app client and an optional Telegram channel.
 Sandboxed Telegram guests do not make this a multi-user product. No onboarding
-wizard, third channel, plugin SDK, native browser or MCP client, or Kubernetes
-deployment. New background work does not acquire standing authority on its
-own. Judge additions against [operator direction](DIRECTION.md), not an old
-rollout plan.
+wizard, third channel, plugin SDK, or Kubernetes deployment. 
 
 ## Test posture
 

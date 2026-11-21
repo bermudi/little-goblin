@@ -80,6 +80,7 @@ export interface ResponsibilityStore {
 		understanding: Understanding;
 	}): { responsibility: Responsibility; created: boolean };
 	get(id: string): Responsibility | null;
+	byHandover(handoverKey: string): Responsibility | null;
 	forProject(projectId: string): Responsibility[];
 	/** Statuses that still owe the operator follow-through. */
 	open(): Responsibility[];
@@ -407,6 +408,10 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 
 		get: (id) => {
 			const row = qResp.get(id);
+			return row === null ? null : toResponsibility(respRowSchema.parse(row));
+		},
+		byHandover: (handoverKey) => {
+			const row = qRespByHandover.get(handoverKey);
 			return row === null ? null : toResponsibility(respRowSchema.parse(row));
 		},
 		forProject: (projectId) =>

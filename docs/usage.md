@@ -83,11 +83,14 @@ Files up to 2 GB work if you're running the self-hosted Telegram bot API
 
 ## Issue builds and PR readiness
 
-For an issue build, Goblin links the lead to the responsibility and the
-explicit issue (`issue:{repository:"owner/repo",number:N}`). When the lead
-settles, code checks the closing PR, its current head SHA, the verifier
-comment, and CI on that SHA. The notice and worker report carry the sources,
-not just the lead's claim. No passing evidence means **not ready**.
+Hand Goblin an issue in a project conversation and it starts the inner loop
+at once: one T3 Code thread (Claude on Opus 5.5 unless `innerLoop` says
+otherwise) in a new worktree from the repo's default branch, on branch
+`issue/<N>`. The responsibility links the explicit issue
+(`issue:{repository:"owner/repo",number:N}`). Code then checks the closing
+PR, its current head SHA, the verifier comment, and CI on that SHA. Each
+change files a worker report with the sources and wakes Goblin; it is not
+the worker's claim. No passing evidence means **not ready**.
 
 The verifier's comment must open with `PASS`, `PASS+NOTES`, or `FAIL`, and
 include exactly one standalone line:
@@ -98,9 +101,9 @@ Checked-SHA: <full 40-character lowercase commit SHA>
 
 After a push, the old verdict cannot make the new head ready. `PASS+NOTES`
 still needs judgment on its notes. Readiness is never permission to merge.
-Code checks for changes once a minute after settlement, with no model turns
-spent on unchanged CI. Paused, closed, corrected or stopped work is not
-monitored. Existing delegations without an explicit issue are not adopted.
+Code checks for changes once a minute, with no model turns spent on
+unchanged CI. Paused or closed work is not monitored. Responsibilities
+accepted without an explicit issue are not adopted.
 
 To inspect the same GitHub evidence without starting Goblin or a model:
 

@@ -253,36 +253,43 @@ Rulings:
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;
   restated 2026-11-18).** "`delegate` stays just for this … only for
   use when the user asks for a `codex` run, or a `opencode` run" — or a
-  standing instruction the operator set, like the issue-build flow
-  below. Goblin never picks `delegate` on its own judgment; work it
+  standing instruction the operator set. Issue builds are not one: they
+  run as the inner loop (below). Goblin never picks `delegate` on its own judgment; work it
   decides to hand off goes to `agent`. `/stop` fences goblin's turn,
   not delegations: they aren't turns. `delegate stop` ends one.
 
-- **An issue build is one lead delegation (operator, 2026-11-09).**
-  Goblin coordinates across issues; inside one issue a `lead`-role
-  delegation runs the operator's fusion skill: it designs, has its own
-  sidekick implement, reviews the diff, has a clean-session verifier drive
-  the change, and opens a draft PR carrying the verdict (`PASS`,
-  `PASS+NOTES`, `FAIL`). The lead's agents are its own acts, not
-  goblin's: they run in the lead's workspace, the goblin-session adapter
-  never lists or addresses them (it has no list call), and goblin's view
-  of them is the lead's report. Ready = a PR closing the issue, a
-  `PASS`/`PASS+NOTES` verdict on its head SHA, and CI green on that SHA;
-  code checks those facts (PR readiness below), the report being a claim. Rework and the
-  post-green-light merge go to the same lead (`send`), so one agent stays
-  accountable per issue. At most two leads run at once (each fans out to
-  several agents on one box) — the procedure's limit, not a tool refusal;
-  the 2026-10-06 no-cap ruling for the tool stands. Handover is explicit;
-  goblin does not pick issues up on its own. The procedure lives in the
-  workspace `proxy-operator` skill; the lead harness in
-  `delegation.defaults.lead`.
+- **An issue build is one inner loop on T3 Code (operator, 2026-11-20;
+  #745; replaces the 2026-11-09 lead-delegation ruling).** Goblin
+  coordinates across issues; inside one issue the [inner
+  loop](../GLOSSARY.md) does the work: one T3 Code thread, led by Claude
+  on Opus 5.5 (T3 provider `claudeAgent`, model `claude-opus-5-5`), in a
+  new git worktree from the repo's default branch
+  (`t3 thread start --worktree origin/<default> --branch issue/<N>`).
+  When the operator hands over an issue, goblin starts it at once,
+  without asking first: `responsibility accept` with `issue` and
+  `start:{brief, branch?}` resolves `origin/HEAD`, fetches it, starts
+  the thread and binds it as the responsibility's attachment in the same
+  call. A retried accept with the same handover key finds the existing
+  responsibility and starts nothing. The thread's own agents are its
+  acts, not goblin's; goblin's view of them is the thread and its PR.
+  Rework and the post-green-light merge go to the same thread
+  (`responsibility send`), so one worker stays accountable per issue.
+  The 2026-11-09 limits carry over: at most two issue builds at once
+  (the procedure's limit, not a tool refusal), and handover is explicit
+  — goblin does not pick issues up on its own. `innerLoop:
+  {provider, model, options?}` in config overrides the default model.
+  `delegate` no longer has a `lead` role: it runs only harnesses the
+  operator names, with `delegation.defaults.default` (pi on prod) as
+  the default. Accepted risk: a crash between the thread start and the
+  accept commit leaves an unbound thread in T3 Code.
 
-- **PR readiness is observed, not inferred (operator, 2026-11-12; #406).**
-  A responsibility-linked `role:"lead"` start requires
-  `issue:{repository:"owner/repo",number:N}`. Role and issue are durable;
-  neither is reconstructed from a report, task, cwd, or harness name.
-  Older delegations keep role `default` and no issue; no implicit adoption.
-  The lead's prompt carries the verifier comment contract:
+- **PR readiness is observed on the responsibility, not inferred
+  (operator, 2026-11-12, #406; moved off the lead 2026-11-20, #745).**
+  The check lives on the responsibility, so it works for any worker. A
+  responsibility accepted with `issue:{repository:"owner/repo",number:N}`
+  links that issue once (`responsibility_issues`); nothing reconstructs
+  it from a report, task, cwd or thread title. The inner loop's start
+  message carries the verifier comment contract:
 
   ```text
   PASS
@@ -315,31 +322,27 @@ Rulings:
   30 seconds per command) fail closed if evidence is partial, inaccessible,
   malformed, or changes inconsistently during the read.
 
-  Each lead settlement carries a timestamped structured observation,
-  source URLs, and a readiness summary outside the worker's claim.
-  The worker report's evidence names the closing PR, head, verdict/SHA
-  and CI/SHA; pending CI reports `waiting`, other missing/negative
-  evidence `blocked`, passing facts `ready`. None closes the responsibility.
-  The observation is persisted on the delegation before notice delivery.
-  Readiness versions make a regression a new report even if the same
-  facts occurred earlier; retries of one version file once.
-  The pending settlement verdict is persisted with its observation, so
-  even a failed initial notice (before the row becomes `done`) retries
-  the saved facts rather than polling again. A delivered settlement or
-  new prompt cannot lend that snapshot to a later settlement.
-
-  The existing delegation ticker observes settled leads at most once a
-  minute, with no model or second scheduler. An unchanged observation
-  updates its timestamp but sends no notice. Changes (including changed
-  notes, errors, head or CI) wake Goblin for judgment; a failed notice
-  remains due across restart without re-fetching GitHub. Watch through
-  pending/missing evidence and readiness regressions until the issue
-  closes, the delegation resumes/stops, or the responsibility is paused,
-  closed, removed or corrected to a new revision. Async observations
-  cannot overwrite a newer prompt or stopped row. No model polls GitHub
-  while CI runs. The one-shot read-only probe is
-  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`.
+  `src/responsibility-readiness.ts` observes each active responsibility
+  with a linked issue at most once a minute, on the responsibility
+  observer's ticker — no model and no second scheduler. After the GitHub
+  read it re-checks the responsibility in the same transaction as every
+  write: a pause, cancel or close during the read wins. The first
+  observation of an open issue with no PR yet is a silent baseline.
+  Unchanged facts update the timestamp and wake nothing. A change
+  (including changed notes, errors, head or CI) files one `worker`
+  report and one `pr-readiness` wake in one transaction: the report's
+  evidence names the closing PR, head, verdict/SHA and CI/SHA; pending CI
+  reports `waiting`, other missing or negative evidence `blocked`,
+  passing facts `ready`. None closes the responsibility. A version
+  counter makes a regression a new report even if the same facts
+  occurred earlier. An `unavailable` read records nothing and retries on
+  the next tick. Watching stops when the issue closes with no PR or the
+  responsibility leaves `active`; an operator correction keeps the link.
+  No model polls GitHub while CI runs. The one-shot read-only probe is
+  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`. Delegation
+  rows keep their old `issue_json`/`readiness_*` columns unread; dropping
+  them would drop data.
 
 Still out: subagent fleets inside goblin (a delegation is one external
-agent per task, not an orchestrator), goblin-managed nesting (a lead's own
-agents are the lead's), fan-out tooling, ACP, the AI SDK harness wrappers.
+agent per task, not an orchestrator), goblin-managed nesting (an inner loop's own
+agents are the inner loop's), fan-out tooling, ACP, the AI SDK harness wrappers.

@@ -59,6 +59,7 @@ import { startAgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
+import { makeIssueStore, makeReadinessObserver } from "./responsibility-readiness.ts";
 import { fileAgentChildReport, fileDelegationReport } from "./responsibility-runs.ts";
 import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
@@ -566,13 +567,8 @@ async function boot() {
 					delegationsDir: paths.delegations(),
 					homeDir: homedir(),
 					...delegationWake(delivery.wakeDeps),
-					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
+					settled: (d, verdict, body) => fileDelegationReport(responsibilities, d, verdict, body),
 					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
-					readiness: makeGithubReadiness(),
-					watchResponsibility: (id, revision) => {
-						const r = responsibilities.get(id);
-						return r !== null && r.status === "active" && r.revision === revision;
-					},
 				})
 			: null;
 	const delegateDeps = makeDelegateDeps({
@@ -641,11 +637,22 @@ async function boot() {
 		pump: () => delivery.dispatcher.pump(),
 		show: (threadId) => t3.showThread(threadId, 1),
 	});
+	const readinessObserver = makeReadinessObserver({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		issues: makeIssueStore(store.db),
+		pump: () => delivery.dispatcher.pump(),
+		read: makeGithubReadiness(),
+	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {
 		responsibilityObserver
 			.observe()
 			.catch((err) => log.error("responsibility observe tick failed", err));
+		readinessObserver
+			.observe()
+			.catch((err) => log.error("pr readiness observe tick failed", err));
 	}, OBSERVE_MS);
 	observerTicker.unref();
 	const stopObserverTicker = () => clearInterval(observerTicker);

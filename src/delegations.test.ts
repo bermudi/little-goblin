@@ -27,57 +27,25 @@ function tmpdirPath(): string {
 }
 
 describe("delegations store", () => {
-	test("pre-digest observations reopen without losing sources and upgrade on the next read", () => {
-		const path = join(tmpdirPath(), "goblin.sqlite");
-		const first = openDelegations(path);
-		const d = first.create({
-			name: "old observation", harness: "codex", role: "lead",
-			issue: { repository: "owner/repo", number: 7 }, cwd: "/w", task: "build",
-			address: { chatId: 0, threadId: null }, responsibilityId: "r1",
-		});
-		first.setStatus(d.id, "done");
-		const observation = prReadinessFixture("green");
-		delete observation.result.verifier!.notesDigest;
-		first.recordReadiness(d.id, first.get(d.id)!, observation, true);
-		first.close();
-		const second = openDelegations(path);
-		try {
-			const saved = second.list()[0]!;
-			expect(saved.readiness).toEqual(observation);
-			expect(saved.readinessVersion).toBe(1);
-			second.recordReadiness(saved.id, saved, prReadinessFixture("green"));
-			expect(second.get(saved.id)?.readinessVersion).toBe(2);
-			expect(second.get(saved.id)?.readiness?.result).toMatchObject({
-				kind: "checked", verifier: { notesDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
-			});
-		} finally { second.close(); }
-	});
-
-	test("lead identity and observations survive reopen; a new prompt fences old readiness", () => {
+	test("a lead-era row with issue and readiness columns still opens", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
 		const first = openDelegations(path);
 		const row = first.create({
-			name: "lead", harness: "codex", role: "lead",
-			issue: { repository: "owner/repo", number: 7 }, cwd: "/w", task: "build",
-			address: { chatId: 0, threadId: null }, responsibilityId: "r1", responsibilityRevision: 1,
+			name: "lead", harness: "codex", role: "lead", cwd: "/w", task: "build",
+			address: { chatId: 0, threadId: null }, responsibilityId: "r1",
 		});
-		first.setStatus(row.id, "done");
-		const done = first.get(row.id)!;
-		const observation = prReadinessFixture();
-		expect(first.recordReadiness(row.id, done, observation)).toBe(true);
 		first.close();
+		const db = new Database(path);
+		db.run(
+			"UPDATE delegations SET issue_json = ?, readiness_json = ?, readiness_version = 3 WHERE id = ?",
+			[JSON.stringify({ repository: "owner/repo", number: 7 }), JSON.stringify(prReadinessFixture("green")), row.id],
+		);
+		db.close();
 		const second = openDelegations(path);
 		try {
-			expect(second.get(row.id)).toMatchObject({
-				role: "lead", issue: { repository: "owner/repo", number: 7 },
-				readiness: observation, readinessNotifiedKey: null, readinessVersion: 1,
-			});
-			second.markRunning(row.id, 5, new Date(Date.now() + 1000));
-			expect(second.recordReadiness(row.id, done, prReadinessFixture("green"), true)).toBe(false);
-			expect(second.get(row.id)).toMatchObject({ readiness: null, readinessNotifiedKey: null });
+			expect(second.get(row.id)).toMatchObject({ role: "lead", name: "lead", responsibilityId: "r1" });
 		} finally { second.close(); }
 	});
-
 
 	// baseline_seq went nullable — NULL is the baseline-pending posture (a
 	// failed post-prompt read never falls back to a pre-prompt value).
@@ -114,7 +82,7 @@ describe("delegations store", () => {
 		try {
 			expect(store.get(1)!.baselineSeq).toBe(3);
 			expect(store.get(1)).toMatchObject({
-				role: "default", issue: null, readiness: null,
+				role: "default",
 				responsibilityId: "r-old", responsibilityRevision: 2,
 			});
 			const d = store.create({

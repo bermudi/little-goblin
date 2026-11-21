@@ -9,6 +9,7 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { followupSchema, silenceFollowup } from "./responsibility-followup.ts";
 import { ensureReportsSchema } from "./responsibility-reports.ts";
+import { ensureIssueSchema } from "./responsibility-readiness.ts";
 import {
 	UNREACHABLE_POLLS,
 	understandingSchema,
@@ -313,6 +314,7 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 		});
 	}
 	ensureReportsSchema(db);
+	ensureIssueSchema(db);
 	migrateLegacyStatuses(db);
 }
 

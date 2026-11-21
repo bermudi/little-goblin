@@ -251,7 +251,8 @@ ends at the end is not a reason to switch from following the reply to
 the tail: the browser clamps the scroll position when content above
 shrinks (the "…" row unmounting), and that is not the operator's input.
 Content growth re-sticks in the same frame through a ResizeObserver, not
-an effect a frame late.
+an effect a frame late. Replies already below the asked message when the
+follow starts (the old reply a retry replaces) are never its head.
 See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
 One assistant card per reply: the "…" waiting row shows only until the
 reply has a part to draw (#415).

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 
 export type Follow =
 	| { kind: "tail" }
-	| { kind: "reply"; after: string }
+	| { kind: "reply"; after: string; stale: ReadonlySet<Element> }
 	| { kind: "free" };
 
 export type ScrollDirection = "up" | "down";
@@ -16,15 +16,31 @@ export function distanceToEnd(el: Element): number {
 	return el.scrollHeight - el.scrollTop - el.clientHeight;
 }
 
-export function replyHead(scroller: Element, afterId: string): Element | null {
+export function replyHead(
+	scroller: Element,
+	afterId: string,
+	stale: ReadonlySet<Element> = new Set(),
+): Element | null {
 	const asked = [...scroller.querySelectorAll("[data-outline-anchor]")].find(
 		(node) => node.getAttribute("data-outline-anchor") === afterId,
 	);
 	for (let row = asked?.nextElementSibling ?? null; row !== null; row = row.nextElementSibling) {
 		if (row.matches(".msg.user")) return null;
-		if (row.matches(".msg.assistant:not(.pending)")) return row;
+		if (row.matches(".msg.assistant:not(.pending)") && !stale.has(row)) return row;
 	}
 	return null;
+}
+
+export function repliesAfter(scroller: Element, afterId: string): Set<Element> {
+	const asked = [...scroller.querySelectorAll("[data-outline-anchor]")].find(
+		(node) => node.getAttribute("data-outline-anchor") === afterId,
+	);
+	const replies = new Set<Element>();
+	for (let row = asked?.nextElementSibling ?? null; row !== null; row = row.nextElementSibling) {
+		if (row.matches(".msg.user")) break;
+		if (row.matches(".msg.assistant:not(.pending)")) replies.add(row);
+	}
+	return replies;
 }
 
 export function followTarget(
@@ -34,7 +50,7 @@ export function followTarget(
 	if (follow.kind === "free") return null;
 	const end = scroller.scrollHeight - scroller.clientHeight;
 	if (follow.kind === "tail") return { top: end, next: follow };
-	const head = replyHead(scroller, follow.after);
+	const head = replyHead(scroller, follow.after, follow.stale);
 	if (head === null) return { top: end, next: follow };
 	const headTop =
 		head.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
@@ -81,7 +97,12 @@ export function useTranscriptFollow(
 
 	const followReply = useCallback(
 		(afterMessageId: string) => {
-			follow.current = { kind: "reply", after: afterMessageId };
+			const el = scrollRef.current;
+			follow.current = {
+				kind: "reply",
+				after: afterMessageId,
+				stale: el === null ? new Set() : repliesAfter(el, afterMessageId),
+			};
 			stick();
 		},
 		[stick],

@@ -67,6 +67,9 @@ function renderRow() {
 		["KeyboardEvent", win.KeyboardEvent],
 		["NodeFilter", win.NodeFilter],
 		["HTMLElement", win.HTMLElement],
+		["HTMLFieldSetElement", win.HTMLFieldSetElement],
+		["HTMLInputElement", win.HTMLInputElement],
+		["HTMLTextAreaElement", win.HTMLTextAreaElement],
 		["MutationObserver", win.MutationObserver],
 		["Element", win.Element],
 		["getComputedStyle", win.getComputedStyle],
@@ -97,7 +100,7 @@ function rowElement(conversation = conv) {
 	);
 }
 
-test("conversation row keeps link navigation and groups actions in one named menu trigger", () => {
+test("conversation row keeps link navigation and exposes the row actions in a toolbar", () => {
 	const html = renderToStaticMarkup(
 		<ConversationNav loop={false}>
 			<li>{rowElement()}</li>
@@ -105,12 +108,44 @@ test("conversation row keeps link navigation and groups actions in one named men
 	);
 
 	expect(html).toContain('href="/app/c/example"');
+	expect(html).toContain('role="toolbar"');
 	expect(html).toContain('aria-label="Actions for Example conversation"');
+	expect(html).toContain('aria-label="Pin"');
+	expect(html).toContain('aria-label="Rename"');
+	expect(html).toContain('aria-label="Archive"');
+	expect(html).not.toContain("⋯");
+	const pinned = renderToStaticMarkup(
+		<ConversationNav loop={false}>
+			<li>{rowElement({ ...conv, pinnedAt: "2026-10-09T00:00:00.000Z" })}</li>
+		</ConversationNav>,
+	);
+	expect(pinned).toContain('aria-label="Unpin"');
+	const archived = renderToStaticMarkup(
+		<ConversationNav loop={false}>
+			<li>{rowElement({ ...conv, archivedAt: "2026-10-09T00:00:00.000Z" })}</li>
+		</ConversationNav>,
+	);
+	expect(archived).toContain('aria-label="Rename"');
+	expect(archived).toContain('aria-label="Unarchive"');
+	expect(archived).toContain('aria-label="Delete"');
+	expect(archived).not.toContain('aria-label="Pin"');
 	expect(html).not.toContain('role="listbox"');
-	expect(html).not.toContain('aria-label="Rename"');
-	expect(html).toContain('tabindex="0"');
 	expect(html).toContain("<ul");
 	expect(html).toContain("<li>");
+});
+
+test("the row toolbar has one tab stop and arrow keys move between its buttons", async () => {
+	renderRow();
+	await act(async () => root?.render(<ConversationNav loop={false}><li>{rowElement()}</li></ConversationNav>));
+	const buttons = [...container!.querySelectorAll<HTMLButtonElement>('[role="toolbar"] button')];
+	expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, -1]);
+	buttons[0]!.focus();
+	await act(async () => {
+		buttons[0]!.dispatchEvent(
+			new win!.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event,
+		);
+	});
+	expect(win!.document.activeElement?.getAttribute("aria-label")).toBe("Rename");
 });
 
 test("arrow keys move between conversation links without replacing list or link semantics", async () => {

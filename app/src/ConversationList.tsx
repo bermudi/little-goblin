@@ -1,11 +1,28 @@
 "use client";
 
 import { createParts } from "@ui-sdk/react/primitive";
+import { bindHold } from "@ui-sdk/core";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
+import {
+	Drawer,
+	DrawerBackdrop,
+	DrawerContent,
+	DrawerTitle,
+} from "@ui-sdk/react/drawer";
+import { Toolbar, ToolbarButton } from "@ui-sdk/react/toolbar";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
-import { patchConversation, suggestConversationTitle } from "./api.ts";
-import { PinGlyph } from "./glyphs.tsx";
+import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
+import { conversationActions } from "./conversationActions.ts";
+import { flatLine, flatTitle } from "./flatText.ts";
+import {
+	ArchiveGlyph,
+	PencilGlyph,
+	PinActionGlyph,
+	PinGlyph,
+	TrashGlyph,
+	UnarchiveGlyph,
+	UnpinGlyph,
+} from "./glyphs.tsx";
 import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
 
 const navigationParts = createParts(conversationNavigationPrimitive, { root: "ul", link: "a" });
@@ -71,28 +88,6 @@ export function relTime(iso: string): string {
 	});
 }
 
-// Mirrors conversation.ts's flatLine — the client does its own pass
-// because a running server may predate the store-side flattening and
-// still hand over a fenced title.
-export function flatLine(text: string): string {
-	return text
-		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
-		.replace(/`([^`]*)`/g, "$1")
-		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.replace(/(\*\*|__|~~)(.+?)\1/g, "$2")
-		.replace(/(\*|_)([^\s*_][^*_]*?[^\s*]|[^\s*_])\1/g, "$2")
-		.replace(/^[ \t]*(?:#{1,6}|>|[-*+]|\d+\.)[ \t]+/gm, "")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-// An emptied title falls through to the preview — mirrors the server's
-// `flatLine(r.title) || null` projection.
-export function flatTitle(title: string | null): string | null {
-	if (title === null) return null;
-	return flatLine(title) || null;
-}
-
 // Archive and delete both skip the confirm: each raises an Undo toast
 // instead (delete is held back for that window — see the App's
 // deleteConversationHeld).
@@ -124,133 +119,55 @@ export function ConversationRow({
 	const archived = conv.archivedAt !== null;
 	const pinned = conv.pinnedAt !== null;
 	const [editing, setEditing] = useState(false);
-	const [draft, setDraft] = useState("");
-	const editRef = useRef<HTMLInputElement>(null);
-	const [suggesting, setSuggesting] = useState(false);
-	// Enter commits and unmounts the input — its blur then fires
-	// commitRename a second time (a duplicate PATCH with the same title).
-	const committed = useRef(false);
-	const editSession = useRef(0);
-	const draftRevision = useRef(0);
+	const [sheetOpen, setSheetOpen] = useState(false);
+	const linkRef = useRef<HTMLAnchorElement>(null);
 	useEffect(() => {
-		if (editing) {
-			committed.current = false;
-			editRef.current?.focus();
-			editRef.current?.select();
-		}
+		const link = linkRef.current;
+		if (link === null) return;
+		return bindHold(link, {
+			keys: [],
+			onPress: ({ input }) => input === "touch",
+			onHold: () => setSheetOpen(true),
+		});
 	}, [editing]);
-
-	// A dropped rejection leaves the operator staring at a row that did
-	// nothing — every mutation failure surfaces in the rail.
-	const failed = (verb: string) => (err: unknown) =>
-		onError(
-			`Couldn't ${verb} "${title ?? (preview === "" ? "this conversation" : preview)}": ` +
-				(err instanceof Error ? err.message : String(err)),
-		);
-	const commitRename = () => {
-		if (committed.current) return;
-		committed.current = true;
-		editSession.current += 1;
-		const t = draft.trim();
-		setEditing(false);
-		if (t === "" || t === title) return;
-		void patchConversation(token, conv.id, { title: t }).then(onRenamed, failed("rename"));
-	};
-	// Suggest only: the result lands in the draft, and the usual
-	// Enter/blur commit is still the one saver.
-	// A suggestion belongs to the editing session and draft it started in:
-	// cancel/commit/reopen bump the session, manual typing bumps the draft
-	// revision, and a stale result is dropped.
-	const suggestTitle = () => {
-		if (suggesting) return;
-		const session = editSession.current;
-		const revision = draftRevision.current;
-		setSuggesting(true);
-		void suggestConversationTitle(token, conv.id)
-			.then(
-				(r) => {
-					if (editSession.current !== session || draftRevision.current !== revision) return;
-					setDraft(r.title);
-					editRef.current?.focus();
-				},
-				(err: unknown) => {
-					if (editSession.current !== session) return;
-					failed("suggest a title for")(err);
-				},
-			)
-			.finally(() => {
-				if (editSession.current === session) setSuggesting(false);
-			});
-	};
-	const toggleArchived = () =>
-		patchConversation(token, conv.id, { archived: !archived }).then(
-			() => onToggleArchived(conv.id, !archived),
-			failed(archived ? "unarchive" : "archive"),
-		);
-	const togglePinned = () =>
-		patchConversation(token, conv.id, { pinned: !pinned }).then(
-			() => onTogglePinned(conv.id, !pinned),
-			failed(pinned ? "unpin" : "pin"),
-		);
-	const startRename = () => {
-		editSession.current += 1;
-		setSuggesting(false);
-		setDraft(title ?? "");
-		setEditing(true);
-	};
-	const remove = () => onDelete(conv);
+	const actions = conversationActions(conv, {
+		token,
+		onToggleArchived,
+		onTogglePinned,
+		onDelete,
+		onError,
+	});
+	const startRename = () => setEditing(true);
+	const name = title ?? (preview || "new conversation");
 
 	if (editing) {
 		return (
 			<div className="conv editing">
-				<div
-					className="rename-field"
-					onBlur={(e) => {
-						// Focus moving between the input and the AI button stays
-						// inside the editor; only leaving the whole field commits.
-						const next = e.relatedTarget as Element | null;
-						if (next !== null && e.currentTarget.contains(next)) return;
-						commitRename();
-					}}
-					onKeyDown={(e) => {
-						// Escape is a cancel, from the input or the button: mark
-						// committed so the unmount's blur doesn't PATCH the draft.
-						if (e.key === "Escape") {
-							committed.current = true;
-							editSession.current += 1;
-							setEditing(false);
-						}
-					}}
-				>
-					<input
-						ref={editRef}
-						value={draft}
-						onChange={(e) => {
-							draftRevision.current += 1;
-							setDraft(e.target.value);
-						}}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") commitRename();
-						}}
-					/>
-					{/* mousedown preventDefault keeps focus in the input, so the
-					    click doesn't blur-commit and close the editor first. */}
-					<button
-						type="button"
-						className="rename-ai"
-						title="Rename with AI"
-						aria-label="Rename with AI"
-						aria-disabled={suggesting || undefined}
-						data-busy={suggesting || undefined}
-						onMouseDown={(e) => e.preventDefault()}
-						onClick={suggestTitle}
-					>
-						✨
-					</button>
-				</div>
+				<ConversationTitleEditor
+					conv={conv}
+					token={token}
+					onRenamed={onRenamed}
+					onError={onError}
+					onClose={() => setEditing(false)}
+				/>
 			</div>
 		);
 	}
+	const items = archived
+		? [
+				{ label: "Rename", icon: <PencilGlyph />, run: startRename },
+				{ label: "Unarchive", icon: <UnarchiveGlyph />, run: () => void actions.toggleArchived() },
+				{ label: "Delete", icon: <TrashGlyph />, run: actions.remove },
+			]
+		: [
+				{
+					label: pinned ? "Unpin" : "Pin",
+					icon: pinned ? <UnpinGlyph /> : <PinActionGlyph />,
+					run: () => void actions.togglePinned(),
+				},
+				{ label: "Rename", icon: <PencilGlyph />, run: startRename },
+				{ label: "Archive", icon: <ArchiveGlyph />, run: () => void actions.toggleArchived() },
+			];
 	const hasPreviewLine = title !== null && preview !== "";
 	const rowClass = ["conv", conv.id === current ? "current" : null, hasPreviewLine ? null : "bare"]
 		.filter((c): c is string => c !== null)
@@ -258,6 +175,7 @@ export function ConversationRow({
 	return (
 		<div className={rowClass}>
 			<ConversationNavLink
+				ref={linkRef}
 				id={conv.id}
 				className="conv-main"
 				href={`/app/c/${conv.id.slice("app/".length)}`}
@@ -277,46 +195,41 @@ export function ConversationRow({
 				</span>
 				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
 			</ConversationNavLink>
-			<Menu
-				onAction={(action) => {
-					switch (action) {
-						case "pin":
-							return togglePinned();
-						case "rename":
-							startRename();
-							return;
-						case "archive":
-							return toggleArchived();
-						case "delete":
-							remove();
-							return;
-					}
-				}}
-			>
-				<MenuTrigger
-					className="conv-menu-trigger"
-					aria-label={`Actions for ${title ?? (preview || "new conversation")}`}
-					title="Conversation actions"
-				>
-					<span aria-hidden="true">⋯</span>
-				</MenuTrigger>
-				<MenuContent className="conv-menu">
-					{!archived && (
-						<MenuItem value="pin">{pinned ? "Unpin" : "Pin"}</MenuItem>
-					)}
-					<MenuItem value="rename">Rename</MenuItem>
-					{archived ? (
-						<>
-							<MenuItem value="archive">Unarchive</MenuItem>
-							<MenuItem value="delete" destructive>
-								Delete
-							</MenuItem>
-						</>
-					) : (
-						<MenuItem value="archive">Archive</MenuItem>
-					)}
-				</MenuContent>
-			</Menu>
+			<Toolbar className="conv-actions" aria-label={`Actions for ${name}`}>
+				{items.map((item) => (
+					<ToolbarButton
+						key={item.label}
+						title={item.label}
+						aria-label={item.label}
+						onClick={item.run}
+					>
+						{item.icon}
+					</ToolbarButton>
+				))}
+			</Toolbar>
+			{sheetOpen && (
+				<Drawer open={sheetOpen} onOpenChange={setSheetOpen} modal side="bottom">
+					<DrawerBackdrop className="row-sheet-backdrop" />
+					<DrawerContent className="row-sheet">
+						<div className="row-sheet-grip" aria-hidden="true" />
+						<DrawerTitle className="row-sheet-title">{name}</DrawerTitle>
+						{items.map((item) => (
+							<button
+								key={item.label}
+								type="button"
+								className="row-sheet-action"
+								onClick={() => {
+									setSheetOpen(false);
+									item.run();
+								}}
+							>
+								{item.icon}
+								<span>{item.label}</span>
+							</button>
+						))}
+					</DrawerContent>
+				</Drawer>
+			)}
 		</div>
 	);
 }

@@ -60,3 +60,14 @@ describe("composer box separation", () => {
 		expect(rule).not.toMatch(/var\(--app-border\)/);
 	});
 });
+
+describe("touch conversation actions", () => {
+	test("touch styles suppress row buttons and link previews", () => {
+		const touch = /@media\s*\(hover:\s*none\)\s*\{([^{}]|\{[^{}]*\})*\}/g;
+		const rules = [...css.matchAll(touch)].map(([rule]) => rule);
+		expect(rules.some((rule) => /\.conv\.current\s+\.conv-actions/.test(rule))).toBe(false);
+		expect(rules.some((rule) => /\.conv-main\s*\{[^}]*-webkit-touch-callout:\s*none/s.test(rule))).toBe(
+			true,
+		);
+	});
+});

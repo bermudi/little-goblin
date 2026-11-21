@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
 import { log } from "./log.ts";
@@ -154,14 +154,71 @@ function writeClaudeSettings(stateDir: string, hooksDir: string, terminalName: s
 	return path;
 }
 
-function writeDevinConfig(stateDir: string, hooksDir: string, terminalName: string): string {
+function devinOperatorConfigPath(home: string): string {
+	const xdg = process.env.XDG_CONFIG_HOME;
+	const base = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config");
+	return join(base, "devin", "config.json");
+}
+
+const devinConfigSchema = z.looseObject({
+	hooks: z.record(z.string(), z.array(z.unknown())).optional(),
+});
+
+function readDevinOperatorConfig(path: string): z.infer<typeof devinConfigSchema> {
+	let text: string;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { version: 1 };
+		throw new Error(`${path}: cannot read devin config`, { cause: err });
+	}
+	let parsed: unknown;
+	try {
+		parsed = Bun.JSONC.parse(text);
+	} catch (err) {
+		throw new Error(`${path}: invalid JSONC; fix by hand before delegation`, { cause: err });
+	}
+	const result = devinConfigSchema.safeParse(parsed);
+	if (!result.success) {
+		throw new Error(`${path}: expected an object whose hooks map events to arrays`, { cause: result.error });
+	}
+	return result.data;
+}
+
+function hasHookCommand(entries: unknown[], command: string): boolean {
+	return entries.some((entry) => {
+		if (typeof entry !== "object" || entry === null) return false;
+		const list = (entry as { hooks?: unknown }).hooks;
+		return Array.isArray(list) && list.some((hook) =>
+			typeof hook === "object" && hook !== null && (hook as { command?: unknown }).command === command);
+	});
+}
+
+function writeDevinConfig(stateDir: string, hooksDir: string, terminalName: string, home: string): string {
 	const path = join(stateDir, "hc-hooks", `${terminalName}-devin.json`);
-	const command = `${join(hooksDir, "report.sh")} idle`;
-	writeJson(path, {
-		version: 1,
-		hooks: {
-			SessionStart: [{ hooks: [{ type: "command", command, timeout: 10 }] }],
-		},
+	const source = devinOperatorConfigPath(home);
+	const config = readDevinOperatorConfig(source);
+	const hooks: Record<string, unknown[]> = { ...config.hooks };
+	const command = (state: string) => `${join(hooksDir, "report.sh")} ${state}`;
+	const desired = [
+		["SessionStart", "idle"],
+		["UserPromptSubmit", "working"],
+		["PreToolUse", "working"],
+		["PostToolUse", "working"],
+		["Stop", "idle"],
+		["PermissionRequest", "blocked permission"],
+	] as const;
+	for (const [event, state] of desired) {
+		const entries = hooks[event] ?? [];
+		if (hasHookCommand(entries, command(state))) continue;
+		hooks[event] = [...entries, { hooks: [{ type: "command", command: command(state), timeout: 10 }] }];
+	}
+	writeJson(path, { ...config, hooks });
+	log.info("devin per-run config written", {
+		path,
+		source,
+		operatorKeys: Object.keys(config).length,
+		events: desired.length,
 	});
 	return path;
 }
@@ -192,10 +249,11 @@ export function makeHarnessInvocation(input: {
 	if (!executable) throw new Error(`cannot resolve ${command} on Goblin's PATH`);
 
 	const argv = [executable, ...input.args];
+	const home = process.env.HOME ?? homedir();
 	const env: Record<string, string> = {
 		GOBLIN_HC_RUN: "1",
 		GOBLIN_HC_REPORT: join(input.hooksDir, "report.sh"),
-		HOME: homedir(),
+		HOME: home,
 		PATH: process.env.PATH ?? "/usr/bin:/bin",
 	};
 	const stateDir = join(input.goblinHome, "state");
@@ -234,7 +292,7 @@ export function makeHarnessInvocation(input: {
 			...(model === undefined ? {} : { model }),
 		});
 	} else if (input.kind === "devin") {
-		argv.push("--config", writeDevinConfig(stateDir, input.hooksDir, input.terminalName));
+		argv.push("--config", writeDevinConfig(stateDir, input.hooksDir, input.terminalName, home));
 	}
 	log.info("delegation harness invocation prepared", {
 		kind: input.kind,

@@ -147,7 +147,8 @@ tell "never ran" from "broken" (design/doctor.md, #739).
   durably to `$GOBLIN_HOME/bin/hc-hooks/`; hooks only report when
   `GOBLIN_HC_RUN=1`. Codex hooks and trust hashes merge additively into
   the operator's CODEX_HOME. Claude uses per-run settings; Pi an
-  extension; Devin a per-run config. Codex runs with `--no-daemon` and
+  extension; Devin a per-run copy of the operator's devin config with
+  Goblin's six hooks appended (design/delegation.md, #810). Codex runs with `--no-daemon` and
   OpenCode with `--standalone`: a shared app server or background service
   runs outside the hc terminal, so its hooks could not reach it. Codex
   also gets `-c check_for_update_on_startup=false`: its update prompt

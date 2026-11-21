@@ -1,18 +1,8 @@
 # Goblin design notes
 
 **Code defines shipped behavior.** Tests pin what must not change.
-[DIRECTION.md](DIRECTION.md) records operator intent;
-[ROADMAP.md](ROADMAP.md) tracks unbuilt work and acceptance evidence.
-These notes explain choices and trade-offs. [Docs](docs/) are for operating
-Goblin.
-
-| Looking for | Start with |
-| --- | --- |
-| Conversation identity, history, settings | [`conversation-address.ts`](src/conversation-address.ts), [`conversation.ts`](src/conversation.ts), [`config-schema.ts`](src/config-schema.ts) |
-| Request lifecycle, persistence, recovery | [`runtime.ts`](src/runtime.ts), [`turn-journal.ts`](src/turn-journal.ts), [runtime rationale](design/runtime-turn.md) |
-| Client and Telegram | [`app/src`](app/src/), [`src/http`](src/http/), [`src/tg`](src/tg/) |
-| Scheduled work and division of work between agents | [`programs.ts`](src/programs.ts), [`watches.ts`](src/watches.ts), [`agent-children.ts`](src/agent-children.ts) |
-| Memory and conversation summarization | [`src/memory`](src/memory/), [`compaction.ts`](src/agent/compaction.ts) |
+[the scope set in AGENTS.md](AGENTS.md#goblin-is-a-loop-with-tools-and-connectors-thats-it).
+[Docs](docs/) are for operating Goblin.
 
 Area notes live in [`design/`](design/). Non-obvious decisions with no
 existing home get a short [architecture decision record](design/decisions/).
@@ -104,10 +94,7 @@ cache reuse (#759).
 
 One operator, one process, one app client and an optional Telegram channel.
 Sandboxed Telegram guests do not make this a multi-user product. No onboarding
-wizard, third channel, plugin SDK, native browser or MCP client, or Kubernetes
-deployment. New background work does not acquire standing authority on its
-own. Judge additions against [operator direction](DIRECTION.md), not an old
-rollout plan.
+wizard, third channel, plugin SDK, or Kubernetes deployment. 
 
 ## Test posture
 

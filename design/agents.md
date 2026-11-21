@@ -164,8 +164,8 @@ tell "never ran" from "broken" (design/doctor.md, #739).
 
 ## Watches: wake on an outside change (operator, 2026-11-21, #844)
 
-Goblin is a loop with tools and connectors (DIRECTION.md → A Loop With
-Tools And Connectors). Code does not track work for it. When Goblin wants
+Goblin is a loop with tools and connectors (AGENTS.md → Goblin Is A Loop
+With Tools And Connectors). Code does not track work for it. When Goblin wants
 to hear about a change, it asks for one wake with the `watch` tool
 (`src/agent/tools/watch.ts`), and decides what to do when the wake comes.
 Responsibilities, handover records, the work feed and reminder pushes

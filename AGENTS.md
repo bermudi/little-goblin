@@ -55,7 +55,7 @@ How Goblin solves a problem is up to the operator and skills, not the code.
 For workspace layout, identity and memory files, prompts, or scheduled work,
 look at `~/build/testing/openclaw/` and `~/build/testing/hermes-agent/`.
 For compaction and tool calling, look at `~/build/pi-mono/`. Borrow mechanisms,
-not scope, and cite what you borrow in the design notes.
+not scope.
 
 ## Live services
 

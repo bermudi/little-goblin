@@ -113,14 +113,9 @@ Rulings:
   write fences the occurrence in-process: the write retries with the
   original fire time, never the submit; a restart may re-offer the row
   once — at-least-once, never a duplicate storm.
-  **One destination (operator, 2026-11-21, #844):** a program row
-  delivers to one conversation address, its `target`. Responsibility
-  destinations (`resp:<id>` targets) and their follow-up clocks were
-  removed with responsibilities; their rows stay on disk, hidden from
-  every read and never fired, and the store logs their count at open.
-  A create or a grant-shaped update (a new cron, a new or changed mail
-  filter, charter text) stages a proposal pinned to the staging
-  conversation, and only the operator's decision applies it.
+  Responsibility destinations (`resp:<id>` targets) were removed with
+  responsibilities (operator, 2026-11-21, #844). Their rows stay on disk,
+  hidden and never fired.
 
 **Programs page:** show only statuses the stored facts support. Run
 outcomes are not stored, so a failed status or recent-runs list would

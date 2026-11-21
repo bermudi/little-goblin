@@ -42,7 +42,7 @@
 - **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
 - **Wake:** a durable queued trigger that asks a conversation to start a turn. `wake-store.ts` and `wake-dispatcher.ts` own it.
-- **Watch:** a durable request to wake a conversation when something outside changes: a T3 Code thread ends its run or waits for input, a GitHub PR merges, closes or finishes its checks with a new result, or a set time comes. Each watch fires once. Goblin sets one with the `watch` tool instead of code that tracks work for it; for example, after it asks a T3 thread for a fix it watches that thread and gets one turn when the thread stops (design/agents.md → Watches).
+- **Watch:** a one-shot request, made with the `watch` tool, to wake a conversation when a T3 Code thread, a GitHub PR or a set time changes. Example: after asking a T3 thread for a fix, Goblin watches that thread and gets one turn when it stops.
 - **Fold:** one compaction: older messages become a summary, a recent tail stays verbatim. The full history stays on disk.
 - **Fold mark:** the pill in the app transcript that shows where a fold ran and expands to its summary.
 - **Idle fold:** a fold that runs on its own shortly before an idle app conversation's prompt cache expires, so the summary reads warm cache.

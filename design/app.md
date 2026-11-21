@@ -728,8 +728,6 @@ conversation that had ever carried a wake.
   events, and their joins are the conversation's delivery bookkeeping;
   they mean nothing without it. `openStore` ensures the wake schema
   alongside projects/notes so the sweep always finds its tables.
-  Responsibilities, which once refused a delete while they anchored a
-  conversation, were removed (operator, 2026-11-21, #844).
 
 Reconcile treats a wake whose conversation row is gone (out-of-band
 surgery only — the FK chain and the sweep keep them together) exactly

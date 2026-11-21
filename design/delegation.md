@@ -235,8 +235,7 @@ Rulings:
 
 - **`delegate` stays separate from `subagent`:** their controls differ,
   and a merged tool would hide the choice inside one schema instead of
-  removing it. A delegation links to no tracked work: responsibilities
-  were removed (operator, 2026-11-21, #844).
+  removing it.
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;
   restated 2026-11-18).** "`delegate` stays just for this … only for
   use when the user asks for a `codex` run, or a `opencode` run" — or a

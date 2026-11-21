@@ -160,42 +160,19 @@ tell "never ran" from "broken" (design/doctor.md, #739).
   the terminal. The operator can inspect the terminal through hc or the
   app's Delegations page.
 
-## Watches: wake on an outside change (operator, 2026-11-21, #844)
+## Watches (operator, 2026-11-21, #844)
 
-Goblin is a loop with tools and connectors (AGENTS.md → Goblin Is A Loop
-With Tools And Connectors). Code does not track work for it. When Goblin wants
-to hear about a change, it asks for one wake with the `watch` tool
-(`src/agent/tools/watch.ts`), and decides what to do when the wake comes.
-Responsibilities, handover records, the work feed and reminder pushes
-were removed for this; their old tables stay on disk, unread.
+Goblin asks for a wake with the `watch` tool and decides what to do when it
+comes; code does not track work for it (AGENTS.md → Goblin Is A Loop With
+Tools And Connectors). Behavior lives in `src/agent/tools/watch.ts`,
+`src/watches.ts` and `src/watch-observer.ts`.
 
-- **Targets.** One per watch: a T3 Code thread id, a GitHub PR
-  (`repository`, `number`), or a time (`at`, in the future and within 90
-  days). Adding a watch reads a baseline at once: the thread's status,
-  latest run and item count, or the PR's state, head and checks. A thread
-  or PR it cannot read is refused at add, not later.
-- **When it fires.** A thread fires when its cursor moves and it is not
-  working (its run ended, or it waits for input), or when T3 says it is
-  gone. A PR fires when it merges or closes, or when its checks all
-  finish with a result different from the baseline. A time fires once it
-  has passed.
-- **Once, then done.** A watch fires one durable wake and ends. Goblin
-  adds another to keep following. `list` and `cancel` act only on the
-  calling conversation's watches; a conversation holds at most 32 active
-  watches.
-- **The wake.** The observer (`src/watch-observer.ts`) runs every 60
-  seconds. A fire records the wake and marks the watch `fired` in one
-  commit (`src/watches.ts`), so a restart cannot lose or double it. The
-  message is `[watch #<id> fired] <reason>` plus what changed. Goblin
-  reads the details itself (`t3 thread show`, `gh pr view`).
-- **Boundaries.** `src/t3.ts` reads threads and `src/github.ts` reads
-  PRs; a boundary error skips that watch for one pass and logs a line.
-  Goblin acts on T3 Code (start, send, take over) with the `t3` CLI
-  through its shell, not with a Goblin tool.
-
-The operator's desk is T3 Code; Goblin's delegated runs use its private
-hc core. The Goblin-side `herdr` tool for the operator's desk remains
-removed.
+- A watch fires once, then ends. Following longer is Goblin's call, by
+  adding another.
+- Goblin acts on T3 Code through the `t3` CLI in its shell, not through a
+  tool. `src/t3.ts` exists only so the observer can read threads.
+- Responsibilities, the work feed and reminder pushes were removed for
+  this. Their tables and `resp:` programs stay on disk, unread.
 
 ## Computer use: a `computer` agent type (operator, 2026-11-16)
 

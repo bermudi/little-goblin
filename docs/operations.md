@@ -268,10 +268,8 @@ app. Keep the relevant
    harness. See the named hc terminal and the completion notice back in
    chat. Check the `tool call` line with `"tool":"delegate"` and the related
    `hc rpc` lines in `goblin.log`.
-4. **`watch`:** Ask Goblin to watch a T3 Code thread, or a time two
-   minutes away. Within about a minute of the change, see a
-   `[watch #<id> fired]` turn in chat. Check the `watch added` and
-   `watch fired` lines in `goblin.log`.
+4. **`watch`:** Ask Goblin to watch a time two minutes away. See a
+   `[watch #<id> fired]` turn in chat and a `watch fired` line in `goblin.log`.
 
 The gate is `bun run typecheck` inside the release; the full suite gates
 merges via `.github/workflows/ci.yml`, not deploys. After the restart it

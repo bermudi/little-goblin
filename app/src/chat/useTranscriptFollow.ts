@@ -12,6 +12,12 @@ export const REPLY_HEAD_GAP_PX = 24;
 const UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
 const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
 
+export function initialFollow(after?: string): Follow {
+	return after === undefined
+		? { kind: "tail" }
+		: { kind: "reply", after, stale: new Set<Element>() };
+}
+
 export function distanceToEnd(el: Element): number {
 	return el.scrollHeight - el.scrollTop - el.clientHeight;
 }
@@ -75,8 +81,9 @@ export function endTurnFollow(follow: Follow): Follow {
 export function useTranscriptFollow(
 	scrollRef: RefObject<HTMLDivElement | null>,
 	contentRef: RefObject<HTMLDivElement | null>,
+	followAfter?: string,
 ) {
-	const follow = useRef<Follow>({ kind: "tail" });
+	const follow = useRef<Follow>(initialFollow(followAfter));
 	const ownTop = useRef<number | null>(null);
 	const [below, setBelow] = useState(false);
 

@@ -117,6 +117,10 @@ function AppShell() {
 	const [rollingChain, setRollingChain] = useState<AppConversationList["rolling"]["chain"]>([]);
 	const [rollingViewing, setRollingViewing] = useState<string | null>(null);
 	const [rollingRouted, setRollingRouted] = useState<string | null>(null);
+	const [rollingFollow, setRollingFollow] = useState<{
+		conversationId: string;
+		messageId: string;
+	} | null>(null);
 	// Every project, archived included — the rail shows only the active
 	// ones.
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
@@ -244,6 +248,7 @@ function AppShell() {
 		if (!(route.kind === "page" && route.page === "rolling")) {
 			setRollingViewing(null);
 			setRollingRouted(null);
+			setRollingFollow(null);
 		}
 	}, [route]);
 	useEffect(() => setHeaderRenaming(false), [current]);
@@ -1992,12 +1997,23 @@ function AppShell() {
 							onSeeded={() => {}}
 							onTurnDone={() => void refresh()}
 							onSendAccepted={() => void refresh()}
-							onRollingAccepted={(id) => {
+							onRollingAccepted={(id, _rolled, messageId) => {
 								if (id === rollingId) return;
 								setRollingViewing(null);
 								setRollingRouted(id);
+								setRollingFollow({ conversationId: id, messageId });
 								void refresh();
 							}}
+							followAfter={
+								rollingFollow?.conversationId === rollingId
+									? rollingFollow.messageId
+									: undefined
+							}
+							onFollowStarted={() =>
+								setRollingFollow((current) =>
+									current?.conversationId === rollingId ? null : current,
+								)
+							}
 							header={
 								<div className="rolling-history-bar">
 									{rollingViewing !== null && (

@@ -4,6 +4,7 @@ import {
 	afterUserScroll,
 	endTurnFollow,
 	followTarget,
+	initialFollow,
 	REPLY_HEAD_GAP_PX,
 	replyHead,
 	repliesAfter,
@@ -74,6 +75,26 @@ describe("replyHead", () => {
 });
 
 describe("followTarget", () => {
+	test("initialFollow arms reply-head follow only when given a message id", () => {
+		expect(initialFollow()).toEqual({ kind: "tail" });
+		const follow = initialFollow("u1");
+		expect(follow.kind).toBe("reply");
+		if (follow.kind !== "reply") return;
+		expect(follow.after).toBe("u1");
+		expect(follow.stale.size).toBe(0);
+		const long = transcript(`${asked}<div class="msg assistant" id="reply">answer</div>`, {
+			scrollHeight: 3000,
+			clientHeight: 800,
+			scrollTop: 1100,
+			headTop: 1500,
+		});
+		expect(followTarget(long, follow)).toEqual({
+			top: 1500 - REPLY_HEAD_GAP_PX,
+			next: { kind: "free" },
+		});
+		expect(followTarget(long, initialFollow())?.top).toBe(2200);
+	});
+
 	test("tail follows the end", () => {
 		const el = transcript(asked, { scrollHeight: 2000, clientHeight: 800, scrollTop: 900 });
 		expect(followTarget(el, { kind: "tail" })).toEqual({

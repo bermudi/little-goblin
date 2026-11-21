@@ -144,6 +144,7 @@ export function ChatView({
   conversationId,
   title,
   seed,
+  followAfter,
   staged,
   setStaged,
   stagedNotes,
@@ -158,6 +159,7 @@ export function ChatView({
   onBranched,
   rolling = false,
   onRollingAccepted,
+  onFollowStarted,
   header,
   now = Date.now(),
 }: {
@@ -167,6 +169,7 @@ export function ChatView({
   // The message an empty-state send parked while its conversation was
   // being created — delivered once, on mount.
   seed: UIMessage["parts"] | null;
+  followAfter?: string | undefined;
   // The staged-upload list App owns — carried in so the conversation's
   // composer renders the same entries the empty state's did.
   staged: StagedUpload[];
@@ -192,7 +195,8 @@ export function ChatView({
   // A branch opened a new conversation — the host refreshes and opens it.
   onBranched?: ((id: string) => void) | undefined;
   rolling?: boolean;
-  onRollingAccepted?: ((id: string, rolled: boolean) => void) | undefined;
+  onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
+  onFollowStarted?: (() => void) | undefined;
   header?: ReactNode;
   now?: number;
 }) {
@@ -244,6 +248,7 @@ export function ChatView({
       initialRateableIds={initial.rateableMessageIds}
       initialCompactions={initial.compactions}
       seed={seed}
+      followAfter={followAfter}
       staged={staged}
       setStaged={setStaged}
       stagedNotes={stagedNotes}
@@ -258,6 +263,7 @@ export function ChatView({
       onBranched={onBranched}
       rolling={rolling}
       onRollingAccepted={onRollingAccepted}
+      onFollowStarted={onFollowStarted}
       header={header}
       now={now}
     />
@@ -275,6 +281,7 @@ function Chat({
   initialRateableIds,
   initialCompactions,
   seed,
+  followAfter,
   staged,
   setStaged,
   stagedNotes,
@@ -289,6 +296,7 @@ function Chat({
   onBranched,
   rolling = false,
   onRollingAccepted,
+  onFollowStarted,
   header,
   now,
 }: {
@@ -305,6 +313,7 @@ function Chat({
   initialRateableIds: string[];
   initialCompactions: AppCompactionMark[];
   seed: UIMessage["parts"] | null;
+  followAfter?: string | undefined;
   staged: StagedUpload[];
   setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
   stagedNotes: StagedNote[];
@@ -321,7 +330,8 @@ function Chat({
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
   rolling?: boolean;
-  onRollingAccepted?: ((id: string, rolled: boolean) => void) | undefined;
+  onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
+  onFollowStarted?: (() => void) | undefined;
   header?: ReactNode;
   now: number;
 }) {
@@ -610,7 +620,7 @@ function Chat({
     n: 0,
   });
   const contentRef = useRef<HTMLDivElement>(null);
-  const follow = useTranscriptFollow(scrollRef, contentRef);
+  const follow = useTranscriptFollow(scrollRef, contentRef, followAfter);
   const [eventsLive, setEventsLive] = useState(false);
   const [submitPending, setSubmitPending] = useState(false);
   const [settledTailId, setSettledTailId] = useState<string | null>(null);
@@ -667,7 +677,11 @@ function Chat({
     [gate],
   );
 
-  const postChat = async (body: Record<string, unknown>, routeRolling = false) => {
+  const postChat = async (
+    body: Record<string, unknown>,
+    routeRolling = false,
+    postedMessageId?: string,
+  ) => {
     const response = await fetch("/api/app/chat", {
       method: "POST",
       headers: {
@@ -686,8 +700,8 @@ function Chat({
       rolled?: unknown;
     };
     onSendAccepted?.();
-    if (rolling && typeof result.conversationId === "string")
-      onRollingAccepted?.(result.conversationId, result.rolled === true);
+    if (rolling && typeof result.conversationId === "string" && postedMessageId !== undefined)
+      onRollingAccepted?.(result.conversationId, result.rolled === true, postedMessageId);
     return result;
   };
   const submit = async (
@@ -721,7 +735,7 @@ function Chat({
     }
     setSubmitPending(true);
     try {
-      const result = await postChat({ message: optimistic, whenBusy }, rolling);
+      const result = await postChat({ message: optimistic, whenBusy }, rolling, optimistic.id);
       if (typeof result.pendingId === "string") {
         setMessages((current) => current.filter((item) => item.id !== optimistic.id));
         setPendingItems((current) =>
@@ -779,6 +793,7 @@ function Chat({
 
   // A seed arrives once (empty-state send → conversation created → this view mounts).
   const seeded = useRef(false);
+  const followStarted = useRef(false);
   const submitSeed = useEffectEvent((parts: UIMessage["parts"]) => submit({ parts }));
   useEffect(() => {
     if (seeded.current || seed === null || seed.length === 0) return;
@@ -786,6 +801,11 @@ function Chat({
     onSeeded();
     void submitSeed(seed).catch((err: unknown) => console.error("Couldn't submit seeded message", err));
   }, [seed, onSeeded]);
+  useEffect(() => {
+    if (followAfter === undefined || followStarted.current) return;
+    followStarted.current = true;
+    onFollowStarted?.();
+  }, [followAfter, onFollowStarted]);
 
   // The retry affordance belongs to the newest answer — anything older
   // gets copy/read only.
@@ -799,6 +819,11 @@ function Chat({
   // them onto displayed; marks deeper than the loaded range hold
   // until their page arrives.
   const displayed = useMemo(() => [...older, ...messages], [older, messages]);
+  const idleWithReply =
+    !eventsLive && !submitPending && displayed.at(-1)?.role === "assistant";
+  useEffect(() => {
+    if (idleWithReply) follow.endTurn();
+  }, [idleWithReply, follow]);
   const viewMarks = useMemo(
     () =>
       marks

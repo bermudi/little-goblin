@@ -38,17 +38,6 @@ const rowSchema = z.object({
 	version: z.number().int().nonnegative(),
 });
 
-export function ensureIssueSchema(db: Database): void {
-	db.run(`
-		CREATE TABLE IF NOT EXISTS responsibility_issues (
-			responsibility_id TEXT PRIMARY KEY REFERENCES responsibilities(responsibility_id),
-			issue_json TEXT NOT NULL,
-			readiness_json TEXT,
-			notified_key TEXT,
-			version INTEGER NOT NULL DEFAULT 0
-		)`);
-}
-
 function fromRow(raw: unknown): IssueWatch {
 	const row = rowSchema.parse(raw);
 	return {
@@ -151,7 +140,7 @@ export interface ReadinessObserverDeps {
 	issues: IssueStore;
 	pump(): void;
 	read(issue: GithubIssue): Promise<PrReadiness>;
-	now?: (() => Date) | undefined;
+	now(): Date;
 }
 
 export interface ReadinessObserver {
@@ -166,8 +155,7 @@ function due(watch: IssueWatch, now: Date): boolean {
 }
 
 export function makeReadinessObserver(deps: ReadinessObserverDeps): ReadinessObserver {
-	const { db, resps, wakes, issues, pump, read } = deps;
-	const now = (): Date => deps.now?.() ?? new Date();
+	const { db, resps, wakes, issues, pump, read, now } = deps;
 
 	function settle(watch: IssueWatch, readiness: PrReadiness): boolean {
 		let woke = false;

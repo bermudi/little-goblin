@@ -527,13 +527,14 @@ async function boot() {
 	// record seam — both exist only here, past the wire. Boot recovery
 	// runs before any new traffic: a child cut by the restart settles
 	// failed and its parent's wake is durable.
+	const wallClock = (): Date => new Date();
 	const agentChildren = startAgentChildren({
 		store,
 		runtime,
 		record: (input) => delivery.dispatcher.record(input),
 		bell: (conv) => delivery.wakeDeps.bell(conv),
 		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
-		now: () => new Date(),
+		now: wallClock,
 		desktops: () => desktops,
 		responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
 		settled: (child, status, result) => fileAgentChildReport(responsibilities, child, status, result),
@@ -644,6 +645,7 @@ async function boot() {
 		issues: makeIssueStore(store.db),
 		pump: () => delivery.dispatcher.pump(),
 		read: makeGithubReadiness(),
+		now: wallClock,
 	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {

@@ -9,7 +9,6 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { followupSchema, silenceFollowup } from "./responsibility-followup.ts";
 import { ensureReportsSchema } from "./responsibility-reports.ts";
-import { ensureIssueSchema } from "./responsibility-readiness.ts";
 import {
 	UNREACHABLE_POLLS,
 	understandingSchema,
@@ -346,4 +345,15 @@ function migrateLegacyStatuses(db: Database): void {
 	}).immediate();
 	if (migrated > 0)
 		log.info("responsibility legacy statuses migrated to reports", { rows: migrated });
+}
+
+function ensureIssueSchema(db: Database): void {
+	db.run(`
+		CREATE TABLE IF NOT EXISTS responsibility_issues (
+			responsibility_id TEXT PRIMARY KEY REFERENCES responsibilities(responsibility_id),
+			issue_json TEXT NOT NULL,
+			readiness_json TEXT,
+			notified_key TEXT,
+			version INTEGER NOT NULL DEFAULT 0
+		)`);
 }

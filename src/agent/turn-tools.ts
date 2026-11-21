@@ -43,7 +43,13 @@ import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
-import { INNER_LOOP_DEFAULT, innerLoopBranch, runGit, startInnerLoop } from "../inner-loop.ts";
+import {
+	INNER_LOOP_DEFAULT,
+	innerLoopBranch,
+	makeInnerLoopStarts,
+	runGit,
+	startInnerLoop,
+} from "../inner-loop.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
@@ -387,8 +393,10 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 									throw new Error(`project ${projectId} has no dir — cannot start its inner loop`);
 								}
 								return startInnerLoop(
-									{ t3: deps.t3, git: runGit },
+									{ t3: deps.t3, git: runGit, starts: makeInnerLoopStarts(deps.store.db) },
 									{
+										handoverKey: start.handoverKey,
+										authorize: start.authorize,
 										projectDir: dir,
 										brief: start.brief,
 										branch: innerLoopBranch(start.issue, start.branch),

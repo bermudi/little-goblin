@@ -147,11 +147,9 @@ export interface ReadinessObserver {
 	observe(): Promise<void>;
 }
 
-function due(watch: IssueWatch, now: Date): boolean {
+function settledForGood(watch: IssueWatch): boolean {
 	const last = watch.readiness;
-	if (last === null) return true;
-	if (last.result.kind === "no-pr" && last.result.issueClosed) return false;
-	return now.getTime() - Date.parse(last.observedAt) >= READINESS_OBSERVE_MS;
+	return last !== null && last.result.kind === "no-pr" && last.result.issueClosed;
 }
 
 export function makeReadinessObserver(deps: ReadinessObserverDeps): ReadinessObserver {
@@ -217,7 +215,7 @@ export function makeReadinessObserver(deps: ReadinessObserverDeps): ReadinessObs
 		let woke = false;
 		let unexpected: { err: unknown } | null = null;
 		for (const watch of issues.watched()) {
-			if (resps.get(watch.responsibilityId)?.status !== "active" || !due(watch, now())) continue;
+			if (resps.get(watch.responsibilityId)?.status !== "active" || settledForGood(watch)) continue;
 			try {
 				const readiness = await read(watch.issue);
 				if (readiness.result.kind === "unavailable") {

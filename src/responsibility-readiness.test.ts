@@ -1,9 +1,11 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
+import { openDelegations } from "./delegations.ts";
 import { log, setLogFile } from "./log.ts";
-import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";
+import { readinessKey, type GithubIssue, type PrReadiness } from "./pr-readiness.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
 import { makeIssueStore, makeReadinessObserver, readinessReport } from "./responsibility-readiness.ts";
@@ -35,6 +37,7 @@ function rig(opts: { link?: boolean } = {}) {
 	if (opts.link !== false) issues.link(id, ISSUE);
 	let clock = Date.now();
 	const r = {
+		dbPath: join(home, "state", "goblin.sqlite"),
 		store,
 		resps,
 		wakes,
@@ -81,7 +84,7 @@ const noPr = (issueClosed: boolean): PrReadiness => ({
 });
 
 describe("pr readiness observer", () => {
-	test("an open issue with no PR yet is a silent baseline, and fresh observations are not re-read", async () => {
+	test("an open issue with no PR yet is a silent baseline", async () => {
 		const r = rig();
 		r.next = () => noPr(false);
 		await r.observe();
@@ -89,9 +92,20 @@ describe("pr readiness observer", () => {
 		expect(r.events()).toEqual([]);
 		expect(r.resps.reportsFor(r.id)).toEqual([]);
 		expect(r.pumps).toBe(0);
-		r.advance(30_000);
+	});
+
+	test("a slow GitHub read does not skip the next tick", async () => {
+		const r = rig();
+		r.next = () => noPr(false);
+		const read = r.read;
+		r.read = async (issue) => {
+			r.advance(2_000);
+			return read(issue);
+		};
 		await r.observe();
-		expect(r.reads).toBe(1);
+		r.advance(58_000);
+		await r.observe();
+		expect(r.reads).toBe(2);
 	});
 
 	test("each change in GitHub facts files one sourced report and one wake; unchanged facts wake nothing", async () => {
@@ -177,6 +191,20 @@ describe("pr readiness observer", () => {
 		const r = rig({ link: false });
 		await r.observe();
 		expect(r.reads).toBe(0);
+	});
+
+	test("an issue build started as a lead delegation keeps its watch after the upgrade", () => {
+		const r = rig({ link: false });
+		const seen = prReadinessFixture("pending");
+		openDelegations(r.dbPath);
+		new Database(r.dbPath).run(
+			`INSERT INTO delegations (id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at, responsibility_id, role, issue_json, readiness_json, readiness_notified_key)
+			VALUES (1, 'lead', 'claude', '/x', 't', 0, 0, 'a', 'w', 'p', 'done', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', ?, 'lead', ?, ?, ?)`,
+			[r.id, JSON.stringify(ISSUE), JSON.stringify(seen), readinessKey(seen)],
+		);
+		const issues = makeIssueStore(openStore(r.dbPath).db);
+		expect(issues.get(r.id)).toMatchObject({ issue: ISSUE, notifiedKey: readinessKey(seen) });
+		expect(issues.get(r.id)?.readiness?.result.kind).toBe("checked");
 	});
 
 	test("linking twice keeps the first issue", () => {

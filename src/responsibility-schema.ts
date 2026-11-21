@@ -314,6 +314,8 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 	}
 	ensureReportsSchema(db);
 	ensureIssueSchema(db);
+	ensureInnerLoopStartsSchema(db);
+	adoptLeadIssues(db);
 	migrateLegacyStatuses(db);
 }
 
@@ -356,4 +358,32 @@ function ensureIssueSchema(db: Database): void {
 			notified_key TEXT,
 			version INTEGER NOT NULL DEFAULT 0
 		)`);
+}
+
+function ensureInnerLoopStartsSchema(db: Database): void {
+	db.run(`
+		CREATE TABLE IF NOT EXISTS inner_loop_starts (
+			handover_key TEXT PRIMARY KEY,
+			thread_json TEXT NOT NULL
+		)`);
+}
+
+function adoptLeadIssues(db: Database): void {
+	const cols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(delegations)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!["role", "responsibility_id", "issue_json", "readiness_json", "readiness_notified_key"].every((c) => cols.has(c)))
+		return;
+	const adopted = db.run(`
+		INSERT INTO responsibility_issues (responsibility_id, issue_json, readiness_json, notified_key)
+		SELECT d.responsibility_id, d.issue_json, d.readiness_json, d.readiness_notified_key
+		FROM delegations d
+		WHERE d.role = 'lead' AND d.issue_json IS NOT NULL AND d.responsibility_id IS NOT NULL
+			AND EXISTS (SELECT 1 FROM responsibilities r WHERE r.responsibility_id = d.responsibility_id)
+		ORDER BY d.created_at DESC
+		ON CONFLICT(responsibility_id) DO NOTHING`).changes;
+	if (adopted > 0) log.info("lead delegation issues adopted by responsibilities", { adopted });
 }

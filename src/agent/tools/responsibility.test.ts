@@ -175,7 +175,7 @@ describe("responsibility tool", () => {
 		};
 		const out = await r.execute(input);
 		expect(out.created).toBe(true);
-		expect(starts).toEqual([{ brief: "fix issue 7", branch: undefined, issue: input.issue }]);
+		expect(starts).toMatchObject([{ handoverKey: "handover:test", brief: "fix issue 7", branch: undefined, issue: input.issue }]);
 		const id = (out.responsibility as { responsibilityId: string }).responsibilityId;
 		expect(r.resps.attachmentsFor(id).map((a) => a.target.agentName)).toEqual(["mcp:inner"]);
 		expect(makeIssueStore(r.store.db).get(id)?.issue).toEqual(input.issue);

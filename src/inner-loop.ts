@@ -1,3 +1,5 @@
+import type { Database } from "bun:sqlite";
+import { z } from "zod";
 import { log } from "./log.ts";
 import type { GithubIssue } from "./pr-readiness.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
@@ -12,6 +14,8 @@ export interface InnerLoopModel {
 export const INNER_LOOP_DEFAULT: InnerLoopModel = { provider: "claudeAgent", model: "claude-opus-5-5" };
 
 export interface InnerLoopStart {
+	handoverKey: string;
+	authorize(): void;
 	projectDir: string;
 	brief: string;
 	branch: string;
@@ -22,11 +26,41 @@ export interface InnerLoopStart {
 export interface InnerLoopDeps {
 	t3: Pick<T3, "startThread">;
 	git(dir: string, args: string[]): Promise<string>;
+	starts: InnerLoopStarts;
 }
 
 export interface InnerLoopThread extends T3StartResult {
 	base: string;
 	branch: string;
+}
+
+export interface InnerLoopStarts {
+	get(handoverKey: string): InnerLoopThread | null;
+	record(handoverKey: string, thread: InnerLoopThread): void;
+}
+
+const startedSchema = z.object({
+	threadId: z.string(),
+	projectId: z.string(),
+	runId: z.string(),
+	base: z.string(),
+	branch: z.string(),
+});
+
+export function makeInnerLoopStarts(db: Database): InnerLoopStarts {
+	const qGet = db.query("SELECT thread_json FROM inner_loop_starts WHERE handover_key = ?");
+	const qRecord = db.query(
+		"INSERT INTO inner_loop_starts (handover_key, thread_json) VALUES (?, ?) ON CONFLICT(handover_key) DO NOTHING",
+	);
+	return {
+		get(handoverKey) {
+			const row = z.object({ thread_json: z.string() }).nullable().parse(qGet.get(handoverKey));
+			return row === null ? null : startedSchema.parse(JSON.parse(row.thread_json));
+		},
+		record(handoverKey, thread) {
+			qRecord.run(handoverKey, JSON.stringify(startedSchema.parse(thread)));
+		},
+	};
 }
 
 export const VERIFIER_CONTRACT = [
@@ -78,8 +112,18 @@ export async function defaultBase(git: InnerLoopDeps["git"], dir: string): Promi
 }
 
 export async function startInnerLoop(deps: InnerLoopDeps, input: InnerLoopStart): Promise<InnerLoopThread> {
+	const prior = deps.starts.get(input.handoverKey);
+	if (prior !== null) {
+		log.info("inner loop start reused", {
+			project: input.projectDir,
+			thread: prior.threadId,
+			branch: prior.branch,
+		});
+		return prior;
+	}
 	const base = await defaultBase(deps.git, input.projectDir);
 	await deps.git(input.projectDir, ["fetch", "origin", base.slice("origin/".length)]);
+	input.authorize();
 	const started = await deps.t3.startThread({
 		project: input.projectDir,
 		message: innerLoopMessage(input.brief, input.issue),
@@ -89,6 +133,8 @@ export async function startInnerLoop(deps: InnerLoopDeps, input: InnerLoopStart)
 		worktree: base,
 		branch: input.branch,
 	});
+	const thread: InnerLoopThread = { ...started, base, branch: input.branch };
+	deps.starts.record(input.handoverKey, thread);
 	log.info("inner loop started", {
 		project: input.projectDir,
 		thread: started.threadId,
@@ -99,5 +145,5 @@ export async function startInnerLoop(deps: InnerLoopDeps, input: InnerLoopStart)
 		model: input.model.model,
 		...(input.issue !== undefined ? { repository: input.issue.repository, issue: input.issue.number } : {}),
 	});
-	return { ...started, base, branch: input.branch };
+	return thread;
 }

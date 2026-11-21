@@ -128,21 +128,32 @@ describe.skipIf(!LIVE)("t3 live wire", () => {
 		expect((err as T3Error).code).toBe("thread_not_found");
 	});
 
-	test("a worktree start from a base branch is listed at once with its worktree", async () => {
-		execSync("git -c user.name=probe -c user.email=probe@example.invalid commit -q --allow-empty -m seed", { cwd: projectDir });
-		const base = execSync("git symbolic-ref --short HEAD", { cwd: projectDir, encoding: "utf8" }).trim();
-		const started = await t3.startThread({
-			project: projectDir,
-			message: "Probe four. Reply with: probe-ack-4",
-			provider: PROVIDER,
-			model: MODEL,
-			worktree: base,
-			branch: "goblin-drift/worktree",
-		});
-		const row = (await t3.listThreads(projectDir)).find((t) => t.threadId === started.threadId);
-		expect(row).toBeDefined();
-		expect(row?.worktreePath).toBeTruthy();
-		expect(row?.worktreePath).not.toBe(projectDir);
+	test("a worktree start from the remote default branch is listed at once with its worktree", async () => {
+		const origin = mkdtempSync(join(tmpdir(), "t3-drift-origin-"));
+		try {
+			execSync("git -c user.name=probe -c user.email=probe@example.invalid commit -q --allow-empty -m seed", { cwd: projectDir });
+			const branch = execSync("git symbolic-ref --short HEAD", { cwd: projectDir, encoding: "utf8" }).trim();
+			execSync(`git init -q --bare ${JSON.stringify(origin)}`);
+			execSync(`git remote add origin ${JSON.stringify(origin)}`, { cwd: projectDir });
+			execSync(`git push -q origin ${branch}`, { cwd: projectDir });
+			execSync("git remote set-head origin --auto", { cwd: projectDir });
+			const base = execSync("git symbolic-ref --short refs/remotes/origin/HEAD", { cwd: projectDir, encoding: "utf8" }).trim();
+			expect(base).toBe(`origin/${branch}`);
+			const started = await t3.startThread({
+				project: projectDir,
+				message: "Probe four. Reply with: probe-ack-4",
+				provider: PROVIDER,
+				model: MODEL,
+				worktree: base,
+				branch: "goblin-drift/worktree",
+			});
+			const row = (await t3.listThreads(projectDir)).find((t) => t.threadId === started.threadId);
+			expect(row).toBeDefined();
+			expect(row?.worktreePath).toBeTruthy();
+			expect(row?.worktreePath).not.toBe(projectDir);
+		} finally {
+			rmSync(origin, { recursive: true, force: true });
+		}
 	});
 
 	test("list of the throwaway project sees its threads", async () => {

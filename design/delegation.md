@@ -269,8 +269,11 @@ Rulings:
   without asking first: `responsibility accept` with `issue` and
   `start:{brief, branch?}` resolves `origin/HEAD`, fetches it, starts
   the thread and binds it as the responsibility's attachment in the same
-  call. A retried accept with the same handover key finds the existing
-  responsibility and starts nothing. The thread's own agents are its
+  call. Authority is re-checked after the git work, right before the
+  start. The start is recorded under the handover key
+  (`inner_loop_starts`) as soon as T3 Code returns it, so a retried
+  accept reuses that thread even when binding failed; once the
+  responsibility exists, a retry starts nothing. The thread's own agents are its
   acts, not goblin's; goblin's view of them is the thread and its PR.
   Rework and the post-green-light merge go to the same thread
   (`responsibility send`), so one worker stays accountable per issue.
@@ -280,8 +283,8 @@ Rulings:
   {provider, model, options?}` in config overrides the default model.
   `delegate` no longer has a `lead` role: it runs only harnesses the
   operator names, with `delegation.defaults.default` (pi on prod) as
-  the default. Accepted risk: a crash between the thread start and the
-  accept commit leaves an unbound thread in T3 Code.
+  the default. Accepted risk: a crash between T3 Code's start and its
+  record leaves an unbound thread in T3 Code.
 
 - **PR readiness is observed on the responsibility, not inferred
   (operator, 2026-11-12, #406; moved off the lead 2026-11-20, #745).**
@@ -323,8 +326,9 @@ Rulings:
   malformed, or changes inconsistently during the read.
 
   `src/responsibility-readiness.ts` observes each active responsibility
-  with a linked issue at most once a minute, on the responsibility
-  observer's ticker — no model and no second scheduler. After the GitHub
+  with a linked issue once per tick of the responsibility observer's
+  60 s ticker — no model and no second scheduler; the ticker alone sets
+  the cadence, so a slow read never skips the next tick. After the GitHub
   read it re-checks the responsibility in the same transaction as every
   write: a pause, cancel or close during the read wins. The first
   observation of an open issue with no PR yet is a silent baseline.
@@ -339,9 +343,12 @@ Rulings:
   the next tick. Watching stops when the issue closes with no PR or the
   responsibility leaves `active`; an operator correction keeps the link.
   No model polls GitHub while CI runs. The one-shot read-only probe is
-  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`. Delegation
-  rows keep their old `issue_json`/`readiness_*` columns unread; dropping
-  them would drop data.
+  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`. On store
+  open, a lead delegation's issue and last notified readiness are copied
+  onto its responsibility once, so an issue build started before #745
+  keeps its watch without replaying unchanged facts. Delegation rows
+  keep their old `issue_json`/`readiness_*` columns; dropping them
+  would drop data.
 
 Still out: subagent fleets inside goblin (a delegation is one external
 agent per task, not an orchestrator), goblin-managed nesting (an inner loop's own

@@ -151,7 +151,13 @@ export interface ResponsibilityToolDeps {
 	 *  Absent = every managed send refuses identity-unenforceable. */
 	guardedSend?: ManagedSend | undefined;
 	startInnerLoop?:
-		| ((input: { brief: string; branch: string | undefined; issue: GithubIssue | undefined }) => Promise<{
+		| ((input: {
+				handoverKey: string;
+				authorize(): void;
+				brief: string;
+				branch: string | undefined;
+				issue: GithubIssue | undefined;
+		  }) => Promise<{
 				threadId: string;
 			}>)
 		| undefined;
@@ -331,6 +337,8 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 							return { error: "the inner loop is not wired — this project has no T3 start edge" };
 						}
 						const started = await deps.startInnerLoop({
+							handoverKey,
+							authorize: checkAuthority,
 							brief: input.start.brief,
 							branch: input.start.branch,
 							issue: input.issue,

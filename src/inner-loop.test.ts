@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import {
 	defaultBase,
 	INNER_LOOP_DEFAULT,
 	innerLoopBranch,
 	innerLoopMessage,
+	makeInnerLoopStarts,
 	runGit,
 	startInnerLoop,
+	type InnerLoopDeps,
+	type InnerLoopStart,
 } from "./inner-loop.ts";
 import type { T3StartInput } from "./t3.ts";
 import { tmpDir } from "./testkit.ts";
@@ -28,27 +32,34 @@ async function clonedRepo(): Promise<string> {
 }
 
 describe("inner loop start", () => {
-	test("starts the T3 thread in a fresh worktree from the fetched default branch", async () => {
-		const dir = await clonedRepo();
+	function rig(dir: string) {
 		const starts: T3StartInput[] = [];
-		const out = await startInnerLoop(
-			{
-				git: runGit,
-				t3: {
-					startThread: async (input) => {
-						starts.push(input);
-						return { threadId: "t-1", projectId: "p-1", runId: "r-1" };
-					},
+		const deps: InnerLoopDeps = {
+			git: runGit,
+			starts: makeInnerLoopStarts(openStore(join(tmpDir(), "goblin.sqlite")).db),
+			t3: {
+				startThread: async (input) => {
+					starts.push(input);
+					return { threadId: `t-${starts.length}`, projectId: "p-1", runId: "r-1" };
 				},
 			},
-			{
-				projectDir: dir,
-				brief: "fix the bug",
-				branch: "issue/7",
-				issue: { repository: "owner/repo", number: 7 },
-				model: INNER_LOOP_DEFAULT,
-			},
-		);
+		};
+		const input: InnerLoopStart = {
+			handoverKey: "h1",
+			authorize: () => {},
+			projectDir: dir,
+			brief: "fix the bug",
+			branch: "issue/7",
+			issue: { repository: "owner/repo", number: 7 },
+			model: INNER_LOOP_DEFAULT,
+		};
+		return { starts, deps, input };
+	}
+
+	test("starts the T3 thread in a fresh worktree from the fetched default branch", async () => {
+		const dir = await clonedRepo();
+		const { starts, deps, input } = rig(dir);
+		const out = await startInnerLoop(deps, input);
 		expect(out).toMatchObject({ threadId: "t-1", base: "origin/trunk", branch: "issue/7" });
 		expect(starts).toHaveLength(1);
 		expect(starts[0]).toMatchObject({
@@ -61,6 +72,31 @@ describe("inner loop start", () => {
 		expect(starts[0]?.message).toStartWith("fix the bug\n");
 		expect(starts[0]?.message).toContain("Closes #7");
 		expect(starts[0]?.message).toContain("Checked-SHA:");
+	});
+
+	test("a retried handover reuses the thread it already started", async () => {
+		const dir = await clonedRepo();
+		const { starts, deps, input } = rig(dir);
+		const first = await startInnerLoop(deps, input);
+		const again = await startInnerLoop(deps, input);
+		expect(again).toEqual(first);
+		expect(starts).toHaveLength(1);
+		await startInnerLoop(deps, { ...input, handoverKey: "h2", branch: "issue/7-b" });
+		expect(starts).toHaveLength(2);
+	});
+
+	test("authority lost during the git work starts nothing", async () => {
+		const dir = await clonedRepo();
+		const { starts, deps, input } = rig(dir);
+		const fenced = startInnerLoop(deps, {
+			...input,
+			authorize: () => {
+				throw new Error("conversation fenced");
+			},
+		});
+		await expect(fenced).rejects.toThrow("conversation fenced");
+		expect(starts).toHaveLength(0);
+		expect(deps.starts.get("h1")).toBeNull();
 	});
 
 	test("a repo without a known default branch fails loud with the fix", async () => {

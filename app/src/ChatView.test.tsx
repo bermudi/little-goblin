@@ -2639,6 +2639,75 @@ describe("ChatView edit and branch", () => {
     ).toHaveLength(1);
   });
 
+  test("Retry turn-end reconciliation keeps only the rewound reply", async () => {
+    let stored: UIMessage[] = [
+      userMsg("u1", "hello"),
+      assistantMsg("a1", "old reply"),
+    ];
+    let eventsController!: ReadableStreamDefaultController<Uint8Array>;
+    let retryPosts = 0;
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        eventsController = controller;
+        controller.enqueue(new TextEncoder().encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (url.endsWith("/messages")) {
+          return jsonResponse({
+            messages: stored,
+            ratings: [],
+            rateableMessageIds: stored.filter((message) => message.role === "assistant").map((message) => message.id),
+          });
+        }
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url === "/api/app/chat") {
+          const body = JSON.parse(String(init?.body)) as {
+            conversationId: string;
+            retry?: boolean;
+          };
+          expect(body).toEqual({ conversationId: "app/meta-01", retry: true });
+          retryPosts++;
+          stored = [userMsg("u1", "hello"), assistantMsg("a2", "new reply")];
+          return jsonResponse({ submitted: true }, 202);
+        }
+        return jsonResponse(configFallback());
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await settle(() => dom.container.textContent?.includes("old reply") ?? false);
+
+    const retry = dom.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry"]',
+    );
+    expect(retry).not.toBeNull();
+    await act(async () => {
+      retry!.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+    });
+    await settle(() => retryPosts === 1);
+    await act(async () => {
+      eventsController.enqueue(new TextEncoder().encode('data: {"type":"turn-end"}\n\n'));
+    });
+    await settle(() => dom.container.textContent?.includes("new reply") ?? false);
+
+    expect(dom.container.textContent).toContain("new reply");
+    expect(dom.container.textContent).not.toContain("old reply");
+    expect(dom.container.querySelectorAll(".msg.user")).toHaveLength(1);
+    expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
+  });
+
   test("an edit that fails after the server committed keeps the committed transcript — the dropped tail stays dropped", async () => {
     let messagesCalls = 0;
     let editedId: string | null = null;

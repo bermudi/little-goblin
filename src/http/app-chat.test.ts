@@ -763,9 +763,18 @@ describe("app chat", () => {
 	});
 
 	test("retry re-runs the newest user message without duplicating it", async () => {
-		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const model = sdkScript();
+		model.script(
+			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "retried reply" }] },
+		);
+		const { http, call, store, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+		});
 		try {
 			await createAndChat(call);
+			const originalAssistantId = store.history("app/chat-01")[1]!.id;
 			const res = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -773,9 +782,169 @@ describe("app chat", () => {
 			});
 			expect(res.status).toBe(202);
 			expect(await res.json()).toEqual({ submitted: true });
-			await waitUntil(() => store.history("app/chat-01").length === 3, "retry settles");
-			const roles = store.history("app/chat-01").map((m) => m.role);
-			expect(roles).toEqual(["user", "assistant", "assistant"]);
+			await waitUntil(
+				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
+				"retry settles",
+			);
+			const history = store.history("app/chat-01");
+			expect(history.map((message) => message.role)).toEqual(["user", "assistant"]);
+			expect(history[0]!.id).toBe("m1");
+			expect(history[1]!.parts).toContainEqual(
+				expect.objectContaining({ type: "text", text: "retried reply" }),
+			);
+			expect(history[1]!.id).not.toBe(originalAssistantId);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("retry removes the complete old tail after a tool call", async () => {
+		const work = tmpDir("goblin-app-retry-tool-");
+		writeFileSync(join(work, "old.txt"), "old tool artifact");
+		const model = sdkScript();
+		model.script(
+			{
+				kind: "reply",
+				parts: [
+					{
+						type: "tool-call",
+						toolName: "send_file",
+						input: { path: "old.txt", caption: "old artifact" },
+					},
+				],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "old final reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "new retry reply" }] },
+		);
+		const { http, call, store, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+			makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
+				send_file: sendFileTool(work, deliverFile!),
+			}),
+		});
+		try {
+			await createAndChat(call);
+			await waitUntil(
+				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
+				"tool reply settles",
+			);
+			const oldHistory = store.historyDetail("app/chat-01");
+			expect(oldHistory.length).toBeGreaterThan(2);
+			expect(oldHistory.flatMap((event) => event.message.parts).some((part) =>
+				part.type === "data-attachment",
+			)).toBe(true);
+
+			const retry = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
+			});
+			expect(retry.status).toBe(202);
+			await retry.json();
+			await waitUntil(
+				() => model.calls() === 3 && !runtime.busy("app/chat-01"),
+				"retried tool turn settles",
+			);
+			const history = store.historyDetail("app/chat-01");
+			expect(history.map((event) => event.message.role)).toEqual(["user", "assistant"]);
+			expect(history.flatMap((event) => event.message.parts).some((part) =>
+				part.type === "data-attachment",
+			)).toBe(false);
+			expect(history[1]!.message.parts).toContainEqual(
+				expect.objectContaining({ type: "text", text: "new retry reply" }),
+			);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("retry sends the same model messages as the original turn", async () => {
+		const model = sdkScript();
+		model.script(
+			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "retried reply" }] },
+		);
+		const { http, call, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+		});
+		try {
+			await createAndChat(call, "cache-stable question");
+			const originalMessages: unknown = JSON.parse(model.requests()[0]!);
+			const retry = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
+			});
+			expect(retry.status).toBe(202);
+			await retry.json();
+			await waitUntil(
+				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
+				"retry request settles",
+			);
+			const retryMessages: unknown = JSON.parse(model.requests()[1]!);
+			expect(retryMessages).toEqual(originalMessages);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("the next turn sees only the replacement reply before its new user message", async () => {
+		const model = sdkScript();
+		model.script(
+			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "retried reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next reply" }] },
+		);
+		const { http, call, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+		});
+		try {
+			await createAndChat(call, "first question");
+			const retry = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
+			});
+			expect(retry.status).toBe(202);
+			await retry.json();
+			await waitUntil(
+				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
+				"retry settles",
+			);
+
+			const next = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: {
+						id: "m2",
+						role: "user",
+						parts: [{ type: "text", text: "next question" }],
+					},
+				}),
+			});
+			expect(next.status).toBe(202);
+			await next.json();
+			await waitUntil(
+				() => model.calls() === 3 && !runtime.busy("app/chat-01"),
+				"next turn settles",
+			);
+			const messages = JSON.parse(model.requests()[2]!) as {
+				role: string;
+				content: { type: string; text?: string }[];
+			}[];
+			const chatMessages = messages.filter((message) => message.role !== "system");
+			expect(chatMessages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+			const assistantTexts = chatMessages
+				.filter((message) => message.role === "assistant")
+				.flatMap((message) =>
+					message.content.filter((part) => part.type === "text").map((part) => part.text),
+				);
+			expect(assistantTexts).toEqual(["retried reply"]);
 		} finally {
 			http.stop();
 		}

@@ -274,10 +274,24 @@ export async function handleChatRoute(
 			if (lastUser === undefined) {
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
-			log.info("app retry", { conversation: convId, message: lastUser.message.id });
+			const rewound = store.editUserMessage(convId, lastUser.message.id, lastUser.message);
+			if (rewound === null) {
+				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
+			}
+			log.info("app retry rewound", {
+				conversation: convId,
+				message: lastUser.message.id,
+				cutSeq: rewound.cutSeq,
+				seq: rewound.seq,
+				events: rewound.events,
+				compactions: rewound.compactions,
+				contexts: rewound.contexts,
+				projections: rewound.projections,
+				ratings: rewound.ratings,
+			});
 			const sink = appConversationSink(convId, media, notifyUnwatched);
 			try {
-				runtime.submitPersisted(conv, lastUser.message, sink, lastUser.seq);
+				runtime.submitPersisted(conv, lastUser.message, sink, rewound.seq);
 			} catch (err) {
 				log.error("app retry submit failed", err, { conversation: convId });
 				return Response.json(

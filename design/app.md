@@ -252,7 +252,7 @@ the tail: the browser clamps the scroll position when content above
 shrinks (the "…" row unmounting), and that is not the operator's input.
 Content growth re-sticks in the same frame through a ResizeObserver, not
 an effect a frame late. Replies already below the asked message when the
-follow starts (the old reply a retry replaces) are never its head.
+follow starts are never its head.
 The transcript turns the browser's scroll anchoring off
 (`overflow-anchor: none`, as t3code's timeline does): the follow and the
 older-page restore own the scroll position, and anchoring kept the view
@@ -530,6 +530,9 @@ non-destructive path, so the prompt names it. Nothing keeps the old tail:
 that is the point, and it is why the write is one transaction. Rendering is
 the bubble's own inline textarea; non-text parts (attachments, note and
 skill chips) ride into the replacement, only text is rewritten.
+
+Retry is an edit with the same text: the same rewind, so the reply it
+replaces is deleted, not kept above the new one (operator, 2026-11-21).
 
 **The cut is causal, not positional.** Events are cut at
 `COALESCE(anchor_seq, seq)`: a late answer to an earlier question belongs to

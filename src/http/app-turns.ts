@@ -1,6 +1,7 @@
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { z } from "zod";
 import { log } from "../log.ts";
+import { within } from "../timing.ts";
 import { appSseWriter } from "./app-sse.ts";
 import {
 	type AppChannelDeps,
@@ -158,16 +159,7 @@ export async function handleTurnsRoute(
 		}
 		const { stopped, active } = runtime.stop(convId.id);
 		const started = Date.now();
-		let settled = true;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const timeout = new Promise<void>((resolve) => {
-			timer = setTimeout(() => {
-				settled = false;
-				resolve();
-			}, STOP_SETTLE_TIMEOUT_MS);
-		});
-		await Promise.race([active, timeout]);
-		clearTimeout(timer);
+		const settled = (await within(active, STOP_SETTLE_TIMEOUT_MS)).kind === "settled";
 		const waitedMs = Date.now() - started;
 		log.info("app stop", { conversation: convId.id, stopped, settled, waitedMs });
 		if (!settled) {

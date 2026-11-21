@@ -18,5 +18,7 @@ export function loadOpenFolders(): Set<string> {
 export function saveOpenFolders(ids: ReadonlySet<string>): void {
 	try {
 		localStorage.setItem(KEY, JSON.stringify([...ids]));
-	} catch {}
+	} catch {
+		return;
+	}
 }

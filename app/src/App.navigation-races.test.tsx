@@ -381,20 +381,20 @@ describe("navigation races: late completions", () => {
 			),
 		);
 
-	const openPane = async (label: "Chats" | "Projects" | "Notes") =>
+	const openPane = async (label: "Chats" | "Notes") =>
 		click(
 			[...container.querySelectorAll(".gutter button")].find(
 				(b) => b.getAttribute("aria-label") === label,
 			),
 		);
+	const openProject = async (name: string) => {
+		await openPane("Chats");
+		await click(container.querySelector(`[aria-label="New chat in ${name}"]`));
+	};
 
 	const submitNewProject = async (name: string) => {
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects button")].find((b) =>
-				b.textContent?.endsWith("New project"),
-			),
-		);
+		await openPane("Chats");
+		await click(container.querySelector('.panel-action[aria-label="New project"]'));
 		const sheet = container.querySelector(".msheet form")!;
 		expect(sheet).not.toBeNull();
 		await typeInto(sheet.querySelector("input")!, name, win.HTMLInputElement.prototype);
@@ -548,20 +548,13 @@ describe("navigation races: late completions", () => {
 			);
 		});
 		await settle();
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
-		);
+		await openProject("Beta");
 		await typeInto(composer(), "Beta draft", win.HTMLTextAreaElement.prototype);
 		gate.resolve();
 		await settle();
 		expect(composer().value).toBe("Beta draft");
 		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find(
-				(b) => b.textContent === "Alpha",
-			),
-		);
+		await openProject("Alpha");
 		expect(composer().value).toBe("Alpha message");
 	});
 
@@ -578,15 +571,8 @@ describe("navigation races: late completions", () => {
 				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
 			);
 		});
-		await openPane("Projects");
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
-		);
-		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find(
-				(b) => b.textContent === "Alpha",
-			),
-		);
+		await openProject("Beta");
+		await openProject("Alpha");
 		await typeInto(composer(), "newer draft", win.HTMLTextAreaElement.prototype);
 		gate.resolve();
 		await settle();
@@ -702,11 +688,10 @@ describe("navigation races: late completions", () => {
 
 	test("opening the Projects index twice does not add a duplicate history entry", async () => {
 		await mount();
-		await openPane("Projects");
-		await click(container.querySelector(".panel-index"));
+		await openPage("Projects");
 		await waitFor(() => win.location.pathname === "/app/projects", "Projects index");
 		const length = win.history.length;
-		await click(container.querySelector(".panel-index"));
+		await openPage("Projects");
 		expect(win.history.length).toBe(length);
 	});
 

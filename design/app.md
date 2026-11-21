@@ -250,7 +250,9 @@ project page opens its folder, and which folders are open is kept per device
 in localStorage. A folder's + opens the project page, whose composer starts
 a chat in it. There is no Projects pane: the Projects glyph opens the
 all-projects page, and New project sits in the chats pane head. New project
-uses a folder-plus glyph so it never reads as New conversation.
+uses a folder-plus glyph so it never reads as New conversation. Which folders
+are open is a per-device preference, like the chat width: when storage is
+unavailable the rail only forgets it.
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 

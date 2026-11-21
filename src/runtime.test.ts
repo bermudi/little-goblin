@@ -20,9 +20,13 @@ import type { Config } from "./config-schema.ts";
 import { openNotes } from "./notes.ts";
 import { noteTool } from "./agent/tools/note.ts";
 import { openProjects } from "./projects.ts";
+import { projectWorkdir } from "./projects.ts";
+import { moveIntoProject } from "./conversation-move.ts";
+import { paths } from "./home-layout.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { toolNames } from "./agent/tools/mod.ts";
+import { bashTool } from "./agent/tools/bash.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { sendFileTool } from "./agent/tools/send.ts";
 import { withScript } from "./agent/tools/script.ts";
@@ -4778,6 +4782,196 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		expect(summaries.length).toBeGreaterThan(0);
 		expect(store.getCompaction(app.id)!.model).toBe("test/compact");
 	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("moving an app chat keeps its request prefix and tool definitions byte-identical", async () => {
+	const home = useHome("goblin-move-runtime-");
+	mkdirSync(join(home, "state"), { recursive: true });
+	const store = openStore(join(home, "state", "goblin.sqlite"));
+	const projects = openProjects(store);
+	const notes = openNotes(store, { projects });
+	const workspace = join(home, "workspace");
+	const conv = store.resolve(appAddress("move-cache"), workspace);
+	const project = projects.create({ name: "Cache Project", instructions: "Ship the thing." });
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first answer" }] },
+		{
+			kind: "reply",
+			parts: [
+				{
+					type: "tool-call",
+					toolName: "bash",
+					input: { command: "pwd" },
+					toolCallId: "project-pwd",
+				},
+			],
+		},
+		{ kind: "reply", parts: [{ type: "text", text: "second answer" }] },
+	);
+	const systemTexts: string[] = [];
+	const probe = defineTool({
+		description: "A stable cache-prefix probe.",
+		input: z.object({}),
+		execute: async () => "ok",
+	});
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep(target, tools) {
+			const selected = target.projectId === null ? null : projects.get(target.projectId);
+			const prompt = systemPromptFor(
+				store,
+				target,
+				toolNames(tools),
+				selected,
+				selected === null ? undefined : notes.index(selected.id),
+			);
+			systemTexts.push(prompt.text);
+			return { ...script.step(), system: prompt.text };
+		},
+	});
+	runtime.mount({
+		makeTools: (target) => ({
+			probe,
+			bash: bashTool(projectWorkdir(projects, target), paths.workspace()),
+		}),
+	});
+	try {
+		const first = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "first question" }]), first);
+		expect(await first.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "first turn drains");
+		const historyBeforeMove = store.history(conv.id);
+		const moved = moveIntoProject(
+			{ store, projects, notes, runtime, workspace },
+			conv.id,
+			project.id,
+		);
+		expect(moved.kind).toBe("moved");
+		expect(JSON.stringify(store.history(conv.id).slice(0, historyBeforeMove.length))).toBe(
+			JSON.stringify(historyBeforeMove),
+		);
+
+		const second = new RecordingSink();
+		runtime.submit(
+			store.get(conv.id)!,
+			userMessage([{ type: "text", text: "second question" }]),
+			second,
+		);
+		expect(await second.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "second turn drains");
+
+		const firstRequest = JSON.parse(script.callOptions()[0]!) as {
+			prompt: unknown[];
+			tools: unknown[];
+		};
+		const secondRequest = JSON.parse(script.callOptions()[1]!) as {
+			prompt: unknown[];
+			tools: unknown[];
+		};
+		const toolResultRequest = JSON.parse(script.callOptions()[2]!) as { prompt: unknown[] };
+		expect(systemTexts[1]).toBe(systemTexts[0]);
+		expect(secondRequest.tools).toEqual(firstRequest.tools);
+		expect(JSON.stringify(secondRequest.prompt.slice(0, firstRequest.prompt.length))).toBe(
+			JSON.stringify(firstRequest.prompt),
+		);
+		const noticeIndex = secondRequest.prompt.findIndex((item) =>
+			JSON.stringify(item).includes("[project: moved into Cache Project]"),
+		);
+		const secondQuestionIndex = secondRequest.prompt.findIndex((item) =>
+			JSON.stringify(item).includes("second question"),
+		);
+		expect(noticeIndex).toBe(firstRequest.prompt.length + 1);
+		expect(secondQuestionIndex).toBe(noticeIndex);
+		const noticeText = JSON.stringify(secondRequest.prompt[noticeIndex]);
+		expect(noticeText.includes(project.dir)).toBe(true);
+		expect(noticeText.includes("Ship the thing.")).toBe(true);
+		expect(noticeText.indexOf("[project: moved into Cache Project]")).toBeLessThan(
+			noticeText.indexOf("second question"),
+		);
+		const storedMessages = store.history(conv.id);
+		const storedNoticeIndex = storedMessages.findIndex(
+			(message) =>
+				message.role === "user" &&
+				message.parts.some(
+					(part) => part.type === "text" && part.text.startsWith("[project: moved into"),
+				),
+		);
+		const storedQuestionIndex = storedMessages.findIndex(
+			(message) =>
+				message.role === "user" &&
+				message.parts.some(
+					(part) => part.type === "text" && part.text.includes("second question"),
+				),
+		);
+		expect(storedQuestionIndex).toBe(storedNoticeIndex + 1);
+		expect(JSON.stringify(toolResultRequest.prompt)).toContain("pwd");
+		expect(JSON.stringify(toolResultRequest.prompt)).toContain(project.dir);
+		const bashResult = store
+			.history(conv.id)
+			.flatMap((message) => message.parts)
+			.find((part) => part.type === "tool-bash" && part.toolCallId === "project-pwd");
+		expect(bashResult).toBeDefined();
+		const bashResultJson = JSON.stringify(bashResult);
+		expect(bashResultJson.includes(JSON.stringify(`${project.dir}\n`))).toBe(true);
+		expect(bashResultJson.includes('"exit_code":0')).toBe(true);
+
+		store.clearPromptSnapshot(conv.id);
+		script.script({ kind: "reply", parts: [{ type: "text", text: "third answer" }] });
+		const third = new RecordingSink();
+		runtime.submit(
+			store.get(conv.id)!,
+			userMessage([{ type: "text", text: "third question" }]),
+			third,
+		);
+		expect(await third.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "third turn drains");
+		expect(systemTexts[2]?.includes(`## project — ${project.name}`)).toBe(true);
+		expect(systemTexts[2]?.includes("Ship the thing.")).toBe(true);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("a move refused while a turn is held succeeds after that turn ends", async () => {
+	const home = useHome("goblin-move-race-");
+	mkdirSync(join(home, "state"), { recursive: true });
+	const store = openStore(join(home, "state", "goblin.sqlite"));
+	const projects = openProjects(store);
+	const notes = openNotes(store, { projects });
+	const workspace = join(home, "workspace");
+	const conv = store.resolve(appAddress("move-race"), workspace);
+	const project = projects.create({ name: "Race Project" });
+	const script = sdkScript();
+	const held = heldText(script, "held answer");
+	script.script({ kind: "reply", parts: [{ type: "text", text: "released answer" }] });
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => script.step(),
+	});
+	runtime.mount({ makeTools: () => ({}) });
+	try {
+		const first = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hold this turn" }]), first);
+		await first.admitted;
+		await held.entered;
+		expect(moveIntoProject({ store, projects, notes, runtime, workspace }, conv.id, project.id).kind)
+			.toBe("busy");
+		expect(store.get(conv.id)?.projectId).toBeNull();
+		expect(store.history(conv.id).some((m) => JSON.stringify(m).includes("[project: moved into"))).toBe(false);
+		held.release();
+		expect(await first.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "held turn drains");
+		expect(moveIntoProject({ store, projects, notes, runtime, workspace }, conv.id, project.id).kind)
+			.toBe("moved");
+	} finally {
+		held.release();
 		await runtime.shutdown();
 		store.close();
 	}

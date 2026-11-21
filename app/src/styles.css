@@ -488,6 +488,27 @@ p code,
 	background: var(--app-hover);
 	outline: none;
 }
+.move-menu {
+	z-index: 80;
+	min-width: 9rem;
+	padding: 0.25rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.move-menu [role="menuitem"] {
+	padding: 0.4rem 0.55rem;
+	border-radius: 5px;
+	font-size: 12.5px;
+	cursor: default;
+}
+.move-menu [role="menuitem"]:focus,
+.move-menu [role="menuitem"][data-highlighted] {
+	background: var(--app-hover);
+	outline: none;
+}
 @media (hover: none) {
 	.conv-menu-trigger {
 		opacity: 1;

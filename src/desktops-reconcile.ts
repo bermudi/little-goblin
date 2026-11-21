@@ -80,15 +80,31 @@ export function makeReconciler(ctx: ReconcilerCtx): {
 		};
 	}
 
-	// Off is fail-closed: any failure to verify it removes the
-	// container — an unknown state is not usable. Row out only after
-	// rm lands; intended-on failures never trigger this cleanup.
 	// Abort is honored only before the toggle dispatches — once begun,
 	// the verifying inspect (and fail-closed drop) runs to completion.
 	async function applyNetwork(name: string, want: boolean, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		const container = containerNameForDesktop(name);
 		const drop = async (why: string, cause?: unknown): Promise<never> => {
+			const row = store.get(name);
+			if (row !== null) {
+				row.network = false;
+				row.lastObsId = null;
+				row.lastObsUsed = false;
+				row.lastObsHash = null;
+				row.lastActSig = null;
+				row.lastActFrameHash = null;
+				row.leaseKind = null;
+				row.leaseId = null;
+				row.leaseExpiresAt = null;
+				store.put(row);
+			}
+			log.warn("desktop network unconfirmed — removing container, row kept", cause, {
+				desktop: name,
+				container,
+				why,
+				row: row !== null,
+			});
 			try {
 				await podman.rm(container);
 			} catch (rmErr) {
@@ -100,11 +116,12 @@ export function makeReconciler(ctx: ReconcilerCtx): {
 					rmErr,
 				);
 			}
-			store.delete(name);
 			throw ctx.refuse(
 				name,
 				"network",
-				`desktop ${name} ${why} — the container was removed`,
+				row === null
+					? `desktop ${name} ${why} — the container was removed`
+					: `desktop ${name} ${why} — the container was removed; the next call recreates it with the network off`,
 				undefined,
 				cause,
 			);

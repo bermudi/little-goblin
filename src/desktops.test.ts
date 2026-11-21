@@ -1592,7 +1592,7 @@ describe("fail-closed desktop network", () => {
 		return { store, desktops };
 	}
 
-	test("an unverifiable confirming inspect removes the container and row", async () => {
+	test("an unverifiable confirming inspect removes the container and keeps the row offline", async () => {
 		const name = "d1";
 		const engine = fakeEngine();
 		const { store, desktops } = await attached(name, engine);
@@ -1609,10 +1609,10 @@ describe("fail-closed desktop network", () => {
 		expect(disconnect).toBeGreaterThanOrEqual(0);
 		expect(rm).toBeGreaterThan(disconnect);
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
-		expect(store.get(name)).toBeNull();
+		expect(store.get(name)?.network).toBe(false);
 	});
 
-	test("an unverifiable initial inspect removes the container and row", async () => {
+	test("an unverifiable initial inspect removes the container and keeps the row", async () => {
 		const name = "d1";
 		const engine = fakeEngine();
 		const { store, desktops } = rig(engine);
@@ -1624,10 +1624,10 @@ describe("fail-closed desktop network", () => {
 			/could not be inspected.*container was removed/s,
 		);
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
-		expect(store.get(name)).toBeNull();
+		expect(store.get(name)?.network).toBe(false);
 	});
 
-	test("a failed disconnect removes the container and row too", async () => {
+	test("a failed disconnect removes the container and keeps the row offline", async () => {
 		const name = "d1";
 		const engine = fakeEngine();
 		const { store, desktops } = await attached(name, engine);
@@ -1636,7 +1636,7 @@ describe("fail-closed desktop network", () => {
 			/disconnect failed.*container was removed/s,
 		);
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
-		expect(store.get(name)).toBeNull();
+		expect(store.get(name)?.network).toBe(false);
 	});
 
 	test("a failed fail-closed removal surfaces the rm error and keeps the row", async () => {
@@ -1648,9 +1648,107 @@ describe("fail-closed desktop network", () => {
 		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
 			/could not be inspected.*could not be removed.*rm wedged/s,
 		);
-		// rm failed — both survive for the retry.
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
-		expect(store.get(name)).not.toBeNull();
+		expect(store.get(name)?.network).toBe(false);
+		engine.flags.failInspectFrom = undefined;
+		engine.flags.failRm = false;
+		await desktops.screenshot(name);
+		expect(engine.containers.get(containerNameForDesktop(name))!.networks.has(NETWORK)).toBe(false);
+	});
+
+	test("a dropped desktop keeps its row and the next call recreates it offline", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		await desktops.reserve(name, true);
+		const before = store.get(name)!;
+		expect(before.lastObsId).not.toBeNull();
+		engine.flags.failDisconnect = true;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
+			/disconnect failed.*container was removed.*recreates it with the network off/s,
+		);
+		const kept = store.get(name)!;
+		expect(kept).toMatchObject({
+			image: before.image,
+			network: false,
+			reserved: true,
+			createdAt: before.createdAt,
+			shotSeq: before.shotSeq,
+			lastObsId: null,
+			lastObsHash: null,
+			leaseKind: null,
+			leaseId: null,
+			leaseExpiresAt: null,
+		});
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
+		engine.flags.failDisconnect = false;
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/no live lease/);
+		const after = store.get(name)!;
+		expect(engine.containers.get(containerNameForDesktop(name))!.networks.has(NETWORK)).toBe(false);
+		expect(after).toMatchObject({
+			image: before.image,
+			network: false,
+			reserved: true,
+			createdAt: before.createdAt,
+			shotSeq: before.shotSeq,
+			leaseKind: null,
+			leaseId: null,
+			leaseExpiresAt: null,
+			lastObsId: null,
+		});
+		await desktops.claim(name, RUN_A);
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
+		const next = await desktops.screenshot(name);
+		expect(next.id).toMatch(new RegExp(`^d1:${before.shotSeq + 1}:`));
+	});
+
+	test("a recreate whose network apply fails again still keeps the row", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		await desktops.reserve(name, true);
+		const before = store.get(name)!;
+		engine.flags.failDisconnect = true;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(/container was removed/);
+		await expect(desktops.claim(name, RUN_A)).rejects.toThrow(
+			/disconnect failed.*container was removed/s,
+		);
+		expect(engine.calls.filter((c) => c[0] === "run").length).toBe(2);
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
+		expect(store.get(name)).toMatchObject({
+			network: false,
+			reserved: true,
+			createdAt: before.createdAt,
+			shotSeq: before.shotSeq,
+		});
+		engine.flags.failDisconnect = false;
+		const claimed = await desktops.claim(name, RUN_A);
+		expect(claimed.note).toContain("recreated fresh");
+		expect(claimed.network).toBe(false);
+		expect(engine.containers.get(containerNameForDesktop(name))!.networks.has(NETWORK)).toBe(false);
+	});
+
+	test("a dropped desktop under a lease can be destroyed by anyone", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		await desktops.claim(name, RUN_A);
+		engine.flags.failDisconnect = true;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(/container was removed/);
+		await desktops.destroy(name, { kind: "operator" });
+		expect(store.get(name)).toBeNull();
+	});
+
+	test("a drop during allocate leaves no row — there was none to keep", async () => {
+		const engine = fakeEngine();
+		const { store, desktops } = rig(engine);
+		engine.flags.failDisconnect = true;
+		const err = await desktops.allocate("d1").catch((e: unknown) => e);
+		expect((err as Error).message).toMatch(/container was removed$/);
+		expect(store.get("d1")).toBeNull();
+		expect(engine.containers.has(containerNameForDesktop("d1"))).toBe(false);
 	});
 });
 

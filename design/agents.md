@@ -289,7 +289,19 @@ release.**
 
 - **Allocate** — `desktop new <name>` creates a container from the
   desktop image; row-vs-engine reconcile on every call follows the
-  sandboxes.ts rule.
+  sandbox rule (design/sandbox.md → `network`), with no carve-out: a
+  container the engine lost is recreated from its row.
+- **Network** — fail closed, as sandboxes do (operator ruling
+  2026-11-20, #292): a desktop whose network can't be confirmed off
+  when off is intended loses its container, never its row. Before the
+  rm, the row is rewritten to network off, with the newest frame
+  invalidated and the lease cleared (it dies with the container, so a
+  dead holder can't block `destroy`). A failed rm or the next call
+  then never re-applies a stale "on". The row keeps its image, reserve
+  pin, `createdAt` and `shotSeq`; the next call recreates the desktop
+  offline from it, with its screen contents gone. A drop during
+  `allocate` has no row to keep. Only `destroy` and idle reaping
+  delete a row.
 - **Claim** — one controller lease; holders are an agent child
   conversation, a goblin conversation, the operator. **One controller at
   a time** (Cua's and Eliza's single-controller rule): two input sources

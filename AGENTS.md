@@ -19,11 +19,6 @@ rather than silently overriding it. `docs/` is for operating Goblin.
 
 ## Guardrails
 
-- **Goblin is a loop with tools and connectors. That's it.** How it solves
-  a problem belongs to the operator and skills, not the code. Before adding
-  code, check it improves the loop, a tool, or a connector — not task logic.
-  DIRECTION.md → Goblin Is A Loop With Tools And Connectors (operator,
-  2026-11-21).
 - **Bun + strict TypeScript.** No `any` — `unknown` and narrow. Validate
   external input with zod at boundaries (config, Telegram updates, tool args,
   disk state).

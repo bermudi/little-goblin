@@ -16,7 +16,7 @@ import type {
 import { attachHintFor } from "../../hc-delegation.ts";
 import { log } from "../../log.ts";
 import { fenceUntrusted } from "./web.ts";
-import { githubIssueSchema } from "../../pr-readiness.ts";
+import { checkNameSchema, githubIssueSchema } from "../../pr-readiness.ts";
 import type { WorkerSendRefusal } from "../../responsibility-authority.ts";
 
 export interface DelegationPin {
@@ -43,7 +43,7 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 		name: d.name,
 		harness: d.harness,
 		role: d.role,
-		issue: d.issue ?? undefined,
+		pr: d.pr ?? undefined,
 		readiness: d.readiness ?? undefined,
 		cwd: d.cwd,
 		status: d.status,
@@ -223,11 +223,14 @@ const startSchema = z.object({
 	name: z.string().min(1).max(40).optional(),
 	responsibility: z.string().min(1).optional(),
 	issue: githubIssueSchema.optional(),
+	checks: z.array(checkNameSchema).min(1).max(20).optional(),
 }).superRefine((input, ctx) => {
-	if (input.role === "lead" && input.responsibility !== undefined && input.issue === undefined)
-		ctx.addIssue({ code: "custom", path: ["issue"], message: "A responsibility-linked lead needs an explicit GitHub issue" });
-	if (input.issue !== undefined && (input.role !== "lead" || input.responsibility === undefined))
-		ctx.addIssue({ code: "custom", path: ["issue"], message: "Issue readiness requires role lead and a responsibility" });
+	if (input.issue !== undefined && input.responsibility === undefined)
+		ctx.addIssue({ code: "custom", path: ["issue"], message: "PR readiness requires a responsibility" });
+	if (input.checks !== undefined && input.issue === undefined)
+		ctx.addIssue({ code: "custom", path: ["checks"], message: "checks requires issue" });
+	if (input.checks !== undefined && new Set(input.checks).size !== input.checks.length)
+		ctx.addIssue({ code: "custom", path: ["checks"], message: "check names must be unique" });
 });
 const listSchema = z.object({ action: z.literal("list") });
 const readSchema = z.object({
@@ -284,6 +287,7 @@ const delegateInputFields = z.object({
 	name: startSchema.shape.name,
 	responsibility: startSchema.shape.responsibility,
 	issue: startSchema.shape.issue,
+	checks: startSchema.shape.checks,
 	id: readSchema.shape.id.optional(),
 	lines: readSchema.shape.lines,
 	text: sendSchema.shape.text.optional(),
@@ -301,7 +305,7 @@ function checkedAgainstAction(value: unknown, ctx: z.core.$RefinementCtx<unknown
 export const delegateInputSchema = delegateInputFields.superRefine(checkedAgainstAction);
 /** Outside a project no link can succeed, so the model is not offered one. */
 const unlinkableDelegateInputSchema = delegateInputFields
-	.omit({ responsibility: true, issue: true })
+	.omit({ responsibility: true, issue: true, checks: true })
 	.superRefine(checkedAgainstAction);
 
 export const delegateTool = (deps: DelegateToolDeps) => {
@@ -314,7 +318,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 		(roles.length === 0
 			? "No delegation defaults are configured: name a harness explicitly."
 			: `With no harness named, the call uses its role's default (role omitted = \`default\`, which is ${defaults.default === undefined ? "unset — name a role or a harness" : `\`${defaults.default}\``}). Configured roles: ${roles.map(([role, name]) => `${role} → ${name}`).join(", ")}. An explicit harness always wins over a role.`) +
-		(linkable ? " A responsibility-linked lead requires issue:{repository:'owner/repo',number:N}. Code observes its closing PR, current head, verifier Checked-SHA and CI; do not spend model turns polling GitHub. PASS+NOTES still needs judgment, and readiness never authorizes a merge." : "");
+		(linkable ? " With a responsibility, issue:{repository:'owner/repo',number:N} makes code watch the open PR that closes that issue: its current head, CI, and any checks:[name…] (commit status contexts or check run names) that must pass on that head. Do not spend model turns polling GitHub. Read each required check's notes before you report; readiness never authorizes a merge." : "");
 	// askFirst harnesses become a prompt rule in the description: the
 	// model asks, execute stays ungated.
 	const askFirst = Object.entries(deps.config.harnesses)
@@ -399,7 +403,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 						out = await deps.lifecycle.launch({
 							harness: { name: named, kind: h.kind, args: h.args ?? [] },
 							role,
-							...(input.issue === undefined ? {} : { issue: input.issue }),
+							...(input.issue === undefined ? {} : { pr: { issue: input.issue, checks: input.checks ?? [] } }),
 							task: input.task,
 							cwd,
 							name,

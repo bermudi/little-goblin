@@ -126,25 +126,26 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
-	test("a linked lead needs explicit issue identity, which survives launch", async () => {
+	test("responsibility-linked PR checks are independent of role", async () => {
 		const h = harness();
 		try {
 			h.deps.checkResponsibility = () => null;
 			const tool = delegateTool(h.deps);
-			const input = { action: "start", harness: "codex", role: "lead", task: "build issue",
-				responsibility: "r1", issue: { repository: "owner/repo", number: 7 } };
+			const input = { action: "start", harness: "codex", role: "default", task: "build issue",
+				responsibility: "r1", issue: { repository: "owner/repo", number: 7 }, checks: ["verify", "build"] };
+			const leadWithoutIssue = { ...input, role: "lead", issue: undefined, checks: undefined };
+			expect(delegateInputSchema.safeParse(leadWithoutIssue).success).toBe(true);
 			expect(delegateInputSchema.safeParse({ ...input, issue: undefined }).success).toBe(false);
-			await expect(exec(tool, { ...input, issue: undefined })).rejects.toThrow("explicit GitHub issue");
-			expect(h.pinned).toHaveLength(0);
-			expect(delegateInputSchema.safeParse({ ...input, issue: { repository: "../repo/path", number: 7 } }).success).toBe(false);
-			expect(delegateInputSchema.safeParse({ ...input, role: "review" }).success).toBe(false);
+			expect(delegateInputSchema.safeParse({ ...input, responsibility: undefined }).error?.issues[0]?.message).toBe("PR readiness requires a responsibility");
+			expect(delegateInputSchema.safeParse({ ...input, issue: undefined }).success).toBe(false);
+			expect(delegateInputSchema.safeParse({ ...input, checks: ["verify", "verify"] }).success).toBe(false);
 			await exec(tool, input);
 			expect(h.store.list()[0]).toMatchObject({
-				role: "lead", issue: input.issue, responsibilityId: "r1",
+				role: "default", pr: { issue: input.issue, checks: input.checks }, responsibilityId: "r1",
 			});
-			expect(h.prompts[0]).toContain("Checked-SHA:");
+			expect(h.prompts[0]).toContain("required: verify, build");
 			const listed = await exec(tool, { action: "list" });
-			expect(listed).toMatchObject({ delegations: [expect.objectContaining({ role: "lead", issue: input.issue })] });
+			expect(listed).toMatchObject({ delegations: [expect.objectContaining({ role: "default", pr: { issue: input.issue, checks: input.checks } })] });
 		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
 	});
 

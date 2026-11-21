@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation } from "./delegations.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import type { GithubIssue } from "./pr-readiness.ts";
+import type { PrWatch } from "./pr-readiness.ts";
 
 // The report file is the durable result channel; screen output is the fallback.
 const REPORT_NOTE =
@@ -26,8 +26,8 @@ export function reportNote(deps: DelegationLifecycleDeps, d: Delegation): string
 	return (
 		REPORT_NOTE +
 		reportPathFor(deps, d) +
-		(isIssueLead(d)
-			? `\nPR readiness is observed by code for ${d.issue.repository}#${d.issue.number}. The verifier's PR comment must open with PASS, PASS+NOTES, or FAIL and have exactly one standalone line "Checked-SHA: <full 40-character lowercase commit SHA>". Post a new verdict for each checked head. PASS+NOTES does not waive the notes or authorize a merge.`
+		(isPrWatched(d)
+			? `\nCode watches ${d.pr.issue.repository}#${d.pr.issue.number}: the open PR that closes it, its current head commit, and the commit checks on that head${d.pr.checks.length === 0 ? "" : ` (required: ${d.pr.checks.join(", ")})`}. A check counts only for the commit it is on; every new push needs its checks again. Readiness never authorizes a merge.`
 			: "")
 	);
 }
@@ -49,6 +49,6 @@ export async function killQuietly(
 	}
 }
 
-export function isIssueLead(d: Delegation): d is Delegation & { issue: GithubIssue; responsibilityId: string } {
-	return d.role === "lead" && d.issue !== null && d.responsibilityId !== null;
+export function isPrWatched(d: Delegation): d is Delegation & { pr: PrWatch; responsibilityId: string } {
+	return d.pr !== null && d.responsibilityId !== null;
 }

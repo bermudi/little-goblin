@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { log } from "./log.ts";
-import { githubIssueSchema, prReadinessSchema, readinessKey, type GithubIssue, type PrReadiness } from "./pr-readiness.ts";
+import { checkNameSchema, githubIssueSchema, prWatchSchema, prReadinessSchema, readinessKey, type PrWatch, type PrReadiness } from "./pr-readiness.ts";
 
 export type DelegationStatus =
 	| "starting"
@@ -21,7 +21,7 @@ export interface Delegation {
 	name: string;
 	harness: string;
 	role: string;
-	issue: GithubIssue | null;
+	pr: PrWatch | null;
 	readiness: PrReadiness | null;
 	readinessNotifiedKey: string | null;
 	readinessVersion: number;
@@ -59,7 +59,7 @@ export interface CreateDelegation {
 	name: string;
 	harness: string;
 	role?: string;
-	issue?: GithubIssue;
+	pr?: PrWatch;
 	cwd: string;
 	task: string;
 	address: { chatId: number; threadId: number | null };
@@ -120,6 +120,7 @@ const delegationSchema = z.object({
 	harness: z.string(),
 	role: z.string(),
 	issue_json: z.string().nullable(),
+	checks_json: z.string(),
 	readiness_json: z.string().nullable(),
 	readiness_notified_key: z.string().nullable(),
 	readiness_version: z.number().int().nonnegative(),
@@ -146,12 +147,15 @@ const TERMINAL: ReadonlySet<DelegationStatus> = new Set(["done", "failed", "stop
 
 function rowToDelegation(row: unknown): Delegation {
 	const r = delegationSchema.parse(row);
+	const checks = z.array(checkNameSchema).parse(JSON.parse(r.checks_json));
+	if (r.issue_json === null && checks.length !== 0) throw new Error(`delegation ${r.id} has checks without an issue`);
 	return {
 		id: r.id,
 		name: r.name,
 		harness: r.harness,
 		role: r.role,
-		issue: r.issue_json === null ? null : githubIssueSchema.parse(JSON.parse(r.issue_json)),
+		pr: r.issue_json === null ? null
+			: prWatchSchema.parse({ issue: githubIssueSchema.parse(JSON.parse(r.issue_json)), checks }),
 		readiness: r.readiness_json === null ? null : prReadinessSchema.parse(JSON.parse(r.readiness_json)),
 		readinessNotifiedKey: r.readiness_notified_key,
 		readinessVersion: r.readiness_version,
@@ -208,6 +212,7 @@ const DELEGATIONS_COLUMNS = `
 		responsibility_revision INTEGER,
 		role TEXT NOT NULL DEFAULT 'default',
 		issue_json TEXT,
+		checks_json TEXT NOT NULL DEFAULT '[]',
 		readiness_json TEXT,
 		readiness_notified_key TEXT,
 		readiness_version INTEGER NOT NULL DEFAULT 0,
@@ -247,6 +252,12 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 	}
 	if (!cols.has("readiness_version"))
 		db.exec("ALTER TABLE delegations ADD COLUMN readiness_version INTEGER NOT NULL DEFAULT 0");
+	if (!cols.has("checks_json")) {
+		// Observations recorded under the verifier-comment contract (#406) no longer parse; the watcher re-observes.
+		db.exec("ALTER TABLE delegations ADD COLUMN checks_json TEXT NOT NULL DEFAULT '[]'");
+		const cleared = db.query("UPDATE delegations SET readiness_json = NULL, readiness_notified_key = NULL WHERE readiness_json IS NOT NULL").run();
+		log.info("delegation readiness observations cleared", { count: cleared.changes });
+	}
 	// Predates the baseline-pending posture: baseline_seq was NOT NULL, so
 	// a failed post-prompt read had to record some pre-prompt number — a
 	// stale comparison the next poll could turn into a spurious done. NULL
@@ -261,8 +272,8 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 		try {
 			db.exec(`CREATE TABLE delegations_migrated (${DELEGATIONS_COLUMNS})`);
 			db.exec(`INSERT INTO delegations_migrated
-				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict)
-				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict
+				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, checks_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict)
+				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, checks_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict
 				FROM delegations`);
 			db.exec("DROP TABLE delegations");
 			db.exec("ALTER TABLE delegations_migrated RENAME TO delegations");
@@ -303,8 +314,8 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 	);
 	const qStarting = db.query("SELECT * FROM delegations WHERE status = 'starting' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision, role, issue_json)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL, ?, ?, ?, ?, ?)`);
+		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision, role, issue_json, checks_json)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
@@ -337,7 +348,7 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 				name,
 				harness,
 				role,
-				issue,
+				pr,
 				cwd,
 				task,
 				address,
@@ -361,7 +372,8 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 				responsibilityId ?? null,
 				responsibilityRevision ?? null,
 				role ?? "default",
-				issue === undefined ? null : JSON.stringify(issue),
+				pr === undefined ? null : JSON.stringify(pr.issue),
+				JSON.stringify(pr?.checks ?? []),
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
 		},

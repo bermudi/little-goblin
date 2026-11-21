@@ -47,7 +47,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		cwd: input.cwd,
 		task: input.task,
 		role: input.role ?? "default",
-		...(input.issue === undefined ? {} : { issue: input.issue }),
+		...(input.pr === undefined ? {} : { pr: input.pr }),
 		address: input.address,
 		...(input.appConversation === undefined ? {} : { appConversation: input.appConversation }),
 		...(input.responsibilityId === undefined

@@ -48,8 +48,11 @@ export function delegationReport(
 				{ item: "Closing PR", ref: readiness.source, checked: r.kind === "checked" ? r.pr : readinessSummary(readiness) },
 				...(r.kind !== "checked" ? [] : [
 					{ item: "PR head", ref: r.head.source, checked: r.head.sha },
-					{ item: "Verifier verdict", ref: r.verifier?.source ?? r.pr,
-						checked: r.verifier === null ? "Missing verdict" : `${r.verifier.verdict}; Checked-SHA: ${r.verifier.sha ?? "missing"}` },
+					...r.checks.map((c) => ({
+						item: `Required check ${c.name}`,
+						ref: c.url ?? r.ci.source,
+						checked: `${c.state}${c.detail.length === 0 ? "" : ` (${c.detail.join(", ")})`}; SHA: ${r.head.sha}`,
+					})),
 					{ item: "CI on PR head", ref: r.ci.source, checked: `${r.ci.state}; SHA: ${r.ci.sha}` },
 				]),
 			],

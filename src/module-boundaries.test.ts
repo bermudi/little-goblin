@@ -529,4 +529,13 @@ describe("module boundaries", () => {
 		}
 		expect(offenders).toEqual([]);
 	});
+
+	test("operator workflow vocabulary stays out of Goblin source", () => {
+		const scripts = join(ROOT, "scripts");
+		const offenders = [...walk(SRC), ...walk(scripts)]
+			.filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+			.filter((file) => /Checked-SHA|PASS\+NOTES|verify-pr/.test(readFileSync(file, "utf8")))
+			.map((file) => `${repoPath(file)}: workflow vocabulary belongs in skills (#748)`);
+		expect(offenders).toEqual([]);
+	});
 });

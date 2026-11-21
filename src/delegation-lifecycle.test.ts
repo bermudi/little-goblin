@@ -136,7 +136,7 @@ function runningRow(
 
 function issueLead(h: Harness): Delegation {
 	const d = h.store.create({
-		name: "issue lead", harness: "codex", role: "lead", issue: { repository: "owner/repo", number: 7 },
+		name: "issue lead", harness: "codex", role: "lead", pr: { issue: { repository: "owner/repo", number: 7 }, checks: [] },
 		cwd: "/w", task: "build the issue", address: { chatId: 1, threadId: null },
 		responsibilityId: "responsibility-7", responsibilityRevision: 1,
 	});
@@ -376,7 +376,7 @@ describe("lead PR readiness watcher", () => {
 		let reads = 0;
 		h.deps.readiness = async (issue) => {
 			reads++;
-			return { ...prReadinessFixture(), issue, result: { kind: "no-pr", issueClosed: true } };
+			return { ...prReadinessFixture(), issue: issue.issue, result: { kind: "no-pr", issueClosed: true } };
 		};
 		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
 		try {

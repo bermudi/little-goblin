@@ -137,7 +137,7 @@ describe("app attention", () => {
 							name: "worker",
 							harness: "pi",
 							role: "default",
-							issue: null,
+							pr: null,
 							readiness: null,
 							readinessNotifiedKey: null,
 							readinessVersion: 0,

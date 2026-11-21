@@ -110,7 +110,7 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 	name: "fix it",
 	harness: "codex",
 	role: "default",
-	issue: null,
+	pr: null,
 	readiness: null,
 	readinessNotifiedKey: null,
 	readinessVersion: 0,
@@ -135,7 +135,7 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 });
 
 describe("delegation reports", () => {
-	test("observed readiness is sourced evidence, not the lead's claim; retries are idempotent", () => {
+	test("observed readiness is sourced evidence, not the worker's claim; retries are idempotent", () => {
 		const { resps, id } = rig();
 		const d = delegation({ responsibilityId: id, responsibilityRevision: 1, role: "lead", readinessVersion: 1 });
 		const pending = prReadinessFixture();
@@ -145,25 +145,43 @@ describe("delegation reports", () => {
 		const first = resps.reportsFor(id)[0]!;
 		expect(first.state).toBe("waiting");
 		expect(first.reason).toStartWith("Not ready: CI is pending");
-		expect(first.evidence).toHaveLength(4);
-		expect(first.evidence[2]).toMatchObject({
-			item: "Verifier verdict", ref: pending.result.verifier!.source,
-			checked: expect.stringContaining(pending.result.head.sha),
-		});
+		expect(first.evidence).toHaveLength(3);
 		fileDelegationReport(resps, { ...d, readinessVersion: 2 }, "done", "Ready!", prReadinessFixture("green"));
 		fileDelegationReport(resps, { ...d, readinessVersion: 3 }, "done", "Still ready!", pending);
 		expect(resps.reportsFor(id).map((r) => r.state)).toEqual(["waiting", "ready", "waiting"]);
 		expect(resps.get(id)?.status).toBe("active");
 	});
 
-	test("stale verification blocks even when the lead claims done and CI is green", () => {
+	test("a failed required check blocks even when the worker claims done and CI is green", () => {
 		const observation = prReadinessFixture("green");
-		observation.result.verifier!.sha = "b".repeat(40);
+		observation.result.checks = [{ name: "verify", state: "failed", detail: ["FAILURE"], description: null, url: null, notes: null }];
 		observation.result.ready = false;
-		observation.result.reasons = ["Verifier verdict is for an older or different SHA"];
+		observation.result.reasons = ["Required check verify did not pass on the current head (FAILURE)"];
 		expect(delegationReport(delegation(), "done", "Everything passed", observation)).toMatchObject({
-			state: "blocked", reason: expect.stringContaining("older or different SHA"),
+			state: "blocked", reason: expect.stringContaining("Required check verify"),
 		});
+	});
+
+	test("required-check evidence uses its URL or falls back to the CI source", () => {
+		const sha = "a".repeat(40);
+		for (const [url, expectedRef] of [
+			["https://github.com/owner/repo/pull/8#check-verify", "https://github.com/owner/repo/pull/8#check-verify"],
+			[null, "https://github.com/owner/repo/pull/8/checks"],
+		] as const) {
+			const observation = prReadinessFixture("green");
+			observation.result.checks = [{
+				name: "verify", state: "failed", detail: ["FAILURE"],
+				description: null, url, notes: null,
+			}];
+			observation.result.ready = false;
+			observation.result.reasons = ["Required check verify did not pass on the current head (FAILURE)"];
+			const report = delegationReport(delegation(), "done", "worker says done", observation);
+			expect(report.evidence).toContainEqual({
+				item: "Required check verify",
+				ref: expectedRef,
+				checked: `failed (FAILURE); SHA: ${sha}`,
+			});
+		}
 	});
 
 	test("each verdict maps to the agent's claim; a blocked agent asks no question", () => {
@@ -195,7 +213,7 @@ describe("delegation reports", () => {
 		expect(report).toMatchObject({
 			state: "blocked", reason: expect.stringContaining("operator stopped it"),
 		});
-		expect(report?.evidence).toHaveLength(4);
+		expect(report?.evidence).toHaveLength(3);
 		expect(responsibilityStage(resps.get(id)!, resps.stageReports(id), []).waitsFor).toBe("goblin");
 	});
 

@@ -7,10 +7,11 @@ import { boundedRun, spawnProc } from "./proc.ts";
 import {
 	commitShaSchema,
 	githubIssueSchema,
+	prWatchSchema,
 	readinessReasons,
-	type GithubIssue,
+	type PrWatch,
 	type PrReadiness,
-	type VerifierVerdict,
+	type RequiredCheck,
 } from "./pr-readiness.ts";
 
 export type GithubRunner = (args: string[]) => Promise<string>;
@@ -91,8 +92,8 @@ const prSchema = z.object({
 								state: z.enum(["SUCCESS", "FAILURE", "ERROR", "PENDING", "EXPECTED"]),
 								contexts: z.object({
 									nodes: z.array(z.discriminatedUnion("__typename", [
-										z.object({ __typename: z.literal("CheckRun"), status: z.string(), conclusion: z.string().nullable() }),
-										z.object({ __typename: z.literal("StatusContext"), state: z.string() }),
+										z.object({ __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable(), title: z.string().nullable(), detailsUrl: z.string().nullable() }),
+										z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string(), description: z.string().nullable(), targetUrl: z.string().nullable() }),
 									])),
 									pageInfo: connectionPage,
 								}),
@@ -117,39 +118,16 @@ const PR_QUERY = `query($owner:String!,$repo:String!,$number:Int!){
 		closingIssuesReferences(first:100){nodes{url} pageInfo{hasNextPage}}
 		comments(last:100){nodes{body url updatedAt isMinimized author{login}} pageInfo{hasPreviousPage}}
 		commits(last:1){nodes{commit{oid statusCheckRollup{state contexts(first:100){
-			nodes{__typename ... on CheckRun{status conclusion} ... on StatusContext{state}}
+			nodes{__typename ... on CheckRun{name status conclusion title detailsUrl} ... on StatusContext{context state description targetUrl}}
 			pageInfo{hasNextPage}
 		}}}}}
 	}}
 }`;
 
-function latestVerdict(comments: z.infer<typeof commentSchema>[]): VerifierVerdict | null {
-	const candidates = comments
-		.filter((c) => !c.isMinimized)
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-	for (const c of candidates) {
-		const verdict = /^(PASS\+NOTES|PASS|FAIL)(?=\s|$)/.exec(c.body.trimStart())?.[1];
-		if (verdict !== "PASS" && verdict !== "PASS+NOTES" && verdict !== "FAIL") continue;
-		const declarations = c.body.split(/\r?\n/).filter((line) => line.trimStart().startsWith("Checked-SHA:"));
-		const sha = declarations.length === 1
-			? /^Checked-SHA: ([a-f0-9]{40})[ \t]*$/.exec(declarations[0]!)?.[1] ?? null
-			: null;
-		return {
-			verdict,
-			sha,
-			source: c.url,
-			author: c.author?.login ?? null,
-			notes: c.body.slice(0, 6000),
-			notesTruncated: c.body.length > 6000,
-			notesDigest: createHash("sha256").update(c.body).digest("hex"),
-		};
-	}
-	return null;
-}
-
 export function makeGithubReadiness(run: GithubRunner = runGh) {
-	return async (input: GithubIssue): Promise<PrReadiness> => {
-		const issue = githubIssueSchema.parse(input);
+	return async (input: PrWatch): Promise<PrReadiness> => {
+		const watch = prWatchSchema.parse(input);
+		const issue = watch.issue;
 		let source = `https://github.com/${issue.repository}/issues/${issue.number}`;
 		const start = Date.now();
 		const query = async (text: string, repository: string, number: number): Promise<unknown> => {
@@ -194,12 +172,38 @@ export function makeGithubReadiness(run: GithubRunner = runGh) {
 				const ci = rollup === null || rollup.contexts.nodes.length === 0 ? "missing"
 					: rollup.state === "SUCCESS" ? succeeded ? "green" : "missing"
 					: rollup.state === "FAILURE" || rollup.state === "ERROR" ? "red" : "pending";
-				const verifier = latestVerdict(pr.comments.nodes);
-				const reasons = readinessReasons(pr.headRefOid, verifier, ci);
+				const checks: RequiredCheck[] = watch.checks.map((name) => {
+					const entries = rollup?.contexts.nodes.filter((c) =>
+						c.__typename === "CheckRun" ? c.name === name : c.context === name,
+					) ?? [];
+					const stateOf = (c: typeof entries[number]): RequiredCheck["state"] => {
+						if (c.__typename === "StatusContext")
+							return c.state === "SUCCESS" ? "passed" : c.state === "PENDING" || c.state === "EXPECTED" ? "pending" : "failed";
+						return c.status !== "COMPLETED" ? "pending" : c.conclusion === "SUCCESS" ? "passed" : "failed";
+					};
+					const state: RequiredCheck["state"] = entries.length === 0 ? "missing"
+						: entries.some((c) => stateOf(c) === "failed") ? "failed"
+						: entries.some((c) => stateOf(c) === "pending") ? "pending" : "passed";
+					const winner = entries.find((c) => stateOf(c) === state);
+					const rawUrl = winner?.__typename === "CheckRun" ? winner.detailsUrl : winner?.targetUrl ?? null;
+					const url = rawUrl === "" ? null : rawUrl;
+					const description = winner?.__typename === "CheckRun" ? winner.title : winner?.description ?? null;
+					const comment = url === null ? undefined : pr.comments.nodes.find((c) => !c.isMinimized && c.url === url);
+					return {
+						name, state, detail: entries.map((c) => c.__typename === "CheckRun" ? c.conclusion ?? c.status : c.state),
+						description, url,
+						notes: comment === undefined ? null : {
+							source: comment.url, author: comment.author?.login ?? null,
+							text: comment.body.slice(0, 6000), truncated: comment.body.length > 6000,
+							digest: createHash("sha256").update(comment.body).digest("hex"),
+						},
+					};
+				});
+				const reasons = readinessReasons(checks, ci);
 				result = {
 					kind: "checked", pr: pr.url,
 					head: { sha: pr.headRefOid, source: `${pr.url}/commits/${pr.headRefOid}` },
-					verifier,
+					checks,
 					ci: { state: ci, sha: commit.oid, source: `${pr.url}/checks` },
 					ready: reasons.length === 0, reasons,
 				};
@@ -221,7 +225,7 @@ export function makeGithubReadiness(run: GithubRunner = runGh) {
 		}
 		log.info("GitHub readiness observed", {
 			repository: issue.repository, issue: issue.number, kind: result.kind,
-			...(result.kind === "checked" ? { head: result.head.sha, ci: result.ci.state, ready: result.ready } : {}),
+			...(result.kind === "checked" ? { head: result.head.sha, ci: result.ci.state, ready: result.ready, checks: result.checks.map(({ name, state }) => ({ name, state })) } : {}),
 			ms: Date.now() - start,
 		});
 		return { issue, source, observedAt: new Date().toISOString(), result };

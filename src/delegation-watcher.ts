@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation, DelegationStatus } from "./delegations.ts";
 import type { HcRunInfo } from "./hc-delegation.ts";
-import { READINESS_OBSERVE_MS, readinessKey, type GithubIssue } from "./pr-readiness.ts";
+import { READINESS_OBSERVE_MS, readinessKey, type PrWatch } from "./pr-readiness.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import {
 	answer,
@@ -21,7 +21,7 @@ import {
 import { notify, observeReadiness } from "./delegation-notices.ts";
 import {
 	killQuietly,
-	isIssueLead,
+	isPrWatched,
 	reportNote,
 	reportPathFor,
 } from "./delegation-paths.ts";
@@ -113,7 +113,7 @@ export function startDelegationLifecycle(
 				if (!watched.has(id)) lastProgress.delete(id);
 			}
 			for (const d of deps.delegations.list()) {
-				if (d.status !== "done" || !isIssueLead(d)) continue;
+				if (d.status !== "done" || !isPrWatched(d)) continue;
 				try {
 					await checkReadiness(deps, d);
 				} catch (err) {
@@ -167,7 +167,7 @@ export function startDelegationLifecycle(
 
 async function checkReadiness(
 	deps: DelegationLifecycleDeps,
-	d: Delegation & { issue: GithubIssue; responsibilityId: string },
+	d: Delegation & { pr: PrWatch; responsibilityId: string },
 ): Promise<void> {
 	if (deps.watchResponsibility?.(d.responsibilityId, d.responsibilityRevision) === false) return;
 	// A failed delivery remains due even across restart, without another GitHub request.
@@ -181,7 +181,7 @@ async function checkReadiness(
 		Date.now() - Date.parse(d.readiness.observedAt) < READINESS_OBSERVE_MS
 	)
 		return;
-	const readiness = await observeReadiness(deps, d.issue);
+	const readiness = await observeReadiness(deps, d.pr);
 	// Corrections, pause/cancel, send and stop may land during the remote read.
 	if (deps.watchResponsibility?.(d.responsibilityId, d.responsibilityRevision) === false) return;
 	if (!deps.delegations.recordReadiness(d.id, d, readiness)) {

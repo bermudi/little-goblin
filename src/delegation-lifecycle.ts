@@ -18,7 +18,7 @@ import type { DelegationConfig } from "./config-schema.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
-import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";
+import type { PrWatch, PrReadiness } from "./pr-readiness.ts";
 import type { WorkerSendRefusal } from "./responsibility-authority.ts";
 
 export interface DelegationLifecycleDeps {
@@ -34,7 +34,7 @@ export interface DelegationLifecycleDeps {
 	// the row eligible for retry; the report is keyed, so a retry files once.
 	settled?: (d: Delegation, verdict: DelegationVerdict, body: string, readiness?: PrReadiness) => void;
 	responsibilityRevision?: (id: string) => number | null;
-	readiness?: (issue: GithubIssue) => Promise<PrReadiness>;
+	readiness?: (watch: PrWatch) => Promise<PrReadiness>;
 	watchResponsibility?: (id: string, revision: number | null) => boolean;
 }
 
@@ -47,7 +47,7 @@ export interface LaunchInput {
 	appConversation?: string;
 	responsibilityId?: string;
 	role?: string;
-	issue?: GithubIssue;
+	pr?: PrWatch;
 }
 
 export type LaunchOutcome =

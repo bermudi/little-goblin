@@ -7,18 +7,35 @@ export const githubIssueSchema = z.strictObject({
 });
 export type GithubIssue = z.infer<typeof githubIssueSchema>;
 export const commitShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
-
-export const verifierVerdictSchema = z.object({
-	verdict: z.enum(["PASS", "PASS+NOTES", "FAIL"]),
-	sha: commitShaSchema.nullable(),
-	source: z.string().url(),
-	author: z.string().nullable(),
-	notes: z.string(),
-	notesTruncated: z.boolean(),
-	// Older disk observations have only the excerpt; a fresh GitHub read fills the digest.
-	notesDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+export const checkNameSchema = z.string().trim().min(1).max(100);
+/** What code watches for one delegation: the issue whose closing PR it observes, and
+ *  the commit checks (status context or check run name) that must pass on that PR's head. */
+export const prWatchSchema = z.strictObject({
+	issue: githubIssueSchema,
+	checks: z.array(checkNameSchema).max(20)
+		.refine((c) => new Set(c).size === c.length, "check names must be unique"),
 });
-export type VerifierVerdict = z.infer<typeof verifierVerdictSchema>;
+export type PrWatch = z.infer<typeof prWatchSchema>;
+
+export const requiredCheckSchema = z.object({
+	name: checkNameSchema,
+	state: z.enum(["passed", "pending", "failed", "missing"]),
+	/** GitHub's raw state/conclusion per entry with this name (e.g. "SUCCESS", "FAILURE", "SKIPPED"); [] when missing. */
+	detail: z.array(z.string()),
+	/** Untrusted: status description / check run title of the entry that set `state`. */
+	description: z.string().nullable(),
+	/** Untrusted: status targetUrl / check run detailsUrl of the entry that set `state`. */
+	url: z.string().nullable(),
+	/** The non-minimized PR comment whose URL equals `url` exactly; untrusted text. */
+	notes: z.object({
+		source: z.string().url(),
+		author: z.string().nullable(),
+		text: z.string(), // first 6000 chars
+		truncated: z.boolean(),
+		digest: z.string().regex(/^[a-f0-9]{64}$/),
+	}).nullable(),
+});
+export type RequiredCheck = z.infer<typeof requiredCheckSchema>;
 
 export const prReadinessSchema = z.object({
 	observedAt: z.string().datetime(),
@@ -41,7 +58,7 @@ export const prReadinessSchema = z.object({
 			kind: z.literal("checked"),
 			pr: z.string().url(),
 			head: z.object({ sha: commitShaSchema, source: z.string().url() }),
-			verifier: verifierVerdictSchema.nullable(),
+			checks: z.array(requiredCheckSchema),
 			ci: z.object({
 				state: z.enum(["green", "pending", "red", "missing"]),
 				sha: commitShaSchema,
@@ -65,17 +82,12 @@ export function readinessKey(readiness: PrReadiness): string {
 	return createHash("sha256").update(JSON.stringify(facts)).digest("hex");
 }
 
-export function readinessReasons(
-	head: string,
-	verifier: VerifierVerdict | null,
-	ci: CheckedPr["ci"]["state"],
-): string[] {
+export function readinessReasons(checks: RequiredCheck[], ci: CheckedPr["ci"]["state"]): string[] {
 	const reasons: string[] = [];
-	if (verifier === null) reasons.push("Missing verifier verdict");
-	else {
-		if (verifier.sha === null) reasons.push("Verifier comment has no full Checked-SHA");
-		else if (verifier.sha !== head) reasons.push("Verifier verdict is for an older or different SHA");
-		if (verifier.verdict === "FAIL") reasons.push("Verifier verdict is FAIL");
+	for (const check of checks) {
+		if (check.state === "missing") reasons.push(`Required check ${check.name} is missing on the current head`);
+		else if (check.state === "pending") reasons.push(`Required check ${check.name} is pending on the current head`);
+		else if (check.state === "failed") reasons.push(`Required check ${check.name} did not pass on the current head (${check.detail.join(", ")})`);
 	}
 	if (ci !== "green") reasons.push(`CI is ${ci} on the current head`);
 	return reasons;
@@ -92,7 +104,7 @@ export function readinessSummary(readiness: PrReadiness): string {
 			return "Not ready: multiple open PRs close the issue";
 		case "checked":
 			return r.ready
-				? "PR readiness facts pass; PASS+NOTES still needs judgment on the notes. Merge still needs operator approval."
+				? "PR readiness facts pass; read the required checks' notes before reporting. Merge still needs operator approval."
 				: `Not ready: ${r.reasons.join("; ")}`;
 	}
 }

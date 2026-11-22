@@ -21,10 +21,20 @@ export const HC_BINARY_SHA256 =
 	"373f1ac70bf78c14e898c3682caafd3fb8b07d39c7f21637a57922e064c7bcba";
 const BINARY_NAME = "herdr-core";
 
-export interface HcInstallPin {
+export interface HcBinaryPin {
 	version: string;
-	archiveSha256: string;
 	binarySha256: string;
+}
+
+export interface HcInstallPin extends HcBinaryPin {
+	archiveSha256: string;
+}
+
+export const RETIRED_HC_PINS: readonly HcBinaryPin[] = [];
+
+export interface HcBinaryPins {
+	current: HcBinaryPin;
+	retired: readonly HcBinaryPin[];
 }
 
 interface EnsureHcOptions {
@@ -140,22 +150,31 @@ export async function ensureHc(
 	}
 }
 
-export type HcBinaryState = "missing" | "pinned" | "wrong-hash" | "not-a-file" | "not-executable";
+export const productionBinaryPins: HcBinaryPins = { current: productionPin, retired: RETIRED_HC_PINS };
 
-export function hcBinaryState(
-	binaryPath: string,
-	binarySha256: string = productionPin.binarySha256,
-): HcBinaryState {
-	if (!existsSync(binaryPath)) return "missing";
-	if (!statSync(binaryPath).isFile()) return "not-a-file";
-	if (fileSha256(binaryPath) !== binarySha256) return "wrong-hash";
+export type HcBinaryState =
+	| { kind: "missing" }
+	| { kind: "pinned" }
+	| { kind: "wrong-hash" }
+	| { kind: "not-a-file" }
+	| { kind: "not-executable" }
+	| { kind: "retired-pin"; version: string };
+
+export function hcBinaryState(binaryPath: string, pins: HcBinaryPins = productionBinaryPins): HcBinaryState {
+	if (!existsSync(binaryPath)) return { kind: "missing" };
+	if (!statSync(binaryPath).isFile()) return { kind: "not-a-file" };
+	const hash = fileSha256(binaryPath);
+	if (hash !== pins.current.binarySha256) {
+		const retired = pins.retired.find((pin) => pin.binarySha256 === hash);
+		return retired === undefined ? { kind: "wrong-hash" } : { kind: "retired-pin", version: retired.version };
+	}
 	try {
 		accessSync(binaryPath, constants.X_OK);
 	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "EACCES") return "not-executable";
+		if (error instanceof Error && "code" in error && error.code === "EACCES") return { kind: "not-executable" };
 		throw error;
 	}
-	return "pinned";
+	return { kind: "pinned" };
 }
 
 export function hcArchiveUrl(pin: HcInstallPin = productionPin): string {

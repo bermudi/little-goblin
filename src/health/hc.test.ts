@@ -4,14 +4,20 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { hcSessionForHome, hcSocketPath } from "../hc.ts";
+import { HC_VERSION } from "../hc-install.ts";
 import { clearHcSetupFailure, failHcSetup } from "../hc-setup-failure.ts";
 import { tmpDir, useHome, waitUntil } from "../testkit.ts";
 import { hcCore } from "./hc.ts";
 
 // The check runs against the real pin; tests stand in a small file and pass
 // its hash as the pin, since the 0.1.21 binary is not in the repo.
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const fakeBinary = Buffer.from("#!/bin/sh\necho fake herdr-core\n");
-const fakeSha = createHash("sha256").update(fakeBinary).digest("hex");
+const retiredBinary = Buffer.from("#!/bin/sh\necho older herdr-core\n");
+const pins = {
+	current: { version: HC_VERSION, binarySha256: sha256(fakeBinary) },
+	retired: [{ version: "0.0.9-retired", binarySha256: sha256(retiredBinary) }],
+};
 
 const inheritedRuntime = process.env.XDG_RUNTIME_DIR;
 const servers: Server[] = [];
@@ -56,7 +62,7 @@ async function serveCore(reply: (id: string) => string): Promise<void> {
 	await new Promise<void>((resolve, reject) => server.listen(socketPath(), () => resolve()).once("error", reject));
 }
 
-const check = () => hcCore(home, true, fakeSha);
+const check = () => hcCore(home, true, pins);
 
 test("skips when delegation is not configured", async () => {
 	expect(await hcCore("/missing/home", false)).toMatchObject({ id: "delegation.hc", status: "skip" });
@@ -90,11 +96,29 @@ test("a reachable core passes with its terminal count", async () => {
 	expect(result).toMatchObject({ status: "pass", detail: "Pinned core is reachable; 0 terminals" });
 });
 
-test("a binary with the wrong hash stays red", async () => {
+test("after a pin bump, a retired-pin binary passes and names its replacement", async () => {
+	installBinary(retiredBinary);
+	const result = await check();
+	expect(result).toMatchObject({ status: "pass" });
+	expect(result.detail).toContain(`herdr-core 0.0.9-retired is a retired pin; the next delegate run replaces it with ${HC_VERSION}`);
+	expect(result.detail).toContain("is not running and starts on the first delegate run");
+});
+
+test("after a pin bump, a retired-pin binary with a reachable core passes", async () => {
+	installBinary(retiredBinary);
+	await serveCore((id) => JSON.stringify({ jsonrpc: "2.0", id, result: { terminals: [] } }));
+	const result = await check();
+	expect(result).toMatchObject({ status: "pass" });
+	expect(result.detail).toContain("herdr-core 0.0.9-retired is a retired pin");
+	expect(result.detail).toContain("core is reachable; 0 terminals");
+});
+
+test("a binary that matches no pin stays red, even with retired pins known", async () => {
 	installBinary(Buffer.from("tampered"));
 	const result = await check();
 	expect(result).toMatchObject({ status: "fail" });
-	expect(result.detail).toContain("does not match the pinned");
+	expect(result.detail).toBe(`herdr-core binary does not match the pinned ${HC_VERSION} hash or any retired pin`);
+	expect(result.next).toContain("tampered or corrupt");
 });
 
 test("a herdr-core path that is not a file stays red", async () => {

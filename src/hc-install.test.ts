@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureHc } from "./hc-install.ts";
+import { ensureHc, HC_BINARY_SHA256, RETIRED_HC_PINS } from "./hc-install.ts";
 import { useHome } from "./testkit.ts";
 
 function makeArchive(): { bytes: Uint8Array; binaryHash: string } {
@@ -50,4 +50,12 @@ test("ensureHc installs a pinned binary once and refuses a bad archive hash", as
 		}),
 	).rejects.toThrow("archive hash mismatch");
 	expect(existsSync(badPath)).toBe(false);
+});
+
+const shippedHcBinarySha256 = ["373f1ac70bf78c14e898c3682caafd3fb8b07d39c7f21637a57922e064c7bcba"];
+
+test("every herdr-core binary a release shipped stays known after a pin bump", () => {
+	expect(shippedHcBinarySha256).toContain(HC_BINARY_SHA256);
+	const known = [HC_BINARY_SHA256, ...RETIRED_HC_PINS.map((pin) => pin.binarySha256)];
+	expect(known.toSorted()).toEqual(shippedHcBinarySha256.toSorted());
 });

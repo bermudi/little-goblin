@@ -54,8 +54,8 @@ import {
 } from "../tg/turn-notice.ts";
 import type { WakeApi } from "../tg/wake.ts";
 import type { TurnJournal } from "../turn-journal.ts";
+import { sleep } from "../timing.ts";
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Attach retries back off toward the cap — the observed boot miss is a
 // wallet or resolver still coming up, which heals in seconds. A
 // genuinely broken credential stays loud at the cap rather than dying

@@ -13,6 +13,7 @@ import type {
 	AppApprovalsResponse,
 	AppAttachmentResponse,
 	AppAttentionResponse,
+	AppActivityResponse,
 	AppCompactResponse,
 	AppSuggestTitleResponse,
 	AppConfigPatch,
@@ -227,6 +228,10 @@ export function listApprovals(token: string | null): Promise<AppApprovalsRespons
 
 export function getAttention(token: string | null): Promise<AppAttentionResponse> {
 	return request(token, "/api/app/attention");
+}
+
+export function getActivity(token: string | null): Promise<AppActivityResponse> {
+	return request(token, "/api/app/activity");
 }
 
 export function getPushStatus(token: string | null): Promise<AppPushStatus> {
@@ -976,4 +981,3 @@ export async function fetchAttachment(token: string | null, name: string): Promi
 	if (!res.ok) throw new ApiError(res.status, `http ${res.status}`);
 	return res.blob();
 }
-

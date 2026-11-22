@@ -8095,3 +8095,183 @@ button.link:hover {
 	font-size: 12.5px;
 	color: var(--app-fg-muted);
 }
+
+.goblin-avatar {
+	position: relative;
+	display: inline-block;
+	flex: none;
+	aspect-ratio: 1;
+	border-radius: 50%;
+	line-height: 0;
+}
+.goblin-avatar-sm {
+	width: 24px;
+	height: 24px;
+}
+.goblin-avatar-md {
+	width: 32px;
+	height: 32px;
+}
+.goblin-avatar-lg {
+	width: 64px;
+	height: 64px;
+}
+.goblin-avatar img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 50%;
+	image-rendering: pixelated;
+}
+.goblin-avatar[data-working]::after {
+	content: "";
+	position: absolute;
+	inset: -3px;
+	border: 2px solid var(--app-accent);
+	border-right-color: transparent;
+	border-bottom-color: transparent;
+	border-radius: 50%;
+	animation: goblin-spin 1.4s linear infinite;
+}
+.goblin-avatar-lg[data-working]::after {
+	inset: -5px;
+	border-width: 2.5px;
+}
+@keyframes goblin-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.goblin-avatar[data-working]::after {
+		animation: none;
+	}
+}
+.goblin-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	min-width: 0;
+	padding: 1rem;
+	background: var(--app-bg);
+	overflow: auto;
+}
+.goblin-panel-column {
+	width: 280px;
+	height: 100%;
+}
+.goblin-panel-sheet {
+	width: 100%;
+	max-height: 85dvh;
+	border-radius: 1rem 1rem 0 0;
+}
+.goblin-panel-header {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.25rem;
+	padding-top: 0.25rem;
+}
+.goblin-profile-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+	border-radius: 50%;
+}
+.goblin-panel-header > span {
+	color: var(--app-fg-muted);
+	font-size: 0.85rem;
+}
+.goblin-needs {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	padding: 0.65rem;
+	border: 1px solid color-mix(in oklab, var(--app-warning) 40%, transparent);
+	border-radius: 0.75rem;
+	background: color-mix(in oklab, var(--app-warning) 6%, transparent);
+}
+.goblin-needs h2 {
+	margin: 0;
+	color: var(--app-warning);
+	font-size: 0.75rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+.goblin-need-row,
+.goblin-panel-row {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.15rem;
+	width: 100%;
+	padding: 0.45rem 0.25rem;
+	border: 0;
+	border-radius: 0.5rem;
+	background: transparent;
+	color: var(--app-fg);
+	font: inherit;
+	text-align: left;
+}
+button.goblin-need-row,
+button.goblin-panel-row {
+	cursor: pointer;
+}
+button.goblin-need-row:hover,
+button.goblin-panel-row:hover {
+	background: var(--app-hover);
+}
+.goblin-need-row strong,
+.goblin-panel-row strong {
+	font-weight: 500;
+}
+.goblin-need-row span,
+.goblin-panel-row span {
+	color: var(--app-fg-muted);
+	font-size: 0.8rem;
+}
+.goblin-panel [data-slot="tabs-list"] {
+	display: flex;
+	gap: 0.2rem;
+}
+.goblin-panel [data-slot="tabs-tab"] {
+	flex: 1;
+	padding: 0.4rem 0.2rem;
+	border: 0;
+	border-radius: 999px;
+	background: transparent;
+	color: var(--app-fg-muted);
+	font: inherit;
+	cursor: pointer;
+}
+.goblin-panel [data-slot="tabs-tab"][data-selected] {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.goblin-panel [data-slot="tabs-panel"] {
+	padding-top: 0.35rem;
+}
+.goblin-panel-rows {
+	display: flex;
+	flex-direction: column;
+}
+.goblin-panel-footer-group {
+	display: flex;
+	justify-content: space-between;
+}
+.goblin-panel-footer {
+	margin-top: 0.5rem;
+	padding: 0.5rem 0;
+	border: 0;
+	border-top: 1px solid var(--app-divider);
+	background: transparent;
+	color: var(--app-fg-muted);
+	font: inherit;
+	cursor: pointer;
+}
+.goblin-panel-footer-group .goblin-panel-footer {
+	flex: 1;
+}

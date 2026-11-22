@@ -542,6 +542,17 @@ export interface AppAttentionResponse {
 	unavailable: string[];
 }
 
+export interface AppBusyConversation {
+	id: string;
+	title: string | null;
+	parentId: string | null;
+}
+
+export interface AppActivityResponse {
+	busy: AppBusyConversation[];
+	otherBusy: number;
+}
+
 export interface AppApprovalDecisionResponse {
 	status:
 		| "activated"

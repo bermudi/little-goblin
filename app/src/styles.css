@@ -1060,7 +1060,8 @@ header h1 {
 }
 /* Chat width selector — trails the header-action (which keeps the auto
    margin), mono like the composer's knobs. Hidden on phone widths: the
-   column is narrow whatever it says there. */
+   column is narrow whatever it says there. Hidden too in a desktop column
+   too narrow for the header, which never wraps (#891). */
 .width-seg {
 	display: inline-flex;
 	gap: 2px;
@@ -1084,6 +1085,9 @@ header h1 {
 	.width-seg {
 		display: none;
 	}
+}
+main[data-cramped] .width-seg {
+	display: none;
 }
 .nav-toggle {
 	display: none;
@@ -2573,6 +2577,11 @@ button.pathchip:hover svg {
 	display: flex;
 	align-items: center;
 	padding: 0 0.15rem;
+}
+@media (min-width: 721px) {
+	.composer-bar {
+		flex-wrap: wrap;
+	}
 }
 .icon-btn {
 	display: inline-flex;

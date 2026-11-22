@@ -91,6 +91,18 @@ export function App() {
 	return telegramDoor() ? <TelegramDoor /> : <AppShell />;
 }
 
+const CRAMPED_COLUMN_PX = 400;
+
+function observeColumnWidth(column: HTMLElement | null) {
+	if (column === null || typeof window.ResizeObserver !== "function") return;
+	const observer = new window.ResizeObserver((entries) => {
+		const width = entries[0]?.contentRect.width;
+		if (width !== undefined) column.toggleAttribute("data-cramped", width < CRAMPED_COLUMN_PX);
+	});
+	observer.observe(column);
+	return () => observer.disconnect();
+}
+
 function AppShell() {
 	// First hook, before the gate's early return — hook order must not
 	// depend on which render lets the operator through.
@@ -1051,6 +1063,7 @@ function AppShell() {
 				</nav>
 			)}
 			<main
+				ref={observeColumnWidth}
 				className={
 					[chatWidth === "wide" ? "chat-wide" : "", chatListMode ? "list-mode" : ""]
 						.filter(Boolean)

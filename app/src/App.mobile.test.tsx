@@ -1244,7 +1244,12 @@ describe("mobile: chats screen and navigation", () => {
 		expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 	});
 
-	test("desktop: a column too narrow for the header drops the chat width selector", async () => {
+	test.each([
+		[193, "none"],
+		[399, "none"],
+		[400, "inline-flex"],
+		[752, "inline-flex"],
+	])("desktop: a %ipx column shows the chat width selector as %s; the composer bar wraps", async (width, display) => {
 		phone = false;
 		win.happyDOM.setWindowSize({ width: 721, height: 800 });
 		const style = win.document.createElement("style");
@@ -1256,7 +1261,7 @@ describe("mobile: chats screen and navigation", () => {
 			observe(target: Element) {
 				observers.push({
 					target,
-					report: (width) => this.callback([{ target, contentRect: { width } }], this),
+					report: (w) => this.callback([{ target, contentRect: { width: w } }], this),
 				});
 			}
 			unobserve() {}
@@ -1273,16 +1278,12 @@ describe("mobile: chats screen and navigation", () => {
 			"chat composer",
 		);
 		const column = container.querySelector("main");
-		const reportColumn = async (width: number) => {
-			await act(async () => {
-				for (const o of observers) if (o.target === column) o.report(width);
-			});
-		};
-		const selector = () => container.querySelector('main > header [aria-label="Chat width"]');
-		await reportColumn(193);
-		expect(getComputedStyle(selector()!).display).toBe("none");
+		await act(async () => {
+			for (const o of observers) if (o.target === column) o.report(width);
+		});
+		const selector = container.querySelector('main > header [aria-label="Chat width"]');
+		expect(selector).not.toBeNull();
+		expect(getComputedStyle(selector!).display).toBe(display);
 		expect(getComputedStyle(container.querySelector(".chat .composer-bar")!).flexWrap).toBe("wrap");
-		await reportColumn(752);
-		expect(getComputedStyle(selector()!).display).toBe("inline-flex");
 	});
 });

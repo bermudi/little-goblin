@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { appAddress } from "./conversation-address.ts";
+import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { moveIntoProject } from "./conversation-move.ts";
 import { openNotes } from "./notes.ts";
@@ -78,6 +79,14 @@ describe("moveIntoProject", () => {
 			child.id,
 		]);
 		expect(moveIntoProject(f.deps, child.id, first.id).kind).toBe("child");
+		const roll = f.store.rollApp({
+			model: "zai/m",
+			thinking: "medium",
+			providers: { zai: { kind: "openai-compatible", baseUrl: "https://example.com", auth: "zai" } },
+		} as unknown as Config);
+		expect(moveIntoProject(f.deps, roll.id, first.id).kind).toBe("rolling");
+		expect(f.store.get(roll.id)?.projectId).toBeNull();
+		expect(f.store.history(roll.id)).toHaveLength(0);
 		f.store.close();
 	});
 

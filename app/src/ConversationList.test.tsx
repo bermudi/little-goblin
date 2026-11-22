@@ -96,6 +96,9 @@ function rowElement(conversation = conv) {
 			onTogglePinned={() => {}}
 			onDelete={() => {}}
 			onError={() => {}}
+			moveTargets={[]}
+			onMove={() => {}}
+			onMoveToNewProject={() => {}}
 			token={null}
 		/>
 	);

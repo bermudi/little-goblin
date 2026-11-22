@@ -47,8 +47,8 @@ program tool's project arm, delegate's responsibility link) follow the
 binding the frozen prompt was built with, so they arrive together with the
 project section at the next snapshot rebuild (compaction). A move is
 refused while a turn runs, for a chat already in a project, for child
-conversations and outside the app channel. Moving between projects or
-out of one is still not offered.
+conversations, for rolling chat conversations and outside the app channel.
+Moving between projects or out of one is still not offered.
 
 **Working directory and cache.** Paths are not confined — `dir` is a
 default, not a wall. Project prompt changes load at the next snapshot

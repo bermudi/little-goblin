@@ -1081,6 +1081,11 @@ export async function handleConversationsRoute(
 							{ error: "child conversations cannot move into a project" },
 							{ status: 422, headers: NO_STORE },
 						);
+					case "rolling":
+						return Response.json(
+							{ error: "rolling chat conversations cannot move into a project" },
+							{ status: 422, headers: NO_STORE },
+						);
 				}
 			}
 			if (parsed.data.pinned === true) {

@@ -274,6 +274,12 @@ Pressing and holding a row opens a sheet with those actions through ui-sdk
 title is a menu with the same actions, which is also the path without
 gestures. Swipe actions were considered and not taken. The list stays a
 list, not a listbox, and Rename stays inline.
+Move to project (ruling 2026-11-21, #859) sits in the hold sheet and the
+title menu, for loose, unarchived, non-child chats only: the sheet switches
+in place to the active projects and New project…, with Back; the title menu
+opens them as a sub-menu. Hover buttons have no Move. A move from the list
+stays on the list and opens the project's folder. A roll cannot move, and
+the server refuses it.
 
 The chats pane lists each active project as a folder above the loose chats,
 a mechanism borrowed from t3code's sidebar. A folder holds that project's

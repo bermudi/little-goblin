@@ -105,6 +105,7 @@ export interface ConversationStore extends ConversationReads {
 	currentAppRoll(): Conversation | null;
 	rollApp(config: Config): Conversation;
 	appRollChain(limit: number): AppConversationSummary[];
+	isAppRoll(id: string): boolean;
 	// Atomically select the predecessor and reset the quiet-gap clock;
 	// null = no state change. No history replays; the caller owns logs
 	// and pending input.

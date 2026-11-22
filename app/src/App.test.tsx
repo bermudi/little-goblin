@@ -3053,29 +3053,50 @@ describe("app projects surface", () => {
 			convRow("loose chat", { id: "app/loose" }),
 			convRow("bound chat", { id: "app/bound", projectId: "p-goblin" }),
 			convRow("child chat", { id: "app/child", parentId: "app/loose" }),
+			convRow("archived chat", { id: "app/archived", archivedAt: "2026-10-24T00:00:00Z" }),
 		];
 		projs = [projRow("Goblin Work", { id: "p-goblin" })];
 		await mount();
+		const hasMoveItem = () =>
+			[...container.querySelectorAll('[role="menuitem"]')].some(
+				(item) => item.textContent === "Move to project",
+			);
 		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		expect(container.querySelector('[aria-label="Move to project"]')).not.toBeNull();
+		await click(container.querySelector(".title-trigger"));
+		expect(container.querySelector('[role="menuitem"]')?.textContent).toBeTruthy();
+		expect(hasMoveItem()).toBe(true);
 
+		await click(container.querySelector(".title-trigger"));
 		await click(container.querySelector('.conv-main[href="/app/c/child"]'));
-		expect(container.querySelector('[aria-label="Move to project"]')).toBeNull();
+		expect(hasMoveItem()).toBe(false);
 
 		win.history.replaceState(null, "", "/app/c/bound");
 		await act(async () => {
 			win.dispatchEvent(new win.PopStateEvent("popstate"));
 		});
 		await settle();
-		expect(container.querySelector('[aria-label="Move to project"]')).toBeNull();
+		expect(hasMoveItem()).toBe(false);
+
+		win.history.replaceState(null, "", "/app/c/archived");
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		await click(container.querySelector(".title-trigger"));
+		expect(hasMoveItem()).toBe(false);
 	});
 
-	test("moving into an existing project patches the same chat and refreshes its crumb", async () => {
+	test("move into an existing project patches the same chat and refreshes its crumb", async () => {
 		convs = [convRow("loose chat", { id: "app/loose" })];
 		projs = [projRow("Goblin Work", { id: "p-goblin" })];
 		await mount();
 		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(container.querySelector(".title-trigger"));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Move to project",
+			),
+		);
 		await click(
 			[...container.querySelectorAll('[role="menuitem"]')].find(
 				(item) => item.textContent === "Goblin Work",
@@ -3094,15 +3115,26 @@ describe("app projects surface", () => {
 		projs = [projRow("Goblin Work", { id: "p-goblin" })];
 		await mount();
 		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(container.querySelector(".title-trigger"));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Move to project",
+			),
+		);
 		expect(container.querySelector('[role="menu"].move-menu')).not.toBeNull();
+		expect(container.querySelector('[aria-label="Move to project"]:not([role="menuitem"])')).toBeNull();
 	});
 
 	test("creating a project from the move menu moves the chat and stays on its route", async () => {
 		convs = [convRow("loose chat", { id: "app/loose" })];
 		await mount();
 		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(container.querySelector(".title-trigger"));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Move to project",
+			),
+		);
 		await click(
 			[...container.querySelectorAll('[role="menuitem"]')].find(
 				(item) => item.textContent === "New project…",
@@ -3110,9 +3142,15 @@ describe("app projects surface", () => {
 		);
 		const form = container.querySelector<HTMLFormElement>(".msheet form");
 		expect(form).not.toBeNull();
-		await typeInto(form!.querySelector("input")!, "Side Hustle", win.HTMLInputElement.prototype);
+		await typeInto(
+			form!.querySelector("input")!,
+			"Side Hustle",
+			win.HTMLInputElement.prototype,
+		);
 		await act(async () => {
-			form!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+			form!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
 		});
 		await settle();
 		expect(posts.findIndex((post) => post.url === "/api/app/projects")).toBeLessThan(
@@ -3132,7 +3170,12 @@ describe("app projects surface", () => {
 		movePatchFail = true;
 		await mount();
 		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector('[aria-label="Move to project"]'));
+		await click(container.querySelector(".title-trigger"));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Move to project",
+			),
+		);
 		await click(
 			[...container.querySelectorAll('[role="menuitem"]')].find(
 				(item) => item.textContent === "Goblin Work",

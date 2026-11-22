@@ -5,6 +5,7 @@
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
+import { every } from "./timing.ts";
 import type { Delegation, DelegationStatus } from "./delegations.ts";
 import type { HcRunInfo } from "./hc-delegation.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
@@ -116,9 +117,9 @@ export function startDelegationLifecycle(
 		});
 		return current;
 	};
-	const timer = setInterval(() => {
+	const ticker = every(tickMs, "delegation watcher tick", () => {
 		void scan();
-	}, tickMs);
+	});
 	void scan();
 	return {
 		launch: (input) => tracked(launch(deps, input)),
@@ -138,7 +139,7 @@ export function startDelegationLifecycle(
 		stopTicker: () => {
 			if (stopping !== null) return stopping;
 			stopped = true;
-			clearInterval(timer);
+			ticker.cancel();
 			// Join the scan and in-flight ops before releasing ownership:
 			// shutdown closes the store next, so an op holding launch/send
 			// progress must land its row transition (or fail loud) first.

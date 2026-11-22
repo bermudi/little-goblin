@@ -20,6 +20,7 @@ import { openStore } from "./conversation.ts";
 import type { Runtime } from "./runtime.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import type { Config } from "./config-schema.ts";
+import { sleep, waitUntil } from "./testkit.ts";
 
 let dirs: string[] = [];
 let watchers: MailWatcher[] = [];
@@ -198,6 +199,33 @@ function mailProgram(h: Harness, name = "bank watch", filter = "from:bank"): Pro
 }
 
 describe("mail watcher", () => {
+	test("the ticker scans on its interval and stops scanning once stopped", async () => {
+		const h = harness();
+		let scans = 0;
+		const w = startMailWatcher(
+			{
+				programs: h.programs,
+				reader: () => {
+					scans += 1;
+					return null;
+				},
+				fire: async () => {},
+				notify: async () => {},
+				now: () => NOW,
+			},
+			5,
+		);
+		watchers.push(w);
+		try {
+			await waitUntil(() => scans >= 3, "boot scan plus two ticks");
+		} finally {
+			await w.stop();
+		}
+		const seen = scans;
+		await sleep(30);
+		expect(scans).toBe(seen);
+	});
+
 	test("a new filter baselines at the head — the backlog never fires", async () => {
 		const h = harness();
 		const p = mailProgram(h);

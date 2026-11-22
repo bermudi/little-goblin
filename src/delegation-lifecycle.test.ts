@@ -29,6 +29,7 @@ import { makeHc } from "./hc.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { paths } from "./home-layout.ts";
 import { setLogFile } from "./log.ts";
+import { sleep, waitUntil } from "./testkit.ts";
 
 
 let dirs: string[] = [];
@@ -132,6 +133,29 @@ function runningRow(
 }
 
 describe("delegation watcher", () => {
+	test("the ticker checks running rows on its interval and stops once stopped", async () => {
+		const h = harness();
+		const d = runningRow(h, "ticking", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+		let gets = 0;
+		h.deps.hc = {
+			...h.deps.hc,
+			get: (name) => {
+				gets += 1;
+				return Promise.resolve(h.agents.get(name) ?? null);
+			},
+		};
+		const w = startDelegationLifecycle(h.deps, 5);
+		try {
+			await waitUntil(() => gets >= 3, "boot scan plus two ticks");
+		} finally {
+			await w.stopTicker();
+		}
+		const seen = gets;
+		await sleep(30);
+		expect(gets).toBe(seen);
+	});
+
 	test("shutdown joins a late scan without recording a history-only notice as landed", async () => {
 		const h = harness();
 		const d = runningRow(h, "late", 1);

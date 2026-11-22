@@ -16,6 +16,7 @@ import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { openWindowCapture } from "../window-capture.ts";
+import { sleep } from "../timing.ts";
 import type { ScriptedModel } from "../testkit/turn-script.ts";
 import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
@@ -198,7 +199,7 @@ export async function createAndChat(
 		const response = await call(`/api/app/conversations/${id}/messages`);
 		history = (await response.json()) as { messages?: Array<{ role: string }> };
 		if (history.messages?.some((message) => message.role === "assistant" || message.role === "system")) break;
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await sleep(10);
 	}
 	if (!history.messages?.some((message) => message.role === "assistant" || message.role === "system")) {
 		throw new Error(`chat turn did not settle for app/${id}`);

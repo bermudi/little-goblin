@@ -21,6 +21,10 @@ risks cache stability.
 - `after(ms, label, fn)` schedules a callback. A throw or rejection becomes an
   error line with the label. A raw timer callback that throws reaches the
   process's uncaught-exception handler, which exits.
+- `every(ms, label, fn)` is the repeating form of `after`, with the same
+  error line per failed tick; the ticker keeps going. It does not skip a
+  tick while the previous one still runs: a module that must not overlap
+  keeps its own in-flight guard (#830).
 
 Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.
@@ -28,5 +32,5 @@ one-flush-per-key rule, model fallback after a zero-effect failure.
 **Consequences.** [`timers.test.ts`](../../src/timers.test.ts) freezes the raw
 `setTimeout`/`setInterval` count of every file not yet moved. A file may lose
 calls, never gain them, and a file that loses calls must update its entry.
-Modules move one at a time (#830). `setInterval` users get a helper
-with their first move, not before.
+Modules move one at a time (#830). `every` arrived with the first
+`setInterval` user, the wake dispatcher's ticker.

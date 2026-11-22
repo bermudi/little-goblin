@@ -1,3 +1,4 @@
+import { deadline } from "../timing.ts";
 import { ProbeError } from "./shared.ts";
 
 export async function http(
@@ -7,14 +8,9 @@ export async function http(
 	body?: string,
 ): Promise<{ status: number; text: string }> {
 	if (signal?.aborted) throw new ProbeError("cancelled");
+	using limit = deadline(timeoutMs, signal);
 	const controller = new AbortController();
-	let expired = false;
-	const abort = () => controller.abort();
-	signal?.addEventListener("abort", abort, { once: true });
-	const timer = setTimeout(() => {
-		expired = true;
-		abort();
-	}, timeoutMs);
+	limit.signal.addEventListener("abort", () => controller.abort(), { once: true });
 	let reader:
 		| {
 				read(): Promise<{ done?: boolean; value?: Uint8Array }>;
@@ -49,15 +45,13 @@ export async function http(
 		throw new ProbeError(
 			signal?.aborted
 				? "cancelled"
-				: expired
+				: limit.expired()
 					? "deadline"
 					: error instanceof ProbeError
 						? error.category
 						: "HTTP-transport-or-body-error",
 		);
 	} finally {
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", abort);
 		controller.abort();
 		if (reader) {
 			void reader.cancel().catch(() => {

@@ -6,7 +6,7 @@
 // is real, the store/journal/wake store are real SQLite.
 
 import { foldSummary } from "./testkit/fake-summary.ts";
-import { describe, expect, test as bunTest } from "bun:test";
+import { describe, expect, spyOn, test as bunTest } from "bun:test";
 import { defineTool, type Tools } from "./tool.ts";
 import type { Message } from "./message.ts";
 import { z } from "zod";
@@ -16,7 +16,7 @@ import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 
 import type { TurnToolMaker } from "./turn/tool-authority.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
-import { deferred, HeadlessSink, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
+import { deferred, HeadlessSink, RecordingSink, sleep, tmpDb, waitUntil } from "./testkit.ts";
 import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import { claudeScript } from "./testkit/turn-script-claude.ts";
 import type { ScriptedModel } from "./testkit/turn-script.ts";
@@ -769,6 +769,52 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		now += 200;
 		d.pump();
 		expect(calls).toBe(2);
+		store.close();
+	});
+
+	test("the ticker retries a backed-off wake with no manual pump, and stops when told", async () => {
+		const store = openStore(tmpDb("goblin-wd-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let now = 1_000_000;
+		let calls = 0;
+		const failThenOk = {
+			accepting: () => true,
+			isAdmitted: () => false,
+			submitPersisted: () => {
+				calls += 1;
+				if (calls === 1) throw new Error("submit boom");
+				return true;
+			},
+		} as unknown as Runtime;
+		const d = makeWakeDispatcher({
+			store,
+			wakes: openWakeStore(store.db),
+			journal: openTurnJournal(store.db),
+			runtime: failThenOk,
+			sinkFor: () => new HeadlessSink(),
+			backoff: { baseMs: 100, capMs: 10_000 },
+			now: () => now,
+		});
+		d.record({
+			sourceKey: "poll:1",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line",
+			facts: {},
+			origin: "observer",
+		});
+		expect(calls).toBe(1);
+		now += 200;
+		const pumps = spyOn(d, "pump");
+		const stop = d.startTicker(5);
+		try {
+			await waitUntil(() => calls === 2, "the ticker pumps the opened backoff gate");
+		} finally {
+			stop();
+		}
+		const seen = pumps.mock.calls.length;
+		await sleep(30);
+		expect(pumps.mock.calls.length).toBe(seen);
 		store.close();
 	});
 

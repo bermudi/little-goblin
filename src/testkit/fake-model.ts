@@ -8,8 +8,7 @@ import type {
 	LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+import { sleep } from "../timing.ts";
 
 // The controller swallows closed-stream throws — a cancelled stream's
 // enqueue throws, and racing cancellation is the norm in these tests.

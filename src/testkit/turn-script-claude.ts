@@ -50,7 +50,10 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 				kind: "tool",
 				name: part.toolName,
 				input: part.input,
-				run: () => bridgeRef.current!.invoke(part.toolName, part.input),
+				run: (toolUseId) =>
+					bridgeRef.current!.invoke(part.toolName, part.input, {
+						_meta: { "claudecode/toolUseId": toolUseId },
+					}),
 				...billed(),
 			});
 			// The CLI acks steers drained during tool execution before its next request.

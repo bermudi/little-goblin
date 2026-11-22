@@ -7,6 +7,7 @@ import { clearHcSetupFailure, failHcSetup } from "./hc-setup-failure.ts";
 import { installHcHooks } from "./hc-hooks.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { paths } from "./home-layout.ts";
+import { sleep } from "./timing.ts";
 
 export { HcError } from "./hc.ts";
 
@@ -87,7 +88,7 @@ export function makeHcDelegation(input: {
 			let info = asRun(terminal);
 			const deadline = performance.now() + 30_000;
 			while (info.agent_status === "unknown" && performance.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 200));
+				await sleep(200);
 				const current = await get(name);
 				if (current === null) throw new HcError("terminal.get", `terminal disappeared during startup: ${name}`);
 				info = current;
@@ -110,7 +111,7 @@ export function makeHcDelegation(input: {
 			if (before === null || before === undefined || before.agent_status !== "idle") return;
 			const end = performance.now() + 30_000;
 			while (performance.now() < end) {
-				await new Promise((resolve) => setTimeout(resolve, 200));
+				await sleep(200);
 				const current = await get(name);
 				if (current === null) throw new HcError("terminal.get", `terminal disappeared after send: ${name}`);
 				if (["working", "blocked", "done"].includes(current.agent_status)) return;

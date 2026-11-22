@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { log } from "./log.ts";
-import { after, deadline, sleep, within } from "./timing.ts";
+import { after, deadline, every, sleep, within } from "./timing.ts";
 
 const tick = (ms: number) => new Promise<void>((resolve) => after(ms, "test tick", resolve));
 
@@ -117,6 +117,72 @@ describe("after", () => {
 			expect(timers).toContainEqual({ timer: "sync throw" });
 			expect(timers).toContainEqual({ timer: "async reject" });
 		} finally {
+			error.mockRestore();
+		}
+	});
+});
+
+describe("every", () => {
+	function counter(target: number): { hit(): number; reached: Promise<void> } {
+		let runs = 0;
+		let reach!: () => void;
+		const reached = new Promise<void>((resolve) => {
+			reach = resolve;
+		});
+		return {
+			hit: () => {
+				runs += 1;
+				if (runs === target) reach();
+				return runs;
+			},
+			reached,
+		};
+	}
+
+	test("runs the callback on each interval until cancelled", async () => {
+		const runs = counter(3);
+		let last = 0;
+		const ticker = every(5, "test ticker", () => {
+			last = runs.hit();
+		});
+		await runs.reached;
+		ticker.cancel();
+		const seen = last;
+		await tick(40);
+		expect(seen).toBe(3);
+		expect(last).toBe(seen);
+	});
+
+	test("cancel before the first interval means no run", async () => {
+		let runs = 0;
+		every(10, "test cancel", () => {
+			runs += 1;
+		}).cancel();
+		await tick(30);
+		expect(runs).toBe(0);
+	});
+
+	test("a throwing or rejecting tick is an error line and the ticker keeps going", async () => {
+		const error = spyOn(log, "error").mockImplementation(() => {});
+		const syncRuns = counter(2);
+		const asyncRuns = counter(2);
+		const sync = every(5, "sync throw", () => {
+			syncRuns.hit();
+			throw new Error("sync");
+		});
+		const rejecting = every(5, "async reject", () => {
+			asyncRuns.hit();
+			return Promise.reject(new Error("async"));
+		});
+		try {
+			await Promise.all([syncRuns.reached, asyncRuns.reached]);
+			await tick(1);
+			const timers = error.mock.calls.map((call) => call[2]);
+			expect(timers).toContainEqual({ timer: "sync throw" });
+			expect(timers).toContainEqual({ timer: "async reject" });
+		} finally {
+			sync.cancel();
+			rejecting.cancel();
 			error.mockRestore();
 		}
 	});

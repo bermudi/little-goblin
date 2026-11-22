@@ -1,8 +1,7 @@
 import { GrammyError, type Transformer } from "grammy";
 import { log } from "../log.ts";
+import { sleep } from "../timing.ts";
 import { API_CALL_TIMEOUT_MS } from "./deadline.ts";
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const DEFAULT_MAX_WAIT_MS = API_CALL_TIMEOUT_MS - 10_000;
 const ANSWER_MAX_WAIT_MS = 5_000;

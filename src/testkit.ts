@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MessageChunk } from "./message.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
+import { after } from "./timing.ts";
 import type {
 	HeadlessSink as HeadlessSinkContract,
 	StreamingSink,
@@ -155,7 +156,7 @@ export function openTestStore(prefix?: string): {
 
 // ---------- timing: event awaits, not guesses ----------
 
-export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise<void>((resolve) => after(ms, "testkit sleep", resolve));
 
 /** Poll `cond` until it holds, failing loud after `timeoutMs`. */
 export async function waitUntil(

@@ -569,6 +569,19 @@ function Chat({
     setMarks(initialCompactions);
   }, [initialCompactions]);
 
+  const [resumed, setResumed] = useState(0);
+  const onResume = useEffectEvent(() => {
+    if (document.visibilityState !== "visible") return;
+    setResumed((n) => n + 1);
+    refreshTranscript();
+    refreshPending();
+  });
+  useEffect(() => {
+    const resume = () => onResume();
+    document.addEventListener("visibilitychange", resume);
+    return () => document.removeEventListener("visibilitychange", resume);
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     let retry = 250;
@@ -612,7 +625,7 @@ function Chat({
     };
     void run();
     return () => controller.abort();
-  }, [token, conversationId]);
+  }, [token, conversationId, resumed]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // The outline rail is a pointer/keyboard affordance — phones don't

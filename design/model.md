@@ -462,11 +462,17 @@ decisions and their why:
   register through an in-process SDK MCP server (tools.ts) — handlers
   run in goblin's process, the child only orchestrates model calls.
   `Runtime.fenceTools` wraps every execute, so authority re-checks and
-  journal dispatch/result/error rows are inherited unchanged. Id
-  namespaces stay separate: the vendor handler receives no tool_use id,
-  so the bridge mints its own result queue; the engine pairs stream-frame
-  tool_use ids with queued results by (name, exact input) then FIFO,
-  emitting goblin's exact outputs on the wire.
+  journal dispatch/result/error rows are inherited unchanged. Each
+  execute runs under the CLI's own `toolu_` id, which the CLI stamps on
+  every MCP `tools/call` as `_meta["claudecode/toolUseId"]` (verified
+  live on SDK 0.3.330, parallel calls included, 2026-11-22). So journal
+  rows, `sentMedia.toolCallId` and the reply's tool parts share one id,
+  and the app places sent media beside its tool call (#875). A call
+  without that stamp still runs, under a bridge-minted
+  `claude-<bridge>-<seq>` id, and logs a warning. Result adoption still
+  pairs stream-frame tool_use ids with the bridge's queue by
+  (name, exact input) then FIFO, emitting goblin's exact outputs on the
+  wire.
 - **Auth isolation.** The auth.jsonl record resolves to
   `CLAUDE_CODE_OAUTH_TOKEN`, injected into the child env ONLY — the
   SDK's `env` option replaces the child environment wholesale

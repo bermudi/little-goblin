@@ -135,7 +135,11 @@ session. A failed install or core start writes
 `$GOBLIN_HOME/state/hc-setup-failure.json` (stage, pinned version, time)
 before the error returns, and the next successful setup removes it: the
 failure leaves no other trace, and doctor's `delegation.hc` needs one to
-tell "never ran" from "broken" (design/doctor.md, #739).
+tell "never ran" from "broken" (design/doctor.md, #739). A pin bump
+moves the old version and binary hash into `RETIRED_HC_PINS` in
+`src/hc-install.ts`, so doctor can tell a not-yet-replaced binary from
+an unknown one; `src/hc-install.test.ts` fails if a shipped hash goes
+missing (#809).
 
 - **Harnesses stay config** as `{kind, args?, askFirst?}`. The retired T3 shape is rejected at boot with a
   fix-naming message. Goblin never guesses a model.

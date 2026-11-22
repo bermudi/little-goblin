@@ -4,6 +4,7 @@
 - **Delegation:** one run of an external coding harness that Goblin starts with the `delegate` tool, only when the operator asks for that harness. It runs as a named terminal on Goblin's private hc core; the operator can inspect it through hc or the app (design/delegation.md).
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
 - **hc core:** the pinned herdr-core process that owns Goblin's named delegation terminals and survives Goblin restarts. Its session state is under `~/.local/state/herdr-core/` (design/delegation.md).
+- **Retired pin:** an older herdr-core version and binary hash that Goblin shipped before the current pin. It is listed in `RETIRED_HC_PINS` in `src/hc-install.ts`. It exists so doctor can tell a binary that the next delegate run will replace from a tampered or corrupt one: right after a release moves the pin from 0.1.21 to a newer version, a box still holding the 0.1.21 binary passes `delegation.hc` instead of failing (#809).
 - **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
 - **Delegation family:** the five modules that implement delegations: `delegation-lifecycle.ts` (contracts + boot wiring), `delegation-paths.ts` (shared predicates), `delegation-notices.ts` (notice bodies + delivery), `delegation-actions.ts` (the five verbs), and `delegation-watcher.ts` (the scan lifecycle). Imports flow one way: watcher → actions → notices → paths.
 - **Subagent:** a child conversation that Goblin starts with the `agent` tool. It runs on Goblin's own runtime, with an agent type's prompt, model and tools (design/agents.md).
@@ -41,6 +42,7 @@
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
 - **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
+- **Post:** a short plain-text note Goblin writes to the operator with the `post` tool. It shows in the Activity tab of the Goblin panel and links back to the chat it came from; it does not notify anyone. Example: after a nightly backup check, Goblin posts "Backup finished. All 3 disks OK." (design/posts.md).
 - **Roll:** a fresh app conversation made when the Rolling chat treats a
   message as a new subject. For example, after a quiet gap and a new-subject
   check, Goblin starts an empty conversation instead of adding the message to

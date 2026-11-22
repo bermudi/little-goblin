@@ -5,6 +5,7 @@ import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { openNotes } from "../notes.ts";
+import { makePosts } from "../posts.ts";
 import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
@@ -15,6 +16,7 @@ import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { openWindowCapture } from "../window-capture.ts";
+import { sleep } from "../timing.ts";
 import type { ScriptedModel } from "../testkit/turn-script.ts";
 import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
@@ -49,6 +51,7 @@ export function setup(
 	const store = openStore(join(home, "goblin.sqlite"));
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
+	const posts = makePosts(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
 	const turnJournal = openTurnJournal(store.db);
 	// The context-window rows ride the same db — prod wires them
 	// unconditionally (src/index.ts), so the rig does too.
@@ -118,6 +121,7 @@ export function setup(
 		runtime,
 		projects,
 		notes,
+		posts,
 		auth,
 		configRef,
 		...(opts.gate !== undefined ? { gate: opts.gate } : {}),
@@ -156,6 +160,7 @@ export function setup(
 		runtime,
 		projects,
 		notes,
+		posts,
 		configRef,
 		configWrites,
 		call,
@@ -194,7 +199,7 @@ export async function createAndChat(
 		const response = await call(`/api/app/conversations/${id}/messages`);
 		history = (await response.json()) as { messages?: Array<{ role: string }> };
 		if (history.messages?.some((message) => message.role === "assistant" || message.role === "system")) break;
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await sleep(10);
 	}
 	if (!history.messages?.some((message) => message.role === "assistant" || message.role === "system")) {
 		throw new Error(`chat turn did not settle for app/${id}`);

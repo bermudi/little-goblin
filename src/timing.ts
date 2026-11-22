@@ -8,24 +8,37 @@ export interface TimerOptions {
 	unref?: boolean;
 }
 
+function run(label: string, fn: () => unknown): void {
+	try {
+		const result = fn();
+		if (result instanceof Promise) {
+			result.catch((err: unknown) => log.error("timer callback failed", err, { timer: label }));
+		}
+	} catch (err) {
+		log.error("timer callback failed", err, { timer: label });
+	}
+}
+
 export function after(
 	ms: number,
 	label: string,
 	fn: () => unknown,
 	options: TimerOptions = {},
 ): Timer {
-	const handle = setTimeout(() => {
-		try {
-			const result = fn();
-			if (result instanceof Promise) {
-				result.catch((err: unknown) => log.error("timer callback failed", err, { timer: label }));
-			}
-		} catch (err) {
-			log.error("timer callback failed", err, { timer: label });
-		}
-	}, ms);
+	const handle = setTimeout(() => run(label, fn), ms);
 	if (options.unref === true) handle.unref();
 	return { cancel: () => clearTimeout(handle) };
+}
+
+export function every(
+	ms: number,
+	label: string,
+	fn: () => unknown,
+	options: TimerOptions = {},
+): Timer {
+	const handle = setInterval(() => run(label, fn), ms);
+	if (options.unref === true) handle.unref();
+	return { cancel: () => clearInterval(handle) };
 }
 
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {

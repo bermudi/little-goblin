@@ -108,6 +108,7 @@ interface Row {
 	at: number;
 	label: string;
 	detail: string;
+	post?: boolean;
 	action?: () => void;
 }
 
@@ -128,9 +129,10 @@ function PanelRow({ row }: { row: Row }) {
 			<span>{row.detail}</span>
 		</>
 	);
-	if (row.action === undefined) return <div className="goblin-panel-row">{body}</div>;
+	const className = row.post === true ? "goblin-panel-row goblin-panel-post" : "goblin-panel-row";
+	if (row.action === undefined) return <div className={className}>{body}</div>;
 	return (
-		<button type="button" className="goblin-panel-row" onClick={row.action}>
+		<button type="button" className={className} onClick={row.action}>
 			{body}
 		</button>
 	);
@@ -189,6 +191,23 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				label: `Ran ${p.name}`,
 				detail: relTime(p.lastRun),
 			})),
+		...(data.activity?.posts ?? []).map((post): Row => {
+			const source = post.conversation;
+			return {
+				key: `post:${post.id}`,
+				at: at(post.createdAt),
+				label: post.text,
+				detail: `post · ${relTime(post.createdAt)}`,
+				post: true,
+				...(source === null
+					? {}
+					: {
+							action: source.rolling
+								? () => props.onOpenPage("rolling")
+								: () => props.onOpenConversation(source.id),
+						}),
+			};
+		}),
 	].sort((a, b) => b.at - a.at);
 	const otherBusy = data.activity?.otherBusy ?? 0;
 	const running = [...busyRows, ...activeRows].slice(0, ACTIVITY_ROWS - (otherBusy > 0 ? 1 : 0));

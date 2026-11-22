@@ -657,7 +657,6 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 			{ tools: echoTools() },
 		);
 		expect(outcome.kind).toBe("ok");
-		// No planned rows: the CLI's ids never match fenceTools' journal ids.
 		expect(rec.inputs).toEqual([]);
 		expect(rec.checkpoints.length).toBeGreaterThanOrEqual(2);
 		const last = rec.checkpoints.at(-1) as { partial?: PromptMessage[] };

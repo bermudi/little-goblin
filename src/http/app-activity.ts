@@ -1,6 +1,8 @@
 import { APP_ID_PREFIX } from "../conversation-address.ts";
-import type { AppActivityResponse } from "./app-wire.ts";
+import type { AppActivityResponse, AppPost } from "./app-wire.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
+
+const POSTS_SHOWN = 20;
 
 export async function handleActivityRoute(
 	req: Request,
@@ -27,7 +29,17 @@ export async function handleActivityRoute(
 		if (row === undefined) continue;
 		busy.push({ id, title: row.title, parentId: row.parentId, rolling: false });
 	}
-	return Response.json({ busy, otherBusy } satisfies AppActivityResponse, {
+	const posts = deps.posts.recent(POSTS_SHOWN).map((post): AppPost => {
+		const id = post.conversationId;
+		const linked = id.startsWith(APP_ID_PREFIX) && deps.store.get(id) !== null;
+		return {
+			id: post.id,
+			text: post.text,
+			createdAt: post.createdAt,
+			conversation: linked ? { id, rolling: deps.store.isAppRoll(id) } : null,
+		};
+	});
+	return Response.json({ busy, otherBusy, posts } satisfies AppActivityResponse, {
 		headers: NO_STORE,
 	});
 }

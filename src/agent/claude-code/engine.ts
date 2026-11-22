@@ -1156,9 +1156,6 @@ function wireFromBlock(
 			run.toolNameById.set(id, name);
 			run.pendingToolUse.set(id, { name, input });
 			head.onToolCall(name, input);
-			// No journal: the CLI's toolu_ ids never match the bridge ids
-			// fenceTools journals under, so a planned row here would stay
-			// stale beside the completed one.
 			recorder.toolInput(id, name, input, { journal: false });
 			run.parts.push({
 				type: `tool-${name}` as never,

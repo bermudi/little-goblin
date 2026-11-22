@@ -6,6 +6,7 @@
 import { HistoryExpiredError, type MailHit, type ThreadContext } from "./mail.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
+import { every } from "./timing.ts";
 
 /** The watcher's poll surface: history intersect + baseline + thread
  *  context. mail-gws.ts's GwsMailReader in production, a fake at the
@@ -117,16 +118,16 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		});
 		return current;
 	};
-	const timer = setInterval(() => {
+	const ticker = every(tickMs, "mail watcher tick", () => {
 		void scan();
-	}, tickMs);
+	});
 	void scan(); // boot catch-up: the cursor persisted, missed mail fires
 	return {
 		tick: scan,
 		stop: () => {
 			if (stopping !== null) return stopping;
 			stopped = true;
-			clearInterval(timer);
+			ticker.cancel();
 			stopping = (current ?? Promise.resolve()).finally(() => {
 				activeWatchers.delete(deps.programs);
 			});

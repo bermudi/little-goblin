@@ -921,8 +921,10 @@ p code,
 	white-space: nowrap;
 }
 /* The header's sidebar collapse — .nav-toggle is display:none off the
-   drawer door; this one is JSX-gated to desktop, so it always shows. */
-.rail-toggle {
+   drawer door; this one is JSX-gated to desktop, so it always shows.
+   Both classes in the selector so it outranks the later .nav-toggle
+   rule (#874). */
+.nav-toggle.rail-toggle {
 	display: inline-flex;
 }
 
@@ -8103,6 +8105,10 @@ button.goblin-panel-row:hover {
 .goblin-need-row strong,
 .goblin-panel-row strong {
 	font-weight: 500;
+}
+.goblin-panel-post strong {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 .goblin-need-row span,
 .goblin-panel-row span {

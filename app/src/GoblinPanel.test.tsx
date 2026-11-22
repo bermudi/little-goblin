@@ -16,7 +16,7 @@ const item: AppAttentionItem = {
 	createdAt: "2026-11-20T00:00:00.000Z", target,
 };
 const baseData = (working: number, attention: AppAttentionItem[] = []) => ({
-	attention, attentionError: false, delegations: [], programs: [], activity: { busy: [], otherBusy: 0 },
+	attention, attentionError: false, delegations: [], programs: [], activity: { busy: [], otherBusy: 0, posts: [] },
 	loadError: false, working, reload() {},
 }) as unknown as Parameters<typeof GoblinPanel>[0]["data"];
 
@@ -77,7 +77,7 @@ test("tabs are Activity, Scheduled and Library; avatar opens profile", async () 
 test("activity puts running delegation before finished work and labels subagents", async () => {
 	const data = {
 		...baseData(2),
-		activity: { busy: [{ id: "app/child", title: "Compare prices", parentId: "app/parent", rolling: false }], otherBusy: 0 },
+		activity: { busy: [{ id: "app/child", title: "Compare prices", parentId: "app/parent", rolling: false }], otherBusy: 0, posts: [] },
 		delegations: [
 			{ id: 1, harness: "codex", task: "Fix the sheet", status: "running", createdAt: "2026-11-21T00:00:00Z", appConversation: "app/work" },
 			{ id: 2, harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-20T01:00:00Z", appConversation: null },
@@ -99,6 +99,7 @@ test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", asy
 		activity: {
 			busy: [{ id: "app/roll-2", title: null, parentId: null, rolling: true }],
 			otherBusy: 0,
+			posts: [],
 		},
 	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
 	const pages: string[] = [];
@@ -127,4 +128,55 @@ test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", asy
 	);
 	expect(pages).toEqual(["rolling"]);
 	expect(conversations).toEqual([]);
+});
+
+test("posts show in Activity by time beside finished work and open their chat", async () => {
+	const data = {
+		...baseData(0),
+		activity: {
+			busy: [],
+			otherBusy: 0,
+			posts: [
+				{ id: 3, text: "Backup finished.\nAll disks OK.", createdAt: "2026-11-21T03:00:00Z", conversation: { id: "app/nightly", rolling: false } },
+				{ id: 2, text: "Morning summary is ready.", createdAt: "2026-11-20T12:00:00Z", conversation: { id: "app/roll-1", rolling: true } },
+				{ id: 1, text: "From Telegram.", createdAt: "2026-11-19T12:00:00Z", conversation: null },
+			],
+		},
+		delegations: [
+			{ id: 9, harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-21T01:00:00Z", appConversation: null },
+		],
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	const pages: string[] = [];
+	const conversations: string[] = [];
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(
+			<GoblinPanel
+				data={data}
+				notes={null}
+				variant="column"
+				onOpenTarget={() => {}}
+				onOpenConversation={(id) => conversations.push(id)}
+				onOpenPage={(page) => pages.push(page)}
+				onOpenNote={() => {}}
+				onOpenProfile={() => {}}
+			/>,
+		),
+	);
+	const rows = [...container.querySelectorAll(".goblin-panel-row")];
+	expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual([
+		"Backup finished.\nAll disks OK.",
+		"pi: Old task",
+		"Morning summary is ready.",
+		"From Telegram.",
+	]);
+	const posts = [...container.querySelectorAll(".goblin-panel-post")];
+	expect(posts.map((row) => row.tagName)).toEqual(["BUTTON", "BUTTON", "DIV"]);
+	expect(posts[0]?.querySelector("span")?.textContent).toStartWith("post · ");
+	for (const row of posts.slice(0, 2)) {
+		await act(async () => row.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+	}
+	expect(conversations).toEqual(["app/nightly"]);
+	expect(pages).toEqual(["rolling"]);
+	expect(container.textContent).not.toContain("Nothing running.");
 });

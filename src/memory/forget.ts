@@ -1,4 +1,5 @@
 import { log } from "../log.ts";
+import { sleep } from "../timing.ts";
 import { HindsightError, identifier, type MemoryOperation } from "./hindsight.ts";
 import type { MemoryContexts } from "./mod.ts";
 import type { MemoryQueue } from "./queue.ts";
@@ -36,7 +37,7 @@ async function settleInflightRetention(
 		if (outstanding.size > 0) {
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) return false;
-			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+			await sleep(Math.min(pollMs, remaining));
 		}
 	}
 	return outstanding.size === 0;

@@ -7,9 +7,8 @@ import {
 	proposalFingerprint,
 	skillResolutionText,
 } from "../skill-decisions.ts";
+import { sleep } from "../timing.ts";
 import { withTimeout } from "./deadline.ts";
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Long enough to span the reviewer's two-rename same-name swap (reviewer.ts
 // proposeSkill moves the incumbent out before the restage lands), short

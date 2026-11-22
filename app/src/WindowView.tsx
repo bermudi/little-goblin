@@ -265,18 +265,19 @@ function Breakdown({
 	);
 }
 
-// What the next turn will do, from figures the backend serves: the
-// window's last input, the model's limit, and the compaction threshold.
 function nextTurnNote(ctx: AppContextView | null, stale: boolean): string | null {
 	if (stale) return "The model changed since this capture: the next turn rebuilds the window.";
 	if (ctx === null || ctx.input === null || ctx.limit === null || ctx.limit <= 0) {
-		return "No token count for this window: the provider reported no usage or the model has no known limit, so the fill and the room before compaction are unknown.";
+		return "No token count for this window: the provider reported no usage, so the fill and the room before compaction are unknown.";
 	}
-	const at = Math.floor((ctx.limit * ctx.compactAtPct) / 100);
-	if (ctx.input >= at) {
-		return `At or above ${ctx.compactAtPct}% of the window: the turn that just ended compacts the history before the next one.`;
+	const model =
+		ctx.modelLimit !== null && ctx.modelLimit !== ctx.limit
+			? ` The model itself takes up to ${num(ctx.modelLimit)}.`
+			: "";
+	if (ctx.input >= ctx.limit) {
+		return `At or above the ${num(ctx.limit)}-token limit: the turn that just ended compacts the history before the next one.${model}`;
 	}
-	return `A finished turn at ${ctx.compactAtPct}% of the window (${num(at)} tokens) compacts the history. ${num(at - ctx.input)} tokens of room remain before that.`;
+	return `A finished turn at ${num(ctx.limit)} tokens compacts the history. ${num(ctx.limit - ctx.input)} tokens of room remain before that.${model}`;
 }
 
 function WindowSummary({
@@ -292,7 +293,7 @@ function WindowSummary({
 	const limit = ctx?.limit ?? null;
 	const pct = ctx?.pct ?? null;
 	const note = nextTurnNote(ctx, stale);
-	const nearing = ctx !== null && pct !== null && pct >= ctx.compactAtPct;
+	const nearing = pct !== null && pct >= 100;
 	const segments = view.segments;
 	const totalChars = segments === null ? null : SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
 	const tokens =
@@ -308,7 +309,7 @@ function WindowSummary({
 				</div>
 				<div className={`sumtile${nearing ? " warn" : ""}`}>
 					<b>{pct === null ? "—" : `${pct}%`}</b>
-					<span>of the window</span>
+					<span>of the limit</span>
 				</div>
 				<div className="sumtile">
 					<b>{view.messages === null ? "—" : num(view.messages.length)}</b>
@@ -325,14 +326,13 @@ function WindowSummary({
 					</div>
 				)}
 			</div>
-			{pct !== null && ctx !== null && (
+			{pct !== null && (
 				<div
 					className="win-fill"
 					role="img"
-					aria-label={`${pct}% of the window used; compaction at ${ctx.compactAtPct}%`}
+					aria-label={`${pct}% of the limit used; compaction at 100%`}
 				>
 					<span className={nearing ? "win-fill-used warn" : "win-fill-used"} style={{ width: `${Math.min(pct, 100)}%` }} />
-					<span className="win-fill-mark" style={{ left: `${ctx.compactAtPct}%` }} />
 				</div>
 			)}
 			{note !== null && <p className={nearing ? "win-next warn" : "win-next"}>{note}</p>}

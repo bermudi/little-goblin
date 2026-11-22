@@ -7266,13 +7266,6 @@ button.link:hover {
 .win-fill-used.warn {
 	background: var(--app-warning);
 }
-.win-fill-mark {
-	position: absolute;
-	top: -3px;
-	bottom: -3px;
-	width: 2px;
-	background: var(--app-fg);
-}
 .win-next {
 	margin: 0.2rem 0;
 	font-size: 13px;

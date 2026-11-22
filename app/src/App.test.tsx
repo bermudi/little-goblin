@@ -1043,7 +1043,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 						avgCacheHitRate: null,
 						limit: null,
 						pct: null,
-						compactAtPct: 75,
+						modelLimit: null,
 						turns: 0,
 						segments: null,
 					}),

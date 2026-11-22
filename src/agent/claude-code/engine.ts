@@ -436,7 +436,11 @@ export async function driveClaude<M extends WireMember>(
 	const beginCall = (): void => {
 		// Context landing feeds the detector state even though this engine
 		// cannot cut — parity with prepareStep's recording.
-		state.noteContextLanding(recorder.lastInput ?? undefined, step.contextWindow);
+		state.noteContextLanding(
+			recorder.lastInput ?? undefined,
+			step.contextWindow,
+			step.uncapped === true,
+		);
 		engineState.callOpen = true;
 		engineState.callId = randomUUID();
 		engineState.obs = observation?.begin({

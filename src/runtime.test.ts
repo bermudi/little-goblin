@@ -496,7 +496,7 @@ describe("context note across turns", () => {
 			const second = submit(r, "second request");
 			await second.done;
 			await drain(r);
-			expect(script.requests()[1]).toContain("[context: 60k of 256k tokens used (23%)]");
+			expect(script.requests()[1]).toContain("[context: 60k of 240k tokens used (25%)]");
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
@@ -1785,9 +1785,9 @@ describe("context overflow recovery", () => {
 			await submit(r, "first request").done;
 			expect(await submit(r, "live question").done).toEqual({ kind: "completed" });
 			await drain(r);
-			expect(scriptedPrompt(script, 1)).toContain("tokens used (40%)]");
+			expect(scriptedPrompt(script, 1)).toContain("tokens used (80%)]");
 			expect(scriptedPrompt(script, 2)).toContain("the folded era");
-			expect(scriptedPrompt(script, 2)).toContain("[context: 1k token window]");
+			expect(scriptedPrompt(script, 2)).toContain("[context: 1k token limit]");
 			expect(scriptedPrompt(script, 2)).not.toContain("tokens used");
 		} finally {
 			r.store.close();

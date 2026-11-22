@@ -113,7 +113,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/tg/delivery-files.ts": 1,
 	"src/tg/delivery-voice.ts": 2,
 	"src/tg/delivery.ts": 3,
-	"src/tg/flood-wait.ts": 1,
 	"src/tg/guest.ts": 1,
 	"src/tg/refusals.ts": 1,
 	"src/tg/skill-approval.ts": 1,

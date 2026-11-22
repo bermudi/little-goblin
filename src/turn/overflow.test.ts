@@ -241,7 +241,8 @@ describe("overflowHoldable — the one-recovery budget", () => {
 describe("terminalFailureMessage", () => {
 	test("a second overflow on the resumed attempt gets the still-full wording", () => {
 		const msg = terminalFailureMessage(new Error("maximum context length is 4096 tokens"), true);
-		expect(msg).toContain("still full after compacting");
+		expect(msg).toContain("still full after compacting once");
+		expect(msg).toContain("try a model with a bigger context window");
 		expect(msg.length).toBeLessThan(200);
 	});
 
@@ -330,6 +331,7 @@ describe("recoverFromOverflow", () => {
 		expect(outcome.kind).toBe("error");
 		if (outcome.kind !== "error") return;
 		expect(outcome.message).toContain("nothing left to compact");
+		expect(outcome.message).toContain("try a model with a bigger context window");
 		expect(outcome.message.length).toBeLessThan(200);
 	});
 

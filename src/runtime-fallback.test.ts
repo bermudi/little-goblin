@@ -319,7 +319,7 @@ describe("model fallback list", () => {
 		}
 	});
 
-	test("compaction summarizes only on the conversation's own model; a failed call writes nothing and never asks a fallback", async () => {
+	test("a manual fold summarizes on the conversation's model; a failed call writes nothing and never walks the fallback list", async () => {
 		const asked: string[] = [];
 		const r = rig({
 			model: "zai/glm-5.3",
@@ -345,7 +345,7 @@ describe("model fallback list", () => {
 		}
 	});
 
-	test("a non-overflow fold is one own-model call even when the span exceeds half the window", async () => {
+	test("a manual fold is one call even when the span exceeds half the window", async () => {
 		const prompts: string[] = [];
 		const r = rig({
 			model: "zai/glm-5.3",
@@ -406,7 +406,7 @@ describe("compaction during a fallback-served turn", () => {
 
 	function servedRig(opts: {
 		models: Record<string, ScriptedModel>;
-		ownFails: boolean;
+		summaryFails: boolean;
 		tools?: Tools;
 		windows?: Record<string, number>;
 	}) {
@@ -431,7 +431,7 @@ describe("compaction during a fallback-served turn", () => {
 				contextWindow: (c) => opts.windows?.[c.model ?? ""] ?? 8_000,
 				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
 					asked.push(modelRef);
-					if (opts.ownFails) throw new Error("Weekly/Monthly Limit Exhausted");
+					if (opts.summaryFails) throw new Error("Weekly/Monthly Limit Exhausted");
 					return foldSummary(`folded by ${modelRef}`, prompt);
 				},
 			},
@@ -460,28 +460,27 @@ describe("compaction during a fallback-served turn", () => {
 		return { store, conv, asked, turn, close };
 	}
 
-	test("an overflow fold on the fallback summarizes in chunks on the own model and stores it", async () => {
+	test("an overflow fold on the fallback is one call on the fallback and stores it", async () => {
 		const r = servedRig({
 			models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("after fold")] }),
-			ownFails: false,
+			summaryFails: false,
 		});
 		try {
 			const { sink } = await r.turn("hello");
 			expect(sink.text).toBe("after fold");
-			expect(r.asked.length).toBeGreaterThan(1);
-			expect(new Set(r.asked)).toEqual(new Set([OWN]));
-			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: OWN });
+			expect(r.asked).toEqual([FB]);
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: FB });
 		} finally {
 			await r.close();
 		}
 	});
 
-	test("an overflow fold on the fallback keeps no more recent history than the fallback's window allows", async () => {
-		const keptTail = async (ownWindow: number) => {
+	test("an overflow fold on the fallback sizes the kept history from the fallback's window alone", async () => {
+		const keptTail = async (windows: Record<string, number>) => {
 			const r = servedRig({
 				models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("after fold")] }),
-				ownFails: false,
-				windows: { [OWN]: ownWindow, [FB]: 8_000 },
+				summaryFails: false,
+				windows,
 			});
 			try {
 				const { sink } = await r.turn("hello");
@@ -491,43 +490,45 @@ describe("compaction during a fallback-served turn", () => {
 				await r.close();
 			}
 		};
-		const sameWindows = await keptTail(8_000);
-		expect(sameWindows).toBeGreaterThan(0);
-		expect(await keptTail(400_000)).toBe(sameWindows);
+		const small = await keptTail({ [OWN]: 8_000, [FB]: 8_000 });
+		expect(small).toBeGreaterThan(0);
+		expect(await keptTail({ [OWN]: 400_000, [FB]: 8_000 })).toBe(small);
+		expect(await keptTail({ [OWN]: 8_000, [FB]: 400_000 })).toBeGreaterThan(small!);
 	});
 
-	test("an overflow fold whose own-model summary fails ends the turn and never asks the fallback", async () => {
+	test("an overflow fold whose summary fails ends the turn with the error and asks no other model", async () => {
 		const r = servedRig({
 			models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("must not serve")] }),
-			ownFails: true,
+			summaryFails: true,
 		});
 		try {
 			const { done } = await r.turn("hello");
 			expect(done).toMatchObject({ kind: "error" });
-			expect(r.asked).toEqual([OWN]);
+			expect((done as { message: string }).message).toContain("compacting failed: Weekly/Monthly Limit Exhausted");
+			expect(r.asked).toEqual([FB]);
 			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
 		} finally {
 			await r.close();
 		}
 	});
 
-	test("a threshold fold after a fallback-served reply is one own-model call", async () => {
+	test("a threshold fold after a fallback-served reply is one call on the fallback", async () => {
 		const r = servedRig({
 			models: lanes({ [OWN]: [quotaWall()], [FB]: [replyAt("served", 7_900)] }),
-			ownFails: false,
+			summaryFails: false,
 		});
 		try {
 			const { done } = await r.turn("hello");
 			expect(done).toMatchObject({ kind: "completed" });
 			await waitUntil(() => r.store.listCompactions(r.conv.id).length > 0, "threshold fold lands");
-			expect(r.asked).toEqual([OWN]);
-			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: OWN });
+			expect(r.asked).toEqual([FB]);
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: FB });
 		} finally {
 			await r.close();
 		}
 	});
 
-	test("a pre-empt fold on the fallback asks only the own model and resumes unfolded when it fails", async () => {
+	test("a pre-empt fold on the fallback asks only the fallback and resumes unfolded when it fails", async () => {
 		const r = servedRig({
 			models: lanes({
 				[OWN]: [quotaWall()],
@@ -536,14 +537,14 @@ describe("compaction during a fallback-served turn", () => {
 					reply("final"),
 				],
 			}),
-			ownFails: true,
+			summaryFails: true,
 			tools: probeTools(),
 		});
 		try {
 			const { sink } = await r.turn("run probe");
 			expect(sink.text).toBe("final");
 			expect(r.asked.length).toBeGreaterThan(0);
-			expect(new Set(r.asked)).toEqual(new Set([OWN]));
+			expect(new Set(r.asked)).toEqual(new Set([FB]));
 			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
 		} finally {
 			await r.close();

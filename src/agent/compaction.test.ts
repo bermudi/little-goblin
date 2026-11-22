@@ -7,6 +7,7 @@ import type { CompactionSplit } from "../conversation-events.ts";
 import {
 	chooseBoundary,
 	estimateTokens,
+	renderEventText,
 	runCompaction,
 	serializeSpan,
 	prefixInstruction,
@@ -846,7 +847,7 @@ describe("runCompaction", () => {
 		return detail;
 	};
 
-	for (const reason of ["threshold", "manual", "idle", "preempt"] as const) {
+	for (const reason of ["threshold", "manual", "idle", "preempt", "overflow"] as const) {
 		test(`a ${reason} fold summarizes the whole span in one call, even over the input budget`, async () => {
 			const { store, writes } = fakeStore(tenExchanges());
 			const prompts: string[] = [];
@@ -871,41 +872,7 @@ describe("runCompaction", () => {
 		});
 	}
 
-	test("an overflow fold splits an oversized span into sequential calls inside the input budget", async () => {
-		// 10 exchanges; the tail keeps the last → an 18-event span,
-		// several chunks at this budget.
-		const inputTokenBudget = 1_200;
-		const { store, writes } = fakeStore(tenExchanges());
-		const prompts: string[] = [];
-		const outcome = await runCompaction(
-			"dm:1",
-			store,
-			"m",
-			async (_system, prompt) => {
-				prompts.push(prompt);
-				return foldSummary(`fold ${prompts.length}`, prompt);
-			},
-			{ tailTokenBudget: 1, inputTokenBudget, reason: "overflow" },
-			signal(),
-		);
-		expect(outcome.kind).toBe("compacted");
-		// One call could never hold the span — the fold must be sequential.
-		expect(prompts.length).toBeGreaterThan(1);
-		// Each call honors the budget by the chunker's own estimate.
-		for (const prompt of prompts) {
-			expect(estimateTokens(prompt)).toBeLessThanOrEqual(inputTokenBudget);
-		}
-		// Each call carries the previous call's output forward — the
-		// running summary is the only memory between calls.
-		for (let i = 1; i < prompts.length; i++) {
-			expect(prompts[i]).toContain(`fold ${i}`);
-			expect(prompts[i]).toContain("running summary of the earlier part of this span");
-		}
-		// The final call's output is the stored summary.
-		expect(writes[0]!.summary).toStartWith(`fold ${prompts.length}\n`);
-	});
-
-	test("on overflow, a single event bigger than the allowance is truncated, never dropped", async () => {
+	test("an overflow fold sends an oversized event whole, never cut down", async () => {
 		const detail = [
 			ev(1, "user", "z".repeat(20_000)),
 			ev(2, "assistant", "ok", 1),
@@ -925,12 +892,59 @@ describe("runCompaction", () => {
 			{ tailTokenBudget: 1, inputTokenBudget: 1_200, reason: "overflow" },
 			signal(),
 		);
-		const all = prompts.join("\n");
-		expect(all).toContain("chars truncated for summarization");
-		// The truncated event still shows its head.
-		expect(all).toContain("zzz");
-		// Its tail beyond the kept window must not leak into a prompt.
-		expect(all).not.toContain("z".repeat(5_000));
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("z".repeat(20_000));
+		expect(prompts[0]).not.toContain("chars truncated for summarization");
+	});
+
+	test("the summary input cuts each tool result to 2,000 characters and drops thinking; history_search's render is unchanged", async () => {
+		const result = `${"r".repeat(1_990)}KEPT_EDGE${"s".repeat(5_000)}LATE_RESULT`;
+		const reply: CompactionEvent = {
+			seq: 2,
+			anchorSeq: 1,
+			message: {
+				id: "m2",
+				role: "assistant",
+				parts: [
+					{ type: "reasoning", text: "PRIVATE_THINKING" },
+					{
+						type: "tool-bash",
+						toolCallId: "t1",
+						state: "output-available",
+						input: { command: "cat big.log" },
+						output: result,
+					} as Message["parts"][number],
+					{ type: "text", text: "read the log" },
+				],
+			},
+		};
+		const { store } = fakeStore([
+			ev(1, "user", "read the log".repeat(100)),
+			reply,
+			ev(3, "user", "next".repeat(100)),
+			ev(4, "assistant", "ok".repeat(100), 3),
+		]);
+		const prompts: string[] = [];
+		await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return foldSummary("folded", prompt);
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("cat big.log");
+		expect(prompts[0]).toContain("r".repeat(1_990));
+		expect(prompts[0]).not.toContain("KEPT_EDGE");
+		expect(prompts[0]).not.toContain("LATE_RESULT");
+		expect(prompts[0]).not.toContain("PRIVATE_THINKING");
+		const searched = renderEventText(reply.message);
+		expect(searched).toContain("KEPT_EDGE");
+		expect(searched).toContain("s".repeat(5_000));
 	});
 
 	test("a wedged summarizer still settles — the call timeout is an ordinary failure", async () => {

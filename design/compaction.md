@@ -82,7 +82,7 @@ re-arms at startup (goblin restarts on every release).
 | quantity | value | source |
 | --- | --- | --- |
 | verbatim tail | **20,000**, ≤25% of window | pi / OpenClaw `keepRecentTokens` |
-| summarizer chunk cap | 100,000 | unchanged |
+| overflow chunk cap | 100,000, ≤50% of window | overflow recovery only (#871) |
 | verbatim user messages | **4,000**, newest first | Hermes lean (budgeted) |
 | identifier index | **1,000** | Hermes lean |
 
@@ -191,8 +191,8 @@ normal path.
   has none of those properties.
 - **What it costs.** A fold landing between the last tool batch and the final
   answer delays that answer by up to one summary call. Accepted: the
-  alternative is a 400. The delay is bounded by the chunk cap, which is why
-  that cap is absolute.
+  alternative is a 400. A pre-empt fold is one summary call over the span
+  (#871), so the delay is one call on the conversation's own model.
 - **The end-of-turn fold is retired as the normal path.** The serial-lane
   queue and `/compact` keep their semantics (`Runtime.busy` still counts a
   queued or in-flight compaction).
@@ -292,9 +292,9 @@ its largest, so it was the most expensive uncached call goblin made.
   the corrective instruction as a user message — still on the cached prefix.
 - **Text mode (the old path) stays** for: overflow recovery (the view just
   overflowed), conversations with no frozen prompt snapshot (a compaction
-  never mints one), fallback candidates other than the conversation's own
-  model, a split turn whose history summary did not succeed in prefix mode,
-  any prefix-mode failure (logged, then the text walk runs unchanged), and a
+  never mints one), a split turn whose history summary did not succeed in
+  prefix mode, any prefix-mode failure (logged, then text mode runs on the
+  same model), and a
   claude-code fold with no session record, a session watermark behind the
   fold, a split checkpoint, or a failed fork.
 - Code-made parts, the identifier index and the audit itself are unchanged:
@@ -347,9 +347,36 @@ goblin summary still runs before native `/compact`.
 
 ## The summary
 
-The conversation's own model writes it (unchanged ruling). It receives the
+The conversation's own model writes it. It receives the
 previous summary plus the newly folded span, never the whole past
 (iterative, as pi/OpenClaw/Hermes).
+
+Ruling (operator, 2026-11-22, #871): compaction summarizes **only with the
+conversation's own model** (`conv.model`, the model whose window sized the
+fold). It never walks the model fallback list, so a summary is never
+written by a model with a smaller window than the one that runs the
+conversation. Pi does the same: `generateSummary` in
+`pi-mono/packages/coding-agent/src/core/compaction/compaction.ts` is one
+call on the session's model.
+
+- **One call, except overflow recovery.** A threshold, manual, idle or
+  pre-empt fold sends the whole span in one text-mode call (prefix mode was
+  already one call). Only an `overflow` fold splits the span into pieces
+  of at most the overflow chunk cap (Budgets), each carrying the running
+  summary forward: there, the history is already too big for one call.
+- **A failed summary call never changes models.** Prefix mode that fails
+  still retries once in text mode on the same model (above). If the text
+  call fails too, the fold writes nothing and warns, and the caller
+  decides as before: a threshold fold retries at the next crossing, a
+  pre-empt resumes on the unfolded view, an overflow fold ends the turn,
+  and `/compact` reports the error. Provider retries inside the call (the
+  SDK's `maxRetries` ladder) are unchanged. There is still no
+  deterministic summary (Non-goals).
+- **Accepted risk.** While the conversation's own model is unavailable
+  (a quota wall, an outage), no fold can land, even when a turn is served
+  by a fallback. A turn on a fallback that overflows then ends instead of
+  folding on the fallback.
+- **The stored fold's `model`** is always the conversation's model.
 
 **Required headings** (OpenClaw safeguard mode, its exact list):
 

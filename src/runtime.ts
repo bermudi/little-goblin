@@ -513,7 +513,6 @@ export class Runtime {
 			store: this.deps.store,
 			compaction: this.deps.compaction,
 			captureConversation: this.deps.captureConversation,
-			modelFallbacks: this.deps.modelFallbacks,
 			budgets: compactionBudgets,
 			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
 			foldCeiling: (convId, floor) => this.lanes.pendingFloor(convId, floor),
@@ -574,7 +573,6 @@ export class Runtime {
 						return null;
 					}
 					const summarizer: PrefixSummarizer = {
-						modelRef,
 						mode: "claude-code",
 						async call(turns, callSignal, cut, context) {
 							if (context === undefined && cut === undefined) {

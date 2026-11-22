@@ -370,7 +370,7 @@ describe("runCompaction prefix summary", () => {
 			const outcome = await runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => {
 					textCalls++;
 					return validPrefixSummary("TEXT");
@@ -385,7 +385,6 @@ describe("runCompaction prefix summary", () => {
 					prefix: async () => {
 						order.push("prefix");
 						return {
-							modelRef: "m",
 							call: async () => validPrefixSummary("PREFIX-STORED", "do a thing".repeat(200)),
 						};
 					},
@@ -410,7 +409,7 @@ describe("runCompaction prefix summary", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				textCalls++;
 				return foldSummary("TEXT-FALLBACK", prompt);
@@ -421,7 +420,7 @@ describe("runCompaction prefix summary", () => {
 				reason: "overflow",
 				prefix: async () => {
 					prefixFactories++;
-					return { modelRef: "m", call: async () => validPrefixSummary("PREFIX") };
+					return { call: async () => validPrefixSummary("PREFIX") };
 				},
 			},
 			signal(),
@@ -440,13 +439,12 @@ describe("runCompaction prefix summary", () => {
 			const outcome = await runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async (_system, prompt) => foldSummary("TEXT-FALLBACK", prompt),
 				{
 					tailTokenBudget: 1,
 					inputTokenBudget: 32_000,
 					prefix: async () => ({
-						modelRef: "m",
 						call: async () => {
 							throw new Error("prefix provider failed");
 						},
@@ -470,7 +468,7 @@ describe("runCompaction prefix summary", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async () => {
 				textCalls++;
 				return validPrefixSummary("TEXT");
@@ -479,7 +477,6 @@ describe("runCompaction prefix summary", () => {
 				tailTokenBudget: 1,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					call: async (turns) => {
 						calls.push(turns);
 						return calls.length === 1
@@ -509,7 +506,7 @@ describe("runCompaction prefix summary", () => {
 			runCompaction(
 				"dm:1",
 				abortStore,
-				["m"],
+				"m",
 				async () => {
 					fallbackCalls++;
 					return validPrefixSummary("TEXT");
@@ -518,7 +515,6 @@ describe("runCompaction prefix summary", () => {
 					tailTokenBudget: 1,
 					inputTokenBudget: 32_000,
 					prefix: async () => ({
-						modelRef: "m",
 						call: async (_turns, callSignal) => {
 							controller.abort(new Error("stopped"));
 							return new Promise<string>((_, reject) =>
@@ -531,39 +527,6 @@ describe("runCompaction prefix summary", () => {
 			),
 		).rejects.toThrow("stopped");
 		expect(fallbackCalls).toBe(0);
-	});
-
-	test("E — a non-primary prefix model selects text mode with fallback-candidate", async () => {
-		const home = useHome("goblin-compaction-prefix-e-");
-		const logPath = join(home, "state/goblin.log");
-		setLogFile(logPath);
-		try {
-			const { store } = fakeStore(sample());
-			let prefixCalls = 0;
-			const outcome = await runCompaction(
-				"dm:1",
-				store,
-				["primary", "backup"],
-				async (_system, prompt) => foldSummary("TEXT", prompt),
-				{
-					tailTokenBudget: 1,
-					inputTokenBudget: 32_000,
-					prefix: async () => ({
-						modelRef: "backup",
-						call: async () => {
-							prefixCalls++;
-							return validPrefixSummary("PREFIX");
-						},
-					}),
-				},
-				signal(),
-			);
-			expect(outcome.kind).toBe("compacted");
-			expect(prefixCalls).toBe(0);
-			expect(readFileSync(logPath, "utf8")).toContain('"mode":"text","reason":"fallback-candidate"');
-		} finally {
-			setLogFile(null);
-		}
 	});
 
 	test("F — split checkpoint replays the prefix request and appends the exact checkpoint instruction", async () => {
@@ -590,13 +553,12 @@ describe("runCompaction prefix summary", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => foldSummary("history summary", prompt),
 			{
 				tailTokenBudget: 5_000,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					call: async (turns, _signal, cut) => {
 						calls.push({ turns, ...(cut !== undefined ? { cut } : {}) });
 						return calls.length === 1
@@ -625,7 +587,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["zai/glm-5.3"],
+			"zai/glm-5.3",
 			async (system, prompt) => {
 				prompts.push({ system, prompt });
 				return foldSummary("the folded summary", prompt);
@@ -653,7 +615,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("folded", prompt);
@@ -683,7 +645,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("folded", prompt);
@@ -724,7 +686,7 @@ describe("runCompaction", () => {
 		await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("folded", prompt);
@@ -741,7 +703,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => {
 					throw new Error("provider down");
 				},
@@ -759,7 +721,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => {
 					controller.abort();
 					return "late summary";
@@ -780,7 +742,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => {
 					revoked = true; // the epoch bumps while the call is in flight
 					return "late summary";
@@ -805,7 +767,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => {
 					calls++;
 					return "must not run";
@@ -830,7 +792,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => "  ",
 				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 				signal(),
@@ -854,7 +816,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("fold two", prompt);
@@ -874,27 +836,56 @@ describe("runCompaction", () => {
 		expect(writes[0]!.summary).toStartWith("fold two");
 	});
 
-	test("an oversized span folds through sequential calls inside the input budget", async () => {
-		// 10 exchanges; the tail keeps the last → an 18-event span,
-		// several chunks at this budget.
+	const tenExchanges = (): CompactionEvent[] => {
 		const detail: CompactionEvent[] = [];
 		for (let i = 0; i < 10; i++) {
 			const u = 2 * i + 1;
 			detail.push(ev(u, "user", `question ${i} `.repeat(50)));
 			detail.push(ev(u + 1, "assistant", `answer ${i} `.repeat(50), u));
 		}
+		return detail;
+	};
+
+	for (const reason of ["threshold", "manual", "idle", "preempt"] as const) {
+		test(`a ${reason} fold summarizes the whole span in one call, even over the input budget`, async () => {
+			const { store, writes } = fakeStore(tenExchanges());
+			const prompts: string[] = [];
+			const outcome = await runCompaction(
+				"dm:1",
+				store,
+				"m",
+				async (_system, prompt) => {
+					prompts.push(prompt);
+					return foldSummary("one fold", prompt);
+				},
+				{ tailTokenBudget: 1, inputTokenBudget: 1_200, reason },
+				signal(),
+			);
+			expect(outcome.kind).toBe("compacted");
+			expect(prompts).toHaveLength(1);
+			expect(estimateTokens(prompts[0]!)).toBeGreaterThan(1_200);
+			expect(prompts[0]).toContain("question 0");
+			expect(prompts[0]).toContain("answer 8");
+			expect(prompts[0]).not.toContain("running summary of the earlier part of this span");
+			expect(writes[0]).toMatchObject({ model: "m" });
+		});
+	}
+
+	test("an overflow fold splits an oversized span into sequential calls inside the input budget", async () => {
+		// 10 exchanges; the tail keeps the last → an 18-event span,
+		// several chunks at this budget.
 		const inputTokenBudget = 1_200;
-		const { store, writes } = fakeStore(detail);
+		const { store, writes } = fakeStore(tenExchanges());
 		const prompts: string[] = [];
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return foldSummary(`fold ${prompts.length}`, prompt);
 			},
-			{ tailTokenBudget: 1, inputTokenBudget },
+			{ tailTokenBudget: 1, inputTokenBudget, reason: "overflow" },
 			signal(),
 		);
 		expect(outcome.kind).toBe("compacted");
@@ -914,7 +905,7 @@ describe("runCompaction", () => {
 		expect(writes[0]!.summary).toStartWith(`fold ${prompts.length}\n`);
 	});
 
-	test("a single event bigger than the allowance is truncated, never dropped", async () => {
+	test("on overflow, a single event bigger than the allowance is truncated, never dropped", async () => {
 		const detail = [
 			ev(1, "user", "z".repeat(20_000)),
 			ev(2, "assistant", "ok", 1),
@@ -926,12 +917,12 @@ describe("runCompaction", () => {
 		await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("folded", prompt);
 			},
-			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
+			{ tailTokenBudget: 1, inputTokenBudget: 1_200, reason: "overflow" },
 			signal(),
 		);
 		const all = prompts.join("\n");
@@ -948,7 +939,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				// Ignores its abort — the race, not the model's good
 				// behavior, bounds the call.
 				() => new Promise<string>(() => {}),
@@ -1089,7 +1080,7 @@ describe("tool-call atomicity across the cut", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("folded", prompt);
@@ -1128,7 +1119,7 @@ describe("runCompaction — split turns", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				// Fake at the edge: the turn-prefix call is recognizable by
@@ -1166,7 +1157,7 @@ describe("runCompaction — split turns", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => foldSummary("folded", prompt),
 			{ tailTokenBudget: 5_000, inputTokenBudget: 32_000 },
 			signal(),
@@ -1202,7 +1193,7 @@ describe("runCompaction — split turns", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				prompts.push(prompt);
 				return prompt.includes("checkpoint of the user's request")
@@ -1249,7 +1240,7 @@ describe("runCompaction — split turns", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("refold", prompt);
@@ -1312,8 +1303,8 @@ describe("opaque reasoning state", () => {
 		const a = fakeStore(small);
 		const b = fakeStore(huge);
 		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
-		const outA = await runCompaction("dm:1", a.store, ["m"], summarize, opts, signal());
-		const outB = await runCompaction("dm:1", b.store, ["m"], summarize, opts, signal());
+		const outA = await runCompaction("dm:1", a.store, "m", summarize, opts, signal());
+		const outB = await runCompaction("dm:1", b.store, "m", summarize, opts, signal());
 		expect(outA.kind).toBe("compacted");
 		expect(outB.kind).toBe("compacted");
 		if (outA.kind !== "compacted" || outB.kind !== "compacted") return;
@@ -1333,7 +1324,7 @@ describe("opaque reasoning state", () => {
 		const codexOut = await runCompaction(
 			"dm:1",
 			fakeStore(ciphered("x".repeat(60_000))).store,
-			["m"],
+			"m",
 			summarize,
 			opts,
 			signal(),
@@ -1341,7 +1332,7 @@ describe("opaque reasoning state", () => {
 		const foreignOut = await runCompaction(
 			"dm:1",
 			fakeStore(foreign).store,
-			["m"],
+			"m",
 			summarize,
 			opts,
 			signal(),
@@ -1350,111 +1341,6 @@ describe("opaque reasoning state", () => {
 			throw new Error("expected both spans to fold");
 		}
 		expect(foreignOut.tokensBefore - codexOut.tokensBefore).toBeGreaterThan(10_000);
-	});
-});
-
-// The summarizer's fallback walk (design/model.md → Model fallback list
-// → Compaction): each candidate gets its own call timeout, the walk is
-// sticky within a pass, and the pointer names who wrote it.
-describe("runCompaction — fallback walk", () => {
-	const longSpan = (): CompactionEvent[] => {
-		const detail: CompactionEvent[] = [];
-		for (let i = 0; i < 10; i++) {
-			const u = 2 * i + 1;
-			detail.push(ev(u, "user", `question ${i} `.repeat(50)));
-			detail.push(ev(u + 1, "assistant", `answer ${i} `.repeat(50), u));
-		}
-		return detail;
-	};
-
-	test("a wedged primary times out alone — the fallback gets a live signal and writes the pointer", async () => {
-		const { store, writes } = fakeStore(sample());
-		const signals: Array<{ model: string; abortedAtStart: boolean }> = [];
-		const outcome = await runCompaction(
-			"dm:1",
-			store,
-			["zai/glm-5.3", "codex/gpt-6.1-terra"],
-			(_system, prompt, callSignal, model) => {
-				signals.push({ model, abortedAtStart: callSignal.aborted });
-				// The primary ignores its abort — only the attempt's own
-				// timeout can end it.
-				if (model === "zai/glm-5.3") return new Promise<string>(() => {});
-				return Promise.resolve(foldSummary("folded by the fallback", prompt));
-			},
-			{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 50 },
-			signal(),
-		);
-		expect(outcome).toMatchObject({ kind: "compacted" });
-		if (outcome.kind === "compacted") expect(outcome.summary).toStartWith("folded by the fallback");
-		expect(signals).toEqual([
-			{ model: "zai/glm-5.3", abortedAtStart: false },
-			{ model: "codex/gpt-6.1-terra", abortedAtStart: false },
-		]);
-		// Provenance is the serving ref, not the conversation's model.
-		expect(writes).toHaveLength(1);
-		expect(writes[0]).toMatchObject({ model: "codex/gpt-6.1-terra" });
-	});
-
-	test("a candidate that failed a chunk is not retried on later chunks", async () => {
-		const { store, writes } = fakeStore(longSpan());
-		const asked: string[] = [];
-		const outcome = await runCompaction(
-			"dm:1",
-			store,
-			["a/primary", "b/backup"],
-			async (_system, prompt, _signal, model) => {
-				asked.push(model);
-				if (model === "a/primary") throw new Error("server_is_overloaded");
-				return foldSummary(`fold ${asked.length}`, prompt);
-			},
-			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
-			signal(),
-		);
-		expect(outcome.kind).toBe("compacted");
-		// Several chunks, one primary attempt.
-		expect(asked.length).toBeGreaterThan(2);
-		expect(asked.filter((m) => m === "a/primary")).toEqual(["a/primary"]);
-		expect(asked[0]).toBe("a/primary");
-		expect(writes[0]).toMatchObject({ model: "b/backup" });
-	});
-
-	test("every candidate failing names each miss once, and nothing is written", async () => {
-		const { store, writes } = fakeStore(sample());
-		await expect(
-			runCompaction(
-				"dm:1",
-				store,
-				["a/primary", "b/backup"],
-				async (_system, _prompt, _signal, model) => {
-					throw new Error(`down: ${model}`);
-				},
-				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
-				signal(),
-			),
-		).rejects.toThrow("every model failed — a/primary: down: a/primary; b/backup: down: b/backup");
-		expect(writes).toHaveLength(0);
-	});
-
-	test("a parent abort never advances the walk", async () => {
-		const { store, writes } = fakeStore(sample());
-		const controller = new AbortController();
-		const asked: string[] = [];
-		await expect(
-			runCompaction(
-				"dm:1",
-				store,
-				["a/primary", "b/backup"],
-				(_system, _prompt, _signal, model) => {
-					asked.push(model);
-					controller.abort(new Error("stopped"));
-					return new Promise<string>(() => {});
-				},
-				{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 5_000 },
-				controller.signal,
-			),
-		).rejects.toThrow("stopped");
-		expect(asked).toEqual(["a/primary"]);
-		expect(writes).toHaveLength(0);
 	});
 });
 
@@ -1469,7 +1355,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				prompts.push(prompt);
 				return prompts.length === 1 ? "free prose" : foldSummary("fixed", prompt);
@@ -1491,7 +1377,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async () => {
 					calls++;
 					return "free prose";
@@ -1515,7 +1401,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 		const headingsOnly =
 			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nnothing\n## Exact identifiers";
 		await expect(
-			runCompaction("dm:1", store, ["m"], async () => headingsOnly, opts, signal()),
+			runCompaction("dm:1", store, "m", async () => headingsOnly, opts, signal()),
 		).rejects.toThrow("latest operator request");
 		expect(writes).toHaveLength(0);
 	});
@@ -1542,7 +1428,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 		];
 		const a = fakeStore(first);
 		const summarizer = async (_s: string, prompt: string) => foldSummary("model text", prompt);
-		await runCompaction("dm:1", a.store, ["m"], summarizer, opts, signal());
+		await runCompaction("dm:1", a.store, "m", summarizer, opts, signal());
 		const stored = a.writes[0]!.summary;
 		expect(stored).toContain(JSON.stringify("don't drop Herbert from the invite list, ever"));
 		expect(stored).toContain("https://example.test/invites");
@@ -1564,7 +1450,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 		await runCompaction(
 			"dm:1",
 			b.store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				prompts.push(prompt);
 				return foldSummary("model text two", prompt);
@@ -1592,7 +1478,7 @@ describe("runCompaction memory flush", () => {
 			await runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async (_s, prompt) => foldSummary("folded", prompt),
 				{
 					tailTokenBudget: 1,
@@ -1620,14 +1506,13 @@ describe("runCompaction memory flush", () => {
 			await runCompaction(
 				"dm:1",
 				store,
-				["m"],
+				"m",
 				async (_s, prompt) => foldSummary("folded", prompt),
 				{
 					tailTokenBudget: 1,
 					inputTokenBudget: 32_000,
 					flush: async () => ({ noteCalls: 0 }),
 					prefix: async () => ({
-						modelRef: "m",
 						call: async () => validPrefixSummary("prefix", "do a thing"),
 					}),
 				},
@@ -1646,7 +1531,7 @@ describe("runCompaction memory flush", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				order.push("summary");
 				return foldSummary("folded", prompt);
@@ -1674,7 +1559,7 @@ describe("runCompaction memory flush", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => foldSummary("folded", prompt),
 			{
 				tailTokenBudget: 1,
@@ -1696,7 +1581,7 @@ describe("runCompaction memory flush", () => {
 		const run = runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_s, prompt) => {
 				summarized = true;
 				return foldSummary("folded", prompt);
@@ -1729,13 +1614,12 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 				await runCompaction(
 					"dm:1",
 					store,
-					["m"],
+					"m",
 					async (_system, prompt) => foldSummary("text fallback", prompt),
 					{
 						tailTokenBudget: 1,
 						inputTokenBudget: 32_000,
 						prefix: async () => ({
-							modelRef: "m",
 							mode: "claude-code",
 							call: async () => {
 								const error = new Error(`fallback ${reason}`);
@@ -1761,13 +1645,12 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			["m"],
+			"m",
 			async (_system, prompt) => foldSummary("text fallback", prompt),
 			{
 				tailTokenBudget: 1,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					mode: "claude-code",
 					call: async (turns, _signal, _cut, context) => {
 						turnsSeen.push(turns);
@@ -1795,7 +1678,7 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 		const folded = await runCompaction(
 			"dm:1",
 			first.store,
-			["m"],
+			"m",
 			async (_system, prompt) => foldSummary("first folded", prompt),
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -1816,13 +1699,12 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 		await runCompaction(
 			"dm:1",
 			second.store,
-			["m"],
+			"m",
 			async (_system, prompt) => foldSummary("text fallback", prompt),
 			{
 				tailTokenBudget: 1,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					mode: "claude-code",
 					call: async (_turns, _signal, _cut, context) => {
 						seen = context?.previousSummary ?? null;
@@ -1841,7 +1723,7 @@ test("a flush that ignores its abort still times out and the fold lands", async 
 	const outcome = await runCompaction(
 		"dm:1",
 		store,
-		["m"],
+		"m",
 		async (_s, prompt) => foldSummary("folded", prompt),
 		{
 			tailTokenBudget: 1,

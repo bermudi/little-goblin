@@ -459,7 +459,7 @@ describe("compaction pointers", () => {
 		};
 		const fold = () => {
 			promptsByFold.push([]);
-			return runCompaction(c.id, store, ["m"], summarize, {
+			return runCompaction(c.id, store, "m", summarize, {
 				tailTokenBudget: 5_000,
 				inputTokenBudget: 100_000,
 			}, new AbortController().signal);

@@ -110,6 +110,8 @@ bun run try <name>
 
 The operator can open the URL directly in a browser on this machine. Tell them what to click first.
 
+Before you send a URL, put in the data the feature needs (projects, chats, notes) and screenshot that exact URL. A restart after a new commit starts with an empty home, so add the data again after every restart. A URL to an empty app is not a way to try it (2026-11-22).
+
 ## Cleanup
 
 ```sh

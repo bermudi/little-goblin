@@ -543,6 +543,19 @@ describe("mobile: chats screen and navigation", () => {
 		expect(win.location.pathname).toBe(`/app/${page.toLowerCase()}`);
 	});
 
+	test("phone: the context window returns to its conversation", async () => {
+		win.history.replaceState(null, "", "/app/c/fixture/window");
+		root = createRoot(container);
+		await act(async () => root?.render(<App />));
+		await waitFor(() => container.querySelector(".mobile-back") !== null, "window back");
+		expect(container.querySelectorAll(".mobile-back")).toHaveLength(1);
+		expect(container.querySelector(".mobile-back")?.getAttribute("aria-label")).toBe(
+			"Back to conversation",
+		);
+		await click(container.querySelector(".mobile-back"));
+		await waitFor(() => win.location.pathname === "/app/c/fixture", "conversation");
+	});
+
 	test("phone: a note returns to the notes index", async () => {
 		win.history.replaceState(null, "", "/app/n/example");
 		root = createRoot(container);

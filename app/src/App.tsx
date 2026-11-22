@@ -976,6 +976,13 @@ function AppShell() {
 	);
 
 	const needsCount = goblin.attention?.length ?? 0;
+	const backFromWindow = () => {
+		if (windowConv === null) return;
+		void leaveDirty().then((ok) => {
+			if (!ok) return;
+			void select(windowConv);
+		});
+	};
 	const youMenu = (
 		<Menu
 			onAction={(value) => {
@@ -1074,11 +1081,18 @@ function AppShell() {
 							type="button"
 							className="mobile-back"
 							aria-label={
-								page === "project" ? "Back to projects" : page === "note" ? "Back to notes" : "Back to chats"
+								page === "project"
+									? "Back to projects"
+									: page === "note"
+										? "Back to notes"
+										: page === "window"
+											? "Back to conversation"
+											: "Back to chats"
 							}
 							onClick={() => {
 								if (page === "project") void openProjectsIndex();
 								else if (page === "note") void openNotesIndex();
+								else if (page === "window") backFromWindow();
 								else void navigate({ kind: "home", composing: false });
 							}}
 						>
@@ -1410,12 +1424,7 @@ function AppShell() {
 						token={token}
 						conversationId={windowConv}
 						title={flatTitle(conversations?.find((c) => c.id === windowConv)?.title ?? null)}
-						onBack={() => {
-							void leaveDirty().then((ok) => {
-								if (!ok) return;
-								void select(windowConv);
-							});
-						}}
+						onBack={backFromWindow}
 					/>
 				)}
 				{page === "projects" && (

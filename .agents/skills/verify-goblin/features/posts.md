@@ -10,7 +10,7 @@ Desktop: the Goblin panel is the right column beside any chat page, Activity tab
 
 ## Driving it with agent-browser
 
-The fake model turns `[post <text>]` in the last user message into one `post` tool call with that text, then replies with the usual echo.
+The fake model turns `[post <text>]` in the last user message into one `post` tool call with that text, untouched (spaces and line breaks included, so the tool's own trimming and length checks are reachable), then replies with the usual echo.
 
 ```sh
 ab fill '[aria-label="Message draft"]' '[post Backup finished.

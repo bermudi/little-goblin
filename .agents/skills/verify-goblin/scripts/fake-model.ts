@@ -410,9 +410,9 @@ const server = Bun.serve({
 			return longReply();
 		}
 		if (!toolAfterLastUser) {
-			const postMatch = /\[post ([^\]]+)\]/.exec(lastUserText);
+			const postMatch = /\[post ([^\]]*)\]/.exec(lastUserText);
 			if (postMatch !== null) {
-				return toolCallResponse("post", { text: postMatch[1]!.trim() }, parsed.data.stream === true);
+				return toolCallResponse("post", { text: postMatch[1]! }, parsed.data.stream === true);
 			}
 			const delegateMatch = /\[delegate (\S+) (\S+) ([^\]]+)\]/.exec(lastUserText);
 			if (delegateMatch !== null) {

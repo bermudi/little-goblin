@@ -11,6 +11,7 @@ test("workingCount counts busy conversations and active delegations", () => {
 			{ id: "app/b", title: "B", parentId: null, rolling: false },
 		],
 		otherBusy: 1,
+		posts: [],
 	};
 	const make = (status: OperatorDelegationItem["status"]): OperatorDelegationItem =>
 		({ status }) as OperatorDelegationItem;

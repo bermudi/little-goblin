@@ -39,6 +39,7 @@ import { delegationWake, makeDelegateDeps, wireDelegation } from "./delegation-l
 import { makeT3 } from "./t3.ts";
 import { makeGitHub } from "./github.ts";
 import { makeWatches } from "./watches.ts";
+import { makePosts } from "./posts.ts";
 import { makeWatchObserver } from "./watch-observer.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
@@ -156,6 +157,7 @@ async function boot() {
 	const wallClock = (): Date => new Date();
 	const store = openStore(paths.db());
 	const watches = makeWatches(store.db, wallClock);
+	const posts = makePosts(store.db, wallClock);
 	recoverPendingInputs(store);
 	// Browser push is an app-owned device registry. Its VAPID pair is an
 	// auth record generated on first enable, not operator config.
@@ -560,6 +562,7 @@ async function boot() {
 		delegateDeps,
 		t3,
 		watches,
+		posts,
 		github,
 		mail: mailApproval,
 		programApproval,
@@ -693,6 +696,7 @@ async function boot() {
 				runtime,
 				projects,
 				notes,
+				posts,
 				auth,
 				configRef,
 				gate: () => system1Gate ?? undefined,

@@ -8104,6 +8104,10 @@ button.goblin-panel-row:hover {
 .goblin-panel-row strong {
 	font-weight: 500;
 }
+.goblin-panel-post strong {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
 .goblin-need-row span,
 .goblin-panel-row span {
 	color: var(--app-fg-muted);

@@ -9,6 +9,7 @@ import { appIdSchema } from "../conversation-address.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { ModelSettings } from "../conversation-settings.ts";
 import type { NoteStore } from "../notes.ts";
+import type { Posts } from "../posts.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
 import type { System1Client } from "../system1.ts";
@@ -68,6 +69,7 @@ export interface AppChannelDeps {
 	runtime: Runtime;
 	projects: ProjectStore;
 	notes: NoteStore;
+	posts: Pick<Posts, "recent">;
 	auth: Pick<AuthStore, "resolve">;
 	configRef: ConfigRef;
 	gate?: () => Pick<System1Client, "decide"> | undefined;

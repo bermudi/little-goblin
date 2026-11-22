@@ -36,6 +36,7 @@ test("descriptors reproduce the former name lists", () => {
 			"memory_reflect",
 			"history_search",
 			"note",
+			"post",
 			"speak",
 			"send_file",
 			"generate_image",

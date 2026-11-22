@@ -19,6 +19,7 @@ import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { type WatchToolDeps, watchTool } from "./watch.ts";
+import { type PostToolDeps, postTool } from "./post.ts";
 import { readFileTool } from "./read.ts";
 import type { ContextFill } from "./read.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
@@ -80,6 +81,7 @@ export interface MakeToolsOptions {
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
 	watch?: WatchToolDeps | undefined;
+	post?: PostToolDeps | undefined;
 	file?: FileToolDeps | undefined;
 	artifact?: ArtifactToolDeps | undefined;
 	memory?: MemoryToolDeps | undefined;
@@ -120,6 +122,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		voice,
 		program,
 		watch,
+		post,
 		file,
 		artifact,
 		memory,
@@ -153,6 +156,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		...(watch ? { watch: watchTool(watch) } : {}),
+		...(post ? { post: postTool(post) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),

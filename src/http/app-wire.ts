@@ -552,9 +552,17 @@ export interface AppBusyConversation {
 	rolling: boolean;
 }
 
+export interface AppPost {
+	id: number;
+	text: string;
+	createdAt: string;
+	conversation: { id: string; rolling: boolean } | null;
+}
+
 export interface AppActivityResponse {
 	busy: AppBusyConversation[];
 	otherBusy: number;
+	posts: AppPost[];
 }
 
 export interface AppApprovalDecisionResponse {

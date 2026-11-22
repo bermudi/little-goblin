@@ -42,6 +42,7 @@ import { withScript } from "./tools/script.ts";
 import { promptHasProject } from "./prompt.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
+import type { Posts } from "../posts.ts";
 import type { GitHub } from "../github.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
@@ -78,6 +79,7 @@ export interface TurnToolsDeps {
 	desktops: Desktops | null;
 	t3: T3;
 	watches: Watches;
+	posts: Pick<Posts, "add">;
 	github: GitHub;
 	agents: AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
@@ -150,6 +152,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				readPr: (repository, number) => deps.github.readPr(repository, number),
 				now: deps.now,
 			},
+			post: { posts: deps.posts, conversationId: conv.id },
 			cwd: workdir,
 			bashDescriptionCwd,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),

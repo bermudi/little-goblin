@@ -684,8 +684,8 @@ console.
 - [Needs you](../GLOSSARY.md#needs-you): the Attention items. Each opens its
   target, where its evidence already shows. The panel never decides an
   approval: an approval shows its diff before the decision (#168).
-- Three tabs. Activity: busy conversations, delegations and program runs;
-  feed posts join it with #845. Scheduled: programs. Library: notes and
+- Three tabs. Activity: busy conversations, delegations, program runs and
+  [feed posts](posts.md) (#845). Scheduled: programs. Library: notes and
   files. Each tab ends with a link to its full page.
 - The avatar opens [Goblin's profile](../GLOSSARY.md#goblins-profile): the
   Status, Memory, Skills and Log pages under one header that links them.

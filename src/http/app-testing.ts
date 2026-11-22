@@ -5,6 +5,7 @@ import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { openNotes } from "../notes.ts";
+import { makePosts } from "../posts.ts";
 import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
@@ -49,6 +50,7 @@ export function setup(
 	const store = openStore(join(home, "goblin.sqlite"));
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
+	const posts = makePosts(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
 	const turnJournal = openTurnJournal(store.db);
 	// The context-window rows ride the same db — prod wires them
 	// unconditionally (src/index.ts), so the rig does too.
@@ -118,6 +120,7 @@ export function setup(
 		runtime,
 		projects,
 		notes,
+		posts,
 		auth,
 		configRef,
 		...(opts.gate !== undefined ? { gate: opts.gate } : {}),
@@ -156,6 +159,7 @@ export function setup(
 		runtime,
 		projects,
 		notes,
+		posts,
 		configRef,
 		configWrites,
 		call,

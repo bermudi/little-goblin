@@ -22,6 +22,7 @@ import {
 	type VisionToolDeps,
 } from "./mod.ts";
 import type { WatchToolDeps } from "./watch.ts";
+import type { PostToolDeps } from "./post.ts";
 
 const programs = {} as unknown as ProgramsStore;
 const memoryClient = {} as unknown as HindsightClient;
@@ -197,6 +198,7 @@ describe("toolNames ↔ makeTools", () => {
 			note: {} as unknown as NoteToolDeps,
 			sandbox: {} as unknown as SandboxToolDeps,
 			watch: {} as unknown as WatchToolDeps,
+			post: {} as unknown as PostToolDeps,
 			ui: true,
 		});
 		// Policy exhaustiveness, both ways: a mounted tool without a

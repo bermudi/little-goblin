@@ -41,6 +41,7 @@
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
 - **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
+- **Post:** a short plain-text note Goblin writes to the operator with the `post` tool. It shows in the Activity tab of the Goblin panel and links back to the chat it came from; it does not notify anyone. Example: after a nightly backup check, Goblin posts "Backup finished. All 3 disks OK." (design/posts.md).
 - **Roll:** a fresh app conversation made when the Rolling chat treats a
   message as a new subject. For example, after a quiet gap and a new-subject
   check, Goblin starts an empty conversation instead of adding the message to

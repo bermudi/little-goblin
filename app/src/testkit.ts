@@ -18,7 +18,7 @@ export function clickConfirm(root: ParentNode, ok: boolean): void {
 }
 
 export function goblinFeedResponse(url: string): Response | null {
-	if (url === "/api/app/activity") return Response.json({ busy: [], otherBusy: 0 });
+	if (url === "/api/app/activity") return Response.json({ busy: [], otherBusy: 0, posts: [] });
 	if (url === "/api/app/delegations") return Response.json({ delegations: [] });
 	if (url === "/api/app/programs") return Response.json({ programs: [] });
 	return null;

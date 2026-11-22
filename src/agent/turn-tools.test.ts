@@ -99,6 +99,7 @@ describe("hosted web_search mount", () => {
 			t3: fakeT3(() => []).t3,
 			now: () => new Date(0),
 			watches: {} as unknown as Watches,
+			posts: { add: () => { throw new Error("unused"); } },
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
@@ -140,6 +141,13 @@ describe("hosted web_search mount", () => {
 		expect("watch" in rigTools(config, project)(project)).toBe(true);
 	});
 
+	test("the post tool mounts for the operator and stays off guest turns", () => {
+		const config = cfgFor("off");
+		const telegram = conv("zai/glm-5");
+		expect("post" in rigTools(config, telegram)(telegram)).toBe(true);
+		expect(policyOf("post")).toMatchObject({ guestChannel: false, guestSandbox: false, replay: "unsafe" });
+	});
+
 	test("guests keep web_search exactly like local search", () => {
 		expect(policyOf("web_search").guestSandbox).toBe(true);
 		expect(policyOf("search").guestSandbox).toBe(true);
@@ -176,6 +184,7 @@ describe("agent tool mount", () => {
 			t3: {} as unknown as T3,
 			now: () => new Date(0),
 			watches: {} as unknown as Watches,
+			posts: { add: () => { throw new Error("unused"); } },
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
@@ -250,6 +259,7 @@ describe("computer child mount", () => {
 			t3: {} as unknown as T3,
 			now: () => new Date(0),
 			watches: {} as unknown as Watches,
+			posts: { add: () => { throw new Error("unused"); } },
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,

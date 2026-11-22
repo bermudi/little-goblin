@@ -655,7 +655,7 @@ p code,
 .header-title-editor input {
 	width: 100%;
 }
-.header-title-editor ~ .header-parent {
+header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	display: none;
 }
 .conv-pin {

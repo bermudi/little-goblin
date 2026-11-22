@@ -255,6 +255,23 @@ describe("mobile: chats screen and navigation", () => {
 						headers: { "content-type": "text/event-stream" },
 					}),
 				);
+			if (/^\/api\/app\/conversations\/[^/]+\/context$/.test(url))
+				return Promise.resolve(
+					json({
+						model: "main/test",
+						input: null,
+						output: null,
+						cacheRead: null,
+						cacheWrite: null,
+						cacheHitRate: null,
+						avgCacheHitRate: null,
+						limit: null,
+						pct: null,
+						modelLimit: null,
+						turns: 0,
+						segments: null,
+					}),
+				);
 			if (/^\/api\/app\/conversations\/fixture\/window$/.test(url))
 				return Promise.resolve(
 					json({

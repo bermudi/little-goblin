@@ -404,7 +404,12 @@ describe("compaction during a fallback-served turn", () => {
 		probe: defineTool({ description: "probe", input: z.object({}), execute: async () => "probe-result" }),
 	});
 
-	function servedRig(opts: { models: Record<string, ScriptedModel>; ownFails: boolean; tools?: Tools }) {
+	function servedRig(opts: {
+		models: Record<string, ScriptedModel>;
+		ownFails: boolean;
+		tools?: Tools;
+		windows?: Record<string, number>;
+	}) {
 		const asked: string[] = [];
 		const store = openStore(tmpDb("goblin-fallback-fold-"));
 		const conv = store.resolve({ kind: "app", appId: "app-fallback-fold", chatId: 0, threadId: 0 }, "/w", {
@@ -423,7 +428,7 @@ describe("compaction during a fallback-served turn", () => {
 			modelFallbacks: () => [FB],
 			compaction: {
 				modelRef: (c) => c.model!,
-				contextWindow: () => 8_000,
+				contextWindow: (c) => opts.windows?.[c.model ?? ""] ?? 8_000,
 				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
 					asked.push(modelRef);
 					if (opts.ownFails) throw new Error("Weekly/Monthly Limit Exhausted");
@@ -469,6 +474,26 @@ describe("compaction during a fallback-served turn", () => {
 		} finally {
 			await r.close();
 		}
+	});
+
+	test("an overflow fold on the fallback keeps no more recent history than the fallback's window allows", async () => {
+		const keptTail = async (ownWindow: number) => {
+			const r = servedRig({
+				models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("after fold")] }),
+				ownFails: false,
+				windows: { [OWN]: ownWindow, [FB]: 8_000 },
+			});
+			try {
+				const { sink } = await r.turn("hello");
+				expect(sink.text).toBe("after fold");
+				return r.store.listCompactions(r.conv.id).at(-1)?.tailEvents;
+			} finally {
+				await r.close();
+			}
+		};
+		const sameWindows = await keptTail(8_000);
+		expect(sameWindows).toBeGreaterThan(0);
+		expect(await keptTail(400_000)).toBe(sameWindows);
 	});
 
 	test("an overflow fold whose own-model summary fails ends the turn and never asks the fallback", async () => {

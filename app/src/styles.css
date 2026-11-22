@@ -972,9 +972,10 @@ p code,
 	margin: 0 1rem 0.5rem;
 	padding: 0.75rem;
 	text-align: left;
+	border: 1px solid color-mix(in oklab, var(--app-warning) 40%, transparent);
 	border-radius: 8px;
-	background: var(--app-active);
-	color: var(--app-fg);
+	background: color-mix(in oklab, var(--app-warning) 6%, transparent);
+	color: var(--app-warning);
 }
 .chatlist-screen > .rail-you {
 	margin: auto 1rem 0;

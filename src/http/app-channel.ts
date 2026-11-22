@@ -1,6 +1,7 @@
 import { log } from "../log.ts";
 import { handleAttachmentsRoute } from "./app-attachments.ts";
 import { handleAttentionRoute } from "./app-attention.ts";
+import { handleActivityRoute } from "./app-activity.ts";
 import { appAuth } from "./app-auth.ts";
 import { handleApprovalsRoute } from "./app-approvals.ts";
 import { handleChatRoute } from "./app-chat.ts";
@@ -93,6 +94,7 @@ export async function handleAppApi(
 		(await handleApprovalsRoute(req, url, deps)) ??
 		(await handleProgramRoutes(req, url, deps)) ??
 		(await handleAttentionRoute(req, url, deps)) ??
+		(await handleActivityRoute(req, url, deps)) ??
 		(await handleAppPushRoute(req, url, deps)) ??
 		(await handleConversationsRoute(req, url, deps)) ??
 		(await handleTurnsRoute(req, url, deps)) ??

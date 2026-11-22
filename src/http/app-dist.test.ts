@@ -11,6 +11,7 @@ function makeDist(): string {
 	writeFileSync(join(dist, "index.html"), "<html><body>goblin</body></html>");
 	writeFileSync(join(dist, "assets", "index-abc123.js"), "console.log('x')");
 	writeFileSync(join(dist, "assets", "index-abc123.css"), "body{}");
+	writeFileSync(join(dist, "goblin-avatar.webp"), "RIFF");
 	return dist;
 }
 
@@ -38,6 +39,12 @@ describe("serveAppDist", () => {
 		expect(js.headers.get("cache-control")).toContain("immutable");
 		const css = await serveAppDist("assets/index-abc123.css", dist);
 		expect(css.headers.get("content-type")).toContain("text/css");
+	});
+
+	test("the WebP avatar serves as an image", async () => {
+		const res = await serveAppDist("goblin-avatar.webp", makeDist());
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toBe("image/webp");
 	});
 
 	test("traversal attempts never escape the dist dir", async () => {

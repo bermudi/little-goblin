@@ -1,4 +1,6 @@
 import { describe, beforeEach, afterEach, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
@@ -1217,5 +1219,30 @@ describe("mobile: chats screen and navigation", () => {
 		// empty transcript.
 		await click(container.querySelector('.conv-main[href="/app/c/fixture"]'));
 		await waitFor(() => container.querySelector(".outline") !== null, "outline rail");
+	});
+
+	test("desktop: the header Sidebar button shows and hides the whole list", async () => {
+		phone = false;
+		const style = win.document.createElement("style");
+		style.textContent = readFileSync(join(import.meta.dir, "styles.css"), "utf8");
+		win.document.head.appendChild(style);
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await waitFor(
+			() => container.querySelector('nav[aria-label="Sidebar"]') !== null,
+			"desktop sidebar list",
+		);
+		const toggle = win.document.querySelector('main > header button[aria-label="Sidebar"]');
+		expect(toggle).toBeTruthy();
+		expect(win.innerWidth).toBeGreaterThan(720);
+		expect(win.getComputedStyle(toggle!).display).toBe("inline-flex");
+		expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+		await click(toggle);
+		expect(container.querySelector('nav[aria-label="Sidebar"]')).toBeNull();
+		expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+		await click(toggle);
+		expect(container.querySelector('nav[aria-label="Sidebar"]')).toBeTruthy();
 	});
 });

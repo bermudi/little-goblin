@@ -65,7 +65,6 @@ export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
 
 	return (
 		<div className="ops activity-page">
-			{data.loadError && <p className="error">Couldn't refresh activity.</p>}
 			{running && (
 				<>
 					<h2 className="ops-h2">Running</h2>

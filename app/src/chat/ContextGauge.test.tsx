@@ -19,7 +19,7 @@ const view = (patch: Partial<AppContextView>): AppContextView => ({
 	avgCacheHitRate: null,
 	limit: null,
 	pct: null,
-	compactAtPct: 75,
+	modelLimit: null,
 	turns: 0,
 	segments: null,
 	...patch,

@@ -139,7 +139,7 @@ describe("WindowView", () => {
 		avgCacheHitRate: null,
 		limit: 10000,
 		pct: 31,
-		compactAtPct: 75,
+		modelLimit: null,
 		turns: 1,
 		segments: [{ key: "history", tokens: 1700 }],
 	};
@@ -211,15 +211,16 @@ describe("WindowView", () => {
 		const tiles = [...container.querySelectorAll(".sumtile")].map((e) => e.textContent);
 		expect(tiles[0]).toContain("3,100");
 		expect(tiles[0]).toContain("of 10,000");
-		expect(container.textContent).toContain("compacts the history. 4,400 tokens of room remain");
+		expect(container.textContent).toContain("compacts the history. 6,900 tokens of room remain");
 		// The raw parts are folded; nothing scrolls inside the page.
 		expect(container.querySelectorAll("details.win-fold[open]").length).toBe(0);
 	});
 
 	test("above the threshold the note says the history compacts", async () => {
-		mount({}, { input: 8000, pct: 80 });
+		mount({}, { input: 10000, pct: 100, modelLimit: 20000 });
 		await act(async () => {});
-		expect(container.textContent).toContain("At or above 75% of the window");
+		expect(container.textContent).toContain("At or above the 10,000-token limit");
+		expect(container.textContent).toContain("The model itself takes up to 20,000.");
 	});
 
 	test("without the context read the page still shows the capture", async () => {

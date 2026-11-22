@@ -46,7 +46,7 @@ export function contextLabel(ctx: AppContextView | null): string {
 }
 
 // The composer's context gauge — the last turn's window utilization
-// against the conversation model's catalog limit, with cache-hit rates
+// against goblin's compaction limit, with cache-hit rates
 // in the popover. Reads stay cheap: one GET on mount and one per
 // settled turn (busy → idle), never mid-stream.
 export function ContextGauge({
@@ -192,6 +192,7 @@ export function ContextGauge({
 			: {
 					...ctx,
 					limit,
+					modelLimit: limit === null ? null : ctx.modelLimit,
 					input: viewInput,
 					pct: viewPct,
 				};
@@ -339,6 +340,12 @@ export function ContextGauge({
 								{shown.input === null ? "—" : `${contextCount(shown.input)} tok`}
 							</dd>
 						</div>
+						{shown.modelLimit !== null && shown.modelLimit !== shown.limit && (
+							<div>
+								<dt>Model window</dt>
+								<dd className="mono">{contextCount(shown.modelLimit)} tok</dd>
+							</div>
+						)}
 						<div>
 							<dt>Cache hit</dt>
 							<dd className="mono">{contextRate(hitRate)}</dd>

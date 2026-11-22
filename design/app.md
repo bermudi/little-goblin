@@ -26,6 +26,9 @@ a chat command grammar (2026-10-16).
 steps once showed 223k tokens in a 37k window. Only the last call measures
 occupancy; itemized shares are estimates. Show the last settled measure
 rather than flashing an empty state while the next call is in progress.
+The denominator is goblin's compaction limit, not the model's window
+(2026-11-21): a 1.1M model compacts at 256k, so 100% means "the next
+fold". The model's own window shows in the popover only for reference.
 See the [gauge tests](../app/src/chat/ContextGauge.test.tsx).
 
 **Auth (#75).** See [Security](../docs/security.md#the-app-channels-auth) for

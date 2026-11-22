@@ -1769,7 +1769,8 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 			model: "zai/m",
 			input: null,
 			output: null,
-			limit: 1000,
+			limit: 500,
+			modelLimit: 1000,
 			pct: null,
 			turns: 0,
 			cacheHitRate: null,
@@ -1784,10 +1785,9 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 			model: "zai/m",
 			input: 1,
 			output: 2,
-			limit: 1000,
-			pct: 0.1,
-			// design/compaction.md → Triggers: 50% of the 1000 window.
-			compactAtPct: 50,
+			limit: 500,
+			modelLimit: 1000,
+			pct: 0.2,
 			turns: 1,
 			cacheHitRate: null,
 			avgCacheHitRate: null,
@@ -1803,6 +1803,26 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 				})
 			).status,
 		).toBe(405);
+	} finally {
+		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
+test("context measures a large-window model against the compaction cap, not its window", async () => {
+	const { http, call } = setup();
+	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1_100_000 } } } } });
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "ctx-cap" }),
+		});
+		const body = (await (await call("/api/app/conversations/ctx-cap/context")).json()) as Record<
+			string,
+			unknown
+		>;
+		expect(body).toMatchObject({ limit: 256_000, modelLimit: 1_100_000 });
 	} finally {
 		_resetModelsDevForTest();
 		http.stop();
@@ -1861,7 +1881,7 @@ test("context prefers the final step's input and itemizes the window", async () 
 		expect(body.input).toBe(300);
 		expect(body.cacheRead).toBe(280);
 		expect(body.cacheHitRate).toBeCloseTo(280 / 300, 5);
-		expect(body.pct).toBe(30);
+		expect(body.pct).toBe(60);
 		// 500 chars scale to 300 tokens; toolResults is a subset, scaled
 		// against the same denominator so it never double-counts.
 		expect(body.segments).toEqual([
@@ -2015,7 +2035,7 @@ test.each([
 			input,
 			cacheRead,
 			turns: 1,
-			pct: input === null ? null : input / 10,
+			pct: input === null ? null : input / 5,
 			cacheHitRate: input === null || cacheRead === null ? null : cacheRead / input,
 			avgCacheHitRate: input === null || cacheRead === null ? null : cacheRead / input,
 			segments: input === null ? null : [{ key: "identity", tokens: input }],

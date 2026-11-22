@@ -56,7 +56,7 @@ a first call that overflows rides the overflow rail.
 Manual `/compact` stays a forced fold: no trigger, window possibly unknown.
 `minSpanTokens` stays: a fold that buys nothing still spends a call and
 moves the cache boundary. `/compact <focus>` and the app route's `{"focus":
-"…"}` body carry an operator focus into every summarizer chunk prompt —
+"…"}` body carry an operator focus into the summarizer prompt —
 a bracketed line ahead of the span text — so a manual fold can be steered
 without touching the fixed system prompt.
 
@@ -82,10 +82,12 @@ re-arms at startup (goblin restarts on every release).
 | quantity | value | source |
 | --- | --- | --- |
 | verbatim tail | **20,000**, ≤25% of window | pi / OpenClaw `keepRecentTokens` |
-| overflow chunk cap | 100,000, ≤50% of window | overflow recovery only (#871) |
+| memory flush input | 100,000, ≤50% of window | the flush's newest slice; summaries have no cap (#871) |
+| tool result in summary input | **2,000** chars | pi `TOOL_RESULT_MAX_CHARS` (#871) |
 | verbatim user messages | **4,000**, newest first | Hermes lean (budgeted) |
 | identifier index | **1,000** | Hermes lean |
 
+The window is the one of the model that serves the fold (The summary).
 Small windows keep the old ratio as a ceiling: tail ≤ 25% of the window.
 OpenClaw's shrink-to-fit (tail shrinks so prompt + tools + pending input +
 reserve fit) is not adopted: the fold replaces everything but a ≤20k
@@ -192,7 +194,7 @@ normal path.
 - **What it costs.** A fold landing between the last tool batch and the final
   answer delays that answer by up to one summary call. Accepted: the
   alternative is a 400. A pre-empt fold is one summary call over the span
-  (#871), so the delay is one call on the conversation's own model.
+  (#871), on the model that serves the turn.
 - **The end-of-turn fold is retired as the normal path.** The serial-lane
   queue and `/compact` keep their semantics (`Runtime.busy` still counts a
   queued or in-flight compaction).
@@ -248,7 +250,7 @@ Implementation rulings (2026-10-25):
   threshold with a false window-full error.
 
 Invariants carried over unchanged, because they are not about timing: the
-authority fence checked before each chunk and before the pointer lands; a
+authority fence checked before each summary call and before the pointer lands; a
 failed fold writes no pointer and warns; `/stop` or shutdown aborts; the
 epoch is re-compared between compaction and the resume decision; the frozen
 system-prompt snapshot clears at a landed boundary — including one landing
@@ -347,39 +349,57 @@ goblin summary still runs before native `/compact`.
 
 ## The summary
 
-The conversation's own model writes it. It receives the
-previous summary plus the newly folded span, never the whole past
-(iterative, as pi/OpenClaw/Hermes).
+The model that serves the request writes it. It receives the previous
+summary plus the newly folded span, never the whole past (iterative, as
+pi/OpenClaw/Hermes).
 
-Ruling (operator, 2026-11-22, #871): compaction summarizes **only with the
-conversation's own model**, the configured model whose window sizes the
-fold. A fold inside a turn that a fallback serves (overflow, pre-empt,
-threshold) still uses the configured model: the runtime passes the run's
-configured ref, not the serving candidate. It never walks the model
-fallback list, so a summary is never
-written by a model with a smaller window than the one that runs the
-conversation. Pi does the same: `generateSummary` in
-`pi-mono/packages/coding-agent/src/core/compaction/compaction.ts` is one
-call on the session's model.
+Ruling (operator, 2026-11-22, second, #871): handle compaction the way pi
+does (`~/build/pi-mono/packages/coding-agent/src/core`, read 2026-11-22).
+It replaces the same day's first ruling (own model only) and the
+2026-11-02 fallback walk ([model](model.md), Model fallback list).
 
-- **One call, except overflow recovery.** A threshold, manual, idle or
-  pre-empt fold sends the whole span in one text-mode call (prefix mode was
-  already one call). Only an `overflow` fold splits the span into pieces
-  of at most the overflow chunk cap (Budgets), each carrying the running
-  summary forward: there, the history is already too big for one call.
-- **A failed summary call never changes models.** Prefix mode that fails
-  still retries once in text mode on the same model (above). If the text
-  call fails too, the fold writes nothing and warns, and the caller
-  decides as before: a threshold fold retries at the next crossing, a
-  pre-empt resumes on the unfolded view, an overflow fold ends the turn,
-  and `/compact` reports the error. Provider retries inside the call (the
-  SDK's `maxRetries` ladder) are unchanged. There is still no
+- **Model.** A fold inside a turn (overflow, pre-empt, and the threshold
+  fold after the reply lands) runs on the model that serves the turn: on a
+  fallback turn, the fallback writes the summary. `/compact` and the idle
+  fold run on the conversation's model. No fold walks the fallback list.
+  The stored fold's `model` names the model that wrote it. Pi:
+  `_getSummarizationRequestAuth` in `agent-session.ts` ("summaries size
+  their input and output from the model they get").
+- **One call.** Text mode sends the whole span in one summary call for
+  every reason, overflow included; nothing is chunked. A split turn adds
+  its checkpoint call, as pi's `compact` does. The input is the span as
+  plain text: thinking is dropped and each tool result is cut to 2,000
+  characters (Budgets; pi's `serializeConversation` in
+  `compaction/utils.ts`). The cut applies to the summary input only:
+  `history_search` reads the same `renderEventText` and keeps 8,000.
+- **Tail.** Sized from the window of the model that serves the turn
+  (Budgets). Pi: `_checkCompaction` reads the window of the model that
+  produced the message.
+- **Failure.** Short (retryable) errors retry inside the call with a
+  delay: the SDK's `maxRetries` ladder for flagged 5xx and throttles, and
+  `transportRetry` (`src/agent/providers.ts`) for dropped connections,
+  from 2s, doubling. Quota walls never retry. Pi's twin is
+  `retryAssistantCall`. A failed prefix-mode call retries once in text
+  mode on the same model. When text mode fails too, nothing is saved:
+  `/compact` reports the error, an overflow fold ends the turn with
+  "context window full and compacting failed: …" (Overflow recovery), and
+  a pre-empt resumes on the unfolded view. There is still no
   deterministic summary (Non-goals).
-- **Accepted risk.** While the conversation's own model is unavailable
-  (a quota wall, an outage), no fold can land, even when a turn is served
-  by a fallback. A turn on a fallback that overflows then ends instead of
-  folding on the fallback.
-- **The stored fold's `model`** is always the conversation's model.
+- **Goblin difference: a failed threshold or idle fold is log-only.** Pi
+  shows "Auto-compaction failed". Goblin's threshold fold runs after the
+  reply was delivered and the idle fold runs with no turn, so neither has
+  a reply to carry the error, and goblin has no notice channel outside a
+  turn. The fold warns in the log and retries at the next crossing; a
+  turn that keeps growing meets overflow recovery, which shows its error.
+- **Rejected: own model only** (first ruling, 2026-11-22). It kept every
+  summary on the conversation's model and window. But while that model is
+  down (a quota wall, an outage), no fold could land even on a turn a
+  fallback served, and a fallback turn that overflowed ended instead of
+  folding.
+- **Accepted cost.** Summary quality depends on which fallback answered:
+  a weaker fallback writes a weaker summary, and every later turn reads
+  it. A span too big for the serving model's window fails the fold
+  instead of being chunked.
 
 **Required headings** (OpenClaw safeguard mode, its exact list):
 
@@ -453,7 +473,7 @@ flush on with no other change.
   retains was queued before the fold could read it.
 - **Mechanism (operator, 2026-11-09; cache-prefix extension, #617,
   operator 2026-11-18):** one direct `generateText` call in the fold job,
-  before the first summary chunk. In prefix mode it replays the last turn's
+  before the first summary call. In prefix mode it replays the last turn's
   exact cached prefix and tool definitions; `note` is the only function
   executor allowed to act, and every other function executor returns a fixed
   refusal. Without a usable prefix or a `note` definition, it uses the
@@ -475,6 +495,12 @@ Unchanged in shape, now OpenClaw's contract stated explicitly: on a
 provider context-overflow error, fold and retry the request; finished tool
 calls are never run again (the journaled-call guard already does this). It
 stays the backstop behind pre-emption.
+
+One compact-and-retry per turn, as pi (`_checkCompaction`, 2026-11-22,
+#871): a second overflow on the resumed attempt, or an overflow with
+nothing left to fold, ends the turn with a message that says the latest
+message or tool output is too big and suggests a model with a bigger
+context window.
 
 ## Fold marks in the app
 

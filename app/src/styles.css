@@ -921,8 +921,9 @@ p code,
 	white-space: nowrap;
 }
 /* The header's sidebar collapse — .nav-toggle is display:none off the
-   drawer door; this one is JSX-gated to desktop, so it always shows. */
-.rail-toggle {
+   drawer door; this one is JSX-gated to desktop, so it always shows.
+   The compound selector outranks the later .nav-toggle rule (#874). */
+.nav-toggle.rail-toggle {
 	display: inline-flex;
 }
 

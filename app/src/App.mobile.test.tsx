@@ -1234,10 +1234,10 @@ describe("mobile: chats screen and navigation", () => {
 			() => container.querySelector('nav[aria-label="Sidebar"]') !== null,
 			"desktop sidebar list",
 		);
-		const toggle = win.document.querySelector('main > header button[aria-label="Sidebar"]');
+		const toggle = container.querySelector('main > header button[aria-label="Sidebar"]');
 		expect(toggle).toBeTruthy();
 		expect(win.innerWidth).toBeGreaterThan(720);
-		expect(win.getComputedStyle(toggle!).display).toBe("inline-flex");
+		expect(getComputedStyle(toggle!).display).toBe("inline-flex");
 		expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 		await click(toggle);
 		expect(container.querySelector('nav[aria-label="Sidebar"]')).toBeNull();

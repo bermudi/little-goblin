@@ -573,7 +573,6 @@ export class Runtime {
 						return null;
 					}
 					const summarizer: PrefixSummarizer = {
-						modelRef,
 						mode: "claude-code",
 						async call(turns, callSignal, cut, context) {
 							if (context === undefined && cut === undefined) {

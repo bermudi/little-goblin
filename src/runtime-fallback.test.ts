@@ -319,8 +319,9 @@ describe("model fallback list", () => {
 		}
 	});
 
-	test("compaction walks the list and the fold names the ref that wrote it", async () => {
+	test("compaction never walks the list: a down primary fails the fold and writes nothing (#871)", async () => {
 		const asked: string[] = [];
+		let primaryDown = true;
 		const r = rig({
 			model: "zai/glm-5.3",
 			fallbacks: ["codex/gpt-6.1-terra"],
@@ -330,7 +331,7 @@ describe("model fallback list", () => {
 				contextWindow: () => 1000,
 				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
 					asked.push(modelRef);
-					if (modelRef === "zai/glm-5.3") throw quotaWall();
+					if (primaryDown && modelRef === "zai/glm-5.3") throw new Error("Weekly/Monthly Limit Exhausted");
 					return foldSummary(`folded by ${modelRef}`, prompt);
 				},
 			},
@@ -345,14 +346,20 @@ describe("model fallback list", () => {
 					{ anchorSeq: r.store.lastUserSeq(r.conv.id) },
 				);
 			}
+			await expect(r.runtime.compact(r.store.get(r.conv.id)!)).rejects.toThrow(/^Weekly\/Monthly Limit Exhausted$/);
+			expect(asked).toEqual(["zai/glm-5.3"]);
+			expect(r.store.listCompactions(r.conv.id)).toEqual([]);
+
+			primaryDown = false;
+			asked.length = 0;
 			const outcome = await r.runtime.compact(r.store.get(r.conv.id)!);
 			expect(outcome).toMatchObject({ kind: "compacted" });
 			if (outcome.kind === "compacted") {
-				expect(outcome.summary).toStartWith("folded by codex/gpt-6.1-terra\n");
+				expect(outcome.summary).toStartWith("folded by zai/glm-5.3\n");
 			}
-			expect(asked).toEqual(["zai/glm-5.3", "codex/gpt-6.1-terra"]);
+			expect(asked).toEqual(["zai/glm-5.3"]);
 			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({
-				model: "codex/gpt-6.1-terra",
+				model: "zai/glm-5.3",
 			});
 		} finally {
 			await r.runtime.shutdown();

@@ -389,8 +389,6 @@ export interface PrefixCallContext {
 }
 
 export interface PrefixSummarizer {
-	/** The ref whose cached prefix this replays; only that candidate runs prefix mode. */
-	modelRef: string;
 	mode?: "claude-code";
 	/** Preflight replay-only failures before the optional memory flush. */
 	prepare?(): Promise<void>;
@@ -693,7 +691,7 @@ export async function runCompaction(
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
 	let summary: string | null = null;
 	let prefixSucceeded = false;
-	const modeReason: "overflow" | "no-prefix" | "model-mismatch" | "empty-span" | "prefix-failed" | null =
+	const modeReason: "overflow" | "no-prefix" | "empty-span" | "prefix-failed" | null =
 		reason === "overflow" ? "overflow" : opts.prefix === undefined ? "no-prefix" :
 			span.length === 0 ? "empty-span" : null;
 	let prefixSummarizer: PrefixSummarizer | null = null;
@@ -714,10 +712,7 @@ export async function runCompaction(
 		}
 		signal.throwIfAborted();
 		opts.assertAuthority?.();
-		if (selectedModeReason === null) {
-			if (prefixSummarizer === null) selectedModeReason = "no-prefix";
-			else if (prefixSummarizer.modelRef !== model) selectedModeReason = "model-mismatch";
-		}
+		if (selectedModeReason === null && prefixSummarizer === null) selectedModeReason = "no-prefix";
 	}
 	const keptEvents = split === null
 		? detail.slice(boundaryIndex + 1)
@@ -745,10 +740,10 @@ export async function runCompaction(
 		await runFlush(
 			id,
 			opts.flush,
-			selectedModeReason === null && prefixSummarizer !== null && prefixSummarizer.modelRef === model
+			selectedModeReason === null && prefixSummarizer !== null
 				? prefixSummarizer.flush
 				: undefined,
-			prefixSummarizer !== null && prefixSummarizer.modelRef === model
+			prefixSummarizer !== null
 				? "no-note-tool"
 				: selectedModeReason ?? "no-prefix",
 			prefixMessage === null

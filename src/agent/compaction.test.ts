@@ -385,7 +385,6 @@ describe("runCompaction prefix summary", () => {
 					prefix: async () => {
 						order.push("prefix");
 						return {
-							modelRef: "m",
 							call: async () => validPrefixSummary("PREFIX-STORED", "do a thing".repeat(200)),
 						};
 					},
@@ -421,7 +420,7 @@ describe("runCompaction prefix summary", () => {
 				reason: "overflow",
 				prefix: async () => {
 					prefixFactories++;
-					return { modelRef: "m", call: async () => validPrefixSummary("PREFIX") };
+					return { call: async () => validPrefixSummary("PREFIX") };
 				},
 			},
 			signal(),
@@ -446,7 +445,6 @@ describe("runCompaction prefix summary", () => {
 					tailTokenBudget: 1,
 					inputTokenBudget: 32_000,
 					prefix: async () => ({
-						modelRef: "m",
 						call: async () => {
 							throw new Error("prefix provider failed");
 						},
@@ -479,7 +477,6 @@ describe("runCompaction prefix summary", () => {
 				tailTokenBudget: 1,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					call: async (turns) => {
 						calls.push(turns);
 						return calls.length === 1
@@ -518,7 +515,6 @@ describe("runCompaction prefix summary", () => {
 					tailTokenBudget: 1,
 					inputTokenBudget: 32_000,
 					prefix: async () => ({
-						modelRef: "m",
 						call: async (_turns, callSignal) => {
 							controller.abort(new Error("stopped"));
 							return new Promise<string>((_, reject) =>
@@ -531,39 +527,6 @@ describe("runCompaction prefix summary", () => {
 			),
 		).rejects.toThrow("stopped");
 		expect(fallbackCalls).toBe(0);
-	});
-
-	test("E — a prefix summarizer for another model selects text mode with model-mismatch", async () => {
-		const home = useHome("goblin-compaction-prefix-e-");
-		const logPath = join(home, "state/goblin.log");
-		setLogFile(logPath);
-		try {
-			const { store } = fakeStore(sample());
-			let prefixCalls = 0;
-			const outcome = await runCompaction(
-				"dm:1",
-				store,
-				"primary",
-				async (_system, prompt) => foldSummary("TEXT", prompt),
-				{
-					tailTokenBudget: 1,
-					inputTokenBudget: 32_000,
-					prefix: async () => ({
-						modelRef: "backup",
-						call: async () => {
-							prefixCalls++;
-							return validPrefixSummary("PREFIX");
-						},
-					}),
-				},
-				signal(),
-			);
-			expect(outcome.kind).toBe("compacted");
-			expect(prefixCalls).toBe(0);
-			expect(readFileSync(logPath, "utf8")).toContain('"mode":"text","reason":"model-mismatch"');
-		} finally {
-			setLogFile(null);
-		}
 	});
 
 	test("F — split checkpoint replays the prefix request and appends the exact checkpoint instruction", async () => {
@@ -596,7 +559,6 @@ describe("runCompaction prefix summary", () => {
 				tailTokenBudget: 5_000,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					call: async (turns, _signal, cut) => {
 						calls.push({ turns, ...(cut !== undefined ? { cut } : {}) });
 						return calls.length === 1
@@ -1648,7 +1610,6 @@ describe("runCompaction memory flush", () => {
 					inputTokenBudget: 32_000,
 					flush: async () => ({ noteCalls: 0 }),
 					prefix: async () => ({
-						modelRef: "m",
 						call: async () => validPrefixSummary("prefix", "do a thing"),
 					}),
 				},
@@ -1756,7 +1717,6 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 						tailTokenBudget: 1,
 						inputTokenBudget: 32_000,
 						prefix: async () => ({
-							modelRef: "m",
 							mode: "claude-code",
 							call: async () => {
 								const error = new Error(`fallback ${reason}`);
@@ -1788,7 +1748,6 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 				tailTokenBudget: 1,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					mode: "claude-code",
 					call: async (turns, _signal, _cut, context) => {
 						turnsSeen.push(turns);
@@ -1843,7 +1802,6 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 				tailTokenBudget: 1,
 				inputTokenBudget: 32_000,
 				prefix: async () => ({
-					modelRef: "m",
 					mode: "claude-code",
 					call: async (_turns, _signal, _cut, context) => {
 						seen = context?.previousSummary ?? null;

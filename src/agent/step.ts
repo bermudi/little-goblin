@@ -318,8 +318,6 @@ export function makeStepBuilder(
 				}
 				return contextLimit(provider, modelId);
 			},
-			// One call on the ref runCompaction's fallback walk hands it
-			// (design/model.md → Model fallback list → Compaction).
 			summarize: (conv, system, prompt, signal, modelRef) =>
 				summarizeOn(conv, modelRef, system, prompt, signal),
 			// #418: the recorded native session compacts itself alongside

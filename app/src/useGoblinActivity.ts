@@ -28,12 +28,19 @@ export function useGoblinActivity(token: string | null, enabled: boolean) {
 		const load = async () => {
 			const current = ++seq.current;
 			const results = await Promise.allSettled([
-				getAttention(token), listDelegations(token), listPrograms(token), getActivity(token),
+				getAttention(token),
+				listDelegations(token),
+				listPrograms(token),
+				getActivity(token),
 			]);
 			if (!live || seq.current !== current) return;
 			const [a, d, p, x] = results;
-			if (a.status === "fulfilled") { setAttention(a.value.items); setAttentionError(false); }
-			else setAttentionError(true);
+			if (a.status === "fulfilled") {
+				setAttention(a.value.items);
+				setAttentionError(false);
+			} else {
+				setAttentionError(true);
+			}
 			if (d.status === "fulfilled") setDelegations(d.value.delegations);
 			if (p.status === "fulfilled") setPrograms(p.value.programs);
 			if (x.status === "fulfilled") setActivity(x.value);
@@ -58,5 +65,14 @@ export function useGoblinActivity(token: string | null, enabled: boolean) {
 			document.removeEventListener("visibilitychange", visible);
 		};
 	}, [enabled, token, refresh]);
-	return { attention, attentionError, delegations, programs, activity, loadError, working: workingCount(activity, delegations), reload };
+	return {
+		attention,
+		attentionError,
+		delegations,
+		programs,
+		activity,
+		loadError,
+		working: workingCount(activity, delegations),
+		reload,
+	};
 }

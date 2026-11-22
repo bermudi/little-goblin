@@ -37,14 +37,64 @@ function saveTab(value: GoblinPanelTab): void {
 	}
 }
 
+const OPEN_KEY = "goblin.panelOpen";
+
+export function loadPanelOpen(): boolean {
+	try {
+		return localStorage.getItem(OPEN_KEY) !== "false";
+	} catch {
+		return true;
+	}
+}
+
+export function savePanelOpen(open: boolean): void {
+	try {
+		localStorage.setItem(OPEN_KEY, String(open));
+	} catch {
+		return;
+	}
+}
+
 export function goblinStatusText(working: number): string {
 	if (working <= 0) return "Idle";
 	return `Working · ${working} ${working === 1 ? "job" : "jobs"}`;
 }
 
+export function GoblinProfileHeader({ page, working, onPage }: {
+	page: "status" | "memory" | "skills" | "log";
+	working: number;
+	onPage(page: AppPageKey): void;
+}) {
+	const pages = ["status", "memory", "skills", "log"] as const;
+	return (
+		<div className="goblin-profile-header">
+			<GoblinAvatar size="md" working={working > 0} />
+			<strong>Goblin</strong>
+			<span>{goblinStatusText(working)}</span>
+			<nav aria-label="Goblin's profile">
+				{pages.map((key) => (
+					<a
+						key={key}
+						href={`/app/${key}`}
+						aria-current={page === key ? "page" : undefined}
+						onClick={(event) => {
+							if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+							event.preventDefault();
+							onPage(key);
+						}}
+					>
+						{key[0]?.toUpperCase()}{key.slice(1)}
+					</a>
+				))}
+			</nav>
+		</div>
+	);
+}
+
 export interface GoblinPanelProps {
 	data: ActivityData;
 	notes: AppNoteSummary[] | null;
+	notesError?: boolean;
 	variant: "column" | "sheet";
 	onOpenTarget(target: AppAttentionTarget): void;
 	onOpenConversation(id: string): void;
@@ -275,7 +325,11 @@ export function GoblinPanel(props: GoblinPanelProps) {
 								}}
 							/>
 						))}
-						{notes.length === 0 && <p className="empty">No notes yet.</p>}
+						{props.notesError ? (
+							<p className="error">Couldn't load notes.</p>
+						) : notes.length === 0 && (
+							<p className="empty">No notes yet.</p>
+						)}
 					</div>
 					<div className="goblin-panel-footer-group">
 						<button

@@ -15,7 +15,7 @@ import {
 } from "../../src/config-schema.ts";
 import type { AppConversationList, AppMessageList, AppProject } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
-import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
+import { clickConfirm, confirmSheet, confirmText, goblinFeedResponse } from "./testkit.ts";
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -129,6 +129,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
@@ -152,6 +153,8 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		}));
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			const patchMatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
 			if (patchMatch !== null && method === "PATCH") {
@@ -444,7 +447,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		const rows = [...container.querySelectorAll(".chatlist-screen .conv-title")].map(
 			(el) => el.textContent,
 		);
-		expect(rows).toEqual(["Rolling chat", "fixture chat", "second chat"]);
+		expect(rows).toEqual(["Goblin", "fixture chat", "second chat"]);
 		expect(container.querySelectorAll(".tabbar .tab").length).toBe(5);
 		expect(tab("Chats")?.getAttribute("aria-current")).toBe("page");
 		// The list screen replaces the composer as the chat surface — the
@@ -455,7 +458,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	test("Rolling chat is first, opens its page, and has no hold actions", async () => {
 		await mount();
 		const row = container.querySelector(".chatlist-screen .rolling-row");
-		expect(row?.querySelector(".conv-title")?.textContent).toBe("Rolling chat");
+		expect(row?.querySelector(".conv-title")?.textContent).toBe("Goblin");
 		expect(row?.querySelectorAll("button")).toHaveLength(0);
 		await hold(row!.querySelector("a")!, "touch");
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -468,7 +471,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await mount();
 		const rows = [...container.querySelectorAll(".chatlist-screen .conv")];
 		expect(rows.map((row) => row.querySelector(".conv-title")?.textContent)).toEqual([
-			"Rolling chat",
+			"Goblin",
 			"fixture chat",
 			"second chat",
 		]);

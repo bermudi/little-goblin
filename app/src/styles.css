@@ -802,144 +802,67 @@ p code,
 	color: var(--app-fg);
 }
 
-/* ---------- the C gutter (design/app.md → mobile-nav ruling) ----------
-   Desktop nav: a 52px glyph spine where every surface is one click
-   away, and a 216px panel that lists exactly one at a time. Phone
-   widths never see it (.app-rail's display:none in the 720px block);
-   the Telegram door's .rail keeps the column rules this overrides. */
 .app-rail {
-	width: auto;
-	flex-direction: row;
-	padding: 0;
-	gap: 0;
 	overflow: hidden;
-	border-right: none;
 }
-.gutter {
-	width: 52px;
-	flex: none;
-	border-right: 1px solid var(--app-divider);
+.rail-top {
 	display: flex;
-	flex-direction: column;
 	align-items: center;
-	padding: 0.6rem 0 0.55rem;
-	gap: 2px;
-	overflow-y: auto;
-	scrollbar-width: none;
+	gap: .3rem;
 }
-.gutter::-webkit-scrollbar {
-	display: none;
-}
-.g {
-	position: relative;
-	width: 34px;
-	height: 34px;
-	flex: none;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 8px;
-	color: var(--app-fg-muted);
-	transition:
-		background-color 75ms,
-		color 75ms;
-}
-.g:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-.g.on {
-	background: var(--app-active);
-	color: var(--app-fg);
-}
-.g .dot {
-	position: absolute;
-	top: 6px;
-	right: 6px;
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: var(--app-accent);
-}
-/* A failed attention load keeps the dot up, in the error colour. */
-.g .dot.attention-dot-error {
-	background: var(--app-danger);
-}
-.g-new {
-	color: var(--app-fg);
-}
-.g-split {
-	width: 18px;
-	height: 1px;
-	flex: none;
-	background: var(--app-divider);
-	margin: 0.4rem 0;
-}
-.g-gap {
-	height: 0.45rem;
-	flex: none;
-}
-.g-spacer {
+.rail-top .rail-search {
+	min-width: 0;
 	flex: 1;
 }
-
-.panel {
-	width: 216px;
-	border-right: 1px solid var(--app-divider);
-	display: flex;
-	flex-direction: column;
-	padding: 0.5rem 0.5rem 0.45rem;
-	gap: 0.15rem;
-	overflow: hidden;
-}
-.panel-head {
-	flex: none;
-	display: flex;
-	align-items: baseline;
-	padding: 0.15rem 0.55rem 0.35rem;
-}
-.panel-label {
-	font-size: 11px;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	color: var(--app-fg-subtle);
-}
-button.panel-index {
-	border-radius: 6px;
-	transition: color 75ms;
-}
-button.panel-index:hover {
-	color: var(--app-fg-muted);
-}
-.panel-count {
-	margin-left: auto;
-	font-family: var(--font-mono);
-	font-size: 10px;
-	color: var(--app-fg-subtle);
-	font-variant-numeric: tabular-nums;
-}
-.panel-action {
-	width: 1.65rem;
-	height: 1.65rem;
-	margin-left: 0.4rem;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 6px;
-	color: var(--app-fg-muted);
-}
-.panel-action:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-.panes {
+.rail-body {
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
 }
-.panel > .error {
-	flex: none;
+.rail-project-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+.rail-project-head,
+.rail-chats-label {
+	color: var(--app-fg-muted);
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: .08em;
+	text-transform: uppercase;
+	padding: .5rem;
+}
+.rail-you {
+	margin-top: auto;
+}
+.goblin-column {
+	flex: 0 0 280px;
+	min-width: 0;
+	overflow-y: auto;
+	border-left: 1px solid var(--app-divider);
+}
+.shell > main {
+	min-width: 0;
+}
+.goblin-panel-toggle {
+	margin-left: auto;
+}
+.goblin-profile-header {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: .75rem;
+	padding: 1rem;
+}
+.goblin-profile-header nav {
+	display: flex;
+	gap: 1rem;
+	flex-basis: 100%;
+}
+.rolling-row .conv-main > .goblin-avatar {
+	float: left;
+	margin-right: .5rem;
 }
 /* Note rows: one line — pin, title, relative time. */
 .line-row {

@@ -406,6 +406,8 @@ p code,
 	font-size: 0.68rem;
 }
 .header-parent {
+	flex: 0 1000 auto;
+	min-width: 2.5rem;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

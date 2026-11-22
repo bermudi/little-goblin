@@ -16,6 +16,16 @@ the [Goblin panel](../GLOSSARY.md#goblin-panel).
   limits. When to post and what to say belong to skills and the
   operator. The tool description says what the tool does, never when to
   use it.
+- Operator, 2026-11-22 (#845): no Telegram copy and no push
+  notification for posts, for now. If posts get missed, that becomes
+  its own issue.
+- Operator, 2026-11-22 (#845): posts stay mixed by time with finished
+  work in the Activity tab, with no pinned section. Activity gets a
+  "See all" so older rows can be reached (#892).
+- Operator, 2026-11-22 (#845): the other picks of #884 stand. Plain
+  text up to 500 characters, no read state or dismiss, keep the newest
+  500, posts outlive their chat, and no edit, remove or list verbs until
+  a skill needs them.
 
 ## Shape
 
@@ -59,15 +69,16 @@ the [Goblin panel](../GLOSSARY.md#goblin-panel).
 | Push or Telegram delivery | A post is something to read when the operator looks. Ringing is what a message is for. |
 | A JSONL file | Retention, newest-first reads and the source link are simple queries in SQLite, beside `watches`. |
 
-## Open calls
+## Ruled calls
 
-These are reversible picks made without the operator (2026-11-22). Each
-is listed in the PR for a ruling.
+The reversible picks of #884, as the operator ruled them on 2026-11-22
+(#845):
 
-- 500-character limit, plain text.
-- Keep the newest 500 posts; show the newest 20 on the wire.
-- No read/unread state and no dismiss.
-- Posts sort by time with finished work, so a busy program can push
-  posts out of the panel's eight rows.
-- No push notification and no Telegram copy.
-- Posts survive the deletion of their chat.
+- 500-character limit, plain text: stands.
+- Keep the newest 500 posts: stands.
+- No read/unread state and no dismiss: stands.
+- Posts sort by time with finished work: stands, with no pinned
+  section. A busy program can still push posts out of the panel's eight
+  rows, so Activity has a "See all" (#892).
+- No push notification and no Telegram copy: stands, for now.
+- Posts survive the deletion of their chat: stands.

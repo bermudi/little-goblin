@@ -180,3 +180,24 @@ test("posts show in Activity by time beside finished work and open their chat", 
 	expect(pages).toEqual(["rolling"]);
 	expect(container.textContent).not.toContain("Nothing running.");
 });
+
+test("Activity offers See all only when rows are hidden, and it opens the activity page", async () => {
+	const posts = (n: number) =>
+		Array.from({ length: n }, (_, i) => ({
+			id: n - i, text: `Post ${n - i}`, createdAt: new Date(Date.UTC(2026, 10, 21, 0, n - i)).toISOString(), conversation: null,
+		}));
+	const render = async (count: number, onOpenPage: (page: string) => void = () => {}) => {
+		const data = { ...baseData(0), activity: { busy: [], otherBusy: 0, posts: posts(count) } } as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+		root ??= createRoot(container);
+		await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={onOpenPage} onOpenNote={() => {}} onOpenProfile={() => {}} />));
+	};
+	const seeAll = () => [...container.querySelectorAll("button.goblin-panel-footer")].find((el) => el.textContent === "See all");
+	await render(8);
+	expect(container.querySelectorAll(".goblin-panel-post")).toHaveLength(8);
+	expect(seeAll()).toBeUndefined();
+	const pages: string[] = [];
+	await render(9, (page) => pages.push(page));
+	expect(container.querySelectorAll(".goblin-panel-post")).toHaveLength(8);
+	await act(async () => seeAll()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+	expect(pages).toEqual(["activity"]);
+});

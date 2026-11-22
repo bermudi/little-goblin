@@ -565,6 +565,11 @@ export interface AppActivityResponse {
 	posts: AppPost[];
 }
 
+export interface AppPostsResponse {
+	posts: AppPost[];
+	more: boolean;
+}
+
 export interface AppApprovalDecisionResponse {
 	status:
 		| "activated"

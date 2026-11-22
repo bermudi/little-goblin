@@ -1196,7 +1196,7 @@ function AppShell() {
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
-					{page === "rolling" && <span className="header-title">Rolling chat</span>}
+					{page === "rolling" && <span className="header-title">Goblin</span>}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"

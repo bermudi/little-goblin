@@ -706,7 +706,7 @@ describe("mobile: chats screen and navigation", () => {
 		rollingChain = [roll("current")];
 		rollingHistories.set("app/current", []);
 		await openRolling();
-		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Rolling chat");
+		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Goblin");
 		expect(container.querySelector("main > header .title-trigger")).toBeNull();
 		expect(container.querySelector("main > header [aria-label='Archive']")).toBeNull();
 		expect(container.querySelector("main > header [aria-label='Move']")).toBeNull();

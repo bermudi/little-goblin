@@ -5,7 +5,6 @@ import type { Message } from "../message.ts";
 import { log } from "../log.ts";
 import type { CompactionSplit } from "../conversation-events.ts";
 import { withoutReasoningCipher } from "./codex/replay-state.ts";
-import { exhaustedMessage, type FallbackMiss, failureClass, missReason } from "./model-fallback.ts";
 import {
 	AUDIT_RETRIES,
 	auditSummary,
@@ -17,7 +16,6 @@ import {
 	parseSummary,
 	SUMMARY_SYSTEM,
 } from "./compaction-summary.ts";
-import { isTransientTurnFailure } from "./provider-errors.ts";
 
 // Rough chars-per-token for mixed chat text — enough to pick a cut; the
 // real number lands in the next turn's utilization log line.
@@ -429,11 +427,6 @@ export function keptTailInstruction(keptExcerpt: string | null): string {
 		: `Everything before the message that begins «${keptExcerpt}» will be replaced by your summary. That message and everything after it stay verbatim right after your summary, so summarize only what comes before it.`;
 }
 
-// One summary call on one candidate. Its timeout is the attempt's own —
-// the parent signal is never pre-armed with it, so a wedged candidate
-// times out alone and the next one starts with a live signal. Combined
-// signal AND raced await: a summarizer that ignores its abort still
-// settles.
 async function attemptSummary(
 	summarize: Summarize,
 	prompt: string,
@@ -510,10 +503,6 @@ export type Summarize = (
 
 export type Flush = (spanText: string, signal: AbortSignal) => Promise<{ noteCalls: number }>;
 
-// The flush sees one bounded slice of the span — the newest events, since a
-// span bigger than one call already loses its head to the summary chunks
-// alone. Abort propagates (a /stop cancels the fold too); any other failure,
-// a timeout included, is a warning.
 async function runFlush(
 	id: string,
 	flush: Flush,
@@ -580,24 +569,10 @@ async function runFlush(
 	}
 }
 
-// The span folds through sequential calls bounded by inputTokenBudget —
-// each carries the running summary forward, so the last call's output
-// is the stored summary and no call sees the whole past.
-//
-// `models` is the summarizer's lane list (design/model.md → Model
-// fallback list → Compaction): the conversation's model, then the
-// operator's fallbacks. Every summary call is single, tools-off and
-// non-streamed, so any non-abort throw — a per-attempt timeout
-// included — is zero effect and advances. The walk is sticky within
-// one pass: a candidate that failed a chunk is not retried on the
-// next (a wedged primary would otherwise cost a full timeout per
-// chunk). The stored pointer names the ref that wrote the final
-// chunk. Exhausting the list propagates: the caller warns, the view
-// stays untouched, and the next threshold crossing retries.
 export async function runCompaction(
 	id: string,
 	store: CompactionStore,
-	models: readonly string[],
+	model: string,
 	summarize: Summarize,
 	opts: {
 		tailTokenBudget: number;
@@ -628,7 +603,6 @@ export async function runCompaction(
 	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
-	if (models.length === 0) throw new Error(`compaction for ${id} has no model to summarize with`);
 	const detail = store.historyDetail(id);
 	const previous = store.getCompaction(id);
 	const boundary = chooseBoundary(detail, {
@@ -717,10 +691,9 @@ export async function runCompaction(
 		reason,
 	});
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
-	let servedBy: string | null = null;
 	let summary: string | null = null;
 	let prefixSucceeded = false;
-	const modeReason: "overflow" | "no-prefix" | "fallback-candidate" | "empty-span" | "prefix-failed" | null =
+	const modeReason: "overflow" | "no-prefix" | "model-mismatch" | "empty-span" | "prefix-failed" | null =
 		reason === "overflow" ? "overflow" : opts.prefix === undefined ? "no-prefix" :
 			span.length === 0 ? "empty-span" : null;
 	let prefixSummarizer: PrefixSummarizer | null = null;
@@ -743,7 +716,7 @@ export async function runCompaction(
 		opts.assertAuthority?.();
 		if (selectedModeReason === null) {
 			if (prefixSummarizer === null) selectedModeReason = "no-prefix";
-			else if (models[0] !== prefixSummarizer.modelRef) selectedModeReason = "fallback-candidate";
+			else if (prefixSummarizer.modelRef !== model) selectedModeReason = "model-mismatch";
 		}
 	}
 	const keptEvents = split === null
@@ -772,10 +745,10 @@ export async function runCompaction(
 		await runFlush(
 			id,
 			opts.flush,
-			selectedModeReason === null && prefixSummarizer !== null && prefixSummarizer.modelRef === models[0]
+			selectedModeReason === null && prefixSummarizer !== null && prefixSummarizer.modelRef === model
 				? prefixSummarizer.flush
 				: undefined,
-			prefixSummarizer !== null && prefixSummarizer.modelRef === models[0]
+			prefixSummarizer !== null && prefixSummarizer.modelRef === model
 				? "no-note-tool"
 				: selectedModeReason ?? "no-prefix",
 			prefixMessage === null
@@ -828,7 +801,6 @@ export async function runCompaction(
 				if (out === "") throw new Error("summarizer returned an empty summary");
 			}
 			summary = out;
-			servedBy = models[0]!;
 			prefixSucceeded = true;
 			log.info("compaction summary mode", { conversation: id, mode: "prefix", reason: null });
 		} catch (err) {
@@ -844,7 +816,8 @@ export async function runCompaction(
 			});
 		}
 	}
-	if (summary === null) log.info("compaction summary mode", { conversation: id, mode: "text", reason: selectedModeReason });
+	const piecewise = reason === "overflow";
+	if (summary === null) log.info("compaction summary mode", { conversation: id, mode: "text", reason: selectedModeReason, piecewise });
 	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
 	const carriedParsed = previous !== null ? parseSummary(previous.summary) : null;
 	let carried = carriedParsed?.modelText ?? null;
@@ -854,48 +827,8 @@ export async function runCompaction(
 	let carriedHeader =
 		previous !== null ? "[summary carried from the previous compaction — fold it in]" : null;
 	let chunks = 0;
-	// The walk's position (sticky across chunks), its misses, and who
-	// wrote the latest chunk.
-	let lane = 0;
-	const misses: FallbackMiss[] = [];
-	// One summary call down the sticky lane: a call failure advances to
-	// the next candidate; exhausting the list propagates. Shared by the
-	// chunk walk and the split turn's prefix call (#403) — one lane,
-	// one set of timeouts, abort and authority checks.
 	const call = async (callPrompt: string, chunk: number): Promise<string> => {
-		let raw: string | undefined;
-		while (raw === undefined) {
-			const model = models[lane]!;
-			try {
-				raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, chunk);
-				servedBy = model;
-			} catch (err) {
-				if (signal.aborted) throw err;
-				misses.push({
-					ref: model,
-					reason: missReason(err),
-					transient: isTransientTurnFailure(err),
-				});
-				const next = models[lane + 1];
-				if (next === undefined) {
-					if (misses.length === 1) throw err;
-					throw new Error(exhaustedMessage(misses), { cause: err });
-				}
-				log.warn("model fallback", {
-					conversation: id,
-					purpose: "compaction",
-					chunk,
-					from: model,
-					to: next,
-					failureClass: failureClass(err),
-					attempt: misses.length,
-					error: err instanceof Error ? err.message : String(err),
-				});
-				lane++;
-				// Authority before spend — the next candidate is new spend.
-				opts.assertAuthority?.();
-			}
-		}
+		const raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, chunk);
 		// Providers may resolve successfully even after an abort — the
 		// pointer must never commit a summary minted under revoked
 		// authority. Same for settings fences.
@@ -904,7 +837,7 @@ export async function runCompaction(
 		const out = raw.trim();
 		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunk})`);
 		return out;
-		};
+	};
 
 	for (let i = 0; !prefixSucceeded && i < span.length; ) {
 		// Authority before spend — a fenced compaction must not keep
@@ -914,11 +847,13 @@ export async function runCompaction(
 		// The allowance shrinks as the running summary grows; the floor
 		// keeps a degenerate budget from zeroing the chunk — better an
 		// oversized call than none at all.
-		const allowance = Math.max(
-			opts.inputTokenBudget - systemTokens - (carried === null ? 0 : estimateTokens(carried)) - 200,
-			1000,
-			Math.floor(opts.inputTokenBudget / 4),
-		);
+		const allowance = piecewise
+			? Math.max(
+					opts.inputTokenBudget - systemTokens - (carried === null ? 0 : estimateTokens(carried)) - 200,
+					1000,
+					Math.floor(opts.inputTokenBudget / 4),
+				)
+			: Number.POSITIVE_INFINITY;
 		const texts: string[] = [];
 		let chunkTokens = 0;
 		let events = 0;
@@ -1074,11 +1009,6 @@ export async function runCompaction(
 		});
 		summary = `${summary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixOut}`;
 	}
-	if (servedBy === null) {
-		// Every summary-producing path above makes at least one call
-		// (a chunk or the turn prefix); reaching here with none is a bug.
-		throw new Error("compaction produced no summary");
-	}
 	// Code-made parts, never through a model: they cannot be paraphrased
 	// away by this fold or any later one.
 	summary = composeSummary(
@@ -1119,7 +1049,7 @@ export async function runCompaction(
 		boundarySeq,
 		summary,
 		tokensBefore,
-		model: servedBy,
+		model,
 		createdAt: new Date().toISOString(),
 		tailEvents,
 		split,
@@ -1135,8 +1065,7 @@ export async function runCompaction(
 		summaryChars: summary.length,
 		chunks,
 		reason,
-		model: servedBy,
-		...(misses.length > 0 ? { fallbacksTried: misses.map((m) => m.ref) } : {}),
+		model,
 	});
 	return {
 		kind: "compacted",

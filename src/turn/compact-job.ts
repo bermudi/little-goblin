@@ -1,6 +1,5 @@
 import { type CompactionOutcome, type Flush, runCompaction } from "../agent/compaction.ts";
 import type { PrefixSummarizer } from "../agent/compaction.ts";
-import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
@@ -39,7 +38,6 @@ export interface CompactJobDeps {
 	store: ConversationStore;
 	compaction?: CompactionSeam | undefined;
 	captureConversation?: ((conv: Conversation) => Conversation) | undefined;
-	modelFallbacks?: (() => readonly string[]) | undefined;
 	budgets(contextWindow: number | null): { tailTokenBudget: number; inputTokenBudget: number };
 	checkAuthority(convId: string, epoch: number): void;
 	foldCeiling(convId: string, activeFloor?: number): number | null;
@@ -91,7 +89,7 @@ export async function runCompactJob(
 		const outcome = await runCompaction(
 			conv.id,
 			deps.store,
-			candidateRefs(modelRef, deps.modelFallbacks?.() ?? []),
+			modelRef,
 			(system, prompt, signal, model) => compaction.summarize(conv, system, prompt, signal, model),
 			{
 				tailTokenBudget: tail,

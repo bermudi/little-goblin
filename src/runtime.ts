@@ -513,7 +513,6 @@ export class Runtime {
 			store: this.deps.store,
 			compaction: this.deps.compaction,
 			captureConversation: this.deps.captureConversation,
-			modelFallbacks: this.deps.modelFallbacks,
 			budgets: compactionBudgets,
 			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
 			foldCeiling: (convId, floor) => this.lanes.pendingFloor(convId, floor),

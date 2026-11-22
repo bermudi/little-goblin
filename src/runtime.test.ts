@@ -2900,6 +2900,45 @@ describe("cache stability", () => {
 		}
 	});
 
+	test("compaction asks only the conversation's own model, never a configured fallback (#871)", async () => {
+		const store = openStore(tmpDb("goblin-rt-own-model-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const script = sdkScript();
+		const asked: string[] = [];
+		let primaryDown = true;
+		const runtime = new Runtime({
+			engines: script.engines,
+			store,
+			buildStep: () => script.step(),
+			modelFallbacks: () => ["b/backup"],
+			compaction: {
+				modelRef: () => "a/primary",
+				contextWindow: () => 1000,
+				summarize: async (_c, _system, prompt, _signal, modelRef) => {
+					asked.push(modelRef);
+					if (primaryDown && modelRef === "a/primary") throw new Error("quota exhausted");
+					return foldSummary(`folded by ${modelRef}`, prompt);
+				},
+			},
+		});
+		runtime.mount({ makeTools: () => ({}) });
+		try {
+			seedBigExchanges(store, conv.id, 6, 2_000);
+			await expect(runtime.compact(conv)).rejects.toThrow(/^quota exhausted$/);
+			expect(asked).toEqual(["a/primary"]);
+			expect(store.getCompaction(conv.id)).toBeNull();
+
+			primaryDown = false;
+			asked.length = 0;
+			expect((await runtime.compact(conv)).kind).toBe("compacted");
+			expect(asked).toEqual(["a/primary"]);
+			expect(store.getCompaction(conv.id)).toMatchObject({ model: "a/primary" });
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
 	test("provider warnings are logged, not dropped", async () => {
 		const edge = scriptedEdge([
 			[

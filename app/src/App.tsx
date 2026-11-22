@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Drawer, DrawerBackdrop, DrawerContent, DrawerTitle } from "@ui-sdk/react/drawer";
 import {
 	Menu,
 	MenuContent,
@@ -84,19 +85,11 @@ import { type LeaveAnswer, useLeaveAsk } from "./leaveAsk.ts";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { useConversationSearch } from "./useConversationSearch.ts";
 import { WindowView } from "./WindowView.tsx";
-
 // One bundle, two doors: /t/ the Telegram mini app, everything else the
 // PWA's app channel.
 export function App() {
 	return telegramDoor() ? <TelegramDoor /> : <AppShell />;
 }
-
-// Phone widths carry the M chrome — thumb bar, chats screen, back doors.
-// CSS hides and shows around the same query, but these surfaces must not
-// exist in a desktop DOM at all: they are navigation, and a hidden
-// duplicate would double every name a screen reader or test queries.
-// The gate itself lives in usePhoneWidth.ts, shared with the chat's
-// outline rail.
 
 function AppShell() {
 	// First hook, before the gate's early return — hook order must not
@@ -146,15 +139,7 @@ function AppShell() {
 	// A pending rail create may navigate only while its original route
 	// still owns the screen, even if the operator later returns there.
 	const navigationSeq = useRef(0);
-	const [systemSheetOpen, setSystemSheetOpen] = useState(false);
-	useEffect(() => {
-		if (!systemSheetOpen) return;
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setSystemSheetOpen(false);
-		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, [systemSheetOpen]);
+	const [goblinSheetOpen, setGoblinSheetOpen] = useState(false);
 	const { query, setQuery, hits, searchError } = useConversationSearch(token);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
@@ -852,29 +837,7 @@ function AppShell() {
 		}
 	};
 
-	// Mobile (M): /app is the chats list, a thread or the staged composer
-	// is full-bleed, and the thumb bar stands down while either is open.
-	// A project page stands down too — its composer is pinned to the
-	// viewport bottom, where the fixed bar would paint over it.
 	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
-	const chatSurfaceOpen =
-		(page === "chat" && (current !== null || composeStaged)) ||
-		page === "rolling" ||
-		page === "window" ||
-		page === "project";
-	// The More sheet carries every system surface except Attention, which
-	// owns its own bar slot.
-	const MORE_TAB_KEYS = [
-		"settings",
-		"memory",
-		"delegations",
-		"programs",
-		"status",
-		"skills",
-		"files",
-		"log",
-	] as const;
-	const moreTabActive = (MORE_TAB_KEYS as readonly string[]).includes(page);
 
 	const renderRow = (
 		c: AppConversationList["conversations"][number],
@@ -919,8 +882,7 @@ function AppShell() {
 					void openPage("rolling");
 				}}
 			/>
-			{!phone && (
-				<li className="rail-project-head">
+			<li className="rail-project-head">
 					<button type="button" onClick={openProjectsIndex}>Projects</button>
 					<button
 						type="button"
@@ -929,8 +891,7 @@ function AppShell() {
 					>
 						<NewProjectGlyph />
 					</button>
-				</li>
-			)}
+			</li>
 			{activeProjects.map((project) => {
 				const chats = projectChats(project.id);
 				return (
@@ -947,7 +908,7 @@ function AppShell() {
 					</ProjectFolder>
 				);
 			})}
-			{!phone && <li className="rail-chats-label">Chats</li>}
+			<li className="rail-chats-label">Chats</li>
 			<ConversationHierarchy conversations={rail} renderItem={renderRow} />
 		</>
 	);
@@ -1014,6 +975,21 @@ function AppShell() {
 		</button>
 	);
 
+	const needsCount = goblin.attention?.length ?? 0;
+	const youMenu = (
+		<Menu
+			onAction={(value) => {
+				if (value === "settings") void openPage("settings");
+				if (value === "archive") void openArchive();
+			}}
+		>
+			<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
+			<MenuContent>
+				<MenuItem value="settings">Settings</MenuItem>
+				<MenuItem value="archive">Archive</MenuItem>
+			</MenuContent>
+		</Menu>
+	);
 
 	return (
 		<div className="shell">
@@ -1058,18 +1034,7 @@ function AppShell() {
 					</div>
 					{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 					{rowError !== null && <p className="error" role="alert">{rowError}</p>}
-					<Menu
-						onAction={(value) => {
-							if (value === "settings") void openPage("settings");
-							if (value === "archive") void openArchive();
-						}}
-					>
-						<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
-						<MenuContent>
-							<MenuItem value="settings">Settings</MenuItem>
-							<MenuItem value="archive">Archive</MenuItem>
-						</MenuContent>
-					</Menu>
+					{youMenu}
 				</nav>
 			)}
 			<main
@@ -1104,17 +1069,18 @@ function AppShell() {
 							</svg>
 						</button>
 					)}
-					{/* Phone-widths-only back doors: a thread and the staged
-						composer both stand down for the chats list, which is the
-						home surface on a phone; a project stands down for the
-						projects index it came from. Desktop never renders them. */}
-					{phone && page === "chat" && current !== null && (
+					{phone && !chatListMode && (
 						<button
 							type="button"
 							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => void navigate({ kind: "home", composing: false })}
+							aria-label={
+								page === "project" ? "Back to projects" : page === "note" ? "Back to notes" : "Back to chats"
+							}
+							onClick={() => {
+								if (page === "project") void openProjectsIndex();
+								else if (page === "note") void openNotesIndex();
+								else void navigate({ kind: "home", composing: false });
+							}}
 						>
 							<svg
 								viewBox="0 0 24 24"
@@ -1125,85 +1091,7 @@ function AppShell() {
 								strokeLinejoin="round"
 								width="19"
 								height="19"
-							>
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "chat" && current === null && composeStaged && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => void navigate({ kind: "home", composing: false })}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="19"
-								height="19"
-							>
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "archive" && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => navigate({ kind: "home", composing: false })}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="19"
-								height="19"
-							>
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "rolling" && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => void navigate({ kind: "home", composing: false })}
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" width="19" height="19">
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "project" && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to projects"
-							title="Projects"
-							onClick={openProjectsIndex}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="19"
-								height="19"
+								aria-hidden="true"
 							>
 								<path d="M14.5 5 7.5 12l7 7" />
 							</svg>
@@ -1401,6 +1289,16 @@ function AppShell() {
 							<GoblinAvatar size="sm" working={goblin.working > 0} />
 						</button>
 					)}
+					{phone && !chatListMode && (page === "chat" || page === "rolling") && (
+						<button
+							type="button"
+							className="goblin-panel-toggle"
+							aria-label="Goblin"
+							onClick={() => setGoblinSheetOpen(true)}
+						>
+							<GoblinAvatar size="sm" working={goblin.working > 0} />
+						</button>
+					)}
 				</header>
 				{/* Mobile (M): the chats surface is a screen. Desktop never sees
 					it — the rail is the list there; CSS shows this on phone
@@ -1413,17 +1311,8 @@ function AppShell() {
 							<button
 								type="button"
 								className="header-action"
-								title="New project"
-								aria-label="New project"
-								onClick={() => setCreateProjectOpen(true)}
-							>
-								<NewProjectGlyph />
-							</button>
-							<button
-								type="button"
-								className="header-action"
-								title="New conversation"
-								aria-label="New conversation"
+								title="New chat"
+								aria-label="New chat"
 								onClick={newConversation}
 							>
 								<svg
@@ -1449,6 +1338,17 @@ function AppShell() {
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
+						{(goblin.attentionError || needsCount > 0) && (
+							<button
+								type="button"
+								className="needs-banner"
+								onClick={() => setGoblinSheetOpen(true)}
+							>
+								{goblin.attentionError
+									? "Couldn't load what needs you"
+									: `${needsCount} ${needsCount === 1 ? "thing needs" : "things need"} you`}
+							</button>
+						)}
 						{searchBody}
 						{hits === null && (
 							<>
@@ -1467,6 +1367,7 @@ function AppShell() {
 								)}
 							</>
 						)}
+						{youMenu}
 					</div>
 				)}
 				{navigationError !== null && (
@@ -1874,183 +1775,45 @@ function AppShell() {
 					/>
 				</aside>
 			)}
-			{/* Mobile (M): the thumb bar — every surface one tap away. It
-				stands down inside a thread, the staged composer, a project, or
-				the context-window view, where the open surface owns the
-				bottom edge. Desktop never renders it. */}
-			{phone && !chatSurfaceOpen && (
-				<nav className="tabbar" aria-label="Surfaces">
-					<button
-						type="button"
-						className={page === "chat" ? "tab on" : "tab"}
-						aria-current={page === "chat" ? "page" : undefined}
-						onClick={() => {
-							if (route.kind === "home" || route.kind === "conversation") return;
-							void navigate({ kind: "home", composing: false });
-						}}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6z" />
-						</svg>
-						Chats
-					</button>
-					<button
-						type="button"
-						// The bar is stood down on a project page, so the tab can
-						// only be current for the index.
-						className={page === "projects" ? "tab on" : "tab"}
-						aria-current={page === "projects" ? "page" : undefined}
-						onClick={openProjectsIndex}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-						</svg>
-						Projects
-					</button>
-					<button
-						type="button"
-						className={page === "notes" || page === "note" ? "tab on" : "tab"}
-						aria-current={page === "notes" || page === "note" ? "page" : undefined}
-						onClick={openNotesIndex}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z" />
-							<path d="M9 3v18" />
-						</svg>
-						Notes
-					</button>
-					<button
-						type="button"
-						className={page === "attention" ? "tab on" : "tab"}
-						aria-current={page === "attention" ? "page" : undefined}
-						onClick={() => openPage("attention")}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z" />
-							<path d="M10 19a2.2 2.2 0 0 0 4 0" />
-						</svg>
-						Attention
-					</button>
-					<button
-						type="button"
-						className={moreTabActive ? "tab on" : "tab"}
-						aria-haspopup="dialog"
-						aria-expanded={systemSheetOpen}
-						onClick={() => setSystemSheetOpen(true)}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<rect x="4" y="4" width="7" height="7" rx="1.5" />
-							<rect x="13" y="4" width="7" height="7" rx="1.5" />
-							<rect x="4" y="13" width="7" height="7" rx="1.5" />
-							<rect x="13" y="13" width="7" height="7" rx="1.5" />
-						</svg>
-						More
-					</button>
-				</nav>
-			)}
-			{systemSheetOpen && (
-				<div className="veil on system-veil" onClick={() => setSystemSheetOpen(false)}>
-					<div
-						className="msheet system-sheet"
-						role="dialog"
-						aria-label="System"
-						onClick={(e) => e.stopPropagation()}
-					>
-						<header className="msheet-head">
-							<h3>System</h3>
-							<button type="button" aria-label="Close" onClick={() => setSystemSheetOpen(false)}>
-								×
-							</button>
-						</header>
-						<div className="msheet-body">
-							{(
-								[
-									{ group: "Reads", keys: ["delegations", "memory"] },
-									{ group: "Operate", keys: ["programs", "skills", "files"] },
-									{ group: "Inspect", keys: ["status", "log"] },
-								] as const
-							).map((g) => (
-								<Fragment key={g.group}>
-									<div className="sheet-group">{g.group}</div>
-									{g.keys.map((k) => (
-										<button
-											key={k}
-											type="button"
-											className="sheet-row"
-											onClick={() => {
-												setSystemSheetOpen(false);
-												void openPage(k);
-											}}
-										>
-											{PAGES.find((p) => p.key === k)?.label ?? k}
-										</button>
-									))}
-								</Fragment>
-							))}
-							<hr />
-							<button
-								type="button"
-								className="sheet-row"
-								onClick={() => {
-									setSystemSheetOpen(false);
-									void openPage("settings");
-								}}
-							>
-								Settings
-							</button>
-						</div>
-					</div>
-				</div>
+			{phone && goblinSheetOpen && (
+				<Drawer
+					open={goblinSheetOpen}
+					onOpenChange={setGoblinSheetOpen}
+					modal
+					side="bottom"
+				>
+					<DrawerBackdrop className="row-sheet-backdrop" />
+					<DrawerContent className="goblin-sheet">
+						<DrawerTitle className="goblin-sheet-title">Goblin</DrawerTitle>
+						<GoblinPanel
+							variant="sheet"
+							data={goblin}
+							notes={notes}
+							notesError={notesError}
+							onOpenTarget={(target) => {
+								setGoblinSheetOpen(false);
+								if (target.kind === "page") void openPage(target.page);
+								else openConversation(target.conversationId);
+							}}
+							onOpenConversation={(id) => {
+								setGoblinSheetOpen(false);
+								openConversation(id);
+							}}
+							onOpenPage={(target) => {
+								setGoblinSheetOpen(false);
+								void openPage(target);
+							}}
+							onOpenNote={(id) => {
+								setGoblinSheetOpen(false);
+								void openNote(id);
+							}}
+							onOpenProfile={() => {
+								setGoblinSheetOpen(false);
+								void openPage("status");
+							}}
+						/>
+					</DrawerContent>
+				</Drawer>
 			)}
 			{page === "chat" && sourcesOpen && current !== null && (
 				<ThreadSourcesSheet

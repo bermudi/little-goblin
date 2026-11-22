@@ -406,7 +406,9 @@ p code,
 	font-size: 0.68rem;
 }
 .header-parent {
-	flex: none;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	color: var(--app-fg-muted);
 	font-size: 0.8rem;
 	text-decoration: none;
@@ -649,6 +651,9 @@ p code,
 .header-title-editor {
 	min-width: 0;
 	flex: 1;
+}
+.header-title-editor input {
+	width: 100%;
 }
 .conv-pin {
 	flex: none;

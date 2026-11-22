@@ -955,7 +955,8 @@ export class Runtime {
 			notifyAll,
 			announcePreRunFailure,
 			shuttingDown: () => this.closed,
-			compact: (reason) => this.doCompact(conv, reason, activeFloor),
+			compact: (reason) =>
+				this.doCompact({ ...conv, model: record.fallback.configured ?? conv.model }, reason, activeFloor),
 			checkAuthority,
 			holdsAuthority,
 			assertAuthority: () => {
@@ -1420,7 +1421,7 @@ export class Runtime {
 			landed.window.input >= compactTriggerTokens(landed.window.limit, seams.step.uncapped === true)
 		) {
 			try {
-				await this.doCompact(conv, "threshold");
+				await this.doCompact({ ...conv, model: a.record.fallback.configured ?? conv.model }, "threshold");
 			} catch (err) {
 				if (err instanceof FencedError) {
 					log.info("threshold compaction fenced — view unchanged", {

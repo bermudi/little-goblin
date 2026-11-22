@@ -352,8 +352,11 @@ previous summary plus the newly folded span, never the whole past
 (iterative, as pi/OpenClaw/Hermes).
 
 Ruling (operator, 2026-11-22, #871): compaction summarizes **only with the
-conversation's own model** (`conv.model`, the model whose window sized the
-fold). It never walks the model fallback list, so a summary is never
+conversation's own model**, the configured model whose window sizes the
+fold. A fold inside a turn that a fallback serves (overflow, pre-empt,
+threshold) still uses the configured model: the runtime passes the run's
+configured ref, not the serving candidate. It never walks the model
+fallback list, so a summary is never
 written by a model with a smaller window than the one that runs the
 conversation. Pi does the same: `generateSummary` in
 `pi-mono/packages/coding-agent/src/core/compaction/compaction.ts` is one

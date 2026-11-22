@@ -386,3 +386,142 @@ function seedExchanges(store: ReturnType<typeof openStore>, convId: string, n: n
 		);
 	}
 }
+
+describe("compaction during a fallback-served turn", () => {
+	const OWN = "zai/glm-5.3";
+	const FB = "codex/gpt-6.1-terra";
+	const overflow = (): ScriptCall => ({
+		kind: "fail",
+		parts: [],
+		error: { message: "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.", status: 400 },
+	});
+	const replyAt = (text: string, input: number): ScriptCall => ({
+		kind: "reply",
+		parts: [{ type: "text", text }],
+		usage: { input, output: 1 },
+	});
+	const probeTools = (): Tools => ({
+		probe: defineTool({ description: "probe", input: z.object({}), execute: async () => "probe-result" }),
+	});
+
+	function servedRig(opts: { models: Record<string, ScriptedModel>; ownFails: boolean; tools?: Tools }) {
+		const asked: string[] = [];
+		const store = openStore(tmpDb("goblin-fallback-fold-"));
+		const conv = store.resolve({ kind: "app", appId: "app-fallback-fold", chatId: 0, threadId: 0 }, "/w", {
+			model: OWN,
+			thinking: "medium",
+		});
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			buildStep: (c) => {
+				const m = opts.models[c.model ?? ""];
+				if (m === undefined) throw new Error(`no provider for ${c.model}`);
+				return { ...m.step(), contextWindow: 8_000 };
+			},
+			turnJournal: openTurnJournal(store.db),
+			modelFallbacks: () => [FB],
+			compaction: {
+				modelRef: (c) => c.model!,
+				contextWindow: () => 8_000,
+				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
+					asked.push(modelRef);
+					if (opts.ownFails) throw new Error("Weekly/Monthly Limit Exhausted");
+					return foldSummary(`folded by ${modelRef}`, prompt);
+				},
+			},
+		});
+		runtime.mount({ makeTools: () => opts.tools ?? {} });
+		const big = "x".repeat(4_000);
+		for (let i = 0; i < 6; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		const turn = async (text: string) => {
+			const sink = new RecordingSink();
+			runtime.submit(store.get(conv.id)!, userMessage([{ type: "text", text }]), sink);
+			const done = await sink.done;
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			return { sink, done };
+		};
+		const close = async () => {
+			await runtime.shutdown();
+			store.close();
+		};
+		return { store, conv, asked, turn, close };
+	}
+
+	test("an overflow fold on the fallback summarizes in chunks on the own model and stores it", async () => {
+		const r = servedRig({
+			models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("after fold")] }),
+			ownFails: false,
+		});
+		try {
+			const { sink } = await r.turn("hello");
+			expect(sink.text).toBe("after fold");
+			expect(r.asked.length).toBeGreaterThan(1);
+			expect(new Set(r.asked)).toEqual(new Set([OWN]));
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: OWN });
+		} finally {
+			await r.close();
+		}
+	});
+
+	test("an overflow fold whose own-model summary fails ends the turn and never asks the fallback", async () => {
+		const r = servedRig({
+			models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("must not serve")] }),
+			ownFails: true,
+		});
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "error" });
+			expect(r.asked).toEqual([OWN]);
+			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
+		} finally {
+			await r.close();
+		}
+	});
+
+	test("a threshold fold after a fallback-served reply is one own-model call", async () => {
+		const r = servedRig({
+			models: lanes({ [OWN]: [quotaWall()], [FB]: [replyAt("served", 7_900)] }),
+			ownFails: false,
+		});
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "completed" });
+			await waitUntil(() => r.store.listCompactions(r.conv.id).length > 0, "threshold fold lands");
+			expect(r.asked).toEqual([OWN]);
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: OWN });
+		} finally {
+			await r.close();
+		}
+	});
+
+	test("a pre-empt fold on the fallback asks only the own model and resumes unfolded when it fails", async () => {
+		const r = servedRig({
+			models: lanes({
+				[OWN]: [quotaWall()],
+				[FB]: [
+					{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }], usage: { input: 7_900, output: 1 } },
+					reply("final"),
+				],
+			}),
+			ownFails: true,
+			tools: probeTools(),
+		});
+		try {
+			const { sink } = await r.turn("run probe");
+			expect(sink.text).toBe("final");
+			expect(r.asked.length).toBeGreaterThan(0);
+			expect(new Set(r.asked)).toEqual(new Set([OWN]));
+			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
+		} finally {
+			await r.close();
+		}
+	});
+});

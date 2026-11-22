@@ -255,8 +255,9 @@
     for `conv.model` everywhere the turn reads it: tools (codex's hosted
     search), view gates (modalities, carries, provider-executed parts),
     thinking clamp (the stored level clamps per ref through the existing
-    profile), `maxRetries`, context window, and engine fork. The stored
-    selection is never written. The frozen system prompt is
+    profile), `maxRetries`, context window, and engine fork. A fold is
+    the exception: it runs on the configured ref (Compaction, below).
+    The stored selection is never written. The frozen system prompt is
     per-conversation and unchanged. Each ref's request bytes stay a pure
     function of ref plus history, so switching lanes is the sanctioned
     model-switch cold cache, once per switch.

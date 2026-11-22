@@ -14,6 +14,7 @@ import type {
 	AppAttachmentResponse,
 	AppAttentionResponse,
 	AppActivityResponse,
+	AppPostsResponse,
 	AppCompactResponse,
 	AppSuggestTitleResponse,
 	AppConfigPatch,
@@ -232,6 +233,10 @@ export function getAttention(token: string | null): Promise<AppAttentionResponse
 
 export function getActivity(token: string | null): Promise<AppActivityResponse> {
 	return request(token, "/api/app/activity");
+}
+
+export function listPosts(token: string | null, before: number | null): Promise<AppPostsResponse> {
+	return request(token, before === null ? "/api/app/posts" : `/api/app/posts?before=${before}`);
 }
 
 export function getPushStatus(token: string | null): Promise<AppPushStatus> {

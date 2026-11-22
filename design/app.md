@@ -686,7 +686,10 @@ console.
   approval: an approval shows its diff before the decision (#168).
 - Three tabs. Activity: busy conversations, delegations, program runs and
   [feed posts](posts.md) (#845). Scheduled: programs. Library: notes and
-  files. Each tab ends with a link to its full page.
+  files. Each tab ends with a link to its full page. Activity shows eight
+  rows; when it hides any, "See all" opens the Activity page
+  (`/app/activity`), which lists every row and pages through older posts
+  ([posts](posts.md#shape), #892).
 - The avatar opens [Goblin's profile](../GLOSSARY.md#goblins-profile): the
   Status, Memory, Skills and Log pages under one header that links them.
 - No Computer tab until the app can show desktops (#863).

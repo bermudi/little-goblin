@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
-import type { AppAttentionTarget, AppNoteSummary } from "../../src/http/app-wire.ts";
+import type { AppAttentionTarget, AppNoteSummary, AppPost } from "../../src/http/app-wire.ts";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
 import { GoblinAvatar } from "./GoblinAvatar.tsx";
@@ -9,7 +9,7 @@ import { ts } from "./opsShared.tsx";
 import { triggerWords } from "./ProgramsView.tsx";
 import type { useGoblinActivity } from "./useGoblinActivity.ts";
 
-type ActivityData = ReturnType<typeof useGoblinActivity>;
+export type ActivityData = ReturnType<typeof useGoblinActivity>;
 type GoblinPanelTab = "activity" | "scheduled" | "library";
 
 const TAB_KEY = "goblin.panelTab";
@@ -103,7 +103,7 @@ export interface GoblinPanelProps {
 	onOpenProfile(): void;
 }
 
-interface Row {
+export interface Row {
 	key: string;
 	at: number;
 	label: string;
@@ -122,7 +122,7 @@ function at(iso: string | null): number {
 	return Number.isNaN(t) ? 0 : t;
 }
 
-function PanelRow({ row }: { row: Row }) {
+export function PanelRow({ row }: { row: Row }) {
 	const body = (
 		<>
 			<strong>{row.label}</strong>
@@ -138,20 +138,23 @@ function PanelRow({ row }: { row: Row }) {
 	);
 }
 
-export function GoblinPanel(props: GoblinPanelProps) {
-	const { data } = props;
-	const [tab, setTab] = useState<GoblinPanelTab>(loadTab);
-	const selectTab = (value: string | null) => {
-		if (value !== "activity" && value !== "scheduled" && value !== "library") return;
-		setTab(value);
-		saveTab(value);
-	};
+export interface ActivityOpeners {
+	onOpenConversation(id: string): void;
+	onOpenPage(page: AppPageKey): void;
+}
 
+export interface ActivityRows {
+	running: Row[];
+	otherBusy: number;
+	finished: Row[];
+}
+
+export function activityRows(data: ActivityData, posts: readonly AppPost[], open: ActivityOpeners): ActivityRows {
 	const delegations = data.delegations ?? [];
 	const openDelegation = (d: OperatorDelegationItem) => () =>
 		d.appConversation !== null
-			? props.onOpenConversation(d.appConversation)
-			: props.onOpenPage("delegations");
+			? open.onOpenConversation(d.appConversation)
+			: open.onOpenPage("delegations");
 	const busyRows: Row[] = (data.activity?.busy ?? []).map((c) => ({
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
@@ -161,7 +164,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				? `Subagent: ${c.title ?? "untitled"}`
 				: `Replying in ${c.title ?? "a chat"}`,
 		detail: "running",
-		action: c.rolling ? () => props.onOpenPage("rolling") : () => props.onOpenConversation(c.id),
+		action: c.rolling ? () => open.onOpenPage("rolling") : () => open.onOpenConversation(c.id),
 	}));
 	const activeRows: Row[] = delegations
 		.filter((d) => ACTIVE.includes(d.status))
@@ -191,7 +194,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				label: `Ran ${p.name}`,
 				detail: relTime(p.lastRun),
 			})),
-		...(data.activity?.posts ?? []).map((post): Row => {
+		...posts.map((post): Row => {
 			const source = post.conversation;
 			return {
 				key: `post:${post.id}`,
@@ -203,18 +206,45 @@ export function GoblinPanel(props: GoblinPanelProps) {
 					? {}
 					: {
 							action: source.rolling
-								? () => props.onOpenPage("rolling")
-								: () => props.onOpenConversation(source.id),
+								? () => open.onOpenPage("rolling")
+								: () => open.onOpenConversation(source.id),
 						}),
 			};
 		}),
 	].sort((a, b) => b.at - a.at);
-	const otherBusy = data.activity?.otherBusy ?? 0;
-	const running = [...busyRows, ...activeRows].slice(0, ACTIVITY_ROWS - (otherBusy > 0 ? 1 : 0));
-	const finished = finishedRows.slice(
+	return {
+		running: [...busyRows, ...activeRows],
+		otherBusy: data.activity?.otherBusy ?? 0,
+		finished: finishedRows,
+	};
+}
+
+export function otherBusyRow(otherBusy: number): Row {
+	return {
+		key: "other",
+		at: 0,
+		label: `Working in ${otherBusy} other ${otherBusy === 1 ? "chat" : "chats"}`,
+		detail: "outside the app",
+	};
+}
+
+export function GoblinPanel(props: GoblinPanelProps) {
+	const { data } = props;
+	const [tab, setTab] = useState<GoblinPanelTab>(loadTab);
+	const selectTab = (value: string | null) => {
+		if (value !== "activity" && value !== "scheduled" && value !== "library") return;
+		setTab(value);
+		saveTab(value);
+	};
+
+	const all = activityRows(data, data.activity?.posts ?? [], props);
+	const otherBusy = all.otherBusy;
+	const running = all.running.slice(0, ACTIVITY_ROWS - (otherBusy > 0 ? 1 : 0));
+	const finished = all.finished.slice(
 		0,
 		Math.max(0, ACTIVITY_ROWS - running.length - (otherBusy > 0 ? 1 : 0)),
 	);
+	const activityHidden = running.length < all.running.length || finished.length < all.finished.length;
 
 	const scheduled = [...(data.programs ?? [])]
 		.sort((a, b) => {
@@ -283,16 +313,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 						{running.map((row) => (
 							<PanelRow key={row.key} row={row} />
 						))}
-						{otherBusy > 0 && (
-							<PanelRow
-								row={{
-									key: "other",
-									at: 0,
-									label: `Working in ${otherBusy} other ${otherBusy === 1 ? "chat" : "chats"}`,
-									detail: "outside the app",
-								}}
-							/>
-						)}
+						{otherBusy > 0 && <PanelRow row={otherBusyRow(otherBusy)} />}
 						{finished.map((row) => (
 							<PanelRow key={row.key} row={row} />
 						))}
@@ -300,13 +321,24 @@ export function GoblinPanel(props: GoblinPanelProps) {
 							<p className="empty">Nothing running.</p>
 						)}
 					</div>
-					<button
-						type="button"
-						className="goblin-panel-footer"
-						onClick={() => props.onOpenPage("delegations")}
-					>
-						All delegations
-					</button>
+					<div className="goblin-panel-footer-group">
+						{activityHidden && (
+							<button
+								type="button"
+								className="goblin-panel-footer"
+								onClick={() => props.onOpenPage("activity")}
+							>
+								See all
+							</button>
+						)}
+						<button
+							type="button"
+							className="goblin-panel-footer"
+							onClick={() => props.onOpenPage("delegations")}
+						>
+							All delegations
+						</button>
+					</div>
 				</TabsPanel>
 				<TabsPanel value="scheduled">
 					<div className="goblin-panel-rows">

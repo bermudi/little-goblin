@@ -49,12 +49,25 @@ the [Goblin panel](../GLOSSARY.md#goblin-panel).
 - **Wire.** `GET /api/app/activity` returns the newest 20 posts, newest
   first. Each carries `conversation: {id, rolling}` when its source is
   an app conversation that still exists, else `null`.
+  `GET /api/app/posts` pages through every kept post, 50 at a time,
+  newest first: `?before=<post id>` reads the page after that id, and
+  `more` says whether an older page exists (#892). A `before` that is
+  not a positive integer is a 400.
 - **Panel.** Posts join the finished rows of the Activity tab (finished
   delegations and program runs) and sort by time with them, under the
   running rows. A post row shows its full text with line breaks, then
   "post · <age>". It opens its source chat; a post from a
   [roll](../GLOSSARY.md#roll) opens the Rolling chat. A post with no app
   source (Telegram, a deleted chat) is not a button.
+- **See all.** The Activity tab shows eight rows. When it hides any, its
+  footer shows "See all" beside "All delegations". "See all" opens the
+  Activity page (`/app/activity`, on desktop and phone): running rows
+  first, then every finished delegation, the last run of each program
+  and the posts, mixed by time. The page loads the first 50 posts and a
+  "Show older" button loads 50 more until none are left. Finished work
+  older than the oldest loaded post waits for the next page, so the time
+  order never skips a post. Posts that arrive while the page is open come
+  in with the panel's 10 s poll (#892).
 
 ## Rejected alternatives
 
@@ -62,7 +75,9 @@ the [Goblin panel](../GLOSSARY.md#goblin-panel).
 |---|---|
 | Derive the feed from work state (delegations, programs) | The operator ruled against it: that is code deciding what matters. |
 | A separate feed page now | Ruled out until posts get rich (#862). |
-| A separate posts route | The panel already polls `/api/app/activity` every 10 s; one more field costs no extra request. |
+| A separate posts route for the panel | The panel already polls `/api/app/activity` every 10 s; one more field costs no extra request. `/api/app/posts` exists only for paging on the Activity page. |
+| All 500 posts in the activity poll | Up to 250 KB every 10 s, for rows the panel never shows. |
+| Expand the panel in place | The panel must stay short beside the chat (#892). |
 | Title plus body | The panel row has no place for a body. One short text fits the row and needs no detail view. |
 | Markdown | Plain text is enough for a row. Rich posts are the trigger for a feed page. |
 | A foreign key that sweeps posts with their chat | A post is the operator's record. Deleting a chat removes the link, not the post. |

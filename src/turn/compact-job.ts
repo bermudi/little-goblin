@@ -57,7 +57,6 @@ export async function runCompactJob(
 	activeFloor: number | undefined,
 	focus: string | undefined,
 	deps: CompactJobDeps,
-	serving?: Conversation,
 ): Promise<CompactionOutcome> {
 	if (reason === "manual" || reason === "idle") {
 		conv = deps.store.get(conv.id) ?? conv;
@@ -70,11 +69,8 @@ export async function runCompactJob(
 	deps.holdController(controller);
 	try {
 		const contextWindow = await compaction.contextWindow(conv);
-		const servingWindow =
-			serving !== undefined && serving.model !== conv.model ? await compaction.contextWindow(serving) : null;
 		deps.checkAuthority(conv.id, epoch);
-		const { inputTokenBudget } = deps.budgets(contextWindow);
-		const { tailTokenBudget } = deps.budgets(smallerWindow(contextWindow, servingWindow));
+		const { tailTokenBudget, inputTokenBudget } = deps.budgets(contextWindow);
 		const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
 		const modelRef = compaction.modelRef(conv);
 		const flush =
@@ -133,10 +129,4 @@ export async function runCompactJob(
 	} finally {
 		deps.releaseController(controller);
 	}
-}
-
-function smallerWindow(a: number | null, b: number | null): number | null {
-	if (a === null) return b;
-	if (b === null) return a;
-	return Math.min(a, b);
 }

@@ -306,12 +306,12 @@ function cutAt(
 
 // Shared with history_search's context action — reading back a folded
 // span must return the tool evidence the fold took.
-export function renderEventText(message: Message): string {
+export function renderEventText(message: Message, resultChars = 8_000): string {
 	const parts: string[] = [];
-	const brief = (value: unknown): string => {
+	const brief = (value: unknown, maxChars = 8_000): string => {
 		if (value === undefined) return "(not recorded)";
 		const text = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
-		return text.length > 8_000 ? `${text.slice(0, 8_000)}… [truncated]` : text;
+		return text.length > maxChars ? `${text.slice(0, maxChars)}… [truncated]` : text;
 	};
 	for (const p of message.parts) {
 		const part = p as {
@@ -349,20 +349,22 @@ export function renderEventText(message: Message): string {
 			// loses the command and result after the cut.
 			parts.push(
 				`[${part.type}]\ninput: ${brief(part.input)}\n` +
-					`result: ${brief(part.output ?? part.errorText)}`,
+					`result: ${brief(part.output ?? part.errorText, resultChars)}`,
 			);
 		}
 	}
 	return parts.join("\n").trim();
 }
 
-export function serializeEvent(e: CompactionEvent): string {
-	return `${e.message.role === "assistant" ? "goblin" : e.message.role}: ${renderEventText(e.message)}`;
+export function serializeEvent(e: CompactionEvent, resultChars?: number): string {
+	return `${e.message.role === "assistant" ? "goblin" : e.message.role}: ${renderEventText(e.message, resultChars)}`;
 }
 
-export function serializeSpan(detail: CompactionEvent[]): string {
-	return detail.map(serializeEvent).join("\n\n");
+export function serializeSpan(detail: CompactionEvent[], resultChars?: number): string {
+	return detail.map((e) => serializeEvent(e, resultChars)).join("\n\n");
 }
+
+export const SUMMARY_TOOL_RESULT_CHARS = 2_000;
 
 // ---------- orchestration ----------
 
@@ -377,9 +379,6 @@ export type CompactionOutcome =
 	  }
 	| { kind: "noop"; reason: string };
 
-// Per summary call — long enough for a large chunk on a slow endpoint;
-// a wedged request must settle so it can't hold the conversation's lane
-// forever.
 export const SUMMARY_CALL_TIMEOUT_MS = 180_000;
 
 export interface PrefixCallContext {
@@ -460,7 +459,7 @@ async function attemptTimedCall<T>(
 	} catch (err) {
 		if (signal.aborted) throw err;
 		if (callSignal.aborted) {
-			throw new Error(`summary call timed out after ${callTimeoutMs / 1000}s (chunk ${chunk})`);
+			throw new Error(`summary call timed out after ${callTimeoutMs / 1000}s (call ${chunk})`);
 		}
 		throw err;
 	} finally {
@@ -583,19 +582,11 @@ export async function runCompaction(
 		// behind them — have no landed reply and must never be folded.
 		// Null (or absent) folds over the whole stored history.
 		beforeSeq?: () => number | null;
-		// The authority fence (wired from runtime.ts checkAuthority):
-		// throws when the conversation's epoch advanced since this
-		// compaction captured it. Checked before each chunk and right
-		// before the pointer commits — a settings fence must land
-		// exactly like the abort signal.
 		assertAuthority?: () => void;
 		// design/compaction.md → Memory flush: one tools-limited call that
 		// may save durable facts from the span to notes before it folds.
 		// The caller owns the gate; a failure warns and the fold goes on.
 		flush?: Flush;
-		// Manual-only operator focus (/compact <focus>, app focus body):
-		// repeated in every chunk prompt so it outlives the carried
-		// summary's shrinking budget share.
 		focus?: string;
 		prefix?: (foldedThroughSeq: number) => Promise<PrefixSummarizer | null>;
 	},
@@ -732,7 +723,7 @@ export async function runCompaction(
 			? span
 			: [...span, { seq: split!.seq, anchorSeq: boundarySeq, message: prefixMessage }];
 	const prefixContext: PrefixCallContext = {
-		foldedText: serializeSpan(foldedEvents),
+		foldedText: serializeSpan(foldedEvents, SUMMARY_TOOL_RESULT_CHARS),
 		previousSummary: previous?.summary ?? null,
 		foldedThroughSeq: split === null ? boundarySeq : split.seq,
 	};
@@ -816,17 +807,12 @@ export async function runCompaction(
 		}
 	}
 	if (summary === null) log.info("compaction summary mode", { conversation: id, mode: "text", reason: selectedModeReason });
-	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
 	const carriedParsed = previous !== null ? parseSummary(previous.summary) : null;
-	let carried = carriedParsed?.modelText ?? null;
-	// The newest real operator message consumed so far — what the audit
-	// checks each chunk's summary reflects.
-	let latestAsk: string | null = null;
-	let carriedHeader =
-		previous !== null ? "[summary carried from the previous compaction — fold it in]" : null;
-	let chunks = 0;
-	const call = async (callPrompt: string, chunk: number): Promise<string> => {
-		const raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, chunk);
+	const carried = carriedParsed?.modelText ?? null;
+	let calls = 0;
+	const call = async (callPrompt: string): Promise<string> => {
+		calls++;
+		const raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, calls);
 		summarized = true;
 		// Providers may resolve successfully even after an abort — the
 		// pointer must never commit a summary minted under revoked
@@ -834,74 +820,28 @@ export async function runCompaction(
 		signal.throwIfAborted();
 		opts.assertAuthority?.();
 		const out = raw.trim();
-		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunk})`);
+		if (out === "") throw new Error(`summarizer returned an empty summary (call ${calls})`);
 		return out;
-		};
+	};
 
-	for (let i = 0; !prefixSucceeded && i < span.length; ) {
-		// Authority before spend — a fenced compaction must not keep
-		// paying the summarizer for a pointer it may no longer write.
+	if (!prefixSucceeded && span.length > 0) {
 		opts.assertAuthority?.();
-		chunks++;
-		// The allowance shrinks as the running summary grows; the floor
-		// keeps a degenerate budget from zeroing the chunk — better an
-		// oversized call than none at all.
-		const allowance = reason !== "overflow" ? Number.POSITIVE_INFINITY : Math.max(
-			opts.inputTokenBudget - systemTokens - (carried === null ? 0 : estimateTokens(carried)) - 200,
-			1000,
-			Math.floor(opts.inputTokenBudget / 4),
-		);
-		const texts: string[] = [];
-		let chunkTokens = 0;
-		let events = 0;
-		while (i < span.length) {
-			const e = span[i]!;
-			let text = serializeEvent(e);
-			let seenChars = Number.POSITIVE_INFINITY;
-			if (events === 0) {
-				// Always take ≥1 event — a message bigger than the
-				// allowance is cut down rather than stalling the
-				// compaction on it.
-				if (estimateTokens(text) > allowance) {
-					const keptChars = allowance * 4;
-					log.warn("compaction event truncated for summarizer", {
-						conversation: id,
-						seq: e.seq,
-						chars: text.length,
-						keptChars,
-					});
-					seenChars = keptChars;
-					text = `${text.slice(0, keptChars)}\n[… ${text.length - keptChars} chars truncated for summarization]`;
-				}
-			} else if (chunkTokens + estimateTokens(text) > allowance) {
-				break;
-			}
-			texts.push(text);
-			// The audit checks the ask as the summarizer saw it — a
-			// truncated event's cut tail is not the model's to restate.
-			const ask = operatorText(e.message);
-			if (ask !== null) latestAsk = ask.slice(0, seenChars);
-			chunkTokens += estimateTokens(text);
-			events++;
-			i++;
-		}
+		const latestAsk = [...span].reverse().map((e) => operatorText(e.message)).find((text) => text !== null) ?? null;
 		const prompt =
-			(carried !== null && carriedHeader !== null
-				? `${carriedHeader}\n${carried}\n\n---\n\n`
+			(carried !== null
+				? `[summary carried from the previous compaction — fold it in]\n${carried}\n\n---\n\n`
 				: "") +
 			(opts.focus !== undefined
 				? `[operator asked this compaction to emphasize: ${opts.focus}]\n\n`
 				: "") +
-			texts.join("\n\n");
-		let out = await call(prompt, chunks);
-		// The quality audit: a deficient summary retries with a corrective
-		// instruction; still failing, the fold writes nothing.
+			serializeSpan(span, SUMMARY_TOOL_RESULT_CHARS);
+		let out = await call(prompt);
 		for (let attempt = 0; ; attempt++) {
 			const reasons = auditSummary(out, latestAsk);
 			if (reasons.length === 0) break;
 			log.warn("compaction summary failed audit", {
 				conversation: id,
-				chunk: chunks,
+				call: calls,
 				attempt,
 				reasons,
 			});
@@ -913,18 +853,14 @@ export async function runCompaction(
 			opts.assertAuthority?.();
 			out = await call(
 				`${prompt}\n\n---\n\n[your previous summary]\n${out}\n\n${correctiveInstruction(reasons, latestAsk)}`,
-				chunks,
 			);
 		}
-		log.info("compaction chunk summarized", {
+		log.info("compaction span summarized", {
 			conversation: id,
-			chunk: chunks,
-			events,
-			estimatedTokens: chunkTokens,
+			events: span.length,
+			estimatedTokens: estimateTokens(prompt),
 			summaryChars: out.length,
 		});
-		carried = out;
-		carriedHeader = "[running summary of the earlier part of this span — fold it in]";
 		summary = out;
 	}
 	// #403 re-split: an empty whole-event span is legal — the delta is the
@@ -963,7 +899,7 @@ export async function runCompaction(
 			`${serializeSpan([
 				triggerEvent,
 				{ seq: split.seq, anchorSeq: boundarySeq, message: prefixMessage },
-			])}\n\n---\n\n` +
+			], SUMMARY_TOOL_RESULT_CHARS)}\n\n---\n\n` +
 			"The messages above are the beginning of one long turn that compaction split; the turn's later messages follow this summary verbatim and do not need to be reconstructed.\n\n" +
 			checkpointBody;
 		let prefixOut: string;
@@ -976,7 +912,7 @@ export async function runCompaction(
 						[{ role: "user", text: prefixInstruction }],
 						signal,
 						callTimeoutMs,
-						chunks + 1,
+						calls + 1,
 						{ seq: split.seq, part: split.part },
 					)
 				).trim();
@@ -992,10 +928,10 @@ export async function runCompaction(
 					error: err instanceof Error ? err.message : String(err),
 				});
 				mode = "text";
-				prefixOut = await call(textPrompt, chunks + 1);
+				prefixOut = await call(textPrompt);
 			}
 		} else {
-			prefixOut = await call(textPrompt, chunks + 1);
+			prefixOut = await call(textPrompt);
 		}
 		log.info("compaction turn-prefix summarized", {
 			conversation: id,
@@ -1007,8 +943,6 @@ export async function runCompaction(
 		summary = `${summary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixOut}`;
 	}
 	if (!summarized) {
-		// Every summary-producing path above makes at least one call
-		// (a chunk or the turn prefix); reaching here with none is a bug.
 		throw new Error("compaction produced no summary");
 	}
 	// Code-made parts, never through a model: they cannot be paraphrased
@@ -1065,7 +999,7 @@ export async function runCompaction(
 		tailEvents,
 		estimatedTokensBefore: tokensBefore,
 		summaryChars: summary.length,
-		chunks,
+		calls,
 		reason,
 		model,
 	});

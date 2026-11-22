@@ -508,7 +508,6 @@ export class Runtime {
 		reason: "threshold" | "manual" | "idle" | "overflow" | "preempt",
 		activeFloor?: number,
 		focus?: string,
-		serving?: Conversation,
 	): Promise<CompactionOutcome> {
 		return runCompactJob(conv, reason, activeFloor, focus, {
 			store: this.deps.store,
@@ -640,7 +639,7 @@ export class Runtime {
 			holdController: (controller) => this.lanes.holdCompactController(conv.id, controller),
 			releaseController: (controller) =>
 				this.lanes.releaseCompactController(conv.id, controller),
-		}, serving);
+		});
 	}
 
 	private withCause(done: TurnDone): TurnDone {
@@ -956,14 +955,7 @@ export class Runtime {
 			notifyAll,
 			announcePreRunFailure,
 			shuttingDown: () => this.closed,
-			compact: (reason) =>
-				this.doCompact(
-					{ ...conv, model: record.fallback.configured ?? conv.model },
-					reason,
-					activeFloor,
-					undefined,
-					conv,
-				),
+			compact: (reason) => this.doCompact(conv, reason, activeFloor),
 			checkAuthority,
 			holdsAuthority,
 			assertAuthority: () => {
@@ -1428,13 +1420,7 @@ export class Runtime {
 			landed.window.input >= compactTriggerTokens(landed.window.limit, seams.step.uncapped === true)
 		) {
 			try {
-				await this.doCompact(
-					{ ...conv, model: a.record.fallback.configured ?? conv.model },
-					"threshold",
-					undefined,
-					undefined,
-					conv,
-				);
+				await this.doCompact(conv, "threshold");
 			} catch (err) {
 				if (err instanceof FencedError) {
 					log.info("threshold compaction fenced — view unchanged", {

@@ -898,7 +898,7 @@ describe("runCompaction", () => {
 	});
 
 	test("the summary input cuts each tool result to 2,000 characters and drops thinking; history_search's render is unchanged", async () => {
-		const result = `${"r".repeat(1_990)}KEPT_EDGE${"s".repeat(5_000)}LATE_RESULT`;
+		const result = `${"r".repeat(2_000)}PAST_CUT${"s".repeat(5_000)}LATE_RESULT`;
 		const reply: CompactionEvent = {
 			seq: 2,
 			anchorSeq: 1,
@@ -938,12 +938,12 @@ describe("runCompaction", () => {
 		);
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]).toContain("cat big.log");
-		expect(prompts[0]).toContain("r".repeat(1_990));
-		expect(prompts[0]).not.toContain("KEPT_EDGE");
+		expect(prompts[0]).toContain("r".repeat(2_000));
+		expect(prompts[0]).not.toContain("PAST_CUT");
 		expect(prompts[0]).not.toContain("LATE_RESULT");
 		expect(prompts[0]).not.toContain("PRIVATE_THINKING");
 		const searched = renderEventText(reply.message);
-		expect(searched).toContain("KEPT_EDGE");
+		expect(searched).toContain("PAST_CUT");
 		expect(searched).toContain("s".repeat(5_000));
 	});
 

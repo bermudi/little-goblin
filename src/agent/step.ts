@@ -104,7 +104,6 @@ export function makeStepBuilder(
 			...(maxRetries !== undefined ? { maxRetries } : {}),
 		};
 	};
-	// One summary call on one ref — the fallback walk below picks refs.
 	const summarizeOn = async (
 		conv: Conversation,
 		modelRef: string,

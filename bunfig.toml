@@ -11,4 +11,10 @@
 # test-dom-print.ts keeps failed assertions on happy-dom nodes from
 # printing the whole app (#798); it must also load before anything
 # imports bun:test as ESM (see its header), so before testkit.ts.
-preload = ["./src/test-memory-net.ts", "./src/test-tmpdir.ts", "./app/src/test-dom-print.ts", "./src/testkit.ts"]
+preload = [
+	"./src/test-memory-net.ts",
+	"./src/test-tmpdir.ts",
+	"./app/src/test-dom-print.ts",
+	"./app/src/test-dom-globals.ts",
+	"./src/testkit.ts",
+]

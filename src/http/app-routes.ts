@@ -6,6 +6,7 @@
 /** Page keys that live at /app/<key> (and /t/<key> for the mini-app door). */
 export const APP_PAGES = [
 	"attention",
+	"activity",
 	"settings",
 	"memory",
 	"delegations",

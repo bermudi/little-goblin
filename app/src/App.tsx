@@ -19,6 +19,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { ArchiveView } from "./ArchiveView.tsx";
+import { ActivityView } from "./ActivityView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
 import {
 	ApiError,
@@ -1414,6 +1415,14 @@ function AppShell() {
 						onPage={openPage}
 						onConversation={openConversation}
 						onItems={goblin.reload}
+					/>
+				)}
+				{page === "activity" && (
+					<ActivityView
+						token={token}
+						data={goblin}
+						onOpenConversation={openConversation}
+						onOpenPage={(p) => void openPage(p)}
 					/>
 				)}
 				{page === "settings" && (

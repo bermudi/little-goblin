@@ -8174,3 +8174,10 @@ button.goblin-panel-row:hover {
 .goblin-panel-footer-group .goblin-panel-footer {
 	flex: 1;
 }
+.activity-page .goblin-panel-rows {
+	max-width: var(--prose-col);
+}
+.activity-more {
+	align-self: flex-start;
+	margin-top: 0.75rem;
+}

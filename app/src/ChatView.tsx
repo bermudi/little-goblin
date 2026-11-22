@@ -23,6 +23,7 @@ import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
 import { hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
+import { placeSentMedia } from "./chat/sentMedia.ts";
 import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
@@ -819,18 +820,22 @@ function Chat({
     onFollowStarted?.();
   }, [followAfter, onFollowStarted]);
 
-  // The retry affordance belongs to the newest answer — anything older
-  // gets copy/read only.
-  const lastAssistantId = [...messages]
-    .reverse()
-    .find((m) => m.role === "assistant")?.id;
-
   // The rendered transcript: paged-in durable prefix, then the live
   // window (newest durable page plus any optimistic tail). Fold-mark
   // indexes are transcript-absolute — subtracting loadedStart maps
   // them onto displayed; marks deeper than the loaded range hold
   // until their page arrives.
   const displayed = useMemo(() => [...older, ...messages], [older, messages]);
+  const placedMedia = useMemo(() => placeSentMedia(displayed), [displayed]);
+  const visible = useMemo(
+    () => displayed.filter((m) => !placedMedia.hidden.has(m)),
+    [displayed, placedMedia],
+  );
+  // The retry affordance belongs to the newest answer — anything older
+  // gets copy/read only.
+  const lastAssistantId = messages.findLast(
+    (m) => m.role === "assistant" && !placedMedia.hidden.has(m),
+  )?.id;
   const idleWithReply =
     !eventsLive && !submitPending && displayed.at(-1)?.role === "assistant";
   useEffect(() => {
@@ -943,7 +948,7 @@ function Chat({
         {/* The outline is a hover rail — a pointer affordance, so it does
 				    not exist in a phone DOM at all. */}
         {phone ? null : (
-          <Outline messages={displayed} scrollRef={scrollRef} onGesture={follow.gesture} />
+          <Outline messages={visible} scrollRef={scrollRef} onGesture={follow.gesture} />
         )}
         <div className="transcript" ref={scrollRef}>
           <div className="transcript-inner" ref={contentRef}>
@@ -972,8 +977,10 @@ function Chat({
               />
             ))}
             {displayed.map((m, i) => {
-              let el: ReactNode;
-              if (m.role === "user") {
+              let el: ReactNode = null;
+              if (placedMedia.hidden.has(m)) {
+                if (!marksByIndex.has(i)) return null;
+              } else if (m.role === "user") {
                 const isEditing = editing !== null && editing.id === m.id;
                 const prevUser = displayed[i - 1]?.role === "user";
                 const nextUser = displayed[i + 1]?.role === "user";
@@ -1083,6 +1090,7 @@ function Chat({
                       <div className="msg assistant unlanded">
                         <MessageParts
                           parts={unlanded.reply}
+                          sentMedia={placedMedia.byReply.get(m.id)}
                           token={token}
                           noteProjectId={noteProjectId}
                           messages={hasUiPart(unlanded.reply) ? displayed : undefined}
@@ -1117,6 +1125,7 @@ function Chat({
                   >
                     <MessageParts
                       parts={m.parts}
+                      sentMedia={placedMedia.byReply.get(m.id)}
                       token={token}
                       noteProjectId={noteProjectId}
                       busy={busy}

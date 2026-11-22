@@ -62,7 +62,13 @@ function toolJson(content: unknown): Json | null {
 	}
 }
 
-function toolCallResponse(name: string, args: Json, stream: boolean, id = `call-verify-${name}`): Response {
+function toolCallResponse(
+	name: string,
+	args: Json,
+	stream: boolean,
+	id = `call-verify-${name}`,
+	beforeCall?: string,
+): Response {
 	const toolCall = {
 		id,
 		type: "function",
@@ -87,6 +93,7 @@ function toolCallResponse(name: string, args: Json, stream: boolean, id = `call-
 	const headers = { "content-type": "text/event-stream" };
 	return new Response(
 		[
+			...(beforeCall === undefined ? [] : [chunk({ content: beforeCall }, null)]),
 			chunk(
 				{ role: "assistant", content: null, tool_calls: [{ ...toolCall, index: 0 }] },
 				null,
@@ -370,6 +377,23 @@ const server = Bun.serve({
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		if (lastUserText.includes("[sent-media]") && parsed.data.stream === true) {
+			const step = parsed.data.messages.slice(lastUserIndex + 1).filter((m) => m.role === "tool").length;
+			const path = "verify-sent-media.txt";
+			if (step === 0) {
+				return toolCallResponse("write_file", { path, content: "Verification file.\n" }, true);
+			}
+			if (step === 1 || step === 2) {
+				return toolCallResponse(
+					"send_file",
+					{ path, caption: step === 1 ? "First copy." : "Second copy." },
+					true,
+					`call-verify-send-file-${step}`,
+					step === 2 ? "Sending another copy." : undefined,
+				);
+			}
+			reply = "verify-sent-media: sent both copies";
+		}
 		if (lastUserText.includes("[long]") && parsed.data.stream === true) {
 			const toolsSinceUser = parsed.data.messages
 				.slice(lastUserIndex + 1)

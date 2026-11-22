@@ -8,6 +8,7 @@ import {
 	persistAttachment,
 } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
+import type { SentMediaMetadata } from "./http/app-wire.ts";
 import { log } from "./log.ts";
 import { FencedError } from "./runtime.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
@@ -32,8 +33,9 @@ export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
 			check: () => boolean,
 			anchorSeq?: number | null,
 			memoryExcluded?: () => boolean,
+			replyId?: () => string | undefined,
 		) {
-			for (const s of sinks) s.setAuthorityCheck?.(check, anchorSeq, memoryExcluded);
+			for (const s of sinks) s.setAuthorityCheck?.(check, anchorSeq, memoryExcluded, replyId);
 		},
 		async onDone(done: TurnDone) {
 			for (const s of sinks) await s.onDone(done);
@@ -53,13 +55,13 @@ export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
 				}
 			: { ...core, delivery };
 	if (sinks.some((s) => s.onVoiceNote !== undefined)) {
-		sink.onVoiceNote = async (audio) => {
-			for (const s of sinks) await s.onVoiceNote?.(audio);
+		sink.onVoiceNote = async (audio, toolCallId) => {
+			for (const s of sinks) await s.onVoiceNote?.(audio, toolCallId);
 		};
 	}
 	if (sinks.some((s) => s.onFile !== undefined)) {
-		sink.onFile = async (file) => {
-			for (const s of sinks) await s.onFile?.(file);
+		sink.onFile = async (file, toolCallId) => {
+			for (const s of sinks) await s.onFile?.(file, toolCallId);
 		};
 	}
 	if (sinks.some((s) => s.onVoiceSynthesisStart !== undefined)) {
@@ -121,6 +123,7 @@ export function appMediaSink(
 	let authorized: (() => boolean) | null = null;
 	let anchorSeq: number | null = null;
 	let inputExcluded: (() => boolean) | undefined;
+	let currentReplyId: (() => string | undefined) | undefined;
 	const checkAuthority = () => {
 		if (authorized !== null && !authorized()) throw new FencedError(convId);
 	};
@@ -128,8 +131,13 @@ export function appMediaSink(
 		ref: AttachmentRef,
 		caption: string | undefined,
 		cleanup: string | null,
+		toolCallId: string | undefined,
 	) => {
 		let excluded = false;
+		const replyId = currentReplyId?.();
+		const metadata = toolCallId !== undefined && replyId !== undefined
+			? { sentMedia: { replyId, toolCallId } } satisfies SentMediaMetadata
+			: undefined;
 		try {
 			checkAuthority();
 			excluded = inputExcluded?.() === true;
@@ -138,6 +146,7 @@ export function appMediaSink(
 					{
 						id: `media-${randomUUID()}`,
 						role: "assistant",
+						...(metadata !== undefined ? { metadata } : {}),
 						parts:
 							caption === undefined || caption === ""
 								? [attachmentPart(ref)]
@@ -166,6 +175,7 @@ export function appMediaSink(
 			mediaType: ref.mediaType,
 			size: ref.size,
 			ownedInputExcluded: excluded,
+			...metadata?.sentMedia,
 		});
 	};
 	return {
@@ -173,7 +183,7 @@ export function appMediaSink(
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},
-		async onVoiceNote(audio) {
+		async onVoiceNote(audio, toolCallId) {
 			checkAuthority();
 			const saved = await persistAttachment(
 				`voice-${randomUUID()}`,
@@ -195,17 +205,19 @@ export function appMediaSink(
 				},
 				undefined,
 				saved.path,
+				toolCallId,
 			);
 		},
-		async onFile(file) {
+		async onFile(file, toolCallId) {
 			checkAuthority();
 			const { ref, cleanup } = await outgoingAttachment(file);
-			await record(ref, file.caption, cleanup);
+			await record(ref, file.caption, cleanup, toolCallId);
 		},
-		setAuthorityCheck(check, anchor, memoryExcluded) {
+		setAuthorityCheck(check, anchor, memoryExcluded, replyId) {
 			authorized = check;
 			anchorSeq = anchor ?? null;
 			inputExcluded = memoryExcluded;
+			currentReplyId = replyId;
 		},
 		async onDone(done) {
 			await onDone?.(done);

@@ -12,9 +12,9 @@ import { fenceTools } from "./tool-fence.ts";
 
 export type TurnToolMaker = (
 	conv: Conversation,
-	deliverVoice?: (audio: Uint8Array) => Promise<void>,
+	deliverVoice?: (audio: Uint8Array, toolCallId: string) => Promise<void>,
 	recording?: () => () => void,
-	deliverFile?: (file: OutgoingFile) => Promise<void>,
+	deliverFile?: (file: OutgoingFile, toolCallId: string) => Promise<void>,
 	context?: {
 		runId: string;
 		sourceMessageId(): string;

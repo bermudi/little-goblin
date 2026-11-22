@@ -28,7 +28,7 @@ export function speakInputSchema(voices?: readonly string[]) {
 export function speakTool(
 	cwd: string,
 	synthesize: (text: string, voice?: string) => Promise<Uint8Array[]>,
-	deliver: (audio: Uint8Array) => Promise<void>,
+	deliver: (audio: Uint8Array, toolCallId: string) => Promise<void>,
 	recording?: () => () => void,
 	voices?: readonly string[],
 ) {
@@ -38,7 +38,7 @@ export function speakTool(
 			"Synthesize text or a plain-text/Markdown file and send it as voice notes." +
 			(allowed ? ` Voice (optional, match the text's language): ${allowed.join(", ")}.` : ""),
 		input: speakInputSchema(voices),
-		execute: async ({ text, path, voice }) => {
+		execute: async ({ text, path, voice }, { toolCallId }) => {
 			let input = text;
 			if (path !== undefined) {
 				if (![".txt", ".md", ".markdown"].includes(extname(path).toLowerCase())) {
@@ -51,7 +51,7 @@ export function speakTool(
 			const stopRecording = recording?.();
 			try {
 				const chunks = await synthesize(input!, voice);
-				for (const audio of chunks) await deliver(audio);
+				for (const audio of chunks) await deliver(audio, toolCallId);
 				return { sent: chunks.length };
 			} catch (err) {
 				log.warn("speak synthesis failed", err);

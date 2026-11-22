@@ -894,7 +894,12 @@ export class Runtime {
 			return admissionExchangeExcluded || [...ownedInputSeqs].some((seq) => !eligible.has(seq));
 		};
 		const holdsAuthority = (): boolean => store.get(convId)?.epoch === epoch;
-		sink.setAuthorityCheck?.(holdsAuthority, snapshot.anchorSeq, ownedInputExcluded);
+		sink.setAuthorityCheck?.(
+			holdsAuthority,
+			snapshot.anchorSeq,
+			ownedInputExcluded,
+			() => live.chunks.findLast((chunk) => chunk.type === "start")?.messageId,
+		);
 		const controller = new AbortController();
 		this.lanes.registerController(convId, controller);
 		const hadLiveWire = this.conversationLive(convId);

@@ -12,13 +12,14 @@ interface SinkCore {
 	onTextDelta(delta: string): void;
 	onReasoningDelta(delta: string): void;
 	onToolCall(toolName: string, input: unknown): void;
-	onVoiceNote?(audio: Uint8Array): Promise<void>;
-	onFile?(file: OutgoingFile): Promise<void>;
+	onVoiceNote?(audio: Uint8Array, toolCallId?: string): Promise<void>;
+	onFile?(file: OutgoingFile, toolCallId?: string): Promise<void>;
 	onVoiceSynthesisStart?(): () => void;
 	setAuthorityCheck?(
 		check: () => boolean,
 		anchorSeq?: number | null,
 		memoryExcluded?: () => boolean,
+		replyId?: () => string | undefined,
 	): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }

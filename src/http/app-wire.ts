@@ -185,6 +185,10 @@ export interface AppPendingInput {
 	createdAt: string;
 }
 
+export interface SentMediaMetadata {
+	sentMedia: { replyId: string; toolCallId: string };
+}
+
 export type AppConversationEvent =
 	| { type: "state"; live: boolean }
 	| { type: "turn-start" }

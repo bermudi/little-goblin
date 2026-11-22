@@ -33,7 +33,7 @@ import { writeFileTool } from "./write.ts";
 
 export interface VoiceToolDeps {
 	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
-	deliver(audio: Uint8Array): Promise<void>;
+	deliver(audio: Uint8Array, toolCallId: string): Promise<void>;
 	recording?(): () => void;
 	voices?: readonly string[];
 }
@@ -41,7 +41,7 @@ export interface VoiceToolDeps {
 export type { ProgramToolDeps };
 
 export interface FileToolDeps {
-	deliver(file: OutgoingFile): Promise<void>;
+	deliver(file: OutgoingFile, toolCallId: string): Promise<void>;
 }
 
 export interface MemoryToolDeps extends MemorySearchDeps {

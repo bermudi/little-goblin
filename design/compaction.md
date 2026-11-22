@@ -43,8 +43,8 @@ Ruling (operator, 2026-11-22):
 So a 1.1M window folds at 272k (or 1,083,616 uncapped); a 200k window at
 183,616; a 64k window at 47,616. The 50% ratio (Hermes) and the 256k cap
 (#547) are retired. The values are named constants in
-`src/turn/overflow.ts` (the pre-emption arm needs them there without an
-import cycle).
+`src/turn/compact-trigger.ts`, a module with no imports, so the pre-emption
+arm, the landing and the app route can all read them without an import cycle.
 
 Hermes also runs an 85% check at the gateway, before each incoming message,
 for sessions that grew between turns. Goblin does not add one: the

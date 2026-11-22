@@ -54,9 +54,9 @@ import { pickEngine, type TurnEngine } from "./turn/engine.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { type LandedAttempt, landAttempt, submitTurnReview } from "./turn/finish.ts";
 import { stepModelRef } from "./turn/model-ref.ts";
+import { compactTriggerTokens } from "./turn/compact-trigger.ts";
 import {
 	ContextOverflowError,
-	compactTriggerTokens,
 	failureFromStream,
 	overflowHoldable,
 	preemptArm,

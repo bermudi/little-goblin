@@ -20,7 +20,7 @@ import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
 import { moveIntoProject } from "../conversation-move.ts";
 import { openRatings } from "../reply-ratings.ts";
-import { compactTriggerTokens } from "../turn/overflow.ts";
+import { compactTriggerTokens } from "../turn/compact-trigger.ts";
 import {
 	type AppChannelDeps,
 	configPatchBody,

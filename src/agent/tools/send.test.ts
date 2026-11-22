@@ -28,13 +28,13 @@ describe("send_file", () => {
 	test("sends a real file and reports its name and size", async () => {
 		const dir = workdir();
 		writeFileSync(join(dir, "report.pdf"), "pdf-bytes");
-		const delivered: OutgoingFile[] = [];
-		const t = sendFileTool(dir, async (f) => {
-			delivered.push(f);
+		const delivered: [OutgoingFile, string][] = [];
+		const t = sendFileTool(dir, async (f, callId) => {
+			delivered.push([f, callId]);
 		});
 		const out = await t.execute!({ path: "report.pdf", caption: "here you go" }, opts);
 		expect(delivered).toEqual([
-			{ path: join(dir, "report.pdf"), filename: "report.pdf", caption: "here you go" },
+			[{ path: join(dir, "report.pdf"), filename: "report.pdf", caption: "here you go" }, "t1"],
 		]);
 		expect(out).toEqual({ sent: "report.pdf", bytes: 9 });
 	});

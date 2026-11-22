@@ -14,7 +14,7 @@ export interface ImageToolDeps {
 	configRef: ConfigRef;
 	auth: AuthStore;
 	conversation: string;
-	deliver?: ((file: OutgoingFile) => Promise<void>) | undefined;
+	deliver?: ((file: OutgoingFile, toolCallId: string) => Promise<void>) | undefined;
 	fetchFn?: typeof fetch | undefined;
 }
 
@@ -83,7 +83,7 @@ export function imageTool(deps: ImageToolDeps) {
 							path,
 							filename,
 							caption: prompt.slice(0, 1024),
-						});
+						}, options.toolCallId);
 						sent = true;
 						delivered++;
 					} catch (err) {

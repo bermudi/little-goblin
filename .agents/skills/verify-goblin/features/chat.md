@@ -19,6 +19,17 @@ sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select count(*) from conversa
 
 Proof: the reply is on screen, the conversation is in the rail, the meta line names `fake/verify-model`, the row exists, and `fake-model.log` has a `POST /v1/chat/completions`.
 
+### Sent files
+
+Send `[sent-media]` and wait for `verify-sent-media: sent both copies`.
+The app should show two `verify-sent-media.txt` download buttons. Each
+follows the closed tool activity that sent it, with `First copy.` and
+`Second copy.` on opposite sides of `Sending another copy.`. Click either
+button to download the file, then reload and check the order again.
+
+Send the marker again in the same chat. There should now be four buttons,
+two per reply, even though the fake model reuses its tool call IDs.
+
 ## Gotchas
 
 The fake model takes the rail title from its own reply, so the title starts with `verify-reply:`. Thinking can't be exercised with it. Tool calls can, through the markers: `[agent <task>]`, `[delegate <harness> <cwd> <task>]` — see [delegation.md](delegation.md).

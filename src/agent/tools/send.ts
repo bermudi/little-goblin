@@ -37,12 +37,12 @@ export const sendFileInputSchema = z.object({
 		),
 });
 
-export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promise<void>) {
+export function sendFileTool(cwd: string, deliver: (file: OutgoingFile, toolCallId: string) => Promise<void>) {
 	return defineTool({
 		description:
 			"Send a file from the workspace to the operator. Channels show image previews when they support them, otherwise they attach the document. Use this whenever the operator should receive a file — never paste file bytes into chat.",
 		input: sendFileInputSchema,
-		execute: async ({ path, caption, as_file }) => {
+		execute: async ({ path, caption, as_file }, { toolCallId }) => {
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;
 			let st: ReturnType<typeof statSync>;
@@ -73,7 +73,7 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 				...(as_file ? { asFile: true } : {}),
 			};
 			try {
-				await deliver(file);
+				await deliver(file, toolCallId);
 			} catch (err) {
 				if (err instanceof DeliveryUncertainError) {
 					log.warn("send_file delivery uncertain", err);

@@ -74,14 +74,15 @@ describe("app media sink", () => {
 		const source = join(home, "out", "note.txt");
 		mkdirSync(join(home, "out"), { recursive: true });
 		writeFileSync(source, "file-bytes");
-		sink.setAuthorityCheck?.(() => true, 7);
+		sink.setAuthorityCheck?.(() => true, 7, undefined, () => "file-reply");
 
-		await sink.onFile!({ path: source, filename: "note.txt", caption: "keepsake" });
+		await sink.onFile!({ path: source, filename: "note.txt", caption: "keepsake" }, "file-call");
 
 		expect(appended).toHaveLength(1);
 		expect(appended[0]!.anchorSeq).toBe(7);
 		const message = appended[0]!.messages[0]!;
 		expect(message.role).toBe("assistant");
+		expect(message.metadata).toEqual({ sentMedia: { replyId: "file-reply", toolCallId: "file-call" } });
 		const ref = attachmentOf(message);
 		expect(ref.filename).toBe("note.txt");
 		expect(ref.mediaType).toMatch(/^text\/plain/);
@@ -92,9 +93,12 @@ describe("app media sink", () => {
 
 	test("a voice note persists as playable audio", async () => {
 		const { sink, appended, emitted } = fixture();
-		sink.setAuthorityCheck?.(() => true, 3);
+		sink.setAuthorityCheck?.(() => true, 3, undefined, () => "voice-reply");
 
-		await sink.onVoiceNote!(new Uint8Array([1, 2, 3]));
+		await sink.onVoiceNote!(new Uint8Array([1, 2, 3]), "voice-call");
+		expect(appended[0]!.messages[0]!.metadata).toEqual({
+			sentMedia: { replyId: "voice-reply", toolCallId: "voice-call" },
+		});
 
 		const ref = attachmentOf(appended[0]!.messages[0]);
 		expect(ref.filename).toBe("voice-note.ogg");

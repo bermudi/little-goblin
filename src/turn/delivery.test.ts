@@ -34,13 +34,13 @@ describe("sink delivery authority", () => {
 			if (epoch !== 0) throw new Error("turn fenced by conversation epoch");
 		};
 		const delivery = sinkDelivery(sink, authority);
-		const voice = delivery.deliverVoice!(new Uint8Array([1]));
+		const voice = delivery.deliverVoice!(new Uint8Array([1]), "voice-call");
 		try {
 			await actionEntered;
 			epoch++;
 			release();
 			await expect(voice).rejects.toThrow("turn fenced by conversation epoch");
-			await expect(delivery.deliverFile!({ path: "/tmp/a", filename: "a.txt" })).rejects.toThrow(
+			await expect(delivery.deliverFile!({ path: "/tmp/a", filename: "a.txt" }, "file-call")).rejects.toThrow(
 				"turn fenced by conversation epoch",
 			);
 			expect(actions).toEqual(["voice"]);

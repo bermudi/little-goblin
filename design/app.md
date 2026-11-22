@@ -46,6 +46,13 @@ reader on every call. The closed summary carries the live state instead:
 "Working for Ns" while the run owns the tail of a streaming reply, the
 failure count when a call fails.
 
+**Sent files (ruling 2026-11-21, #866).** Files sent by `send_file`,
+`generate_image`, and `speak` are openable immediately below the collapsed
+tool activity that sent them. Each new media message records the reply and
+call IDs. This changes display only, not the order stored for the model.
+Old media without those IDs stays where it was. If a page does not contain
+the matching call, keep the file visible in its original place.
+
 **Packaging ladder.** PWA first, on the tailnet URL through `tailscale serve`
 (installable, ~1s open; zero APK churn — the operator evaluated twenty-APK
 development and declined). APK via Capacitor when stable: the same build wrapped, plus

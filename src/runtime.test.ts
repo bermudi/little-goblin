@@ -1040,9 +1040,9 @@ describe("turn authority", () => {
 				send_file: defineTool({
 					description: "send a file to the current conversation",
 					input: z.object({}),
-					execute: async () => {
+					execute: async (_, { toolCallId }) => {
 						if (deliverFile === undefined) throw new Error("file delivery hook missing");
-						await deliverFile({ path: "/fixture/file", filename: "fixture.txt" });
+						await deliverFile({ path: "/fixture/file", filename: "fixture.txt" }, toolCallId);
 						return "sent";
 					},
 				}),

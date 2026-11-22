@@ -52,7 +52,7 @@ function cfg(): Config {
 
 function deps(
 	fetchFn: typeof fetch,
-	deliver?: (file: OutgoingFile) => Promise<void>,
+	deliver?: ImageToolDeps["deliver"],
 ): ImageToolDeps {
 	return {
 		configRef: { current: cfg(), ttsDown: false },
@@ -81,8 +81,8 @@ afterEach(() => {
 describe("generate_image tool", () => {
 	test("generates, persists under the attachments dir, and delivers", async () => {
 		const { fn, seen } = fakeFetch(200, okBody);
-		const sent: OutgoingFile[] = [];
-		const out = (await imageTool(deps(fn, async (f) => void sent.push(f))).execute!(
+		const sent: [OutgoingFile, string][] = [];
+		const out = (await imageTool(deps(fn, async (f, callId) => void sent.push([f, callId]))).execute!(
 			{ prompt: "a goblin reading a newspaper" },
 			opts,
 		)) as {
@@ -109,7 +109,7 @@ describe("generate_image tool", () => {
 		expect(img.path.startsWith(paths.attachments())).toBe(true);
 		expect(readdirSync(paths.attachments())).toHaveLength(1);
 		expect(sent).toEqual([
-			{ path: img.path, filename: "image.png", caption: "a goblin reading a newspaper" },
+			[{ path: img.path, filename: "image.png", caption: "a goblin reading a newspaper" }, "t1"],
 		]);
 		expect(JSON.parse(seen[0]!.body).prompt).toBe("a goblin reading a newspaper");
 	});

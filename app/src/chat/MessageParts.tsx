@@ -469,6 +469,7 @@ function MessagePartsView({
   streaming,
   ended,
   messages,
+  sentMedia,
 }: {
   parts: UIMessage["parts"];
   token?: string | null;
@@ -492,6 +493,7 @@ function MessagePartsView({
   // The full transcript, when the caller has it: ui surfaces re-derive
   // their picked choice row from persisted [ui] messages.
   messages?: readonly UIMessage[] | undefined;
+  sentMedia?: ReadonlyMap<string, readonly UIMessage[]> | undefined;
 }) {
   const out: ReactNode[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -571,12 +573,25 @@ function MessagePartsView({
           ended={ended}
         />,
       );
-      // Published artifacts hoist out of the fold into cards — the
-      // fold records that the call ran; the card is the openable
-      // thing. Direct artifact calls and a script's collected
-      // presentations land the same way.
       for (const q of run) {
-        if (!isToolUIPart(q) || q.state !== "output-available") continue;
+        if (!isToolUIPart(q)) continue;
+        for (const media of sentMedia?.get(q.toolCallId) ?? []) {
+          out.push(
+            <MessagePartsView
+              key={`media:${media.id}`}
+              parts={media.parts}
+              token={token ?? null}
+              noteProjectId={noteProjectId}
+              onOpenNote={onOpenNote}
+              onNotesChanged={onNotesChanged}
+            />,
+          );
+        }
+        if (q.state !== "output-available") continue;
+        // Published artifacts hoist out of the fold into cards — the
+        // fold records that the call ran; the card is the openable
+        // thing. Direct artifact calls and a script's collected
+        // presentations land the same way.
         const name = getToolName(q);
         const artifacts: Artifact[] =
           name === "artifact"

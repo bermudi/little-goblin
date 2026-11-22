@@ -24,19 +24,22 @@ describe("speak", () => {
 		writeFileSync(join(dir, "note.md"), "Read this from disk.");
 		const inputs: string[] = [];
 		const delivered: number[] = [];
+		const callIds: string[] = [];
 		const t = speakTool(
 			dir,
 			async (text) => {
 				inputs.push(text);
 				return [new Uint8Array([1]), new Uint8Array([2])];
 			},
-			async (audio) => {
+			async (audio, toolCallId) => {
 				delivered.push(audio[0]!);
+				callIds.push(toolCallId);
 			},
 		);
 		const out = await t.execute!({ path: "note.md" }, opts);
 		expect(inputs).toEqual(["Read this from disk."]);
 		expect(delivered).toEqual([1, 2]);
+		expect(callIds).toEqual(["t1", "t1"]);
 		expect(out).toEqual({ sent: 2 });
 	});
 

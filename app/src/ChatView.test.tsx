@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AppCompactionMark } from "../../src/http/app-wire.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 import { MessageParts } from "./chat/MessageParts.tsx";
+import { placeSentMedia } from "./chat/sentMedia.ts";
 import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
@@ -24,6 +25,39 @@ const toolPart = {
 } as unknown as UIMessage["parts"][number];
 
 describe("MessageParts", () => {
+  test("sent media appears after its Worked fold and before the answer", () => {
+    const media: UIMessage = {
+      id: "media",
+      role: "assistant",
+      metadata: { sentMedia: { replyId: "reply", toolCallId: "t1" } },
+      parts: [
+        { type: "data-attachment", data: { path: "/tmp/report.pdf", filename: "report.pdf", mediaType: "application/pdf", size: 5 } },
+        { type: "text", text: "Here is the report" },
+      ],
+    };
+    const reply: UIMessage = {
+      id: "reply",
+      role: "assistant",
+      parts: [toolPart, { type: "text", text: "The answer" }],
+    };
+    const placed = placeSentMedia([media, reply]);
+    const html = renderToStaticMarkup(
+      <MessageParts parts={reply.parts} sentMedia={placed.byReply.get(reply.id)} />,
+    );
+    const window = new Window();
+    const container = window.document.createElement("div");
+    container.innerHTML = html;
+    const fold = container.querySelector(".worked");
+    const chip = container.querySelector(".attachment");
+    expect(fold).not.toBeNull();
+    expect(fold?.hasAttribute("open")).toBe(false);
+    expect(chip).not.toBeNull();
+    expect(chip?.querySelector("button")).not.toBeNull();
+    expect(fold?.nextElementSibling === chip).toBe(true);
+    expect(html.indexOf('class="worked"')).toBeLessThan(html.indexOf("report.pdf"));
+    expect(html.indexOf("report.pdf")).toBeLessThan(html.indexOf("Here is the report"));
+    expect(html.indexOf("Here is the report")).toBeLessThan(html.indexOf("The answer"));
+  });
   test("a run of tool parts collapses into the Worked fold", () => {
     const html = renderToStaticMarkup(
       <MessageParts parts={[toolPart, { type: "text", text: "the answer" }]} />,

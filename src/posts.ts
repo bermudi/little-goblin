@@ -26,7 +26,7 @@ function parsePost(row: unknown): Post {
 
 export interface Posts {
 	add(input: { conversationId: string; text: string }): Post;
-	recent(limit: number): Post[];
+	recent(limit: number, before?: number): Post[];
 }
 
 export function makePosts(db: Database, now: () => Date): Posts {
@@ -42,7 +42,7 @@ export function makePosts(db: Database, now: () => Date): Posts {
 	const prune = db.query<null, [number]>(
 		"DELETE FROM posts WHERE id <= (SELECT id FROM posts ORDER BY id DESC LIMIT 1 OFFSET ?)",
 	);
-	const recent = db.query<unknown, [number]>("SELECT * FROM posts ORDER BY id DESC LIMIT ?");
+	const recent = db.query<unknown, [number, number]>("SELECT * FROM posts WHERE id < ? ORDER BY id DESC LIMIT ?");
 	return {
 		add(input) {
 			const text = input.text.trim();
@@ -61,8 +61,8 @@ export function makePosts(db: Database, now: () => Date): Posts {
 			});
 			return post;
 		},
-		recent(limit) {
-			return recent.all(limit).map(parsePost);
+		recent(limit, before = Number.MAX_SAFE_INTEGER) {
+			return recent.all(before, limit).map(parsePost);
 		},
 	};
 }

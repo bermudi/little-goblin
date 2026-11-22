@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
-import type { AppActivityResponse } from "./app-wire.ts";
+import type { AppActivityResponse, AppPostsResponse } from "./app-wire.ts";
 import { HeadlessSink, waitUntil } from "../testkit.ts";
 import { userMessage } from "../runtime.ts";
 import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { postTool } from "../agent/tools/post.ts";
 import { POSTS_KEPT } from "../posts.ts";
+import { POSTS_PAGE } from "./app-activity.ts";
 
 test("activity is empty at idle and method/auth gates match app routes", async () => {
 	const { http, call } = setup({ token: APP_TOKEN_NAME });
@@ -145,6 +146,39 @@ test("activity lists posts newest first, keeps a capped history and links only t
 			"SELECT COUNT(*) AS n, (SELECT text FROM posts ORDER BY id LIMIT 1) AS oldest FROM posts",
 		).get();
 		expect(kept).toEqual({ n: POSTS_KEPT, oldest: "post 2" });
+	} finally {
+		http.stop();
+	}
+});
+
+test("posts pages through every kept post, newest first, behind the app gate", async () => {
+	const { http, call, posts } = setup({ token: APP_TOKEN_NAME });
+	try {
+		for (let i = 0; i < POSTS_KEPT + 5; i += 1) posts.add({ conversationId: "app/gone", text: `post ${i}` });
+		const seen: string[] = [];
+		let before: number | null = null;
+		let pages = 0;
+		for (;;) {
+			const query: string = before === null ? "" : `?before=${before}`;
+			const response = await call(`/api/app/posts${query}`);
+			expect(response.status).toBe(200);
+			expect(response.headers.get("cache-control")).toContain("no-store");
+			const page = await response.json() as AppPostsResponse;
+			pages += 1;
+			expect(page.posts.length).toBeLessThanOrEqual(POSTS_PAGE);
+			seen.push(...page.posts.map((p) => p.text));
+			if (!page.more) break;
+			before = page.posts.at(-1)!.id;
+		}
+		expect(pages).toBe(Math.ceil(POSTS_KEPT / POSTS_PAGE));
+		expect(seen).toHaveLength(POSTS_KEPT);
+		expect(seen[0]).toBe(`post ${POSTS_KEPT + 4}`);
+		expect(seen.at(-1)).toBe("post 5");
+		expect(new Set(seen).size).toBe(POSTS_KEPT);
+		expect((await call("/api/app/posts?before=abc")).status).toBe(400);
+		expect((await call("/api/app/posts?before=0")).status).toBe(400);
+		expect((await call("/api/app/posts", { method: "POST" })).status).toBe(405);
+		expect((await call("/api/app/posts", {}, null)).status).toBe(401);
 	} finally {
 		http.stop();
 	}

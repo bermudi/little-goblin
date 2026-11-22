@@ -655,6 +655,9 @@ p code,
 .header-title-editor input {
 	width: 100%;
 }
+.header-title-editor ~ .header-parent {
+	display: none;
+}
 .conv-pin {
 	flex: none;
 	align-self: center;

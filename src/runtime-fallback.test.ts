@@ -319,7 +319,7 @@ describe("model fallback list", () => {
 		}
 	});
 
-	test("compaction walks the list and the fold names the ref that wrote it", async () => {
+	test("compaction summarizes only on the conversation's own model; a failed call writes nothing and never asks a fallback", async () => {
 		const asked: string[] = [];
 		const r = rig({
 			model: "zai/glm-5.3",
@@ -328,35 +328,61 @@ describe("model fallback list", () => {
 			compaction: {
 				modelRef: (c) => c.model!,
 				contextWindow: () => 1000,
-				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
+				summarize: async (_conv, _system, _prompt, _signal, modelRef) => {
 					asked.push(modelRef);
-					if (modelRef === "zai/glm-5.3") throw quotaWall();
+					throw new Error("Weekly/Monthly Limit Exhausted");
+				},
+			},
+		});
+		try {
+			seedExchanges(r.store, r.conv.id, 3);
+			await expect(r.runtime.compact(r.store.get(r.conv.id)!)).rejects.toThrow("Limit Exhausted");
+			expect(asked).toEqual(["zai/glm-5.3"]);
+			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a non-overflow fold is one own-model call even when the span exceeds half the window", async () => {
+		const prompts: string[] = [];
+		const r = rig({
+			model: "zai/glm-5.3",
+			fallbacks: ["codex/gpt-6.1-terra"],
+			models: lanes({}),
+			compaction: {
+				modelRef: (c) => c.model!,
+				contextWindow: () => 1000,
+				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
+					prompts.push(prompt);
 					return foldSummary(`folded by ${modelRef}`, prompt);
 				},
 			},
 		});
 		try {
-			const big = "x".repeat(600);
-			for (let i = 0; i < 3; i++) {
-				r.store.append(r.conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-				r.store.append(
-					r.conv.id,
-					[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-					{ anchorSeq: r.store.lastUserSeq(r.conv.id) },
-				);
-			}
+			seedExchanges(r.store, r.conv.id, 3);
 			const outcome = await r.runtime.compact(r.store.get(r.conv.id)!);
 			expect(outcome).toMatchObject({ kind: "compacted" });
-			if (outcome.kind === "compacted") {
-				expect(outcome.summary).toStartWith("folded by codex/gpt-6.1-terra\n");
-			}
-			expect(asked).toEqual(["zai/glm-5.3", "codex/gpt-6.1-terra"]);
-			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({
-				model: "codex/gpt-6.1-terra",
-			});
+			expect(prompts).toHaveLength(1);
+			expect(prompts[0]).toContain("q0");
+			expect(prompts[0]).toContain("r1");
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: "zai/glm-5.3" });
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
 		}
 	});
 });
+
+function seedExchanges(store: ReturnType<typeof openStore>, convId: string, n: number) {
+	const big = "x".repeat(2000);
+	for (let i = 0; i < n; i++) {
+		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			convId,
+			[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(convId) },
+		);
+	}
+}

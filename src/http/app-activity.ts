@@ -19,9 +19,13 @@ export async function handleActivityRoute(
 	);
 	const busy: AppActivityResponse["busy"] = [];
 	for (const id of appIds) {
+		if (deps.store.isAppRoll(id)) {
+			busy.push({ id, title: null, parentId: null, rolling: true });
+			continue;
+		}
 		const row = rows.get(id);
 		if (row === undefined) continue;
-		busy.push({ id, title: row.title, parentId: row.parentId });
+		busy.push({ id, title: row.title, parentId: row.parentId, rolling: false });
 	}
 	return Response.json({ busy, otherBusy } satisfies AppActivityResponse, {
 		headers: NO_STORE,

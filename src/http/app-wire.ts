@@ -546,6 +546,7 @@ export interface AppBusyConversation {
 	id: string;
 	title: string | null;
 	parentId: string | null;
+	rolling: boolean;
 }
 
 export interface AppActivityResponse {

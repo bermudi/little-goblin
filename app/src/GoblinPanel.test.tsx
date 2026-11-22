@@ -77,7 +77,7 @@ test("tabs are Activity, Scheduled and Library; avatar opens profile", async () 
 test("activity puts running delegation before finished work and labels subagents", async () => {
 	const data = {
 		...baseData(2),
-		activity: { busy: [{ id: "app/child", title: "Compare prices", parentId: "app/parent" }], otherBusy: 0 },
+		activity: { busy: [{ id: "app/child", title: "Compare prices", parentId: "app/parent", rolling: false }], otherBusy: 0 },
 		delegations: [
 			{ id: 1, harness: "codex", task: "Fix the sheet", status: "running", createdAt: "2026-11-21T00:00:00Z", appConversation: "app/work" },
 			{ id: 2, harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-20T01:00:00Z", appConversation: null },
@@ -91,4 +91,40 @@ test("activity puts running delegation before finished work and labels subagents
 	expect(running).toBeGreaterThanOrEqual(0);
 	expect(finished).toBeGreaterThan(running);
 	expect(rows.some((row) => row.startsWith("Subagent: Compare prices"))).toBe(true);
+});
+
+test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", async () => {
+	const data = {
+		...baseData(1),
+		activity: {
+			busy: [{ id: "app/roll-2", title: null, parentId: null, rolling: true }],
+			otherBusy: 0,
+		},
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	const pages: string[] = [];
+	const conversations: string[] = [];
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(
+			<GoblinPanel
+				data={data}
+				notes={null}
+				variant="column"
+				onOpenTarget={() => {}}
+				onOpenConversation={(id) => conversations.push(id)}
+				onOpenPage={(page) => pages.push(page)}
+				onOpenNote={() => {}}
+				onOpenProfile={() => {}}
+			/>,
+		),
+	);
+	const row = [...container.querySelectorAll("button.goblin-panel-row")].find((el) =>
+		el.textContent?.startsWith("Replying in the Goblin chat"),
+	);
+	expect(row).toBeDefined();
+	await act(async () =>
+		row?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event),
+	);
+	expect(pages).toEqual(["rolling"]);
+	expect(conversations).toEqual([]);
 });

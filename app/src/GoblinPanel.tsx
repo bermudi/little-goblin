@@ -153,9 +153,13 @@ export function GoblinPanel(props: GoblinPanelProps) {
 	const busyRows: Row[] = (data.activity?.busy ?? []).map((c) => ({
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
-		label: c.parentId !== null ? `Subagent: ${c.title ?? "untitled"}` : `Replying in ${c.title ?? "a chat"}`,
+		label: c.rolling
+			? "Replying in the Goblin chat"
+			: c.parentId !== null
+				? `Subagent: ${c.title ?? "untitled"}`
+				: `Replying in ${c.title ?? "a chat"}`,
 		detail: "running",
-		action: () => props.onOpenConversation(c.id),
+		action: c.rolling ? () => props.onOpenPage("rolling") : () => props.onOpenConversation(c.id),
 	}));
 	const activeRows: Row[] = delegations
 		.filter((d) => ACTIVE.includes(d.status))

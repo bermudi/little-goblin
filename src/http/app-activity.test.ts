@@ -38,7 +38,9 @@ test("activity lists a live app turn and removes it after settlement", async () 
 		});
 		await waitUntil(() => runtime.busyConversations().includes("app/active-work"), "turn is busy");
 		const live = await (await call("/api/app/activity")).json() as AppActivityResponse;
-		expect(live.busy).toEqual([{ id: "app/active-work", title: "Active work", parentId: null }]);
+		expect(live.busy).toEqual([
+			{ id: "app/active-work", title: "Active work", parentId: null, rolling: false },
+		]);
 		await waitUntil(async () => {
 			const result = await (await call("/api/app/activity")).json() as AppActivityResponse;
 			return result.busy.length === 0;
@@ -56,6 +58,26 @@ test("activity counts a live Telegram conversation without listing it", async ()
 		await waitUntil(() => runtime.busyConversations().includes(conversation.id), "Telegram turn is busy");
 		const response = await (await call("/api/app/activity")).json() as AppActivityResponse;
 		expect(response).toEqual({ busy: [], otherBusy: 1 });
+	} finally {
+		http.stop();
+	}
+});
+
+test("activity lists a live Rolling chat turn", async () => {
+	const { http, call, runtime, store, configRef } = setup({
+		token: APP_TOKEN_NAME,
+		deltas: ["one", "two", "three"],
+		delayMs: 80,
+	});
+	try {
+		const roll = store.rollApp(configRef.current);
+		runtime.submit(roll, userMessage([{ type: "text", text: "hello" }]), new HeadlessSink());
+		await waitUntil(() => runtime.busyConversations().includes(roll.id), "Rolling chat turn is busy");
+		const live = await (await call("/api/app/activity")).json() as AppActivityResponse;
+		expect(live).toEqual({
+			busy: [{ id: roll.id, title: null, parentId: null, rolling: true }],
+			otherBusy: 0,
+		});
 	} finally {
 		http.stop();
 	}

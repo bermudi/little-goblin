@@ -7,8 +7,8 @@ test("workingCount counts busy conversations and active delegations", () => {
 	expect(workingCount(null, null)).toBe(0);
 	const activity: AppActivityResponse = {
 		busy: [
-			{ id: "app/a", title: "A", parentId: null },
-			{ id: "app/b", title: "B", parentId: null },
+			{ id: "app/a", title: "A", parentId: null, rolling: false },
+			{ id: "app/b", title: "B", parentId: null, rolling: false },
 		],
 		otherBusy: 1,
 	};

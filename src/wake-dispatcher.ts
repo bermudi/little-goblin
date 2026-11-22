@@ -21,6 +21,7 @@ import type { Message } from "./message.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
+import { every } from "./timing.ts";
 import type { Runtime } from "./runtime.ts";
 import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import type { TurnSink } from "./turn/sink.ts";
@@ -432,9 +433,10 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		},
 
 		startTicker(intervalMs = TICKER_MS) {
-			const t = setInterval(() => guard("ticker", () => dispatcher.pump()), intervalMs);
-			t.unref();
-			return () => clearInterval(t);
+			const ticker = every(intervalMs, "wake ticker", () => guard("ticker", () => dispatcher.pump()), {
+				unref: true,
+			});
+			return () => ticker.cancel();
 		},
 
 		start() {

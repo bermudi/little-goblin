@@ -802,144 +802,93 @@ p code,
 	color: var(--app-fg);
 }
 
-/* ---------- the C gutter (design/app.md → mobile-nav ruling) ----------
-   Desktop nav: a 52px glyph spine where every surface is one click
-   away, and a 216px panel that lists exactly one at a time. Phone
-   widths never see it (.app-rail's display:none in the 720px block);
-   the Telegram door's .rail keeps the column rules this overrides. */
 .app-rail {
-	width: auto;
-	flex-direction: row;
-	padding: 0;
-	gap: 0;
 	overflow: hidden;
-	border-right: none;
 }
-.gutter {
-	width: 52px;
-	flex: none;
-	border-right: 1px solid var(--app-divider);
+.rail-top {
 	display: flex;
-	flex-direction: column;
 	align-items: center;
-	padding: 0.6rem 0 0.55rem;
-	gap: 2px;
-	overflow-y: auto;
-	scrollbar-width: none;
+	gap: 0.3rem;
 }
-.gutter::-webkit-scrollbar {
-	display: none;
-}
-.g {
-	position: relative;
-	width: 34px;
-	height: 34px;
-	flex: none;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 8px;
-	color: var(--app-fg-muted);
-	transition:
-		background-color 75ms,
-		color 75ms;
-}
-.g:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-.g.on {
-	background: var(--app-active);
-	color: var(--app-fg);
-}
-.g .dot {
-	position: absolute;
-	top: 6px;
-	right: 6px;
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: var(--app-accent);
-}
-/* A failed attention load keeps the dot up, in the error colour. */
-.g .dot.attention-dot-error {
-	background: var(--app-danger);
-}
-.g-new {
-	color: var(--app-fg);
-}
-.g-split {
-	width: 18px;
-	height: 1px;
-	flex: none;
-	background: var(--app-divider);
-	margin: 0.4rem 0;
-}
-.g-gap {
-	height: 0.45rem;
-	flex: none;
-}
-.g-spacer {
+.rail-top .rail-search {
+	min-width: 0;
 	flex: 1;
 }
-
-.panel {
-	width: 216px;
-	border-right: 1px solid var(--app-divider);
-	display: flex;
-	flex-direction: column;
-	padding: 0.5rem 0.5rem 0.45rem;
-	gap: 0.15rem;
-	overflow: hidden;
-}
-.panel-head {
-	flex: none;
-	display: flex;
-	align-items: baseline;
-	padding: 0.15rem 0.55rem 0.35rem;
-}
-.panel-label {
-	font-size: 11px;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	color: var(--app-fg-subtle);
-}
-button.panel-index {
-	border-radius: 6px;
-	transition: color 75ms;
-}
-button.panel-index:hover {
-	color: var(--app-fg-muted);
-}
-.panel-count {
-	margin-left: auto;
-	font-family: var(--font-mono);
-	font-size: 10px;
-	color: var(--app-fg-subtle);
-	font-variant-numeric: tabular-nums;
-}
-.panel-action {
-	width: 1.65rem;
-	height: 1.65rem;
-	margin-left: 0.4rem;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 6px;
-	color: var(--app-fg-muted);
-}
-.panel-action:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-.panes {
+.rail-body {
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
 }
-.panel > .error {
-	flex: none;
+.rail-project-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+.rail-project-head,
+.rail-chats-label {
+	color: var(--app-fg-muted);
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	padding: 0.5rem;
+}
+.rail-project-head > button:first-child {
+	color: inherit;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
+}
+.rail-you {
+	margin-top: auto;
+	padding: 0.6rem 0.5rem;
+	border-top: 1px solid var(--app-divider);
+	color: var(--app-fg-muted);
+	text-align: left;
+}
+.rail-you:hover {
+	color: var(--app-fg);
+}
+.goblin-column {
+	flex: 0 0 280px;
+	min-width: 0;
+	overflow-y: auto;
+	border-left: 1px solid var(--app-divider);
+}
+.shell > main {
+	min-width: 0;
+}
+.goblin-panel-toggle {
+	margin-left: auto;
+}
+.goblin-profile-header {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	padding: 1rem;
+}
+.goblin-profile-header nav {
+	display: flex;
+	gap: 0.2rem;
+	flex-basis: 100%;
+}
+.goblin-profile-header nav a {
+	padding: 0.4rem 0.9rem;
+	border-radius: 999px;
+	color: var(--app-fg-muted);
+	text-decoration: none;
+}
+.goblin-profile-header nav a:hover {
+	color: var(--app-fg);
+}
+.goblin-profile-header nav a[aria-current="page"] {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.rolling-row .conv-main > .goblin-avatar {
+	float: left;
+	margin-right: 0.5rem;
 }
 /* Note rows: one line — pin, title, relative time. */
 .line-row {
@@ -977,44 +926,6 @@ button.panel-index:hover {
 	display: inline-flex;
 }
 
-/* Mobile (M) surfaces — thumb bar, chats screen, back doors. JSX gates
-   them on matchMedia, so a desktop DOM never contains them; the
-   display:none here is the style-sheet's own guarantee, not the
-   mechanism. */
-.tabbar {
-	display: none;
-	position: fixed;
-	left: 0;
-	right: 0;
-	bottom: 0;
-	z-index: 30;
-	padding: 0.3rem 0.5rem calc(0.3rem + env(safe-area-inset-bottom));
-	background: var(--app-bg);
-	border-top: 1px solid var(--app-divider);
-}
-.tab {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	gap: 0.2rem;
-	min-height: 2.4rem;
-	padding: 0.25rem 0;
-	border-radius: 10px;
-	font-size: 10px;
-	color: var(--app-fg-muted);
-	transition:
-		background-color 75ms,
-		color 75ms;
-}
-.tab:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-.tab.on {
-	background: var(--app-active);
-	color: var(--app-fg);
-}
 .mobile-back {
 	display: none;
 	align-items: center;
@@ -1057,6 +968,20 @@ button.panel-index:hover {
 .chatlist-search {
 	margin: 0.15rem 1rem 0.55rem;
 }
+.needs-banner {
+	margin: 0 1rem 0.5rem;
+	padding: 0.75rem;
+	text-align: left;
+	border: 1px solid color-mix(in oklab, var(--app-warning) 40%, transparent);
+	border-radius: 8px;
+	background: color-mix(in oklab, var(--app-warning) 6%, transparent);
+	color: var(--app-warning);
+}
+.chatlist-screen > .rail-you {
+	margin: auto 1rem 0;
+	padding: 0.75rem;
+	text-align: left;
+}
 .chatlist-screen ul {
 	list-style: none;
 	margin: 0;
@@ -1084,46 +1009,6 @@ button.panel-index:hover {
 	color: var(--app-fg-muted);
 	font-size: 12px;
 	padding: 0.2rem 0.9rem;
-}
-
-/* The More sheet's grouped rows — a bottom sheet on phones like every
-   other .msheet; the rows read as the rail-ops they came from. */
-.sheet-group {
-	padding: 0.5rem 0.6rem 0.15rem;
-	font-size: 10px;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	color: var(--app-fg-subtle);
-}
-.sheet-row {
-	display: flex;
-	align-items: center;
-	width: 100%;
-	min-height: 2.5rem;
-	text-align: left;
-	padding: 0.45rem 0.6rem;
-	border-radius: 8px;
-	font-size: 13px;
-	color: var(--app-fg-muted);
-	transition:
-		background-color 75ms,
-		color 75ms;
-}
-.sheet-row:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-.system-sheet hr {
-	border: none;
-	border-top: 1px solid var(--app-divider);
-	margin: 0.35rem 0.4rem;
-}
-/* The bar is z-30; the sheet must stand over it. Compound selector:
-   a bare .system-veil ties .veil's specificity and loses to its z-index
-   rule, declared much further down this file. */
-.veil.system-veil {
-	z-index: 40;
 }
 
 .scrim {
@@ -5489,9 +5374,6 @@ select.ui-input option {
 /* ---------- narrow screens: rail slides over ---------- */
 
 @media (max-width: 720px) {
-	/* M: the drawer is retired on the app channel — the thumb bar and the
-	   chats screen replace it. The rail keeps its drawer rules for the
-	   Telegram door, which still opens over a scrim. */
 	.app-rail {
 		display: none;
 	}
@@ -5511,14 +5393,6 @@ select.ui-input option {
 	}
 	.chatlist-screen {
 		display: flex;
-		padding-bottom: calc(4.75rem + env(safe-area-inset-bottom));
-	}
-	.tabbar {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: 1px;
-	}
-	.system-sheet {
 		padding-bottom: env(safe-area-inset-bottom);
 	}
 	.ops {
@@ -5561,13 +5435,9 @@ select.ui-input option {
 		min-width: 1.85rem;
 		min-height: 1.85rem;
 	}
-	.tab {
-		min-height: 2.4rem;
-	}
 	.rail .new,
 	.rail-op,
-	.rail-archived,
-	.sheet-row {
+	.rail-archived {
 		min-height: 2.25rem;
 		display: flex;
 		align-items: center;
@@ -5642,9 +5512,7 @@ select.ui-input option {
 	flex: none;
 }
 
-/* ---------- undo toast (design/app.md → Undo) ----------
-   One at a time, top-centre under the page header on desktop (the
-   composer owns the bottom edge); on phones it rides above the thumb bar. */
+/* ---------- undo toast (design/app.md → Undo) ---------- */
 .undo-toast {
 	position: fixed;
 	left: 50%;
@@ -8087,4 +7955,199 @@ button.link:hover {
 	border-top: 1px solid var(--app-divider);
 	font-size: 12.5px;
 	color: var(--app-fg-muted);
+}
+
+.goblin-avatar {
+	position: relative;
+	display: inline-block;
+	flex: none;
+	aspect-ratio: 1;
+	border-radius: 50%;
+	line-height: 0;
+}
+.goblin-avatar-sm {
+	width: 24px;
+	height: 24px;
+}
+.goblin-avatar-md {
+	width: 32px;
+	height: 32px;
+}
+.goblin-avatar-lg {
+	width: 64px;
+	height: 64px;
+}
+.goblin-avatar img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 50%;
+	image-rendering: pixelated;
+}
+.goblin-avatar[data-working]::after {
+	content: "";
+	position: absolute;
+	inset: -3px;
+	border: 2px solid var(--app-accent);
+	border-right-color: transparent;
+	border-bottom-color: transparent;
+	border-radius: 50%;
+	animation: goblin-spin 1.4s linear infinite;
+}
+.goblin-avatar-lg[data-working]::after {
+	inset: -5px;
+	border-width: 2.5px;
+}
+@keyframes goblin-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.goblin-avatar[data-working]::after {
+		animation: none;
+	}
+}
+.goblin-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	min-width: 0;
+	padding: 1rem;
+	background: var(--app-bg);
+	overflow: auto;
+}
+.goblin-panel-column {
+	width: 280px;
+	height: 100%;
+}
+.goblin-panel-sheet {
+	width: 100%;
+	max-height: 85dvh;
+	border-radius: 1rem 1rem 0 0;
+}
+.goblin-sheet {
+	z-index: 31;
+	width: 100%;
+	max-height: 85dvh;
+	overflow: auto;
+	background: var(--app-bg);
+	border-radius: 1rem 1rem 0 0;
+}
+.goblin-sheet-title {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+}
+.goblin-panel-header {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.25rem;
+	padding-top: 0.25rem;
+}
+.goblin-profile-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+	border-radius: 50%;
+}
+.goblin-panel-header > span {
+	color: var(--app-fg-muted);
+	font-size: 0.85rem;
+}
+.goblin-needs {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	padding: 0.65rem;
+	border: 1px solid color-mix(in oklab, var(--app-warning) 40%, transparent);
+	border-radius: 0.75rem;
+	background: color-mix(in oklab, var(--app-warning) 6%, transparent);
+}
+.goblin-needs h2 {
+	margin: 0;
+	color: var(--app-warning);
+	font-size: 0.75rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+.goblin-need-row,
+.goblin-panel-row {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.15rem;
+	width: 100%;
+	padding: 0.45rem 0.25rem;
+	border: 0;
+	border-radius: 0.5rem;
+	background: transparent;
+	color: var(--app-fg);
+	font: inherit;
+	text-align: left;
+}
+button.goblin-need-row,
+button.goblin-panel-row {
+	cursor: pointer;
+}
+button.goblin-need-row:hover,
+button.goblin-panel-row:hover {
+	background: var(--app-hover);
+}
+.goblin-need-row strong,
+.goblin-panel-row strong {
+	font-weight: 500;
+}
+.goblin-need-row span,
+.goblin-panel-row span {
+	color: var(--app-fg-muted);
+	font-size: 0.8rem;
+}
+.goblin-panel [data-slot="tabs-list"] {
+	display: flex;
+	gap: 0.2rem;
+}
+.goblin-panel [data-slot="tabs-tab"] {
+	flex: 1;
+	padding: 0.4rem 0.2rem;
+	border: 0;
+	border-radius: 999px;
+	background: transparent;
+	color: var(--app-fg-muted);
+	font: inherit;
+	cursor: pointer;
+}
+.goblin-panel [data-slot="tabs-tab"][data-selected] {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.goblin-panel [data-slot="tabs-panel"] {
+	padding-top: 0.35rem;
+}
+.goblin-panel-rows {
+	display: flex;
+	flex-direction: column;
+}
+.goblin-panel-footer-group {
+	display: flex;
+	justify-content: space-between;
+}
+.goblin-panel-footer {
+	margin-top: 0.5rem;
+	padding: 0.5rem 0;
+	border: 0;
+	border-top: 1px solid var(--app-divider);
+	background: transparent;
+	color: var(--app-fg-muted);
+	font: inherit;
+	cursor: pointer;
+}
+.goblin-panel-footer-group .goblin-panel-footer {
+	flex: 1;
 }

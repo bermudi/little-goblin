@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Drawer, DrawerBackdrop, DrawerContent, DrawerTitle } from "@ui-sdk/react/drawer";
 import {
 	Menu,
 	MenuContent,
@@ -11,7 +12,6 @@ import {
 } from "@ui-sdk/react/menu";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type {
-	AppAttentionItem,
 	AppConversationList,
 	AppChatResponse,
 	AppNote,
@@ -24,9 +24,7 @@ import {
 	ApiError,
 	clearToken,
 	createConversation,
-	createNote,
 	deleteConversation,
-	getAttention,
 	listConversations,
 	listNotes,
 	listProjects,
@@ -35,6 +33,9 @@ import {
 	telegramDoor,
 } from "./api.ts";
 import { ChatView } from "./ChatView.tsx";
+import { GoblinAvatar } from "./GoblinAvatar.tsx";
+import { GoblinPanel, GoblinProfileHeader, loadPanelOpen, savePanelOpen } from "./GoblinPanel.tsx";
+import { useGoblinActivity } from "./useGoblinActivity.ts";
 import { Composer } from "./chat/Composer.tsx";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
@@ -53,12 +54,7 @@ import { flatLine, flatTitle } from "./flatText.ts";
 import { DelegationsView } from "./DelegationsView.tsx";
 import {
 	ChevronDownGlyph,
-	G,
-	LIST_GLYPHS,
 	NewProjectGlyph,
-	OPS_GLYPHS,
-	PinGlyph,
-	type ListPane,
 } from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
@@ -89,21 +85,11 @@ import { type LeaveAnswer, useLeaveAsk } from "./leaveAsk.ts";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { useConversationSearch } from "./useConversationSearch.ts";
 import { WindowView } from "./WindowView.tsx";
-
-type Pane = ListPane | "search";
-
 // One bundle, two doors: /t/ the Telegram mini app, everything else the
 // PWA's app channel.
 export function App() {
 	return telegramDoor() ? <TelegramDoor /> : <AppShell />;
 }
-
-// Phone widths carry the M chrome — thumb bar, chats screen, back doors.
-// CSS hides and shows around the same query, but these surfaces must not
-// exist in a desktop DOM at all: they are navigation, and a hidden
-// duplicate would double every name a screen reader or test queries.
-// The gate itself lives in usePhoneWidth.ts, shared with the chat's
-// outline rail.
 
 function AppShell() {
 	// First hook, before the gate's early return — hook order must not
@@ -117,6 +103,8 @@ function AppShell() {
 	const [gate, setGate] = useState<"probing" | "shown" | "passed">(
 		token === null ? "probing" : "passed",
 	);
+	const goblin = useGoblinActivity(token, gate === "passed");
+	const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
 	const [probeHint, setProbeHint] = useState<string | null>(null);
 	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(
 		null,
@@ -145,40 +133,13 @@ function AppShell() {
 	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
 	const [headerRenaming, setHeaderRenaming] = useState(false);
-	// Desktop (C): the panel lists exactly one surface at a time — chats
-	// by default; search is a mode the spine's glyph opens, not a standing
-	// box. The header's sidebar toggle collapses the whole rail.
-	const [pane, setPane] = useState<Pane>("chats");
 	const [railHidden, setRailHidden] = useState(false);
-	// The notes and attention feeds ride refresh() — the notes pane's
-	// rows and the Attention glyph's violet dot are rail furniture, not
-	// page state. The open Attention page reports its own (fresher)
-	// snapshot into the count via onItems.
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
-	const [notesTruncated, setNotesTruncated] = useState(false);
-	const [attentionCount, setAttentionCount] = useState(0);
-	// A failed feed load must not read as "no notes" / "nothing needs
-	// attention" — these mark the miss while the last good rows stay.
 	const [notesError, setNotesError] = useState(false);
-	const [attentionError, setAttentionError] = useState(false);
-	const [creatingNote, setCreatingNote] = useState(false);
-	const creatingNoteRef = useRef(false);
 	// A pending rail create may navigate only while its original route
 	// still owns the screen, even if the operator later returns there.
 	const navigationSeq = useRef(0);
-	const searchRef = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		if (pane === "search") searchRef.current?.focus();
-	}, [pane]);
-	const [systemSheetOpen, setSystemSheetOpen] = useState(false);
-	useEffect(() => {
-		if (!systemSheetOpen) return;
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setSystemSheetOpen(false);
-		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, [systemSheetOpen]);
+	const [goblinSheetOpen, setGoblinSheetOpen] = useState(false);
 	const { query, setQuery, hits, searchError } = useConversationSearch(token);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
@@ -415,11 +376,10 @@ function AppShell() {
 	const refresh = useCallback(async () => {
 		const seq = ++listSeq.current;
 		try {
-			const [listR, plistR, nlistR, attnR] = await Promise.allSettled([
+			const [listR, plistR, nlistR] = await Promise.allSettled([
 				listConversations(token),
 				listProjects(token),
 				listNotes(token),
-				getAttention(token),
 			]);
 			if (seq !== listSeq.current) return;
 			if (listR.status === "rejected") throw listR.reason;
@@ -433,10 +393,7 @@ function AppShell() {
 			setNotesError(nlistR.status === "rejected");
 			if (nlistR.status === "fulfilled") {
 				setNotes(nlistR.value.notes);
-				setNotesTruncated(nlistR.value.truncated);
 			}
-			setAttentionError(attnR.status === "rejected");
-			if (attnR.status === "fulfilled") setAttentionCount(attnR.value.items.length);
 			setListError(null);
 			setRowError(null);
 		} catch (err) {
@@ -450,14 +407,6 @@ function AppShell() {
 	useEffect(() => {
 		if (gate === "passed") void refresh();
 	}, [gate, refresh]);
-
-	// While the Attention page is mounted its own load is the freshest
-	// snapshot — let it drive the dot so page and glyph can't disagree.
-	const onAttentionItems = useCallback((items: AppAttentionItem[] | null) => {
-		if (items === null) return;
-		setAttentionCount(items.length);
-		setAttentionError(false);
-	}, []);
 
 	// A /app/c/<id> load selects that conversation once the list
 	// arrives.
@@ -634,30 +583,6 @@ function AppShell() {
 	const openArchive = () => navigate({ kind: "page", page: "archive" });
 	const openNotesIndex = () => navigate({ kind: "page", page: "notes" });
 	const openNote = (id: string) => navigate({ kind: "note", id });
-
-	// The notes pane's "New note" mirrors NotesIndex.newNote — create
-	// untitled, then open it.
-	const newNote = () => {
-		if (creatingNoteRef.current) return;
-		creatingNoteRef.current = true;
-		const navigationAtStart = navigationSeq.current;
-		setCreatingNote(true);
-		void createNote(token, { title: "Untitled note" }).then(
-			(n) => {
-				creatingNoteRef.current = false;
-				setCreatingNote(false);
-				void refresh();
-				if (navigationSeq.current === navigationAtStart) void openNote(n.id);
-			},
-			(err) => {
-				creatingNoteRef.current = false;
-				setCreatingNote(false);
-				setRowError(
-					`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			},
-		);
-	};
 
 	// The context-window view of one conversation — read-only, so the
 	// dirty guard has nothing to protect here.
@@ -912,58 +837,7 @@ function AppShell() {
 		}
 	};
 
-	// Mobile (M): /app is the chats list, a thread or the staged composer
-	// is full-bleed, and the thumb bar stands down while either is open.
-	// A project page stands down too — its composer is pinned to the
-	// viewport bottom, where the fixed bar would paint over it.
 	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
-	const chatSurfaceOpen =
-		(page === "chat" && (current !== null || composeStaged)) ||
-		page === "rolling" ||
-		page === "window" ||
-		page === "project";
-	// A glyph is on when its surface is live: its pane is showing, or its
-	// page family is open in the frame. The panel's surface and the open
-	// page can light two glyphs at once — the spine names both honestly.
-	const pagePane: ListPane | "projects" | null =
-		page === "chat" || page === "window" || page === "archive" || page === "rolling"
-			? "chats"
-			: page === "projects" || page === "project"
-				? "projects"
-				: page === "notes" || page === "note"
-					? "notes"
-					: null;
-	const surfaceOn = (key: ListPane | "projects") =>
-		key === "projects"
-			? page === "projects" || page === "project"
-			: pane === key || pagePane === key;
-	// The notes pane orders like the chats list: pinned float above the
-	// server's own updated order.
-	const paneNotes =
-		notes === null
-			? []
-			: [...notes.filter((n) => n.pinnedAt !== null), ...notes.filter((n) => n.pinnedAt === null)];
-	const paneCount =
-		pane === "chats"
-			? String(rail.length + activeProjects.reduce((count, p) => count + projectChats(p.id).length, 0))
-			: pane === "notes"
-					? notes === null
-						? ""
-						: `${paneNotes.length}${notesTruncated ? "+" : ""}`
-					: "";
-	// The More sheet carries every system surface except Attention, which
-	// owns its own bar slot.
-	const MORE_TAB_KEYS = [
-		"settings",
-		"memory",
-		"delegations",
-		"programs",
-		"status",
-		"skills",
-		"files",
-		"log",
-	] as const;
-	const moreTabActive = (MORE_TAB_KEYS as readonly string[]).includes(page);
 
 	const renderRow = (
 		c: AppConversationList["conversations"][number],
@@ -1001,12 +875,23 @@ function AppShell() {
 				current={page === "rolling"}
 				preview={rollingCurrent?.preview ?? null}
 				updatedAt={rollingCurrent?.updatedAt ?? null}
+				working={goblin.working > 0}
 				onOpen={() => {
 					setRollingViewing(null);
 					setRollingRouted(null);
 					void openPage("rolling");
 				}}
 			/>
+			<li className="rail-project-head">
+				<button type="button" onClick={openProjectsIndex}>Projects</button>
+				<button
+					type="button"
+					aria-label="New project"
+					onClick={() => setCreateProjectOpen(true)}
+				>
+					<NewProjectGlyph />
+				</button>
+			</li>
 			{activeProjects.map((project) => {
 				const chats = projectChats(project.id);
 				return (
@@ -1023,6 +908,7 @@ function AppShell() {
 					</ProjectFolder>
 				);
 			})}
+			<li className="rail-chats-label">Chats</li>
 			<ConversationHierarchy conversations={rail} renderItem={renderRow} />
 		</>
 	);
@@ -1041,7 +927,6 @@ function AppShell() {
 							onClick={() => {
 								openConversation(h.conversationId);
 								setQuery("");
-								setPane("chats");
 							}}
 						>
 							<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
@@ -1090,215 +975,73 @@ function AppShell() {
 		</button>
 	);
 
-	// The attention glyph's dot doubles in the accessible name — the
-	// count is information, not decoration. A failed load names the
-	// miss instead of standing silent.
-	const attentionLabel = attentionError
-		? "Couldn't load attention"
-		: attentionCount > 0
-			? `Attention — ${attentionCount === 1 ? "1 item needs" : `${attentionCount} items need`} you`
-			: "Attention";
-	const plusGlyph = (
-		<svg
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			strokeWidth="1.75"
-			strokeLinecap="round"
-			width="13"
-			height="13"
-			aria-hidden="true"
+	const needsCount = goblin.attention?.length ?? 0;
+	const backFromWindow = () => {
+		if (windowConv === null) return;
+		void leaveDirty().then((ok) => {
+			if (!ok) return;
+			void select(windowConv);
+		});
+	};
+	const youMenu = (
+		<Menu
+			onAction={(value) => {
+				if (value === "settings") void openPage("settings");
+				if (value === "archive") void openArchive();
+			}}
 		>
-			<path d="M12 5v14M5 12h14" />
-		</svg>
+			<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
+			<MenuContent className="title-menu">
+				<MenuItem value="settings">Settings</MenuItem>
+				<MenuItem value="archive">Archive</MenuItem>
+			</MenuContent>
+		</Menu>
 	);
 
 	return (
 		<div className="shell">
-			{/* The C gutter — a 52px spine for every surface, a 216px panel
-				listing one at a time. Desktop-only chrome: phone widths take
-				the M thumb bar and never render this nav's DOM equivalent…
-				it stays mounted but display:none, same as the old rail. */}
 			{!railHidden && (
 				<nav className="rail app-rail" aria-label="Sidebar">
-					<div className="gutter" role="navigation" aria-label="Surfaces">
-						<button
-							type="button"
-							className="g g-new"
-							title="New conversation"
-							aria-label="New conversation"
-							onClick={newConversation}
-						>
-							<G>
-								<path d="M12 5v14M5 12h14" />
-							</G>
-						</button>
-						<button
-							type="button"
-							className={pane === "search" ? "g on" : "g"}
-							title="Search history"
+					<div className="rail-top">
+						<input
+							className="rail-search"
+							type="search"
+							placeholder="Search history"
 							aria-label="Search history"
-							onClick={() => setPane("search")}
-						>
-							<G size={16}>
-								<circle cx="11" cy="11" r="7" />
-								<path d="M20.5 20.5 16.2 16.2" />
-							</G>
-						</button>
-						<div className="g-gap" />
-						{LIST_GLYPHS.map((g) => (
-							<button
-								key={g.key}
-								type="button"
-								className={surfaceOn(g.key) ? "g on" : "g"}
-								title={g.label}
-								aria-label={g.label}
-								aria-current={pagePane === g.key ? "page" : undefined}
-								onClick={() => (g.key === "projects" ? openProjectsIndex() : setPane(g.key))}
+							value={query}
+							onChange={(e) => setQuery(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Escape") setQuery("");
+							}}
+						/>
+						<button type="button" aria-label="New chat" onClick={newConversation}>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								width="18"
+								height="18"
+								aria-hidden="true"
 							>
-								{g.svg}
-							</button>
-						))}
-						<div className="g-split" role="presentation" />
-						{OPS_GLYPHS.map((g) => (
-							<button
-								key={g.key}
-								type="button"
-								className={page === g.key ? "g on" : "g"}
-								title={g.key === "attention" ? attentionLabel : g.label}
-								aria-label={g.key === "attention" ? attentionLabel : g.label}
-								aria-current={page === g.key ? "page" : undefined}
-								onClick={() => openPage(g.key)}
-							>
-								{g.svg}
-								{g.key === "attention" && (attentionCount > 0 || attentionError) && (
-									<span
-										className={attentionError ? "dot attention-dot-error" : "dot"}
-										aria-hidden="true"
-									/>
-								)}
-							</button>
-						))}
-						<div className="g-spacer" />
-						<button
-							type="button"
-							className={page === "settings" ? "g on" : "g"}
-							title="Settings"
-							aria-label="Settings"
-							aria-current={page === "settings" ? "page" : undefined}
-							onClick={() => openPage("settings")}
-						>
-							<G>
-								<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-								<circle cx="12" cy="12" r="3" />
-							</G>
+								<path d="M12 5v14M5 12h14" />
+							</svg>
 						</button>
 					</div>
-					<div className="panel">
-						{pane === "search" ? (
-							<>
-								<input
-									ref={searchRef}
-									className="rail-search"
-									type="search"
-									placeholder="Search history"
-									aria-label="Search history"
-									value={query}
-									onChange={(e) => setQuery(e.target.value)}
-									onKeyDown={(e) => {
-										if (e.key === "Escape") {
-											setQuery("");
-											setPane("chats");
-										}
-									}}
-								/>
-								<div className="panes">{searchBody}</div>
-							</>
+					<div className="rail-body">
+						{query.trim() !== "" ? (
+							searchBody
 						) : (
 							<>
-								<div className="panel-head">
-									{pane === "chats" ? (
-										<span className="panel-label">Chats</span>
-									) : (
-										<button
-											type="button"
-											className="panel-label panel-index"
-											title="All notes"
-											onClick={openNotesIndex}
-										>
-											Notes
-										</button>
-									)}
-									{paneCount !== "" && <span className="panel-count">{paneCount}</span>}
-									{pane === "chats" && (
-										<button
-											type="button"
-											className="panel-action"
-											title="New project"
-											aria-label="New project"
-											onClick={() => setCreateProjectOpen(true)}
-										>
-											<NewProjectGlyph />
-										</button>
-									)}
-								</div>
-								<div className="panes">
-									{pane === "chats" && (
-										<>
-											<ConversationNav loop={false}>
-												{chatFolders}
-											</ConversationNav>
-											{archivedRows}
-											{conversations !== null && rail.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
-												<p className="empty">Nothing here yet — start a conversation.</p>
-											)}
-										</>
-									)}
-									{pane === "notes" && notesError && (
-										<p className="error">Couldn't load notes.</p>
-									)}
-									{pane === "notes" && notes !== null && (
-										<>
-											<ul>
-												{paneNotes.map((n) => (
-													<li key={n.id}>
-														<button
-															type="button"
-															className={
-																page === "note" && noteId === n.id ? "line-row on" : "line-row"
-															}
-															onClick={() => openNote(n.id)}
-														>
-															{n.pinnedAt !== null && <PinGlyph />}
-															<span className="line-row-title">
-																{flatLine(n.title) || "Untitled note"}
-															</span>
-															<span className="conv-time">{relTime(n.updatedAt)}</span>
-														</button>
-													</li>
-												))}
-											</ul>
-											{paneNotes.length === 0 && <p className="empty">No notes yet.</p>}
-											<button
-												type="button"
-												className="new"
-												disabled={creatingNote}
-												onClick={newNote}
-											>
-												{plusGlyph} New note
-											</button>
-										</>
-									)}
-								</div>
+								<ConversationNav loop={false}>{chatFolders}</ConversationNav>
+								{archivedRows}
 							</>
 						)}
-						{listError !== null && <p className="error">Couldn't refresh the list.</p>}
-						{rowError !== null && (
-							<p className="error" role="alert">
-								{rowError}
-							</p>
-						)}
 					</div>
+					{listError !== null && <p className="error">Couldn't refresh the list.</p>}
+					{rowError !== null && <p className="error" role="alert">{rowError}</p>}
+					{youMenu}
 				</nav>
 			)}
 			<main
@@ -1309,10 +1052,6 @@ function AppShell() {
 				}
 			>
 				<header>
-					{/* Desktop (C): collapses the whole rail — gutter and
-						panel — for a focused transcript. Phone widths take the
-						back doors below instead; the M ruling keeps this out
-						of their DOM. */}
 					{!phone && (
 						<button
 							type="button"
@@ -1337,17 +1076,25 @@ function AppShell() {
 							</svg>
 						</button>
 					)}
-					{/* Phone-widths-only back doors: a thread and the staged
-						composer both stand down for the chats list, which is the
-						home surface on a phone; a project stands down for the
-						projects index it came from. Desktop never renders them. */}
-					{phone && page === "chat" && current !== null && (
+					{phone && !chatListMode && (
 						<button
 							type="button"
 							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => void navigate({ kind: "home", composing: false })}
+							aria-label={
+								page === "project"
+									? "Back to projects"
+									: page === "note"
+										? "Back to notes"
+										: page === "window"
+											? "Back to conversation"
+											: "Back to chats"
+							}
+							onClick={() => {
+								if (page === "project") void openProjectsIndex();
+								else if (page === "note") void openNotesIndex();
+								else if (page === "window") backFromWindow();
+								else void navigate({ kind: "home", composing: false });
+							}}
 						>
 							<svg
 								viewBox="0 0 24 24"
@@ -1358,85 +1105,7 @@ function AppShell() {
 								strokeLinejoin="round"
 								width="19"
 								height="19"
-							>
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "chat" && current === null && composeStaged && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => void navigate({ kind: "home", composing: false })}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="19"
-								height="19"
-							>
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "archive" && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => navigate({ kind: "home", composing: false })}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="19"
-								height="19"
-							>
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "rolling" && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to chats"
-							title="Chats"
-							onClick={() => void navigate({ kind: "home", composing: false })}
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" width="19" height="19">
-								<path d="M14.5 5 7.5 12l7 7" />
-							</svg>
-						</button>
-					)}
-					{phone && page === "project" && (
-						<button
-							type="button"
-							className="mobile-back"
-							aria-label="Back to projects"
-							title="Projects"
-							onClick={openProjectsIndex}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="19"
-								height="19"
+								aria-hidden="true"
 							>
 								<path d="M14.5 5 7.5 12l7 7" />
 							</svg>
@@ -1541,7 +1210,7 @@ function AppShell() {
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
-					{page === "rolling" && <span className="header-title">Rolling chat</span>}
+					{page === "rolling" && <span className="header-title">Goblin</span>}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -1620,6 +1289,30 @@ function AppShell() {
 					{PAGES.some((p) => p.key === page) && (
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
+					{!phone && (page === "chat" || page === "rolling") && (
+						<button
+							type="button"
+							className="goblin-panel-toggle"
+							aria-label="Goblin panel"
+							aria-expanded={panelOpen}
+							onClick={() => {
+								setPanelOpen(!panelOpen);
+								savePanelOpen(!panelOpen);
+							}}
+						>
+							<GoblinAvatar size="sm" working={goblin.working > 0} />
+						</button>
+					)}
+					{phone && !chatListMode && (page === "chat" || page === "rolling") && (
+						<button
+							type="button"
+							className="goblin-panel-toggle"
+							aria-label="Goblin"
+							onClick={() => setGoblinSheetOpen(true)}
+						>
+							<GoblinAvatar size="sm" working={goblin.working > 0} />
+						</button>
+					)}
 				</header>
 				{/* Mobile (M): the chats surface is a screen. Desktop never sees
 					it — the rail is the list there; CSS shows this on phone
@@ -1632,17 +1325,8 @@ function AppShell() {
 							<button
 								type="button"
 								className="header-action"
-								title="New project"
-								aria-label="New project"
-								onClick={() => setCreateProjectOpen(true)}
-							>
-								<NewProjectGlyph />
-							</button>
-							<button
-								type="button"
-								className="header-action"
-								title="New conversation"
-								aria-label="New conversation"
+								title="New chat"
+								aria-label="New chat"
 								onClick={newConversation}
 							>
 								<svg
@@ -1668,6 +1352,17 @@ function AppShell() {
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
+						{(goblin.attentionError || needsCount > 0) && (
+							<button
+								type="button"
+								className="needs-banner"
+								onClick={() => setGoblinSheetOpen(true)}
+							>
+								{goblin.attentionError
+									? "Couldn't load what needs you"
+									: `${needsCount} ${needsCount === 1 ? "thing needs" : "things need"} you`}
+							</button>
+						)}
 						{searchBody}
 						{hits === null && (
 							<>
@@ -1686,6 +1381,7 @@ function AppShell() {
 								)}
 							</>
 						)}
+						{youMenu}
 					</div>
 				)}
 				{navigationError !== null && (
@@ -1698,7 +1394,7 @@ function AppShell() {
 						token={token}
 						onPage={openPage}
 						onConversation={openConversation}
-						onItems={onAttentionItems}
+						onItems={goblin.reload}
 					/>
 				)}
 				{page === "settings" && (
@@ -1709,6 +1405,9 @@ function AppShell() {
 						}}
 						leaveRef={settingsLeave}
 					/>
+				)}
+				{(page === "status" || page === "memory" || page === "skills" || page === "log") && (
+					<GoblinProfileHeader page={page} working={goblin.working} onPage={openPage} />
 				)}
 				{page === "memory" && <MemoryView token={token} onConversation={openConversation} />}
 				{page === "delegations" && (
@@ -1725,12 +1424,7 @@ function AppShell() {
 						token={token}
 						conversationId={windowConv}
 						title={flatTitle(conversations?.find((c) => c.id === windowConv)?.title ?? null)}
-						onBack={() => {
-							void leaveDirty().then((ok) => {
-								if (!ok) return;
-								void select(windowConv);
-							});
-						}}
+						onBack={backFromWindow}
 					/>
 				)}
 				{page === "projects" && (
@@ -2072,183 +1766,63 @@ function AppShell() {
 						/>
 					))}
 			</main>
-			{/* Mobile (M): the thumb bar — every surface one tap away. It
-				stands down inside a thread, the staged composer, a project, or
-				the context-window view, where the open surface owns the
-				bottom edge. Desktop never renders it. */}
-			{phone && !chatSurfaceOpen && (
-				<nav className="tabbar" aria-label="Surfaces">
-					<button
-						type="button"
-						className={page === "chat" ? "tab on" : "tab"}
-						aria-current={page === "chat" ? "page" : undefined}
-						onClick={() => {
-							if (route.kind === "home" || route.kind === "conversation") return;
-							void navigate({ kind: "home", composing: false });
+			{!phone && (page === "chat" || page === "rolling") && panelOpen && (
+				<aside className="goblin-column" aria-label="Goblin">
+					<GoblinPanel
+						variant="column"
+						data={goblin}
+						notes={notes}
+						notesError={notesError}
+						onOpenTarget={(target) => {
+							if (target.kind === "page") void openPage(target.page);
+							else openConversation(target.conversationId);
 						}}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6z" />
-						</svg>
-						Chats
-					</button>
-					<button
-						type="button"
-						// The bar is stood down on a project page, so the tab can
-						// only be current for the index.
-						className={page === "projects" ? "tab on" : "tab"}
-						aria-current={page === "projects" ? "page" : undefined}
-						onClick={openProjectsIndex}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-						</svg>
-						Projects
-					</button>
-					<button
-						type="button"
-						className={page === "notes" || page === "note" ? "tab on" : "tab"}
-						aria-current={page === "notes" || page === "note" ? "page" : undefined}
-						onClick={openNotesIndex}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z" />
-							<path d="M9 3v18" />
-						</svg>
-						Notes
-					</button>
-					<button
-						type="button"
-						className={page === "attention" ? "tab on" : "tab"}
-						aria-current={page === "attention" ? "page" : undefined}
-						onClick={() => openPage("attention")}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z" />
-							<path d="M10 19a2.2 2.2 0 0 0 4 0" />
-						</svg>
-						Attention
-					</button>
-					<button
-						type="button"
-						className={moreTabActive ? "tab on" : "tab"}
-						aria-haspopup="dialog"
-						aria-expanded={systemSheetOpen}
-						onClick={() => setSystemSheetOpen(true)}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							width="18"
-							height="18"
-							aria-hidden="true"
-						>
-							<rect x="4" y="4" width="7" height="7" rx="1.5" />
-							<rect x="13" y="4" width="7" height="7" rx="1.5" />
-							<rect x="4" y="13" width="7" height="7" rx="1.5" />
-							<rect x="13" y="13" width="7" height="7" rx="1.5" />
-						</svg>
-						More
-					</button>
-				</nav>
+						onOpenConversation={openConversation}
+						onOpenPage={openPage}
+						onOpenNote={openNote}
+						onOpenProfile={() => openPage("status")}
+					/>
+				</aside>
 			)}
-			{systemSheetOpen && (
-				<div className="veil on system-veil" onClick={() => setSystemSheetOpen(false)}>
-					<div
-						className="msheet system-sheet"
-						role="dialog"
-						aria-label="System"
-						onClick={(e) => e.stopPropagation()}
-					>
-						<header className="msheet-head">
-							<h3>System</h3>
-							<button type="button" aria-label="Close" onClick={() => setSystemSheetOpen(false)}>
-								×
-							</button>
-						</header>
-						<div className="msheet-body">
-							{(
-								[
-									{ group: "Reads", keys: ["delegations", "memory"] },
-									{ group: "Operate", keys: ["programs", "skills", "files"] },
-									{ group: "Inspect", keys: ["status", "log"] },
-								] as const
-							).map((g) => (
-								<Fragment key={g.group}>
-									<div className="sheet-group">{g.group}</div>
-									{g.keys.map((k) => (
-										<button
-											key={k}
-											type="button"
-											className="sheet-row"
-											onClick={() => {
-												setSystemSheetOpen(false);
-												void openPage(k);
-											}}
-										>
-											{PAGES.find((p) => p.key === k)?.label ?? k}
-										</button>
-									))}
-								</Fragment>
-							))}
-							<hr />
-							<button
-								type="button"
-								className="sheet-row"
-								onClick={() => {
-									setSystemSheetOpen(false);
-									void openPage("settings");
-								}}
-							>
-								Settings
-							</button>
-						</div>
-					</div>
-				</div>
+			{phone && goblinSheetOpen && (
+				<Drawer
+					open={goblinSheetOpen}
+					onOpenChange={setGoblinSheetOpen}
+					modal
+					side="bottom"
+				>
+					<DrawerBackdrop className="row-sheet-backdrop" />
+					<DrawerContent className="goblin-sheet">
+						<DrawerTitle className="goblin-sheet-title">Goblin</DrawerTitle>
+						<GoblinPanel
+							variant="sheet"
+							data={goblin}
+							notes={notes}
+							notesError={notesError}
+							onOpenTarget={(target) => {
+								setGoblinSheetOpen(false);
+								if (target.kind === "page") void openPage(target.page);
+								else openConversation(target.conversationId);
+							}}
+							onOpenConversation={(id) => {
+								setGoblinSheetOpen(false);
+								openConversation(id);
+							}}
+							onOpenPage={(target) => {
+								setGoblinSheetOpen(false);
+								void openPage(target);
+							}}
+							onOpenNote={(id) => {
+								setGoblinSheetOpen(false);
+								void openNote(id);
+							}}
+							onOpenProfile={() => {
+								setGoblinSheetOpen(false);
+								void openPage("status");
+							}}
+						/>
+					</DrawerContent>
+				</Drawer>
 			)}
 			{page === "chat" && sourcesOpen && current !== null && (
 				<ThreadSourcesSheet

@@ -114,8 +114,9 @@ column:
 - A decision shows its evidence next to its reason, already open. An
   approval shows its diff without a click.
 - Opening an item replaces the list in the same pane, with a back link. No
-  detail panel: the app already has the rail and the list panel, and a third
-  column reads as a double side panel (operator, 2026-11-07).
+  detail panel: a third column reads as a double side panel (operator,
+  2026-11-07). The Goblin panel beside chat pages is not a detail panel
+  (#862, App navigation).
 - A summary strip (counts that need attention) is allowed on top where it
   helps, e.g. Programs, Memory, Status.
 - Chat stays as it is.
@@ -291,8 +292,8 @@ a mechanism borrowed from t3code's sidebar. A folder holds that project's
 active chats, pinned first. Folders start closed; opening a project chat or
 project page opens its folder, and which folders are open is kept per device
 in localStorage. A folder's + opens the project page, whose composer starts
-a chat in it. There is no Projects pane: the Projects glyph opens the
-all-projects page, and New project sits in the chats pane head. New project
+a chat in it. There is no Projects pane: the Projects head in the chat list
+opens the all-projects page and carries New project (#862). New project
 uses a folder-plus glyph so it never reads as New conversation. Which folders
 are open is a per-device preference, like the chat width: when storage is
 unavailable the rail only forgets it.
@@ -310,7 +311,8 @@ rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
 **Client.** The PWA keeps all ordinary chat and folder rows and adds a
-Rolling chat row at the top of the Chats rail. `/app/rolling` shows one roll
+Rolling chat row at the top of the chat list, named Goblin and shown with
+Goblin's avatar (#862). `/app/rolling` shows one roll
 at a time; when a newer roll begins, its transcript starts with
 "— new conversation —" and a link to the previous conversation. Older rolls
 show an "Earlier conversation" bar with "Back to latest". A `/app/c/<id>` link
@@ -642,10 +644,56 @@ survive. A project-bound source refuses to branch into an archived project
 not in scope: `editMessageId` names a durable event, which only the app
 channel addresses.
 
-## Mobile navigation (ruling 2026-10-24, operator ask; desktop landed 2026-10-30)
+## App navigation (ruling 2026-11-21, #862, operator pick)
 
-The operator chose a glyph gutter on desktop and a thumb bar on phones.
-The Telegram door keeps its drawer: its two pages don't warrant a bar.
+Goblin is someone you message. The chat is the main surface, and one panel
+shows Goblin itself. This replaces the glyph gutter and thumb bar of
+2026-10-24: thirteen equal glyphs made the app read as an operations
+console.
+
+**Desktop.** No glyph gutter. Three columns:
+- Left list: a search field and New chat on top; the Rolling chat as a
+  pinned row named **Goblin**, with Goblin's avatar; the Projects head,
+  which opens the all-projects page and carries New project; project
+  folders; loose chats; archived rows. A **You** control at the bottom
+  opens a menu with Settings and Archive. The sidebar toggle still hides
+  the whole list.
+- Centre: the chat, unchanged.
+- Right: the [Goblin panel](../GLOSSARY.md#goblin-panel), beside chat pages
+  only. Non-chat pages keep the full pane width (#168). The panel can be
+  hidden; open or hidden is a per-device preference in localStorage, like
+  the chat width.
+
+**The Goblin panel**, top to bottom:
+- Goblin's avatar, name and status. "Working · N jobs" puts a spinning ring
+  round the avatar; otherwise it says "Idle". N counts busy conversations
+  (a running turn, queued input or a compaction: `runtime.busyConversations()`)
+  plus delegations that are starting, running or need input. Under
+  `prefers-reduced-motion` the ring stands still.
+- [Needs you](../GLOSSARY.md#needs-you): the Attention items. Each opens its
+  target, where its evidence already shows. The panel never decides an
+  approval: an approval shows its diff before the decision (#168).
+- Three tabs. Activity: busy conversations, delegations and program runs;
+  feed posts join it with #845. Scheduled: programs. Library: notes and
+  files. Each tab ends with a link to its full page.
+- The avatar opens [Goblin's profile](../GLOSSARY.md#goblins-profile): the
+  Status, Memory, Skills and Log pages under one header that links them.
+- No Computer tab until the app can show desktops (#863).
+
+**Phone.** No tab bar and no More sheet. The chats screen is home. When
+Attention has items it shows a "N things need you" banner. The banner, and
+Goblin's avatar in a chat's header, open the Goblin panel as a bottom
+sheet. Every other page has a back control to the chats screen. The
+Telegram door keeps its drawer: its two pages don't warrant more.
+
+**Data.** The panel polls attention, delegations, programs and
+`GET /api/app/activity` every 10 s while the page is visible, and reloads
+when the page returns to the foreground. The activity route lists busy app
+conversations and counts busy conversations on other channels, so a
+Telegram turn still counts as work.
+
+**Avatar.** `app/public/goblin-avatar.webp` is the operator's pixel-art
+goblin. The PWA icons use the same picture.
 
 ## The app wire must never idle — SSE heartbeat
 

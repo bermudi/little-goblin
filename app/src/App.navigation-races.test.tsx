@@ -15,7 +15,14 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
-import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
+import {
+	clickConfirm,
+	confirmSheet,
+	confirmText,
+	type DesktopPage,
+	goblinFeedResponse,
+	openDesktopPage,
+} from "./testkit.ts";
 
 // Late completions must not drive navigation: a held create dialog's
 // onCreated, a held note mint's onOpenNote, and a second note→chat
@@ -118,6 +125,7 @@ describe("navigation races: late completions", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		// The note page lazy-mounts Milkdown — its ctx signals readiness
@@ -142,6 +150,8 @@ describe("navigation races: late completions", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
 			if (method === "DELETE" && url.startsWith("/api/app/conversations/")) {
@@ -374,27 +384,12 @@ describe("navigation races: late completions", () => {
 		});
 		await settle();
 	};
-	const openPage = async (label: string) =>
-		click(
-			[...container.querySelectorAll(".gutter button")].find(
-				(b) => b.getAttribute("aria-label") === label,
-			),
-		);
-
-	const openPane = async (label: "Chats" | "Notes") =>
-		click(
-			[...container.querySelectorAll(".gutter button")].find(
-				(b) => b.getAttribute("aria-label") === label,
-			),
-		);
-	const openProject = async (name: string) => {
-		await openPane("Chats");
-		await click(container.querySelector(`[aria-label="New chat in ${name}"]`));
-	};
+	const openPage = async (page: DesktopPage) => openDesktopPage(container, click, page);
+	const openProject = async (name: string) =>
+		click(container.querySelector(`[aria-label="New chat in ${name}"]`));
 
 	const submitNewProject = async (name: string) => {
-		await openPane("Chats");
-		await click(container.querySelector('.panel-action[aria-label="New project"]'));
+		await click(container.querySelector('.rail-project-head button[aria-label="New project"]'));
 		const sheet = container.querySelector(".msheet form")!;
 		expect(sheet).not.toBeNull();
 		await typeInto(sheet.querySelector("input")!, name, win.HTMLInputElement.prototype);
@@ -476,11 +471,11 @@ describe("navigation races: late completions", () => {
 
 		// The operator moves on while the mint is in flight — the
 		// ProjectNotes component unmounts with the page.
-		await openPage("Memories");
-		expect(win.location.pathname).toBe("/app/memory");
+		await openPage("Archive");
+		expect(win.location.pathname).toBe("/app/archive");
 		gate.resolve();
 		await settle();
-		expect(win.location.pathname).toBe("/app/memory");
+		expect(win.location.pathname).toBe("/app/archive");
 		expect(container.querySelector(".note-title")).toBeNull();
 		expect(notes.some((n) => n.id === "n-new")).toBe(true);
 	});
@@ -591,7 +586,7 @@ describe("navigation races: late completions", () => {
 				(b) => b.textContent === "Chat with this note",
 			),
 		);
-		await click(container.querySelector('nav button[aria-label="New conversation"]'));
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		gate.resolve();
 		await settle();
 		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
@@ -643,8 +638,7 @@ describe("navigation races: late completions", () => {
 		// navigation fences the start's continuation, whose cleanup
 		// (delete the unselected row, refresh) still holds the start
 		// lane busy.
-		await openPane("Notes");
-		await click(container.querySelector(".panel-index"));
+		await openPage("Notes");
 		// The index debounces its fetch — wait for the row, not the chrome.
 		await waitFor(
 			() =>
@@ -775,7 +769,7 @@ describe("navigation races: late completions", () => {
 	test("a declined ask keeps the unsaved pill while it is open; autosave resumes after", async () => {
 		await mount();
 		await editSettingsValidly();
-		await openPage("Memories");
+		await openPage("Archive");
 		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
 		await outlastAutosave();
 		expect(settingsPosts()).toHaveLength(0);

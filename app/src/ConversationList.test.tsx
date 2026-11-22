@@ -141,12 +141,13 @@ test("conversation row keeps link navigation and exposes the row actions in a to
 test("rolling row is a plain PWA link with no conversation actions", () => {
 	const html = renderToStaticMarkup(
 		<ConversationNav loop={false}>
-			<RollingRow current preview="latest message" updatedAt={conv.updatedAt} onOpen={() => {}} />
+			<RollingRow current working={false} preview="latest message" updatedAt={conv.updatedAt} onOpen={() => {}} />
 		</ConversationNav>,
 	);
 	expect(html).toContain('href="/app/rolling"');
 	expect(html).toContain('aria-current="page"');
-	expect(html).toContain("Rolling chat");
+	expect(html).toContain("Goblin");
+	expect(html).toContain('src="/app/goblin-avatar.webp"');
 	expect(html).toContain("latest message");
 	expect(html).not.toContain("toolbar");
 	expect(html).not.toContain("button");

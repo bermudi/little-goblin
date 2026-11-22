@@ -63,6 +63,8 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let conversations: AppConversationList["conversations"];
 	let projects: AppProject[];
 	let patches: { id: string; body: Record<string, unknown> }[];
+	let projectMoveRequests: string[];
+	let movePatchFail: boolean;
 	let threadMessages: AppMessageList["messages"];
 	let rollingChain: AppConversationList["rolling"]["chain"];
 	let rollingHistories: Map<string, AppMessageList["messages"]>;
@@ -87,6 +89,8 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		phone = true;
 		projects = [];
 		patches = [];
+		projectMoveRequests = [];
+		movePatchFail = false;
 		threadMessages = [];
 		rollingChain = [];
 		rollingHistories = new Map();
@@ -153,6 +157,9 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 			if (patchMatch !== null && method === "PATCH") {
 				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 				patches.push({ id: patchMatch[1]!, body });
+				if (body.projectId !== undefined) projectMoveRequests.push(`PATCH:${String(body.projectId)}`);
+				if (movePatchFail && body.projectId !== undefined)
+					return Promise.resolve(json({ error: "move refused" }, 409));
 				const conversation = conversations.find((item) => item.id === `app/${patchMatch[1]}`);
 				if (conversation !== undefined) {
 					if (body.archived === true) conversation.archivedAt = "2026-10-24T00:00:00Z";
@@ -160,6 +167,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 					if (body.pinned === true) conversation.pinnedAt = "2026-10-24T00:00:00Z";
 					if (body.pinned === false) conversation.pinnedAt = null;
 					if (typeof body.title === "string") conversation.title = body.title;
+					if (typeof body.projectId === "string") conversation.projectId = body.projectId;
 				}
 				return Promise.resolve(json(body));
 			}
@@ -172,6 +180,13 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 				if (holdRollingList && rollingRequests.length > 0)
 					return new Promise<Response>((resolve) => rollingListResolvers.push(() => resolve(response())));
 				return Promise.resolve(response());
+			}
+			if (url === "/api/app/projects" && method === "POST") {
+				const body = JSON.parse(String(init?.body)) as { name: string };
+				projectMoveRequests.push("POST");
+				const created = projRow(body.name);
+				projects.push(created);
+				return Promise.resolve(json(created, 201));
 			}
 			if (url === "/api/app/projects") return Promise.resolve(json({ projects }));
 			if (url === "/api/app/notes")
@@ -655,6 +670,151 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		expect(container.querySelector(".row-sheet")).toBeNull();
 	});
 
+	test("the hold sheet switches to project choices and moves in place", async () => {
+		projects = [projRow("Goblin Work")];
+		await mount();
+		const folderToggle = container.querySelector<HTMLButtonElement>(".folder-toggle");
+		expect(folderToggle?.getAttribute("aria-expanded")).toBe("false");
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
+			"touch",
+		);
+		const dialog = container.querySelector('[role="dialog"]');
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Move to project"),
+			),
+		);
+		expect(container.querySelector('[role="dialog"]')).toBe(dialog);
+		expect([...container.querySelectorAll(".row-sheet-action")].map((button) => button.textContent)).toEqual([
+			"Back",
+			"Goblin Work",
+			"New project…",
+		]);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find(
+				(button) => button.textContent === "Goblin Work",
+			),
+		);
+		await waitFor(() => patches.some((patch) => patch.body.projectId === "p-goblin"), "move PATCH");
+		expect(patches).toContainEqual({ id: "fixture", body: { projectId: "p-goblin" } });
+		expect(win.location.pathname).toBe("/app/");
+		expect(folderToggle?.getAttribute("aria-expanded")).toBe("true");
+		const movedLink = container.querySelector('.proj-folder .conv-main[href="/app/c/fixture"]');
+		expect(movedLink).toBeTruthy();
+		expect(
+			[...container.querySelectorAll('.chatlist-screen .conv-main[href="/app/c/fixture"]')]
+				.some((link) => !link.closest(".proj-folder")),
+		).toBe(false);
+	});
+
+	test("Back returns to row actions without moving the chat", async () => {
+		projects = [projRow("Goblin Work")];
+		await mount();
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
+			"touch",
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Move to project"),
+			),
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find(
+				(button) => button.textContent === "Back",
+			),
+		);
+		expect([...container.querySelectorAll(".row-sheet-action")].map((button) => button.textContent)).toEqual([
+			"Unpin",
+			"Rename",
+			"Move to project",
+			"Archive",
+		]);
+		expect(patches.filter((patch) => patch.body.projectId !== undefined)).toEqual([]);
+	});
+
+	test("the hold sheet can create a project, then move the chat without leaving the list", async () => {
+		await mount();
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
+			"touch",
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Move to project"),
+			),
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find(
+				(button) => button.textContent === "New project…",
+			),
+		);
+		const form = container.querySelector<HTMLFormElement>(".msheet form");
+		expect(form).toBeTruthy();
+		await typeInto(form!.querySelector("input")!, "Side Hustle");
+		await act(async () => {
+			form!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await waitFor(
+			() => patches.some((patch) => patch.body.projectId === "p-side"),
+			"move after project create",
+		);
+		expect(projectMoveRequests).toEqual(["POST", "PATCH:p-side"]);
+		expect(win.location.pathname).toBe("/app/");
+	});
+
+	test("a refused move from the hold sheet shows the list alert", async () => {
+		projects = [projRow("Goblin Work")];
+		movePatchFail = true;
+		await mount();
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
+			"touch",
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Move to project"),
+			),
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find(
+				(button) => button.textContent === "Goblin Work",
+			),
+		);
+		await waitFor(
+			() => container.querySelector('[role="alert"]')?.textContent === "move refused",
+			"list move error",
+		);
+		expect(win.location.pathname).toBe("/app/");
+	});
+
+	test("the hold sheet hides Move for project-bound chats", async () => {
+		projects = [projRow("Goblin Work")];
+		conversations[0]!.projectId = "p-goblin";
+		await mount();
+		await click(container.querySelector(".folder-toggle"));
+		await hold(container.querySelector('.proj-folder .conv-main[href="/app/c/fixture"]')!, "touch");
+		expect(
+			[...container.querySelectorAll(".row-sheet-action")].some((button) =>
+				button.textContent?.includes("Move to project"),
+			),
+		).toBe(false);
+	});
+
+	test("the hold sheet hides Move for child chats", async () => {
+		conversations[0]!.parentId = "app/second";
+		await mount();
+		await hold(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!, "touch");
+		expect(
+			[...container.querySelectorAll(".row-sheet-action")].some((button) =>
+				button.textContent?.includes("Move to project"),
+			),
+		).toBe(false);
+	});
+
 	test("a row can open its action sheet again after Rename remounts its link", async () => {
 		await mount();
 		const link = container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"]')!;
@@ -758,6 +918,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 			"Unarchive",
 			"Delete",
 		]);
+		expect(container.querySelector(".row-sheet")?.textContent).not.toContain("Move to project");
 	});
 
 	test("phone: New project uses the folder-plus glyph, not the new-chat plus", async () => {

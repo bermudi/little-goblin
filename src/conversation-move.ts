@@ -17,13 +17,14 @@ export type MoveOutcome =
 	| { kind: "alreadyBound"; projectId: string }
 	| { kind: "busy" }
 	| { kind: "notApp" }
-	| { kind: "child" };
+	| { kind: "child" }
+	| { kind: "rolling" };
 
 export function moveIntoProject(
 	deps: {
 		store: Pick<
 			ConversationStore,
-			"db" | "get" | "bindProject" | "setMeta" | "append" | "memoryQueue"
+			"db" | "get" | "bindProject" | "setMeta" | "append" | "memoryQueue" | "isAppRoll"
 		>;
 		projects: Pick<ProjectStore, "get">;
 		runtime: Pick<Runtime, "busy">;
@@ -37,6 +38,7 @@ export function moveIntoProject(
 	if (conv === null) return refused("notFound");
 	if (channelOf(conv.id) !== "app") return refused("notApp");
 	if (conv.parentId !== null) return refused("child");
+	if (deps.store.isAppRoll(conv.id)) return refused("rolling");
 	const project = deps.projects.get(projectId);
 	if (project === null) return refused("noProject");
 	if (project.archivedAt !== null) return refused("projectArchived");
@@ -74,10 +76,10 @@ export function moveIntoProject(
 	});
 	return { kind: "moved", conv: moved };
 
-	function refused(kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child"): MoveOutcome;
+	function refused(kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "rolling"): MoveOutcome;
 	function refused(kind: "alreadyBound", boundProjectId: string): MoveOutcome;
 	function refused(
-		kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "alreadyBound",
+		kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "rolling" | "alreadyBound",
 		boundProjectId?: string,
 	): MoveOutcome {
 		log.info("conversation move refused", {

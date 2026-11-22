@@ -1204,7 +1204,7 @@ describe("app conversations", () => {
 	});
 
 	test("PATCH moves a loose chat in place and returns mapped move refusals", async () => {
-		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
 		const patch = (id: string, body: unknown) =>
 			call(`/api/app/conversations/${id}`, {
 				method: "PATCH",
@@ -1249,6 +1249,13 @@ describe("app conversations", () => {
 				child.id,
 			]);
 			expect((await patch("move-child", { projectId: project.id })).status).toBe(422);
+			const roll = store.rollApp(configRef.current);
+			const refusedRoll = await patch(roll.id.slice("app/".length), { projectId: project.id });
+			expect(refusedRoll.status).toBe(422);
+			expect(await refusedRoll.json()).toEqual({
+				error: "rolling chat conversations cannot move into a project",
+			});
+			expect(store.get(roll.id)?.projectId).toBeNull();
 		} finally {
 			http.stop();
 		}

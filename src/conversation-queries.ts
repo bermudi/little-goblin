@@ -346,6 +346,9 @@ export function prepareConversationQueries(db: Database) {
 	const qAppRollChain = db.query<{ n: number; conversation_id: string }, [number]>(
 		"SELECT n, conversation_id FROM app_rolls ORDER BY n DESC LIMIT ?",
 	);
+	const qIsAppRoll = db.query<{ present: number }, [string]>(
+		"SELECT 1 AS present FROM app_rolls WHERE conversation_id = ?",
+	);
 	const qAppRollHighwater = db.query<{ n: number }, []>(
 		"SELECT n FROM app_roll_highwater WHERE id = 1",
 	);
@@ -464,6 +467,7 @@ export function prepareConversationQueries(db: Database) {
 		qListAppIds,
 		qAppRollCurrent,
 		qAppRollChain,
+		qIsAppRoll,
 		qAppRollHighwater,
 		qAppRollHighwaterUpsert,
 		qInsertAppRoll,

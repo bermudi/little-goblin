@@ -16,6 +16,7 @@ import { conversationActions } from "./conversationActions.ts";
 import { flatLine, flatTitle } from "./flatText.ts";
 import {
 	ArchiveGlyph,
+	MoveToProjectGlyph,
 	PencilGlyph,
 	PinActionGlyph,
 	PinGlyph,
@@ -137,6 +138,9 @@ export function ConversationRow({
 	onTogglePinned,
 	onDelete,
 	onError,
+	moveTargets,
+	onMove,
+	onMoveToNewProject,
 	token,
 	orphaned = false,
 }: {
@@ -148,6 +152,9 @@ export function ConversationRow({
 	onTogglePinned: (id: string, pinned: boolean) => void;
 	onDelete: (conv: AppConversationList["conversations"][number]) => void;
 	onError: (message: string) => void;
+	moveTargets: { id: string; name: string }[];
+	onMove: (conversationId: string, projectId: string) => void;
+	onMoveToNewProject: (conversationId: string) => void;
 	token: string | null;
 	orphaned?: boolean;
 }) {
@@ -157,14 +164,29 @@ export function ConversationRow({
 	const pinned = conv.pinnedAt !== null;
 	const [editing, setEditing] = useState(false);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	const [sheetStep, setSheetStep] = useState<"actions" | "move">("actions");
+	const firstSheetActionRef = useRef<HTMLButtonElement>(null);
+	const moveActionRef = useRef<HTMLButtonElement>(null);
+	const returningFromMove = useRef(false);
+	const canMove = conv.projectId === null && conv.parentId === null && !archived;
 	const linkRef = useRef<HTMLAnchorElement>(null);
+	useEffect(() => {
+		if (sheetOpen) {
+			(returningFromMove.current ? moveActionRef.current : firstSheetActionRef.current)?.focus();
+			returningFromMove.current = false;
+		}
+	}, [sheetOpen, sheetStep]);
 	useEffect(() => {
 		const link = linkRef.current;
 		if (link === null) return;
 		return bindHold(link, {
 			keys: [],
 			onPress: ({ input }) => input === "touch",
-			onHold: () => setSheetOpen(true),
+			onHold: () => {
+				returningFromMove.current = false;
+				setSheetStep("actions");
+				setSheetOpen(true);
+			},
 		});
 	}, [editing]);
 	const actions = conversationActions(conv, {
@@ -250,20 +272,85 @@ export function ConversationRow({
 					<DrawerContent className="row-sheet">
 						<div className="row-sheet-grip" aria-hidden="true" />
 						<DrawerTitle className="row-sheet-title">{name}</DrawerTitle>
-						{items.map((item) => (
-							<button
-								key={item.label}
-								type="button"
-								className="row-sheet-action"
-								onClick={() => {
-									setSheetOpen(false);
-									item.run();
-								}}
-							>
-								{item.icon}
-								<span>{item.label}</span>
-							</button>
-						))}
+						{sheetStep === "actions" ? (
+							<>
+								{items.slice(0, 2).map((item, index) => (
+									<button
+										key={item.label}
+										ref={index === 0 ? firstSheetActionRef : undefined}
+										type="button"
+										className="row-sheet-action"
+										onClick={() => {
+											setSheetOpen(false);
+											item.run();
+										}}
+									>
+										{item.icon}<span>{item.label}</span>
+									</button>
+								))}
+								{canMove && (
+									<button
+										ref={moveActionRef}
+										type="button"
+										className="row-sheet-action"
+										onClick={() => setSheetStep("move")}
+									>
+										<MoveToProjectGlyph />
+										<span>Move to project</span>
+									</button>
+								)}
+								{items.slice(2).map((item) => (
+									<button
+										key={item.label}
+										type="button"
+										className="row-sheet-action"
+										onClick={() => {
+											setSheetOpen(false);
+											item.run();
+										}}
+									>
+										{item.icon}<span>{item.label}</span>
+									</button>
+								))}
+							</>
+						) : (
+							<>
+								<button
+									ref={firstSheetActionRef}
+									type="button"
+									className="row-sheet-action"
+									onClick={() => {
+										returningFromMove.current = true;
+										setSheetStep("actions");
+									}}
+								>
+									<span>Back</span>
+								</button>
+								{moveTargets.map((project) => (
+									<button
+										key={project.id}
+										type="button"
+										className="row-sheet-action"
+										onClick={() => {
+											setSheetOpen(false);
+											onMove(conv.id, project.id);
+										}}
+									>
+										<span>{project.name}</span>
+									</button>
+								))}
+								<button
+									type="button"
+									className="row-sheet-action"
+									onClick={() => {
+										setSheetOpen(false);
+										onMoveToNewProject(conv.id);
+									}}
+								>
+									<span>New project…</span>
+								</button>
+							</>
+						)}
 					</DrawerContent>
 				</Drawer>
 			)}

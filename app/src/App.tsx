@@ -1,6 +1,14 @@
 import type { UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
+import {
+	Menu,
+	MenuContent,
+	MenuItem,
+	MenuSub,
+	MenuSubContent,
+	MenuSubTrigger,
+	MenuTrigger,
+} from "@ui-sdk/react/menu";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type {
 	AppAttentionItem,
@@ -47,7 +55,6 @@ import {
 	ChevronDownGlyph,
 	G,
 	LIST_GLYPHS,
-	MoveToProjectGlyph,
 	NewProjectGlyph,
 	OPS_GLYPHS,
 	PinGlyph,
@@ -276,6 +283,7 @@ function AppShell() {
 	useEffect(() => setSourcesOpen(false), [route]);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	const [createProjectMoveFor, setCreateProjectMoveFor] = useState<string | null>(null);
+	const [createProjectMoveOrigin, setCreateProjectMoveOrigin] = useState<"list" | "chat">("chat");
 	const [moveError, setMoveError] = useState<string | null>(null);
 	useEffect(() => setMoveError(null), [current]);
 	// The settings editor's dirty bit — navigation asks before
@@ -886,13 +894,21 @@ function AppShell() {
 			return next;
 		});
 	};
-	const moveChatToProject = async (conversationId: string, targetProjectId: string) => {
-		setMoveError(null);
+	const moveChatToProject = async (
+		conversationId: string,
+		targetProjectId: string,
+		origin: "list" | "chat",
+	) => {
+		if (origin === "list") setRowError(null);
+		else setMoveError(null);
 		try {
 			await patchConversation(token, conversationId, { projectId: targetProjectId });
+			setFolderOpen(targetProjectId, true);
 			await refresh();
 		} catch (err) {
-			setMoveError(err instanceof Error ? err.message : String(err));
+			const message = err instanceof Error ? err.message : String(err);
+			if (origin === "list") setRowError(message);
+			else setMoveError(message);
 		}
 	};
 
@@ -960,6 +976,16 @@ function AppShell() {
 				orphaned={orphaned}
 				current={railCurrent}
 				token={token}
+				moveTargets={activeProjects.map(({ id, name }) => ({ id, name }))}
+				onMove={(conversationId, targetProjectId) =>
+					void moveChatToProject(conversationId, targetProjectId, "list")
+				}
+				onMoveToNewProject={(conversationId) => {
+					setRowError(null);
+					setCreateProjectMoveFor(conversationId);
+					setCreateProjectMoveOrigin("list");
+					setCreateProjectOpen(true);
+				}}
 				onOpen={openConversation}
 				onRenamed={() => {
 					setRowError(null);
@@ -1441,6 +1467,18 @@ function AppShell() {
 									else if (value === "archive" || value === "unarchive")
 										void headerActions.toggleArchived();
 									else if (value === "delete") headerActions.remove();
+									else if (value === "new-project") {
+										setMoveError(null);
+										setCreateProjectMoveFor(currentConv.id);
+										setCreateProjectMoveOrigin("chat");
+										setCreateProjectOpen(true);
+									} else if (value.startsWith("project:")) {
+										void moveChatToProject(
+											currentConv.id,
+											value.slice("project:".length),
+											"chat",
+										);
+									}
 								}}
 							>
 								<MenuTrigger className="header-title title-trigger">
@@ -1454,6 +1492,19 @@ function AppShell() {
 												{currentConv.pinnedAt === null ? "Pin" : "Unpin"}
 											</MenuItem>
 											<MenuItem value="rename">Rename</MenuItem>
+											{currentConv.projectId === null && currentConv.parentId === null && (
+												<MenuSub>
+													<MenuSubTrigger>Move to project</MenuSubTrigger>
+													<MenuSubContent className="move-menu">
+														{activeProjects.map((project) => (
+														<MenuItem key={project.id} value={`project:${project.id}`}>
+															{project.name}
+														</MenuItem>
+														))}
+														<MenuItem value="new-project">New project…</MenuItem>
+													</MenuSubContent>
+												</MenuSub>
+											)}
 											<MenuItem value="archive">Archive</MenuItem>
 										</>
 									) : (
@@ -1863,42 +1914,6 @@ function AppShell() {
 									{currentConvProject.name}
 								</button>
 							)}
-							{currentConv !== undefined &&
-								currentConv.projectId === null &&
-								currentConv.parentId === null && (
-									<Menu
-										onAction={(action) => {
-											if (action === "new-project") {
-												setMoveError(null);
-												setCreateProjectMoveFor(currentConv.id);
-												setCreateProjectOpen(true);
-												return;
-											}
-											if (action.startsWith("project:")) {
-												return moveChatToProject(
-													currentConv.id,
-													action.slice("project:".length),
-												);
-											}
-										}}
-									>
-										<MenuTrigger
-											className="header-action"
-											title="Move to project"
-											aria-label="Move to project"
-										>
-											<MoveToProjectGlyph />
-										</MenuTrigger>
-										<MenuContent className="move-menu">
-											{activeProjects.map((project) => (
-												<MenuItem key={project.id} value={`project:${project.id}`}>
-													{project.name}
-												</MenuItem>
-											))}
-											<MenuItem value="new-project">New project…</MenuItem>
-										</MenuContent>
-									</Menu>
-								)}
 							{moveError !== null && (
 								<p className="error" role="alert">
 									{moveError}
@@ -2251,13 +2266,15 @@ function AppShell() {
 					onClose={() => {
 						setCreateProjectOpen(false);
 						setCreateProjectMoveFor(null);
+						setCreateProjectMoveOrigin("chat");
 					}}
 					onCreated={(p) => {
 						setCreateProjectOpen(false);
 						const moveFor = createProjectMoveFor;
+						const moveOrigin = createProjectMoveOrigin;
 						setCreateProjectMoveFor(null);
 						if (moveFor !== null) {
-							void moveChatToProject(moveFor, p.id);
+							void moveChatToProject(moveFor, p.id, moveOrigin);
 						} else {
 							void refresh();
 							void openProject(p.id);

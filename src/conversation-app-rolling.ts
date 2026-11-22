@@ -8,6 +8,9 @@ interface AppRollQueries {
 	qAppRollChain: {
 		all(limit: number): { n: number; conversation_id: string }[];
 	};
+	qIsAppRoll: {
+		get(id: string): { present: number } | null;
+	};
 	qAppRollHighwater: {
 		get(): { n: number } | null;
 	};
@@ -59,5 +62,9 @@ export function makeConversationAppRolling<
 			});
 	}
 
-	return { currentAppRoll, rollApp, appRollChain };
+	function isAppRoll(id: string): boolean {
+		return queries.qIsAppRoll.get(id) !== null;
+	}
+
+	return { currentAppRoll, rollApp, appRollChain, isAppRoll };
 }

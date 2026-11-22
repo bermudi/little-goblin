@@ -378,7 +378,8 @@ It replaces the same day's first ruling (own model only) and the
 - **Failure.** Short (retryable) errors retry inside the call with a
   delay: the SDK's `maxRetries` ladder for flagged 5xx and throttles, and
   `transportRetry` (`src/agent/providers.ts`) for dropped connections,
-  from 2s, doubling. Quota walls never retry. Pi's twin is
+  from 2s, doubling. A claude-code lane relies on the Claude Code CLI's
+  own API retries (its `api_retry` events). Quota walls never retry. Pi's twin is
   `retryAssistantCall`. A failed prefix-mode call retries once in text
   mode on the same model. When text mode fails too, nothing is saved:
   `/compact` reports the error, an overflow fold ends the turn with

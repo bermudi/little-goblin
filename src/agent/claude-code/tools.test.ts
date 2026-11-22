@@ -165,6 +165,60 @@ describe("createToolBridge", () => {
 		expect(r).toEqual({ output: null, error: "boom" });
 	});
 
+	test("parallel calls each execute under the CLI tool_use id from their own _meta", async () => {
+		const gates: Array<() => void> = [];
+		const seen: Array<{ tag: string; executeId: string; modelOutputId: string }> = [];
+		const idTools: Tools = {
+			tagged: defineTool({
+				description: "tagged",
+				input: z.object({ tag: z.string() }),
+				execute: async ({ tag }, { toolCallId }) => {
+					await new Promise<void>((resolve) => gates.push(resolve));
+					return { tag, executeId: toolCallId };
+				},
+				toModelOutput: ({ output, toolCallId }) => {
+					const { tag, executeId } = output as { tag: string; executeId: string };
+					seen.push({ tag, executeId, modelOutputId: toolCallId });
+					return { type: "text", value: tag };
+				},
+			}),
+		};
+		const b = createToolBridge({ convId: "c", tools: idTools });
+		const p1 = b.invoke("tagged", { tag: "x" }, { _meta: { "claudecode/toolUseId": "toolu_x" } });
+		const p2 = b.invoke("tagged", { tag: "y" }, { _meta: { "claudecode/toolUseId": "toolu_y" } });
+		while (gates.length < 2) await new Promise((r) => setTimeout(r, 0));
+		gates[1]?.();
+		await p2;
+		gates[0]?.();
+		await p1;
+		expect(seen).toEqual([
+			{ tag: "y", executeId: "toolu_y", modelOutputId: "toolu_y" },
+			{ tag: "x", executeId: "toolu_x", modelOutputId: "toolu_x" },
+		]);
+	});
+
+	test("a call with no CLI tool_use id still executes under a bridge-minted id", async () => {
+		let executeId = "";
+		const b = createToolBridge({
+			convId: "c",
+			tools: {
+				plain: defineTool({
+					description: "plain",
+					input: z.object({}),
+					execute: async (_, { toolCallId }) => {
+						executeId = toolCallId;
+						return "ok";
+					},
+				}),
+			},
+		});
+		expect(await b.invoke("plain", {}, { _meta: { progressToken: 2 } })).toEqual({
+			output: "ok",
+			error: null,
+		});
+		expect(executeId).toMatch(/^claude-[0-9a-f]{8}-1$/);
+	});
+
 	test("unknown tools fail loud, never throw", async () => {
 		const b = createToolBridge({ convId: "c", tools: {} });
 		const r = await b.invoke("ghost", {});

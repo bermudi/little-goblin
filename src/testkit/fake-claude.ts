@@ -64,7 +64,7 @@ export type FakeStep =
 			name: string;
 			input: unknown;
 			/** Runs the real execution (bridge.invoke) between call and echo. */
-			run?: () => Promise<{ output: unknown; error: string | null }>;
+			run?: (toolUseId: string) => Promise<{ output: unknown; error: string | null }>;
 			/** Echo payload when no adoption should apply (fallback rendering). */
 			content?: string;
 			isError?: boolean;
@@ -285,7 +285,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 					let ran: { output: unknown; error: string | null } | null = null;
 					if (step.run !== undefined) {
 						try {
-							ran = await step.run();
+							ran = await step.run(id);
 						} catch (err) {
 							ran = { output: null, error: err instanceof Error ? err.message : String(err) };
 						}

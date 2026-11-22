@@ -224,6 +224,38 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		expect(result?.type === "result" && !result.isError).toBe(true);
 	}, 180_000);
 
+	test("parallel bridged calls execute under the CLI's own tool_use ids", async () => {
+		const executed: Array<{ tag: string; toolCallId: string }> = [];
+		const bridge = createToolBridge({
+			convId: "drift",
+			tools: {
+				drift_tag: defineTool({
+					description: "Returns the tag it was given",
+					input: z.object({ tag: z.string() }),
+					execute: async ({ tag }, { toolCallId }) => {
+						executed.push({ tag, toolCallId });
+						await new Promise((r) => setTimeout(r, 300));
+						return `tag-${tag}`;
+					},
+				}),
+			},
+		});
+		const events = await collect(
+			"In ONE message, call drift_tag twice in parallel: once with tag x and once with tag y. Then reply with exactly: tags-ok",
+			{ maxTurns: 3, mcpServers: { goblin: bridge.server() }, allowedTools: bridge.allowedTools() },
+		);
+		const toolUses = events
+			.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
+			.flatMap((e) => e.message.content)
+			.filter((b) => b.type === "tool_use")
+			.map((b) => ({ tag: (b.input as { tag: string }).tag, toolCallId: b.id ?? "" }));
+		expect(toolUses).toHaveLength(2);
+		expect(toolUses.every((u) => u.toolCallId.startsWith("toolu_"))).toBe(true);
+		expect([...executed].sort((a, b) => a.tag.localeCompare(b.tag))).toEqual(
+			[...toolUses].sort((a, b) => a.tag.localeCompare(b.tag)),
+		);
+	}, 180_000);
+
 	// #582: a steer pushed while a bridged tool runs (the engine's
 	// afterCall seam) goes in with priority "next": the CLI acks it by
 	// uuid and answers it in the SAME CLI turn — one result, no

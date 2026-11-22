@@ -50,7 +50,7 @@ export function setup(
 	const store = openStore(join(home, "goblin.sqlite"));
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
-	const posts = makePosts(store.db, () => new Date());
+	const posts = makePosts(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
 	const turnJournal = openTurnJournal(store.db);
 	// The context-window rows ride the same db — prod wires them
 	// unconditionally (src/index.ts), so the rig does too.

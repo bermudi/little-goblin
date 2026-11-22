@@ -17,9 +17,15 @@ test("post stores trimmed text under the calling conversation", async () => {
 	]);
 });
 
-test("post refuses blank and overlong text and stores nothing", async () => {
+test("post refuses blank and overlong text and stores nothing", () => {
 	const { posts, run } = rig();
-	expect(await run({ text: "   " })).toEqual({ error: "a post needs text" });
+	expect(() => run({ text: "   " })).toThrow();
 	expect(() => run({ text: "x".repeat(POST_MAX_CHARS + 1) })).toThrow();
 	expect(posts.recent(5)).toEqual([]);
+});
+
+test("the length limit applies after trimming", async () => {
+	const { posts, run } = rig();
+	expect(await run({ text: `${"x".repeat(POST_MAX_CHARS)}\n` })).toMatchObject({ id: 1 });
+	expect(posts.recent(1)[0]?.text).toHaveLength(POST_MAX_CHARS);
 });

@@ -20,8 +20,8 @@ the [Goblin panel](../GLOSSARY.md#goblin-panel).
 ## Shape
 
 - **Tool.** `post {text}`. Plain text, 1–500 characters after trimming.
-  It returns `{id, createdAt}`. A blank text returns an error; an
-  overlong text fails validation. There is no edit, remove or list.
+  It returns `{id, createdAt}`. Blank or overlong text fails
+  validation. There is no edit, remove or list.
 - **Storage.** The `posts` table in the conversation database
   ([`posts.ts`](../src/posts.ts)): id, source conversation id, text and
   time. Each insert keeps only the newest 500 posts, in the same

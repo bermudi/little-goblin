@@ -1243,4 +1243,46 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector('nav[aria-label="Sidebar"]')).not.toBeNull();
 		expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 	});
+
+	test("desktop: a column too narrow for the header drops the chat width selector", async () => {
+		phone = false;
+		win.happyDOM.setWindowSize({ width: 721, height: 800 });
+		const style = win.document.createElement("style");
+		style.textContent = readFileSync(join(import.meta.dir, "styles.css"), "utf8");
+		win.document.head.appendChild(style);
+		const observers: { target: Element; report: (width: number) => void }[] = [];
+		class LayoutResizeObserver {
+			constructor(private readonly callback: (entries: unknown[], observer: unknown) => void) {}
+			observe(target: Element) {
+				observers.push({
+					target,
+					report: (width) => this.callback([{ target, contentRect: { width } }], this),
+				});
+			}
+			unobserve() {}
+			disconnect() {}
+		}
+		Reflect.set(win, "ResizeObserver", LayoutResizeObserver);
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await click(container.querySelector('.conv-main[href="/app/c/fixture"]'));
+		await waitFor(
+			() => container.querySelector(".chat .composer-bar") !== null,
+			"chat composer",
+		);
+		const column = container.querySelector("main");
+		const reportColumn = async (width: number) => {
+			await act(async () => {
+				for (const o of observers) if (o.target === column) o.report(width);
+			});
+		};
+		const selector = () => container.querySelector('main > header [aria-label="Chat width"]');
+		await reportColumn(193);
+		expect(getComputedStyle(selector()!).display).toBe("none");
+		expect(getComputedStyle(container.querySelector(".chat .composer-bar")!).flexWrap).toBe("wrap");
+		await reportColumn(752);
+		expect(getComputedStyle(selector()!).display).toBe("inline-flex");
+	});
 });

@@ -51,7 +51,10 @@ without resetting them or probing the named thread.
 The herdr-core check must not call its CLI: `server status` can start a
 core (#739). Before first use or after a reboot, not installed or not
 running is expected. A setup failure for the current binary pin matters;
-a failure for a retired pin does not.
+a failure for a retired pin does not. After a release bumps the pin, a
+binary of a retired pin passes until the next delegate run replaces it;
+a binary that matches no pin, current or retired, stays red: it can be
+corrupt or tampered (#809).
 
 ## Reports, failures and execution
 

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { HcError, hcSessionForHome, hcSocketPath, makeHc } from "../hc.ts";
-import { HC_BINARY_SHA256, HC_VERSION, hcBinaryState } from "../hc-install.ts";
+import { HC_PINS, hcBinaryState, type HcInstallPin } from "../hc-install.ts";
 import { hcSetupFailureSchema, type HcSetupFailure } from "../hc-setup-failure.ts";
 import { errno, failure, readBounded, result, type HealthResult } from "./shared.ts";
 
@@ -32,8 +32,9 @@ const failedSetupLog: Record<HcSetupFailure["stage"], string> = {
 export async function hcCore(
 	home: string,
 	configured: boolean,
-	binarySha256: string = HC_BINARY_SHA256,
+	pins: readonly [HcInstallPin, ...HcInstallPin[]] = HC_PINS,
 ): Promise<HealthResult> {
+	const pinned = pins[0].version;
 	const id = "delegation.hc";
 	const scope = `caller-home:${home}`;
 	if (!configured) return result(id, scope, "skip", "Delegation is not configured");
@@ -42,7 +43,7 @@ export async function hcCore(
 		// A record for another pin is history: the release changed the pin
 		// after that failure, and the current pin has not been tried yet.
 		const failed = lastSetupFailure(join(home, "state", "hc-setup-failure.json"));
-		if (failed !== null && failed.version === HC_VERSION) {
+		if (failed !== null && failed.version === pinned) {
 			return result(
 				id,
 				scope,
@@ -52,19 +53,22 @@ export async function hcCore(
 				`Find "${failedSetupLog[failed.stage]}" in goblin.log; the next successful delegate run clears this record. Doctor does not install or start hc.`,
 			);
 		}
-		const binary = hcBinaryState(join(home, "bin", "herdr-core"), binarySha256);
-		if (binary === "missing") {
+		const binary = hcBinaryState(join(home, "bin", "herdr-core"), pins);
+		if (binary.kind === "missing") {
 			return result(
 				id,
 				scope,
 				"pass",
-				`Pinned herdr-core ${HC_VERSION} is not installed yet; the first delegate run downloads and verifies it (download unverified)`,
+				`Pinned herdr-core ${pinned} is not installed yet; the first delegate run downloads and verifies it (download unverified)`,
 				started,
 			);
 		}
-		const binaryFailure: Record<Exclude<typeof binary, "missing" | "pinned">, { detail: string; next: string }> = {
+		const binaryFailure: Record<
+			Exclude<typeof binary.kind, "missing" | "pinned" | "retired-pin">,
+			{ detail: string; next: string }
+		> = {
 			"wrong-hash": {
-				detail: `herdr-core binary does not match the pinned ${HC_VERSION} hash`,
+				detail: `herdr-core binary matches no known pin, current or retired (pinned ${pinned}): it may be corrupt or tampered`,
 				next: "Inspect $GOBLIN_HOME/bin/herdr-core; doctor does not replace it",
 			},
 			"not-a-file": {
@@ -72,12 +76,12 @@ export async function hcCore(
 				next: "Inspect $GOBLIN_HOME/bin/herdr-core; doctor does not replace it",
 			},
 			"not-executable": {
-				detail: `Pinned herdr-core ${HC_VERSION} is not executable`,
+				detail: `Pinned herdr-core ${pinned} is not executable`,
 				next: "Inspect $GOBLIN_HOME/bin/herdr-core permissions and its mount; doctor does not change them",
 			},
 		};
-		if (binary !== "pinned") {
-			const failure = binaryFailure[binary];
+		if (binary.kind !== "pinned" && binary.kind !== "retired-pin") {
+			const failure = binaryFailure[binary.kind];
 			return result(
 				id,
 				scope,
@@ -87,19 +91,27 @@ export async function hcCore(
 				failure.next,
 			);
 		}
+		const binaryDetail =
+			binary.kind === "retired-pin"
+				? `herdr-core ${binary.version} is a retired pin; the next delegate run replaces it with pinned ${pinned} (download unverified)`
+				: `Pinned herdr-core ${pinned} verified`;
 		const session = hcSessionForHome(home);
 		if (!existsSync(hcSocketPath(session))) {
 			return result(
 				id,
 				scope,
 				"pass",
-				`Pinned herdr-core ${HC_VERSION} verified; core ${session} is not running and starts on the first delegate run (start unverified)`,
+				`${binaryDetail}; core ${session} is not running and starts on the first delegate run (start unverified)`,
 				started,
 			);
 		}
 		try {
 			const terminals = await makeHc(session).list();
-			return result(id, scope, "pass", `Pinned core is reachable; ${terminals.length} terminals`, started);
+			const reachable =
+				binary.kind === "retired-pin"
+					? `Core is reachable; ${terminals.length} terminals; ${binaryDetail}`
+					: `Pinned core is reachable; ${terminals.length} terminals`;
+			return result(id, scope, "pass", reachable, started);
 		} catch (error) {
 			if (error instanceof HcError && errno(error.cause) === "ECONNREFUSED") {
 				return result(

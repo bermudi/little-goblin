@@ -2,15 +2,15 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureHc } from "./hc-install.ts";
+import { ensureHc, hcBinaryState } from "./hc-install.ts";
 import { useHome } from "./testkit.ts";
 
-function makeArchive(): { bytes: Uint8Array; binaryHash: string } {
+function makeArchive(script = "#!/bin/sh\nprintf 'hc-test\\n'\n"): { bytes: Uint8Array; binaryHash: string } {
 	const root = useHome("goblin-hc-install-test-");
 	const source = join(root, "source");
 	mkdirSync(source, { recursive: true });
 	const binary = join(source, "herdr-core");
-	writeFileSync(binary, "#!/bin/sh\nprintf 'hc-test\\n'\n", { mode: 0o755 });
+	writeFileSync(binary, script, { mode: 0o755 });
 	chmodSync(binary, 0o755);
 	const archive = join(root, "archive.tar.gz");
 	const tar = Bun.spawnSync(["tar", "-czf", archive, "-C", source, "herdr-core"]);
@@ -50,4 +50,27 @@ test("ensureHc installs a pinned binary once and refuses a bad archive hash", as
 		}),
 	).rejects.toThrow("archive hash mismatch");
 	expect(existsSync(badPath)).toBe(false);
+});
+
+test("a retired pin's binary reads as retired and the next ensureHc replaces it", async () => {
+	const home = useHome("goblin-hc-install-home-");
+	const binaryPath = join(home, "bin", "herdr-core");
+	const pinOf = (version: string, archive: { bytes: Uint8Array; binaryHash: string }) => ({
+		version,
+		archiveSha256: createHash("sha256").update(archive.bytes).digest("hex"),
+		binarySha256: archive.binaryHash,
+	});
+	const oldArchive = makeArchive("#!/bin/sh\nprintf 'hc-old\\n'\n");
+	const newArchive = makeArchive("#!/bin/sh\nprintf 'hc-new\\n'\n");
+	const oldPin = pinOf("0.0.1", oldArchive);
+	const newPin = pinOf("0.0.2", newArchive);
+
+	await ensureHc(binaryPath, { pin: oldPin, download: async () => oldArchive.bytes });
+	chmodSync(binaryPath, 0o644);
+	expect(hcBinaryState(binaryPath, [newPin, oldPin])).toEqual({ kind: "retired-pin", version: "0.0.1" });
+	expect(hcBinaryState(binaryPath, [newPin])).toEqual({ kind: "wrong-hash" });
+
+	await ensureHc(binaryPath, { pin: newPin, download: async () => newArchive.bytes });
+	expect(hcBinaryState(binaryPath, [newPin, oldPin])).toEqual({ kind: "pinned" });
+	expect(Bun.spawnSync([binaryPath]).stdout.toString()).toBe("hc-new\n");
 });

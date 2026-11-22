@@ -14,11 +14,6 @@ import { dirname, join } from "node:path";
 import { durableCopyFile } from "./durable.ts";
 import { log } from "./log.ts";
 
-export const HC_VERSION = "0.1.21";
-export const HC_ARCHIVE_SHA256 =
-	"78424755c10a40dde38a0bdb55c20ac19706e9ae05ed68fc2acf1fcff0d941c1";
-export const HC_BINARY_SHA256 =
-	"373f1ac70bf78c14e898c3682caafd3fb8b07d39c7f21637a57922e064c7bcba";
 const BINARY_NAME = "herdr-core";
 
 export interface HcInstallPin {
@@ -27,16 +22,20 @@ export interface HcInstallPin {
 	binarySha256: string;
 }
 
+export const HC_PINS: readonly [HcInstallPin, ...HcInstallPin[]] = [
+	{
+		version: "0.1.21",
+		archiveSha256: "78424755c10a40dde38a0bdb55c20ac19706e9ae05ed68fc2acf1fcff0d941c1",
+		binarySha256: "373f1ac70bf78c14e898c3682caafd3fb8b07d39c7f21637a57922e064c7bcba",
+	},
+];
+const [productionPin] = HC_PINS;
+export const HC_VERSION = productionPin.version;
+
 interface EnsureHcOptions {
 	pin?: HcInstallPin;
 	download?: (url: string) => Promise<Uint8Array>;
 }
-
-const productionPin: HcInstallPin = {
-	version: HC_VERSION,
-	archiveSha256: HC_ARCHIVE_SHA256,
-	binarySha256: HC_BINARY_SHA256,
-};
 
 async function downloadArchive(url: string): Promise<Uint8Array> {
 	const response = await fetch(url, { redirect: "error" });
@@ -140,22 +139,33 @@ export async function ensureHc(
 	}
 }
 
-export type HcBinaryState = "missing" | "pinned" | "wrong-hash" | "not-a-file" | "not-executable";
+export type HcBinaryState =
+	| { kind: "missing" }
+	| { kind: "pinned" }
+	| { kind: "retired-pin"; version: string }
+	| { kind: "wrong-hash" }
+	| { kind: "not-a-file" }
+	| { kind: "not-executable" };
 
 export function hcBinaryState(
 	binaryPath: string,
-	binarySha256: string = productionPin.binarySha256,
+	pins: readonly [HcInstallPin, ...HcInstallPin[]] = HC_PINS,
 ): HcBinaryState {
-	if (!existsSync(binaryPath)) return "missing";
-	if (!statSync(binaryPath).isFile()) return "not-a-file";
-	if (fileSha256(binaryPath) !== binarySha256) return "wrong-hash";
+	if (!existsSync(binaryPath)) return { kind: "missing" };
+	if (!statSync(binaryPath).isFile()) return { kind: "not-a-file" };
+	const [current, ...retired] = pins;
+	const hash = fileSha256(binaryPath);
+	if (hash !== current.binarySha256) {
+		const match = retired.find((pin) => pin.binarySha256 === hash);
+		return match === undefined ? { kind: "wrong-hash" } : { kind: "retired-pin", version: match.version };
+	}
 	try {
 		accessSync(binaryPath, constants.X_OK);
 	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "EACCES") return "not-executable";
+		if (error instanceof Error && "code" in error && error.code === "EACCES") return { kind: "not-executable" };
 		throw error;
 	}
-	return "pinned";
+	return { kind: "pinned" };
 }
 
 export function hcArchiveUrl(pin: HcInstallPin = productionPin): string {

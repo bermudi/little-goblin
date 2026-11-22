@@ -126,7 +126,6 @@ function makePrefixRequest(
 			? []
 			: input.memory.contexts.load(conv.id);
 	return {
-		modelRef: step.modelRef,
 		async prepare() {
 			input.assertAuthority();
 			const ceiling = input.foldCeiling();

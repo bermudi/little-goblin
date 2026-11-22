@@ -60,8 +60,10 @@
 - **Selection scope (2026-10-06).** Telegram uses one shared selection across
   all DMs/topics, and root-default changes must never leak into it. Admission
   freezes a turn's settings (capability gates included) through overflow
-  retry and compaction. Summaries use the conversation's model and thinking
-  (and its fallback list, see "Model fallback list" below);
+  retry and compaction. Summaries use the model that serves the request
+  and the conversation's thinking: a fold inside a fallback-served turn
+  runs on that fallback, and no fold walks the fallback list (see "Model
+  fallback list" below);
   reviewer fallback uses the conversation's model; explicit reviewer and
   title models stay independent. With no `titleModel` configured, titling
   falls back to the conversation's own model — the same model-ref the
@@ -246,7 +248,8 @@
     fenced tool's), and content-filter (it has its own recovery above). Context overflow
     is never a fallback trigger: it keeps its recovery (compaction plus a
     fresh attempt) on whichever candidate is serving, and the
-    continuation stays on that candidate. With compaction unwired the
+    continuation stays on that candidate. The fold itself summarizes on
+    that candidate too (Compaction, below). With compaction unwired the
     overflow ends the turn; it still never advances. (Amended at implementation,
     2026-11-02: "advance on a fallback's overflow" would end a mid-loop
     overflow outright, which is worse than compacting.)
@@ -254,8 +257,9 @@
     for `conv.model` everywhere the turn reads it: tools (codex's hosted
     search), view gates (modalities, carries, provider-executed parts),
     thinking clamp (the stored level clamps per ref through the existing
-    profile), `maxRetries`, context window, and engine fork. The stored
-    selection is never written. The frozen system prompt is
+    profile), `maxRetries`, context window, engine fork, and any fold
+    inside the turn (Compaction, below). The stored selection is never
+    written. The frozen system prompt is
     per-conversation and unchanged. Each ref's request bytes stay a pure
     function of ref plus history, so switching lanes is the sanctioned
     model-switch cold cache, once per switch.
@@ -274,19 +278,19 @@
     check compares configured refs. A recorded
     ref whose provider has since been removed is not refused at continuation;
     the continued turn fails loud at step build instead.
-  - **Compaction.** The summarizer walks the same list (its call is
-    single, tools-off and non-streamed, so any throw is zero effect).
-    This amends "the summarizer is the conversation's own model": it is
-    the conversation's lane list. There is still no deterministic
-    summary. `runCompaction` owns the walk (amended 2026-11-02, review):
-    each candidate's call gets its own timeout, never a parent signal
-    pre-armed with it, so a wedged primary times out alone and the next
-    candidate starts live; only the parent abort (/stop, a fence) ends
-    the walk. Within one pass the walk is sticky — a candidate that
-    failed a chunk is not retried on later chunks, so a wedged primary
-    costs one timeout, not one per chunk. The stored fold names the ref
-    that wrote the final chunk ("folded by" is the server, not the
-    selection).
+  - **Compaction runs on the serving model and does not walk the list**
+    (operator ruling 2026-11-22, second, #871; it replaces the same
+    day's own-model-only ruling and the 2026-11-02 walk). Like pi, the
+    summary runs on the model that serves the request: a fold inside a
+    fallback-served turn (overflow, pre-empt, the threshold fold after
+    its reply) is summarized by that fallback, with the tail sized from
+    its window. `/compact` and the idle fold run on the conversation's
+    model. A failed summary call fails the fold: it writes nothing and
+    never advances to another candidate. The stored fold's `model`
+    names the model that wrote it. See
+    [compaction](compaction.md#the-summary) for the one-call rule, the
+    rejected own-model-only option, and the accepted cost: summary
+    quality depends on which fallback answered.
   - **Visibility.** Each advance logs `model fallback` (conversation,
     from, to, failureClass, error). The turn's finish metadata carries
     `servedBy` and the failed refs with short reasons (metadata

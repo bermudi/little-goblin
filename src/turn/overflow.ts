@@ -119,7 +119,7 @@ export function overflowHoldable(
 }
 
 const STILL_FULL =
-	"context window still full after compacting — the latest message or tool output is too big for this model";
+	"context window still full after compacting once — the latest message or tool output is too big for this model; try a model with a bigger context window";
 
 const TRANSPORT_MARKERS = /econnreset|econnrefused|etimedout|epipe|eai_again|enotfound|fetch failed|socket|failed to process successful response|network|connection (?:reset|closed|dropped|terminated)/i;
 const TRANSPORT_CODES =
@@ -234,7 +234,7 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			return {
 				kind: "error",
 				message:
-					"context window full and there's nothing left to compact — the latest message or tool output may be too big for this model",
+					"context window full and there's nothing left to compact — the latest message or tool output may be too big for this model; try a model with a bigger context window",
 			};
 		}
 		log.warn("compaction pre-empt fold found nothing to fold — resuming on the unfolded view", {

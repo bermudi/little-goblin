@@ -319,7 +319,7 @@ describe("model fallback list", () => {
 		}
 	});
 
-	test("compaction walks the list and the fold names the ref that wrote it", async () => {
+	test("a manual fold summarizes on the conversation's model; a failed call writes nothing and never walks the fallback list", async () => {
 		const asked: string[] = [];
 		const r = rig({
 			model: "zai/glm-5.3",
@@ -328,35 +328,226 @@ describe("model fallback list", () => {
 			compaction: {
 				modelRef: (c) => c.model!,
 				contextWindow: () => 1000,
-				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
+				summarize: async (_conv, _system, _prompt, _signal, modelRef) => {
 					asked.push(modelRef);
-					if (modelRef === "zai/glm-5.3") throw quotaWall();
+					throw new Error("Weekly/Monthly Limit Exhausted");
+				},
+			},
+		});
+		try {
+			seedExchanges(r.store, r.conv.id, 3);
+			await expect(r.runtime.compact(r.store.get(r.conv.id)!)).rejects.toThrow("Limit Exhausted");
+			expect(asked).toEqual(["zai/glm-5.3"]);
+			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a manual fold is one call even when the span exceeds half the window", async () => {
+		const prompts: string[] = [];
+		const r = rig({
+			model: "zai/glm-5.3",
+			fallbacks: ["codex/gpt-6.1-terra"],
+			models: lanes({}),
+			compaction: {
+				modelRef: (c) => c.model!,
+				contextWindow: () => 1000,
+				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
+					prompts.push(prompt);
 					return foldSummary(`folded by ${modelRef}`, prompt);
 				},
 			},
 		});
 		try {
-			const big = "x".repeat(600);
-			for (let i = 0; i < 3; i++) {
-				r.store.append(r.conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-				r.store.append(
-					r.conv.id,
-					[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-					{ anchorSeq: r.store.lastUserSeq(r.conv.id) },
-				);
-			}
+			seedExchanges(r.store, r.conv.id, 3);
 			const outcome = await r.runtime.compact(r.store.get(r.conv.id)!);
 			expect(outcome).toMatchObject({ kind: "compacted" });
-			if (outcome.kind === "compacted") {
-				expect(outcome.summary).toStartWith("folded by codex/gpt-6.1-terra\n");
-			}
-			expect(asked).toEqual(["zai/glm-5.3", "codex/gpt-6.1-terra"]);
-			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({
-				model: "codex/gpt-6.1-terra",
-			});
+			expect(prompts).toHaveLength(1);
+			expect(prompts[0]).toContain("q0");
+			expect(prompts[0]).toContain("r1");
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: "zai/glm-5.3" });
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
+		}
+	});
+});
+
+function seedExchanges(store: ReturnType<typeof openStore>, convId: string, n: number) {
+	const big = "x".repeat(2000);
+	for (let i = 0; i < n; i++) {
+		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			convId,
+			[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(convId) },
+		);
+	}
+}
+
+describe("compaction during a fallback-served turn", () => {
+	const OWN = "zai/glm-5.3";
+	const FB = "codex/gpt-6.1-terra";
+	const overflow = (): ScriptCall => ({
+		kind: "fail",
+		parts: [],
+		error: { message: "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.", status: 400 },
+	});
+	const replyAt = (text: string, input: number): ScriptCall => ({
+		kind: "reply",
+		parts: [{ type: "text", text }],
+		usage: { input, output: 1 },
+	});
+	const probeTools = (): Tools => ({
+		probe: defineTool({ description: "probe", input: z.object({}), execute: async () => "probe-result" }),
+	});
+
+	function servedRig(opts: {
+		models: Record<string, ScriptedModel>;
+		summaryFails: boolean;
+		tools?: Tools;
+		windows?: Record<string, number>;
+	}) {
+		const asked: string[] = [];
+		const store = openStore(tmpDb("goblin-fallback-fold-"));
+		const conv = store.resolve({ kind: "app", appId: "app-fallback-fold", chatId: 0, threadId: 0 }, "/w", {
+			model: OWN,
+			thinking: "medium",
+		});
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			buildStep: (c) => {
+				const m = opts.models[c.model ?? ""];
+				if (m === undefined) throw new Error(`no provider for ${c.model}`);
+				return { ...m.step(), contextWindow: 8_000 };
+			},
+			turnJournal: openTurnJournal(store.db),
+			modelFallbacks: () => [FB],
+			compaction: {
+				modelRef: (c) => c.model!,
+				contextWindow: (c) => opts.windows?.[c.model ?? ""] ?? 8_000,
+				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
+					asked.push(modelRef);
+					if (opts.summaryFails) throw new Error("Weekly/Monthly Limit Exhausted");
+					return foldSummary(`folded by ${modelRef}`, prompt);
+				},
+			},
+		});
+		runtime.mount({ makeTools: () => opts.tools ?? {} });
+		const big = "x".repeat(4_000);
+		for (let i = 0; i < 6; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		const turn = async (text: string) => {
+			const sink = new RecordingSink();
+			runtime.submit(store.get(conv.id)!, userMessage([{ type: "text", text }]), sink);
+			const done = await sink.done;
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			return { sink, done };
+		};
+		const close = async () => {
+			await runtime.shutdown();
+			store.close();
+		};
+		return { store, conv, asked, turn, close };
+	}
+
+	test("an overflow fold on the fallback is one call on the fallback and stores it", async () => {
+		const r = servedRig({
+			models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("after fold")] }),
+			summaryFails: false,
+		});
+		try {
+			const { sink } = await r.turn("hello");
+			expect(sink.text).toBe("after fold");
+			expect(r.asked).toEqual([FB]);
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: FB });
+		} finally {
+			await r.close();
+		}
+	});
+
+	test("an overflow fold on the fallback sizes the kept history from the fallback's window alone", async () => {
+		const keptTail = async (windows: Record<string, number>) => {
+			const r = servedRig({
+				models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("after fold")] }),
+				summaryFails: false,
+				windows,
+			});
+			try {
+				const { sink } = await r.turn("hello");
+				expect(sink.text).toBe("after fold");
+				return r.store.listCompactions(r.conv.id).at(-1)?.tailEvents;
+			} finally {
+				await r.close();
+			}
+		};
+		const small = await keptTail({ [OWN]: 8_000, [FB]: 8_000 });
+		expect(small).toBeGreaterThan(0);
+		expect(await keptTail({ [OWN]: 400_000, [FB]: 8_000 })).toBe(small);
+		expect(await keptTail({ [OWN]: 8_000, [FB]: 400_000 })).toBeGreaterThan(small!);
+	});
+
+	test("an overflow fold whose summary fails ends the turn with the error and asks no other model", async () => {
+		const r = servedRig({
+			models: lanes({ [OWN]: [quotaWall()], [FB]: [overflow(), reply("must not serve")] }),
+			summaryFails: true,
+		});
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "error" });
+			expect((done as { message: string }).message).toContain("compacting failed: Weekly/Monthly Limit Exhausted");
+			expect(r.asked).toEqual([FB]);
+			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
+		} finally {
+			await r.close();
+		}
+	});
+
+	test("a threshold fold after a fallback-served reply is one call on the fallback", async () => {
+		const r = servedRig({
+			models: lanes({ [OWN]: [quotaWall()], [FB]: [replyAt("served", 7_900)] }),
+			summaryFails: false,
+		});
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "completed" });
+			await waitUntil(() => r.store.listCompactions(r.conv.id).length > 0, "threshold fold lands");
+			expect(r.asked).toEqual([FB]);
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({ model: FB });
+		} finally {
+			await r.close();
+		}
+	});
+
+	test("a pre-empt fold on the fallback asks only the fallback and resumes unfolded when it fails", async () => {
+		const r = servedRig({
+			models: lanes({
+				[OWN]: [quotaWall()],
+				[FB]: [
+					{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }], usage: { input: 7_900, output: 1 } },
+					reply("final"),
+				],
+			}),
+			summaryFails: true,
+			tools: probeTools(),
+		});
+		try {
+			const { sink } = await r.turn("run probe");
+			expect(sink.text).toBe("final");
+			expect(r.asked.length).toBeGreaterThan(0);
+			expect(new Set(r.asked)).toEqual(new Set([FB]));
+			expect(r.store.listCompactions(r.conv.id)).toHaveLength(0);
+		} finally {
+			await r.close();
 		}
 	});
 });

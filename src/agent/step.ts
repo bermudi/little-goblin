@@ -104,7 +104,6 @@ export function makeStepBuilder(
 			...(maxRetries !== undefined ? { maxRetries } : {}),
 		};
 	};
-	// One summary call on one ref — the fallback walk below picks refs.
 	const summarizeOn = async (
 		conv: Conversation,
 		modelRef: string,
@@ -318,8 +317,6 @@ export function makeStepBuilder(
 				}
 				return contextLimit(provider, modelId);
 			},
-			// One call on the ref runCompaction's fallback walk hands it
-			// (design/model.md → Model fallback list → Compaction).
 			summarize: (conv, system, prompt, signal, modelRef) =>
 				summarizeOn(conv, modelRef, system, prompt, signal),
 			// #418: the recorded native session compacts itself alongside

@@ -196,8 +196,9 @@ modelFallbacks: ["codex/gpt-6.1-terra", "zai/glm-5.3"],
 
 `modelFallbacks` is an ordered list goblin tries when a conversation's own
 model fails **before doing anything**: a quota wall, an outage, a key that
-won't load. It applies to every conversation (app and Telegram) and to
-compaction summaries. Each turn starts at the conversation's own model
+won't load. It applies to every conversation (app and Telegram). A
+compaction inside a turn a fallback serves is summarized by that fallback;
+a compaction never walks the list itself. Each turn starts at the conversation's own model
 again, so there are no cooldowns to clear. A failure after the model has
 answered or a tool has run never switches models mid-turn. The reply says
 who served (`via zai/glm-5.3 — codex/gpt-6.1-terra: quota exhausted` in

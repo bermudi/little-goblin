@@ -4819,6 +4819,45 @@ describe("app projects surface", () => {
 		await publishRollingEvent({ type: "state", live: true });
 	};
 
+	const textMessage = (id: string, role: "user" | "assistant", text: string) =>
+		({ id, role, parts: [{ type: "text", text }] }) as UIMessage;
+	const resume = async () => {
+		await act(async () => {
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		await settle();
+		await settle();
+	};
+
+	test("returning to the app shows a roll that began while it was hidden", async () => {
+		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
+		stored = [textMessage("old-u", "user", "old roll message")];
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		expect(container.querySelector(".transcript")?.textContent).toContain("old roll message");
+
+		rollingRows = [convRow("roll two", { id: "app/roll-2" }), ...rollingRows];
+		stored = [textMessage("new-u", "user", "new roll message")];
+		await resume();
+		const transcript = container.querySelector(".transcript")?.textContent ?? "";
+		expect(transcript).toContain("new roll message");
+		expect(transcript).not.toContain("old roll message");
+	});
+
+	test("returning to the app re-reads the roll on screen and reopens its events", async () => {
+		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
+		stored = [textMessage("u1", "user", "first message")];
+		rollingEventControl = true;
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		const opened = rollingEventsControllers.length;
+
+		stored = [...stored, textMessage("a1", "assistant", "reply sent while hidden")];
+		await resume();
+		expect(container.querySelector(".transcript")?.textContent).toContain("reply sent while hidden");
+		expect(rollingEventsControllers.length).toBe(opened + 1);
+	});
+
 	test("an idle mounted short reply resolves its rolling follow before a remote turn", async () => {
 		await startRolledView("complete");
 		await addRemoteLongTurn();

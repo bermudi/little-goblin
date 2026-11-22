@@ -10,6 +10,12 @@ interface Paged {
 	more: boolean;
 }
 
+function mergePosts(known: readonly AppPost[], incoming: readonly AppPost[]): AppPost[] {
+	const byId = new Map<number, AppPost>();
+	for (const post of [...known, ...incoming]) byId.set(post.id, post);
+	return [...byId.values()].sort((a, b) => b.id - a.id);
+}
+
 export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
 	token: string | null;
 	data: ActivityData;
@@ -27,7 +33,7 @@ export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
 				const page = await listPosts(token, before);
 				if (!live.current) return;
 				setPaged((prev) => ({
-					posts: before === null || prev === null ? page.posts : [...prev.posts, ...page.posts],
+					posts: before === null || prev === null ? page.posts : mergePosts(prev.posts, page.posts),
 					more: page.more,
 				}));
 				setErr(null);
@@ -46,6 +52,38 @@ export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
 			live.current = false;
 		};
 	}, [loadPage]);
+
+	const fillGap = useCallback(
+		async (from: number, floor: number) => {
+			let before = from;
+			try {
+				for (;;) {
+					const page = await listPosts(token, before);
+					if (!live.current) return;
+					setPaged((prev) => (prev === null ? prev : { ...prev, posts: mergePosts(prev.posts, page.posts) }));
+					const oldest = page.posts.at(-1);
+					if (!page.more || oldest === undefined || oldest.id <= floor + 1) return;
+					before = oldest.id;
+				}
+			} catch (error) {
+				if (live.current) setErr(describe(error));
+			}
+		},
+		[token],
+	);
+	const newest = useRef<number | null>(null);
+	useEffect(() => {
+		newest.current = paged?.posts[0]?.id ?? null;
+	}, [paged]);
+	const polled = data.activity?.posts;
+	const loaded = paged !== null;
+	useEffect(() => {
+		if (!loaded || polled === undefined || polled.length === 0) return;
+		const floor = newest.current ?? 0;
+		setPaged((prev) => (prev === null ? prev : { ...prev, posts: mergePosts(prev.posts, polled) }));
+		const oldestPolled = Math.min(...polled.map((post) => post.id));
+		if (oldestPolled > floor + 1) void fillGap(oldestPolled, floor);
+	}, [loaded, polled, fillGap]);
 
 	if (paged === null)
 		return (

@@ -65,3 +65,37 @@ test("the activity page pages through older posts and keeps finished work in tim
 	expect(older()).toBeUndefined();
 	expect(requests).toEqual(["/api/app/posts", "/api/app/posts?before=4", "/api/app/posts?before=2"]);
 });
+
+test("the activity page keeps posts that leave the live poll and fills a gap the poll skipped", async () => {
+	const kept = Array.from({ length: 5 }, (_, i) => post(5 - i));
+	const requests: string[] = [];
+	globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+		const url = String(input);
+		requests.push(url);
+		const before = Number(new URL(url, "http://localhost").searchParams.get("before") ?? Infinity);
+		const older = kept.filter((p) => p.id < before);
+		return Response.json({ posts: older.slice(0, 2), more: older.length > 2 } satisfies AppPostsResponse);
+	}, { preconnect: realFetch.preconnect });
+	const view = (posts: AppPost[]) => {
+		const data = {
+			attention: [], attentionError: false, programs: [], loadError: false, working: 0, reload() {},
+			activity: { busy: [], otherBusy: 0, posts }, delegations: [],
+		} as unknown as Parameters<typeof ActivityView>[0]["data"];
+		return <ActivityView token={null} data={data} onOpenConversation={() => {}} onOpenPage={() => {}} />;
+	};
+	const labels = () => [...container.querySelectorAll(".goblin-panel-row strong")].map((el) => el.textContent);
+	const arrive = async (...ids: number[]) => {
+		kept.unshift(...ids.map(post));
+		const polled = kept.slice(0, 2);
+		await act(async () => root?.render(view(polled)));
+	};
+	root = createRoot(container);
+	await act(async () => root?.render(view([])));
+	expect(labels()).toEqual(["Post 5", "Post 4"]);
+	await arrive(7, 6);
+	await arrive(9, 8);
+	expect(labels()).toEqual(["Post 9", "Post 8", "Post 7", "Post 6", "Post 5", "Post 4"]);
+	await arrive(13, 12, 11, 10);
+	expect(labels()).toEqual(["Post 13", "Post 12", "Post 11", "Post 10", "Post 9", "Post 8", "Post 7", "Post 6", "Post 5", "Post 4"]);
+	expect(requests).toEqual(["/api/app/posts", "/api/app/posts?before=12"]);
+});

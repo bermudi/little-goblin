@@ -27,7 +27,7 @@ import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
-import { PreemptSignal, transportFailureText } from "./overflow.ts";
+import { compactTriggerTokens, PreemptSignal, transportFailureText } from "./overflow.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
 import type { StepRules } from "./step-rules.ts";
 import { type ForcedKind, type TurnState } from "./state.ts";
@@ -353,6 +353,7 @@ export interface StreamStep {
 	providerOptions?: ProviderOptions;
 	label?: string;
 	contextWindow?: number;
+	uncapped?: boolean;
 	maxRetries?: number;
 }
 
@@ -435,8 +436,12 @@ export async function driveStream<M extends WireMember>(
 		prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 			const prevInput = steps.at(-1)?.usage.inputTokens;
 			const contextUsed = rules.contextFill()?.used ?? null;
-			state.noteContextLanding(prevInput, deps.step.contextWindow);
-			const contextLimit = deps.step.contextWindow;
+			const uncapped = deps.step.uncapped === true;
+			state.noteContextLanding(prevInput, deps.step.contextWindow, uncapped);
+			const contextLimit =
+				deps.step.contextWindow === undefined
+					? undefined
+					: compactTriggerTokens(deps.step.contextWindow, uncapped);
 			const contextPct =
 				contextUsed !== null && contextLimit !== undefined
 					? Math.round((contextUsed / contextLimit) * 100)
@@ -451,7 +456,7 @@ export async function driveStream<M extends WireMember>(
 								content: `[context: ${contextK(contextUsed)} of ${contextK(contextLimit)} tokens used (${contextPct}%)]`,
 							},
 							]
-						: [{ role: "user", content: `[context: ${contextK(contextLimit)} token window]` }]
+						: [{ role: "user", content: `[context: ${contextK(contextLimit)} token limit]` }]
 					: [];
 			const issued = state.issueLanding();
 			if (issued !== null) {

@@ -12,6 +12,7 @@ export interface ModelStep {
 	carries?(mediaType: string, position: MediaPosition): boolean;
 	keepProviderExecuted?: boolean;
 	contextWindow?: number;
+	uncapped?: boolean;
 	maxRetries?: number;
 	transientRetryDelayMs?: number;
 }

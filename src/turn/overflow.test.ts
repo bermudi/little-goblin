@@ -155,28 +155,42 @@ function harness(
 }
 
 describe("compactTriggerTokens — design/compaction.md → Triggers", () => {
-	test("the lower of half the window and the 256k cap; unknown window fires at the cap", () => {
-		expect(compactTriggerTokens(1_000_000)).toBe(256_000);
-		expect(compactTriggerTokens(200_000)).toBe(100_000);
-		expect(compactTriggerTokens(64_000)).toBe(32_000);
-		expect(compactTriggerTokens(undefined)).toBe(256_000);
-		expect(compactTriggerTokens(null)).toBe(256_000);
+	test("windows over 300k fire at the 272k cap; the rest at the window minus the reserve", () => {
+		expect(compactTriggerTokens(1_100_000, false)).toBe(272_000);
+		expect(compactTriggerTokens(300_001, false)).toBe(272_000);
+		expect(compactTriggerTokens(300_000, false)).toBe(300_000 - 16_384);
+		expect(compactTriggerTokens(200_000, false)).toBe(200_000 - 16_384);
+		expect(compactTriggerTokens(undefined, false)).toBe(272_000);
+		expect(compactTriggerTokens(null, false)).toBe(272_000);
+	});
+
+	test("an uncapped agent type fires at the window minus the reserve at any size", () => {
+		expect(compactTriggerTokens(1_100_000, true)).toBe(1_100_000 - 16_384);
+		expect(compactTriggerTokens(200_000, true)).toBe(200_000 - 16_384);
+		expect(compactTriggerTokens(undefined, true)).toBe(272_000);
+	});
+
+	test("windows under twice the reserve fire at half the window", () => {
+		expect(compactTriggerTokens(32_768, false)).toBe(16_384);
+		expect(compactTriggerTokens(8_000, false)).toBe(4_000);
+		expect(compactTriggerTokens(8_000, true)).toBe(4_000);
 	});
 });
 
 describe("preemptArm", () => {
 	test("fires at the trigger, stands down below it and without a projection", () => {
-		expect(preemptArm({ projectedInputTokens: null, contextWindow: 200_000 })).toBeNull();
-		expect(preemptArm({ projectedInputTokens: 99_999, contextWindow: 200_000 })).toBeNull();
-		expect(preemptArm({ projectedInputTokens: 100_000, contextWindow: 200_000 })).toBe("pressure");
-		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: 1_000_000 })).toBe(
-			"pressure",
-		);
-		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: 1_000_000 })).toBeNull();
-		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: undefined })).toBe(
-			"pressure",
-		);
-		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: undefined })).toBeNull();
+		const capped = (projectedInputTokens: number | null, contextWindow: number | undefined) =>
+			preemptArm({ projectedInputTokens, contextWindow, uncapped: false });
+		expect(capped(null, 200_000)).toBeNull();
+		expect(capped(183_615, 200_000)).toBeNull();
+		expect(capped(183_616, 200_000)).toBe("pressure");
+		expect(capped(272_000, 1_100_000)).toBe("pressure");
+		expect(capped(271_999, 1_100_000)).toBeNull();
+		expect(capped(272_000, undefined)).toBe("pressure");
+		expect(capped(271_999, undefined)).toBeNull();
+		expect(
+			preemptArm({ projectedInputTokens: 272_000, contextWindow: 1_100_000, uncapped: true }),
+		).toBeNull();
 	});
 });
 

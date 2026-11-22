@@ -4,6 +4,7 @@ import { lastInputTokensOf } from "../conversation-read.ts";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import { codexContextWindow } from "../agent/codex/models.ts";
+import { agentTypeUncapped } from "../agent-types.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
 import { listCalls } from "../cache-observation.ts";
@@ -584,7 +585,18 @@ export async function handleConversationsRoute(
 		} catch {
 			modelLimit = null;
 		}
-		const limit = compactTriggerTokens(modelLimit !== null && modelLimit > 0 ? modelLimit : null);
+		let uncapped = false;
+		try {
+			uncapped = agentTypeUncapped(row, paths.agentTypes());
+		} catch (err) {
+			log.warn("agent type unreadable — context view shows the capped limit", err, {
+				conversation: convId.id,
+			});
+		}
+		const limit = compactTriggerTokens(
+			modelLimit !== null && modelLimit > 0 ? modelLimit : null,
+			uncapped,
+		);
 		const input = last?.lastInput ?? null;
 		const cacheRead = last?.lastCacheRead ?? null;
 		const body: AppContextView = {

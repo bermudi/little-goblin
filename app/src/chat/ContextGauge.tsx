@@ -45,10 +45,6 @@ export function contextLabel(ctx: AppContextView | null): string {
 	return `${contextCount(ctx.input)}/${contextCount(ctx.limit)} · ${ctx.pct === null ? "?" : `${ctx.pct}%`}`;
 }
 
-// The composer's context gauge — the last turn's window utilization
-// against goblin's compaction limit, with cache-hit rates
-// in the popover. Reads stay cheap: one GET on mount and one per
-// settled turn (busy → idle), never mid-stream.
 export function ContextGauge({
 	token,
 	conversationId,

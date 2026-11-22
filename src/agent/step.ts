@@ -9,7 +9,7 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
-import { agentChildSystemPrompt } from "../agent-types.ts";
+import { agentChildSystemPrompt, agentTypeUncapped } from "../agent-types.ts";
 import { paths } from "../home-layout.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
@@ -187,6 +187,7 @@ export function makeStepBuilder(
 							project,
 							project === null ? undefined : notes.index(project.id),
 						);
+			const uncapped = agentTypeUncapped(conv, paths.agentTypes());
 			log.info("model step", {
 				conversation: conv.id,
 				model: modelRef,
@@ -217,6 +218,7 @@ export function makeStepBuilder(
 					inputModalities: modalities,
 					carries,
 					...(contextWindow !== null ? { contextWindow } : {}),
+					...(uncapped ? { uncapped } : {}),
 					// No maxTurns: a turn has no step budget (design/model.md).
 				};
 			}
@@ -239,6 +241,7 @@ export function makeStepBuilder(
 				carries: lane.carries,
 				keepProviderExecuted: lane.keepProviderExecuted,
 				...(contextWindow !== null ? { contextWindow } : {}),
+				...(uncapped ? { uncapped } : {}),
 				...("providerOptions" in lane ? { providerOptions: lane.providerOptions } : {}),
 				...("maxRetries" in lane ? { maxRetries: lane.maxRetries } : {}),
 			};

@@ -42,7 +42,7 @@ describe("restore and snapshot", () => {
 		const snap = new TurnState(deps, loopOf({ warnings: ["w"], completedCalls: 3 })).snapshot();
 		const a = new TurnState(deps, snap);
 		const b = new TurnState(deps, snap);
-		a.noteContextLanding(900, 1000);
+		a.noteContextLanding(900, 1000, false);
 		a.issueLanding();
 		expect(a.decidedCut()).toBe("context");
 		expect(a.forcedCompletion()).toBe("context");
@@ -81,22 +81,37 @@ describe("restore and snapshot", () => {
 describe("landings", () => {
 	test("input at the fill line cuts, below it does not, and an earlier cut keeps ownership", () => {
 		const at = new TurnState(deps);
-		at.noteContextLanding(850, 1000);
+		at.noteContextLanding(850, 1000, false);
 		expect(at.decidedCut()).toBe("context");
 		const below = new TurnState(deps);
-		below.noteContextLanding(849, 1000);
+		below.noteContextLanding(849, 1000, false);
 		expect(below.decidedCut()).toBeNull();
 		const unset = new TurnState(deps);
-		unset.noteContextLanding(900, undefined);
+		unset.noteContextLanding(900, undefined, false);
 		expect(unset.decidedCut()).toBeNull();
 		const owned = new TurnState(deps, loopOf({ cutKind: "repeat", forcedKind: "repeat" }));
-		owned.noteContextLanding(900, 1000);
+		owned.noteContextLanding(900, 1000, false);
 		expect(owned.decidedCut()).toBe("repeat");
+	});
+
+	test("the landing waits for the compaction trigger when that sits above 85%", () => {
+		const below = new TurnState(deps);
+		below.noteContextLanding(183_615, 200_000, false);
+		expect(below.decidedCut()).toBeNull();
+		const at = new TurnState(deps);
+		at.noteContextLanding(183_616, 200_000, false);
+		expect(at.decidedCut()).toBe("context");
+		const capped = new TurnState(deps);
+		capped.noteContextLanding(935_000, 1_100_000, false);
+		expect(capped.decidedCut()).toBe("context");
+		const uncapped = new TurnState(deps);
+		uncapped.noteContextLanding(935_000, 1_100_000, true);
+		expect(uncapped.decidedCut()).toBeNull();
 	});
 
 	test("issueLanding fires once per attempt and stamps forcedKind", () => {
 		const state = new TurnState(deps);
-		state.noteContextLanding(850, 1000);
+		state.noteContextLanding(850, 1000, false);
 		expect(state.forcedCompletion()).toBeNull();
 		expect(state.issueLanding()).toBe("context");
 		expect(state.forcedCompletion()).toBe("context");

@@ -1103,6 +1103,7 @@ export class Runtime {
 		const arm = preemptArm({
 			projectedInputTokens: info.projectedInputTokens,
 			contextWindow: step.contextWindow,
+			uncapped: step.uncapped === true,
 		});
 		if (arm === null) return null;
 		const { tailTokenBudget } = compactionBudgets(step.contextWindow ?? null);
@@ -1411,7 +1412,10 @@ export class Runtime {
 			digestRing: outcome.digestRing,
 			...(this.reviewer === undefined ? {} : { tools: seams.tools }),
 		});
-		if (landed.window && landed.window.input >= compactTriggerTokens(landed.window.limit)) {
+		if (
+			landed.window &&
+			landed.window.input >= compactTriggerTokens(landed.window.limit, seams.step.uncapped === true)
+		) {
 			try {
 				await this.doCompact(conv, "threshold");
 			} catch (err) {

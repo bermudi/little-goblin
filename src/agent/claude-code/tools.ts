@@ -6,13 +6,6 @@
 // re-check, journal dispatch/result/error rows), so the bridge adds no
 // fencing and no journaling of its own; it validates arguments with the
 // tool's own schema, executes, and returns goblin-shaped results.
-//
-// Id namespaces: the SDK's tool() handler receives no tool_use id (its
-// `extra` is opaque), so the bridge mints journal ids that only its own
-// results queue uses. The engine pairs stream-frame tool_use ids with
-// queued results (earliest-dispatched completed record, exact canonical
-// (name, input) match preferred) to emit exact goblin outputs on the
-// wire. The two namespaces never mix.
 
 import { randomUUID } from "node:crypto";
 import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
@@ -22,6 +15,15 @@ import { stableStringify } from "../../loop-detect.ts";
 import { inputJsonSchema, isHosted, type Tools, type ToolOutput } from "../../tool.ts";
 
 export const MCP_SERVER_NAME = "goblin";
+
+const toolCallExtraSchema = z.object({
+	_meta: z.object({ "claudecode/toolUseId": z.string().min(1) }),
+});
+
+function cliToolUseId(extra: unknown): string | null {
+	const parsed = toolCallExtraSchema.safeParse(extra);
+	return parsed.success ? parsed.data._meta["claudecode/toolUseId"] : null;
+}
 
 export interface BridgeResult {
 	name: string;
@@ -56,7 +58,7 @@ export interface ToolBridge {
 	 * registration holds. Tests drive real executions through this without
 	 * the child CLI; nothing in-process calls it in production.
 	 */
-	invoke(name: string, input: unknown): Promise<BridgeInvokeResult>;
+	invoke(name: string, input: unknown, extra?: unknown): Promise<BridgeInvokeResult>;
 }
 
 // A JSON-Schema'd tool's object schema, decomposed property-by-property
@@ -177,6 +179,7 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	};
 	type Handler = (
 		input: Record<string, unknown>,
+		extra: unknown,
 	) => Promise<{ response: McpResponse; record: QueuedResult }>;
 	const handlers = new Map<string, Handler>();
 	const names: string[] = [];
@@ -187,10 +190,15 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		if (isHosted(t)) continue;
 		const schema = t.input;
 		names.push(name);
-		const settle: Handler = async (input) => {
-			// Monotonic per bridge, plus a random bridge prefix so ids stay
-			// unique across turns (the bridge is rebuilt every turn).
-			const callId = `claude-${bridgeId}-${++callSeq}`;
+		const settle: Handler = async (input, extra) => {
+			const toolUseId = cliToolUseId(extra);
+			if (toolUseId === null) {
+				log.warn("claude bridge: tool call carried no CLI tool_use id", {
+					conversation: convId,
+					tool: name,
+				});
+			}
+			const callId = toolUseId ?? `claude-${bridgeId}-${++callSeq}`;
 			// Reserve this call's queue slot before the first await so
 			// array order is dispatch order, not completion order.
 			const record: QueuedResult = { name, input, output: null, error: null, done: false };
@@ -242,8 +250,8 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 				};
 			}
 		};
-		handlers.set(name, async (input) => {
-			const settled = await settle(input);
+		handlers.set(name, async (input, extra) => {
+			const settled = await settle(input, extra);
 			await afterCall?.();
 			return settled;
 		});
@@ -256,8 +264,8 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		const description = t.description;
 		const shape = rawShapeFor(inputJsonSchema(t));
 		definitions.push(
-			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, async (input) => {
-				const { response } = await handler(input);
+			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, async (input, extra) => {
+				const { response } = await handler(input, extra);
 				return response;
 			}),
 		);
@@ -273,12 +281,12 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		server: () => server,
 		allowedTools: () => [`mcp__${MCP_SERVER_NAME}`],
 		toolNames: () => names,
-		invoke: async (name, input) => {
+		invoke: async (name, input, extra) => {
 			const handler = handlers.get(name);
 			if (handler === undefined) {
 				return { output: null, error: `no bridged tool named ${name}` };
 			}
-			const { response, record } = await handler(input as Record<string, unknown>);
+			const { response, record } = await handler(input as Record<string, unknown>, extra);
 			if (response.isError === true) {
 				const firstText = response.content.find((c) => c.type === "text");
 				return {

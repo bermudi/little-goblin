@@ -53,6 +53,11 @@ const rigTools = (toolHold: EngineRig["toolHold"]): Tools => ({
 		input: z.object({ message: z.string() }),
 		execute: async ({ message }) => `echo:${message}`,
 	}),
+	whoami: defineTool({
+		description: "return this call's tool call id",
+		input: z.object({}),
+		execute: async (_, { toolCallId }) => toolCallId,
+	}),
 	wait: defineTool({
 		description: "wait until released",
 		input: z.object({}),
@@ -154,6 +159,30 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(echo?.beganMs).not.toBeNull();
 			expect(echo?.settledMs).not.toBeNull();
 			expect(echo?.result).toContain("echo:hi");
+		},
+	},
+	{
+		name: "a tool executes under the same call id as its stored reply part and journal row",
+		async run(rig) {
+			rig.model.script(
+				{
+					kind: "reply",
+					parts: [{ type: "tool-call", toolName: "whoami", input: {}, toolCallId: "conf-who-1" }],
+				},
+				text("CONF-WHO-DONE"),
+			);
+			const sink = submit(rig, "who are you");
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await drain(rig);
+			const reply = rig.store.history(rig.conv.id)[1]!;
+			const part = reply.parts.find((p) => p.type === "tool-whoami") as
+				| { toolCallId: string; output: unknown }
+				| undefined;
+			expect(part).toBeDefined();
+			expect(part!.output).toBe(part!.toolCallId);
+			const rows = rig.store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			const row = rig.journal.callsFor(rows[0]!.run_id).find((c) => c.name === "whoami");
+			expect(row?.toolCallId).toBe(part!.toolCallId);
 		},
 	},
 	{

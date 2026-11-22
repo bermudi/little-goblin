@@ -955,7 +955,7 @@ export async function runCompaction(
 				// The split prefix's identifiers ride along too — its content
 				// folded exactly like the span's whole events.
 				identifiers: extractIdentifiers([
-					...span.map(serializeEvent),
+					...span.map((e) => serializeEvent(e)),
 					...(prefixMessage === null
 						? []
 						: [

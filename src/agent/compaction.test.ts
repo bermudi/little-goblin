@@ -947,6 +947,27 @@ describe("runCompaction", () => {
 		expect(searched).toContain("s".repeat(5_000));
 	});
 
+	test("the identifier index keeps ids that appear only in a later event's tool result", async () => {
+		const { store, writes } = fakeStore([
+			ev(1, "user", "write the report".repeat(200)),
+			toolEvent(2, 1, "writing", [
+				{ id: "t1", input: { command: "ls" }, output: "wrote /srv/data/report-7731.csv ok" },
+			]),
+			ev(3, "user", "next".repeat(100)),
+			ev(4, "assistant", "ok".repeat(100), 3),
+		]);
+		await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => foldSummary("folded", prompt),
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		const index = writes[0]!.summary.split("## Identifier index")[1] ?? "";
+		expect(index).toContain("/srv/data/report-7731.csv");
+	});
+
 	test("a wedged summarizer still settles — the call timeout is an ordinary failure", async () => {
 		const { store, writes } = fakeStore(sample());
 		await expect(

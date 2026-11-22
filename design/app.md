@@ -228,6 +228,24 @@ spellings owned by src/tags.ts) at a block start renders fenced as
 `status`, not as a transcript paragraph — it is the event envelope, and
 the prose after it in the same paragraph continues as text.
 
+**A cramped column drops the width selector (ruling 2026-11-22, #891).**
+The chat header never wraps. When the chat column is too narrow for it,
+the narrow/wide selector hides; the stored choice is kept. "Too narrow"
+is the column's measured width, not the window's: the list and the
+Goblin panel can each be open or hidden, so one window width gives
+several column widths. A ResizeObserver on `main` sets `data-cramped`
+below 400px (`CRAMPED_COLUMN_PX` in App.tsx); the stylesheet hides the
+selector there. 400px keeps about 6rem for the chat title beside the
+header's other controls; the header overflowed at about 290px.
+Below 400px the column is far narrower than the 46rem narrow width, so
+the selector changes nothing there anyway. The desktop composer bar
+wraps its controls onto more rows instead of spilling past the box;
+phones keep the one-row bar. In a child chat, the `↑ parent` link gives
+up space first, down to 2.5rem, before the chat's own title shrinks: the
+chat's own name matters more than its parent's. Accepted limit: at
+721–790px with a chat and both side panes open, the title gets 0–60px;
+hiding a pane gives it room, and rename stays available from the list.
+
 **Box-drawing runs (ruling 2026-10-24, operator paste rendered as
 proportional-font noise).** A pasted ╔═╗ table, a file tree, a
 diagram — alignment-dependent art that collapses in proportional

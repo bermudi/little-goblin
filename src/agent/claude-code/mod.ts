@@ -52,6 +52,7 @@ export interface ClaudeStep {
 	inputModalities?: Set<string> | undefined;
 	carries?: ((mediaType: string, position: MediaPosition) => boolean) | undefined;
 	contextWindow?: number | undefined;
+	uncapped?: boolean | undefined;
 	/** Optional tool-loop cap; unset = no step budget (design/model.md). */
 	maxTurns?: number | undefined;
 }

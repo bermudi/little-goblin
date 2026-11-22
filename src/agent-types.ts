@@ -31,6 +31,7 @@ const frontmatterSchema = z
 		// Tool allowlist; absent = the default child set (the parent's
 		// tools minus the child exclusions).
 		tools: z.array(z.string().min(1)).min(1).optional(),
+		uncapped: z.boolean().optional(),
 	})
 	.strict();
 
@@ -39,6 +40,7 @@ export interface AgentType {
 	description: string;
 	model?: string;
 	tools?: string[];
+	uncapped: boolean;
 	systemPrompt: string;
 }
 
@@ -48,6 +50,7 @@ export const GENERAL_AGENT_TYPE: AgentType = {
 	name: "general",
 	description:
 		"General-purpose subagent for self-contained work: reading, research, and small tasks with the caller's tools.",
+	uncapped: false,
 	systemPrompt: [
 		"You are a goblin subagent. You get one self-contained task, fresh:",
 		"you do not see the requesting conversation, and it does not see your",
@@ -77,6 +80,7 @@ export const COMPUTER_AGENT_TYPE: AgentType = {
 	description:
 		"Computer use on a named goblin desktop: inspect the accessibility tree, act on elements, launch Chromium, and — on image-capable models — see the screen. Screenshot support depends on the child's model and provider.",
 	tools: ["inspect", "act", "launch", "screenshot", "ask_operator"],
+	uncapped: false,
 	systemPrompt: [
 		"You are goblin's computer-use agent. Complete the assigned task on your assigned desktop — a dedicated isolated machine; your inspect, act, launch and ask_operator tools are already bound to it.",
 		"You have inspect, act, launch and ask_operator tools, and screenshot when your model can see images. You have no shell, host filesystem access, or way to start other agents.",
@@ -162,6 +166,7 @@ export function loadAgentTypes(dir: string): Map<string, AgentType> {
 			description: fm.description,
 			...(fm.model !== undefined ? { model: fm.model } : {}),
 			...(fm.tools !== undefined ? { tools: [...fm.tools] } : {}),
+			uncapped: fm.uncapped ?? false,
 			systemPrompt: body,
 		});
 	}
@@ -198,4 +203,21 @@ export function agentChildSystemPrompt(
 		type: type.name,
 	});
 	return built;
+}
+
+export function agentTypeUncapped(
+	conv: Conversation,
+	typeDir: string,
+	load: (dir: string) => Map<string, AgentType> = loadAgentTypes,
+): boolean {
+	if (conv.agentType === null) return false;
+	const type = load(typeDir).get(conv.agentType);
+	if (type === undefined) {
+		log.warn("agent type missing — compaction stays capped", {
+			conversation: conv.id,
+			type: conv.agentType,
+		});
+		return false;
+	}
+	return type.uncapped;
 }

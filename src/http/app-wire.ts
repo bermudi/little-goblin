@@ -380,9 +380,8 @@ export interface AppContextView {
 	cacheHitRate: number | null;
 	avgCacheHitRate: number | null;
 	limit: number | null;
+	modelLimit: number | null;
 	pct: number | null;
-	/** A settled turn at or above this share of the limit compacts. */
-	compactAtPct: number;
 	turns: number;
 	/** Last turn's window itemization, scaled to tokens. Null on turns
 	 *  without itemization metadata. */
@@ -544,6 +543,18 @@ export interface AppAttentionItem {
 export interface AppAttentionResponse {
 	items: AppAttentionItem[];
 	unavailable: string[];
+}
+
+export interface AppBusyConversation {
+	id: string;
+	title: string | null;
+	parentId: string | null;
+	rolling: boolean;
+}
+
+export interface AppActivityResponse {
+	busy: AppBusyConversation[];
+	otherBusy: number;
 }
 
 export interface AppApprovalDecisionResponse {

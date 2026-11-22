@@ -22,7 +22,14 @@ import type {
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App } from "./App.tsx";
 import { flatLine } from "./flatText.ts";
-import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
+import {
+	clickConfirm,
+	confirmSheet,
+	confirmText,
+	type DesktopPage,
+	goblinFeedResponse,
+	openDesktopPage,
+} from "./testkit.ts";
 
 // Stored titles predate store-side flattening — the sidebar row must
 // render them clean regardless of the server's vintage.
@@ -106,6 +113,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
@@ -117,6 +125,8 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			if (url === "/api/app/attachments") {
 				const d = deferredUpload();
@@ -301,6 +311,7 @@ describe("rail row actions and the pinned pool", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
@@ -317,6 +328,8 @@ describe("rail row actions and the pinned pool", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			if (url === "/api/app/projects") {
 				return Promise.resolve(jsonResponse({ projects: [] }));
@@ -420,7 +433,7 @@ describe("rail row actions and the pinned pool", () => {
 
 	const domOrder = (): (string | null)[] =>
 		[...container.querySelectorAll(".conv-title")]
-			.filter((t) => t.textContent !== "Rolling chat")
+			.filter((t) => t.textContent !== "Goblin")
 			.map((t) => t.textContent);
 
 	const rowActions = async (title: string): Promise<string[]> => {
@@ -647,6 +660,7 @@ describe("rename editor with the AI button", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
@@ -663,6 +677,8 @@ describe("rename editor with the AI button", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
@@ -951,6 +967,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
@@ -972,6 +989,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
 			if (url === "/api/app/conversations" && init?.method === "POST")
 				return (createGate ?? Promise.resolve()).then(() =>
@@ -1024,7 +1043,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 						avgCacheHitRate: null,
 						limit: null,
 						pct: null,
-						compactAtPct: 75,
+						modelLimit: null,
 						turns: 0,
 						segments: null,
 					}),
@@ -1244,12 +1263,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await settle();
 	};
 
-	const openPage = async (label: string) =>
-		click(
-			[...container.querySelectorAll(".gutter button")].find(
-				(b) => b.getAttribute("aria-label") === label,
-			),
-		);
+	const openPage = async (page: DesktopPage) => openDesktopPage(container, click, page);
 	const traverse = async (direction: "back" | "forward") => {
 		await act(async () => {
 			win.history[direction]();
@@ -1386,11 +1400,11 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.history.length).toBe(selectedLength);
 
 		// The remembered id is not a reason to skip leaving an operator page.
-		await openPage("Memories");
+		await openPage("Archive");
 		await selectFixture();
 		expect(container.querySelector(".chat")).not.toBeNull();
 		const newChat = () =>
-			click(container.querySelector('nav button[aria-label="New conversation"]'));
+			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		await newChat();
 		const emptyState = win.history.state;
 		const emptyLength = win.history.length;
@@ -1430,12 +1444,12 @@ describe("browser back/forward and the unsaved settings editor", () => {
 
 	for (const label of [
 		"Settings",
-		"Memories",
+		"Memory",
 		"Delegations",
 		"Programs",
 		"Status",
 		"dirty Settings",
-	]) {
+	] as const) {
 		test(`Archive of the remembered conversation preserves ${label} without a discard prompt`, async () => {
 			seedConversation();
 			await mount();
@@ -1874,7 +1888,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// composer holds the cleared text, exactly once.
 		expect(container.textContent).not.toContain("Couldn't start a conversation");
 		const newChat = () =>
-			click(container.querySelector('nav button[aria-label="New conversation"]'));
+			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		await newChat();
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer again");
 		const restored = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
@@ -1895,7 +1909,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	for (const direction of ["back", "forward"] as const) {
 		test(`declining real browser ${direction} preserves the history stack and draft`, async () => {
 			await mount();
-			await openPage("Memories");
+			await openPage("Archive");
 			if (direction === "back") {
 				await openPage("Settings");
 			} else {
@@ -1914,7 +1928,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 
 			await traverse(direction);
 			await answerConfirm(true);
-			expect(win.location.pathname).toBe("/app/memory");
+			expect(win.location.pathname).toBe("/app/archive");
 			expect(container.querySelector(".settings")).toBeNull();
 			await traverse(direction === "back" ? "forward" : "back");
 			expect(win.location.pathname).toBe("/app/settings");
@@ -1965,7 +1979,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		const dirty = new win.Event("beforeunload", { cancelable: true });
 		win.dispatchEvent(dirty);
 		expect(dirty.defaultPrevented).toBe(true);
-		await openPage("Memories");
+		await openPage("Archive");
 		await answerConfirm(true);
 		const afterLeaving = new win.Event("beforeunload", { cancelable: true });
 		win.dispatchEvent(afterLeaving);
@@ -1974,8 +1988,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 
 	test("an accepted legacy gap breaks index continuity instead of guessing a restoration distance", async () => {
 		await mount();
-		await openPage("Memories");
-		const memoryState = win.history.state;
+		await openPage("Archive");
+		const archiveState = win.history.state;
 		win.history.pushState({ legacy: true }, "", "/app/memory");
 		await traverse("back");
 		await traverse("forward");
@@ -1992,7 +2006,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"cannot restore an older history entry",
 		);
-		expect(win.history.state).toEqual(memoryState);
+		expect(win.history.state).toEqual(archiveState);
 		await act(async () => {
 			win.history.go(2);
 			await new Promise((r) => setTimeout(r, 30));
@@ -2017,9 +2031,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await dirtyTheForm();
 		await traverse("forward");
 		await answerConfirm(false);
-		await openPage("Memories");
+		await openPage("Archive");
 		await answerConfirm(true);
-		const memoryState = win.history.state;
+		const archiveState = win.history.state;
 		await openPage("Settings");
 		await dirtyTheForm();
 		await act(async () => {
@@ -2035,7 +2049,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await settle();
 		expect(confirmSheet(container)).not.toBeNull();
 		await answerConfirm(false);
-		expect(win.history.state).toEqual(memoryState);
+		expect(win.history.state).toEqual(archiveState);
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"cannot restore an older history entry",
 		);
@@ -2094,6 +2108,7 @@ describe("App telegram door", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
@@ -2105,6 +2120,8 @@ describe("App telegram door", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			if (url.startsWith("/api/app/")) {
 				appDoorHits.push(url);
 				return Promise.resolve(new Response(null, { status: 404 }));
@@ -2495,6 +2512,7 @@ describe("app projects surface", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
@@ -2527,6 +2545,8 @@ describe("app projects surface", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
 			if (url === "/api/app/conversations") {
@@ -2973,6 +2993,76 @@ describe("app projects surface", () => {
 		await settle();
 	};
 
+	test("T1 and T2: sidebar shows Goblin and opens rolling chat", async () => {
+		await mount();
+		expect(container.querySelector(".gutter")).toBeNull();
+		const rail = container.querySelector('nav[aria-label="Sidebar"]')!;
+		expect(rail.querySelector('input[aria-label="Search history"]')).not.toBeNull();
+		expect(rail.querySelector('button[aria-label="New chat"]')).not.toBeNull();
+		expect(rail.querySelector('button[aria-label="You"]')).not.toBeNull();
+		expect(rail.textContent).toContain("Projects");
+		const rolling = rail.querySelector('a[href="/app/rolling"]')!;
+		expect(rolling.querySelector(".conv-title")?.textContent).toBe("Goblin");
+		expect(rolling.querySelector("img")).not.toBeNull();
+		await click(rolling);
+		expect(win.location.pathname).toBe("/app/rolling");
+	});
+
+	test("T3: Projects opens the index and New project opens its dialog", async () => {
+		await mount();
+		const projects = [...container.querySelectorAll(".rail-project-head button")]
+			.find((button) => button.textContent === "Projects");
+		await click(projects);
+		expect(win.location.pathname).toBe("/app/projects");
+		await click(container.querySelector('button[aria-label="New project"]'));
+		expect(container.querySelector(".msheet form")).not.toBeNull();
+	});
+
+	for (const [item, path] of [["Settings", "/app/settings"], ["Archive", "/app/archive"]] as const) {
+		test(`T4: You opens ${item}`, async () => {
+			await mount();
+			await click(container.querySelector('button[aria-label="You"]'));
+			await click([...container.querySelectorAll('[role="menuitem"]')]
+				.find((entry) => entry.textContent === item));
+			expect(win.location.pathname).toBe(path);
+		});
+	}
+
+	test("T5 and T6: panel hides on request and stays hidden after remount", async () => {
+		await mount();
+		expect(container.querySelector("aside.goblin-column")).not.toBeNull();
+		await click(container.querySelector('button[aria-label="Goblin panel"]'));
+		expect(container.querySelector("aside.goblin-column")).toBeNull();
+		await act(async () => root?.unmount());
+		root = null;
+		await mount();
+		expect(container.querySelector("aside.goblin-column")).toBeNull();
+		await click(container.querySelector('button[aria-label="Goblin panel"]'));
+		expect(container.querySelector("aside.goblin-column")).not.toBeNull();
+		await click(container.querySelector('button[aria-label="You"]'));
+		await click([...container.querySelectorAll('[role="menuitem"]')]
+			.find((entry) => entry.textContent === "Settings"));
+		expect(container.querySelector("aside.goblin-column")).toBeNull();
+	});
+
+	test("T7: profile marks Memory current and opens Log", async () => {
+		const fetch = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input).startsWith("/api/app/log?")) {
+				return Promise.resolve(jsonResponse({ lines: [], matched: 0 }));
+			}
+			return fetch(input, init);
+		}) as typeof fetch;
+		win.history.replaceState(null, "", "/app/memory");
+		await mount();
+		const profile = container.querySelector('nav[aria-label="Goblin\'s profile"]')!;
+		expect([...profile.querySelectorAll("a")].map((link) => link.textContent))
+			.toEqual(["Status", "Memory", "Skills", "Log"]);
+		expect(profile.querySelector('a[href="/app/memory"]')?.getAttribute("aria-current")).toBe("page");
+		await click(profile.querySelector('a[href="/app/log"]'));
+		expect(win.location.pathname).toBe("/app/log");
+	});
+
 	test("the chats pane lists active project folders before loose chats", async () => {
 		projs = [
 			projRow("Goblin Work"),
@@ -3001,7 +3091,7 @@ describe("app projects surface", () => {
 			"loose chat",
 		);
 
-		await click(glyph("Projects"));
+		await openPage("Projects");
 		expect(win.location.pathname).toBe("/app/projects");
 		expect(container.querySelector(".proj-folder")).not.toBeNull();
 		expect(container.querySelector("main .tuning")?.textContent).toContain("Archived projects (1)");
@@ -3186,7 +3276,7 @@ describe("app projects surface", () => {
 
 	test("the create dialog posts its fields and lands on the new project's page", async () => {
 		await mount();
-		const newProject = container.querySelector('.panel-action[aria-label="New project"]');
+		const newProject = container.querySelector('.rail-project-head button[aria-label="New project"]');
 		expect(newProject?.querySelector('svg path[d^="M3 7"]')).not.toBeNull();
 		await click(newProject);
 		const sheet = container.querySelector(".msheet form");
@@ -3250,62 +3340,62 @@ describe("app projects surface", () => {
 		);
 	});
 
-	test("a rail note create cannot override later navigation, but refreshes the pane", async () => {
+	const newNoteOnIndex = async () =>
+		click([...container.querySelectorAll("main button")].find((b) => b.textContent === "New note"));
+
+	test("a held index note create cannot override later navigation, but refreshes the Library tab", async () => {
 		await mount();
-		await openPane("Notes");
+		await openPage("Notes");
 		const gate = hold();
 		noteCreateHold = gate.promise;
-		await click(container.querySelector(".panel .new"));
-		await click(container.querySelector(".panel-index"));
-		expect(win.location.pathname).toBe("/app/notes");
+		await newNoteOnIndex();
+		await openNewChat();
+		expect(win.location.pathname).toBe("/app/");
 		gate.resolve();
 		await settle();
-		expect(win.location.pathname).toBe("/app/notes");
-		expect(container.querySelector(".line-row-title")?.textContent).toBe("Untitled note");
+		expect(win.location.pathname).toBe("/app/");
+		expect(await libraryRows()).toEqual(["Untitled note"]);
 	});
 
-	test("creating from the index updates the notes pane", async () => {
+	test("creating from the index updates the Library tab", async () => {
 		await mount();
-		await openPane("Notes");
-		await click(container.querySelector(".panel-index"));
-		await click(
-			[...container.querySelectorAll("main button")].find((b) => b.textContent === "New note"),
-		);
+		await openPage("Notes");
+		await newNoteOnIndex();
 		await settle();
 		expect(win.location.pathname).toBe("/app/n/n-new");
-		expect(container.querySelector(".line-row-title")?.textContent).toBe("Untitled note");
+		await openNewChat();
+		expect(await libraryRows()).toEqual(["Untitled note"]);
 	});
 
-	test("note pin and archive mutations refresh the pane immediately", async () => {
-		notes = [noteRow("Shopping"), noteRow("Other")];
+	test("note pin and archive mutations reach the Library tab", async () => {
+		notes = [noteRow("Other"), noteRow("Shopping")];
 		await notePage("/app/n/n-shopping");
-		await openPane("Notes");
-		const rows = () =>
-			[...container.querySelectorAll(".line-row-title")].map((el) => el.textContent);
-		await click(
-			[...container.querySelectorAll(".note-flags button")].find((b) => b.textContent === "Pin"),
-		);
+		const flag = (label: string) =>
+			[...container.querySelectorAll(".note-flags button")].find((b) => b.textContent === label);
+		await click(flag("Pin"));
 		await settle();
-		expect(rows()).toEqual(["Shopping", "Other"]);
-		expect(container.querySelector(".line-row svg")).not.toBeNull();
+		await openNewChat();
+		expect(await libraryRows()).toEqual(["Shopping", "Other"]);
 		await click(
-			[...container.querySelectorAll(".note-flags button")].find(
-				(b) => b.textContent === "Archive",
+			[...container.querySelectorAll(".goblin-column .goblin-panel-row")].find((row) =>
+				row.textContent?.startsWith("Shopping"),
 			),
 		);
+		for (let i = 0; i < 20 && flag("Archive") === undefined; i++) await settle();
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		await click(flag("Archive"));
 		await settle();
-		expect(rows()).toEqual(["Other"]);
+		await openNewChat();
+		expect(await libraryRows()).toEqual(["Other"]);
 	});
 
-	test("the notes pane lists pinned-first and its head opens the index", async () => {
+	test("the Library tab lists pinned notes first and All notes opens the index", async () => {
 		notes = [noteRow("Shopping"), noteRow("Trip plans", { pinnedAt: "2026-10-09T00:00:00Z" })];
 		await mount();
 
-		await openPane("Notes");
-		const rows = [...container.querySelectorAll(".line-row-title")].map((t) => t.textContent);
-		expect(rows).toEqual(["Trip plans", "Shopping"]);
+		expect(await libraryRows()).toEqual(["Trip plans", "Shopping"]);
 
-		await click(container.querySelector(".panel-index"));
+		await openPage("Notes");
 		await settleSlow();
 		expect(win.location.pathname).toBe("/app/notes");
 		const main = container.querySelector("main")!;
@@ -3420,7 +3510,7 @@ describe("app projects surface", () => {
 		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		gate.resolve();
 		await settle();
-		await click(container.querySelector('nav button[aria-label="New conversation"]'));
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		await settle();
 		expect((container.querySelector("form.composer textarea") as HTMLTextAreaElement).value).toBe(
 			"come back to this",
@@ -3580,10 +3670,7 @@ describe("app projects surface", () => {
 		await settle();
 		const created = posts.find((p) => p.url === "/api/app/notes");
 		expect((created!.body as { projectId?: string }).projectId).toBe("p-goblin");
-		await openPane("Notes");
-		expect(
-			[...container.querySelectorAll(".line-row-title")].map((el) => el.textContent),
-		).toContain("Ideas");
+		expect(await libraryRows()).toContain("Ideas");
 		const status = card!.querySelector(".note-card-status")!;
 		expect(status.textContent).toContain("Created");
 		expect(status.textContent).not.toContain("Appended to");
@@ -3654,20 +3741,14 @@ describe("app projects surface", () => {
 			pm!.querySelector("p")!.firstChild!.textContent = "paragraph to discard";
 			await new Promise((resolve) => setTimeout(resolve, 280));
 		});
-		// The pane's head carries the index link — the guarded navigation
-		// is the index open, not the pane switch.
-		const notesButton = async () => {
-			await openPane("Notes");
-			await click(container.querySelector(".panel-index"));
-		};
-		await notesButton();
+		await openPage("Projects");
 		expect(confirmText(container)).toBe("Discard unsaved note edits and any conflict?");
 		await answerConfirm(false);
 		expect(win.location.pathname).toBe("/app/n/n-shopping");
 		expect(container.querySelector(".ProseMirror")?.textContent).toContain("paragraph to discard");
-		await notesButton();
+		await openPage("Projects");
 		await answerConfirm(true);
-		expect(win.location.pathname).toBe("/app/notes");
+		expect(win.location.pathname).toBe("/app/projects");
 		await settleSlow();
 		expect(patchCalls).toBe(0);
 	});
@@ -4632,13 +4713,19 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-readonly")).not.toBeNull();
 	});
 
-	// The gutter's glyph buttons name themselves by aria-label, not text.
-	const glyph = (label: string) =>
-		[...container.querySelectorAll(".gutter button")].find((b) =>
-			(b.getAttribute("aria-label") ?? "").startsWith(label),
-		) ?? null;
-	const openPane = async (label: "Chats" | "Projects" | "Notes") => click(glyph(label));
-	const openSearchPane = async () => click(glyph("Search history"));
+	const openPage = async (page: DesktopPage) => openDesktopPage(container, click, page);
+	const openNewChat = async () =>
+		click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+	const libraryRows = async () => {
+		await click(
+			[...container.querySelectorAll('.goblin-column [role="tab"]')].find(
+				(tab) => tab.textContent === "Library",
+			),
+		);
+		return [...container.querySelectorAll(".goblin-column .goblin-panel-row strong")].map(
+			(title) => title.textContent,
+		);
+	};
 	const railSearch = () => container.querySelector("input.rail-search")!;
 	const searchAlert = () =>
 		[...container.querySelectorAll("p.error")].find((p) =>
@@ -4833,7 +4920,6 @@ describe("app projects surface", () => {
 		convs = [convRow("fixture chat")];
 		searchScript = new Map([["missing", { fail: true }]]);
 		await mount();
-		await openSearchPane();
 
 		await typeInto(railSearch(), "missing", win.HTMLInputElement.prototype);
 		await settleSlow();
@@ -4848,7 +4934,6 @@ describe("app projects surface", () => {
 	test("clearing a failed search then querying again drops the stale alert immediately", async () => {
 		searchScript = new Map([["missing", { fail: true }]]);
 		await mount();
-		await openSearchPane();
 		const box = railSearch();
 		await typeInto(box, "missing", win.HTMLInputElement.prototype);
 		await settleSlow();
@@ -4871,7 +4956,6 @@ describe("app projects surface", () => {
 	test("a fresh query typed over a displayed failure never flashes 'No matches.'", async () => {
 		searchScript = new Map([["missing", { fail: true }]]);
 		await mount();
-		await openSearchPane();
 		const box = railSearch();
 		await typeInto(box, "missing", win.HTMLInputElement.prototype);
 		await settleSlow();
@@ -4901,7 +4985,6 @@ describe("app projects surface", () => {
 				["gone", { hold: gate.promise, fail: outcome === "failure", hits: [searchHit("needle")] }],
 			]);
 			await mount();
-			await openSearchPane();
 			const box = railSearch();
 			await typeInto(box, "gone", win.HTMLInputElement.prototype);
 			await settleSlow();
@@ -4967,7 +5050,7 @@ describe("app projects surface", () => {
 		);
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		await click(container.querySelector('nav button[aria-label="New conversation"]'));
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		expect(win.location.pathname).toBe("/app/");
 		expect(startAlert()).toBeNull();
 	});
@@ -4984,22 +5067,19 @@ describe("app projects surface", () => {
 		);
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		const railSection = async (label: "Notes" | "Projects") => {
-			await openPane(label);
-			if (label === "Projects") return;
-			await click(container.querySelector(".panel-index"));
-		};
-		await railSection("Notes");
-		expect(win.location.pathname).toBe("/app/notes");
-		expect(startAlert()).toBeNull();
-		await railSection("Projects");
+		await openPage("Projects");
 		expect(win.location.pathname).toBe("/app/projects");
 		expect(startAlert()).toBeNull();
-		await click(glyph("Settings"));
+		await openPage("Settings");
 		expect(win.location.pathname).toBe("/app/settings");
 		expect(startAlert()).toBeNull();
+		await openNewChat();
+		expect(win.location.pathname).toBe("/app/");
+		expect(startAlert()).toBeNull();
 
-		await railSection("Notes");
+		await openPage("Notes");
+		expect(win.location.pathname).toBe("/app/notes");
+		expect(startAlert()).toBeNull();
 		await settleSlow();
 		await click(
 			[...container.querySelectorAll("button.dt-row")].find((b) =>
@@ -5141,31 +5221,28 @@ describe("app projects surface", () => {
 		expect((notePatches[0]!.body as { body?: string }).body).toContain("beta bodyx");
 	});
 
-	test("the attention dot reads the open page's snapshot, not a stale refresh", async () => {
-		// One item at boot: the refresh() count paints the dot.
-		attentionItems = [
-			{
-				id: "delegation-input:3",
+	test("the Attention page's own load refreshes the panel's Needs you", async () => {
+		attentionItems = ["1", "2", "3", "4"].map(
+			(n): AppAttentionItem => ({
+				id: `delegation-input:${n}`,
 				kind: "delegation-input",
-				title: "Delegation needs input — worker",
+				title: `Delegation needs input — worker ${n}`,
 				detail: "finish the report",
 				createdAt: "2026-11-05T00:00:00.000Z",
 				target: { kind: "conversation", conversationId: "app/fixture" },
-			},
-		];
+			}),
+		);
 		await mount();
-		const bell = () => glyph("Attention");
-		expect(bell()?.getAttribute("aria-label")).toBe("Attention — 1 item needs you");
-		expect(bell()?.querySelector(".dot")).not.toBeNull();
+		const needs = () => container.querySelector('.goblin-column [aria-label="Needs you"]');
+		expect(needs()?.querySelector("h2")?.textContent).toBe("Needs you · 4");
 
-		// The item resolved elsewhere — the endpoint answers empty now,
-		// but no refresh() ran, so the count is stale. The page's own
-		// load is the fresher truth and must clear the dot it shows up.
 		attentionItems = [];
-		await click(glyph("Attention"));
+		await click([...needs()!.querySelectorAll("button")].find((b) => b.textContent === "See all 4"));
+		expect(win.location.pathname).toBe("/app/attention");
 		expect(container.textContent).toContain("All clear");
-		expect(bell()?.getAttribute("aria-label")).toBe("Attention");
-		expect(bell()?.querySelector(".dot")).toBeNull();
+		await openNewChat();
+		expect(win.location.pathname).toBe("/app/");
+		expect(needs()).toBeNull();
 	});
 });
 
@@ -5202,6 +5279,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
@@ -5213,6 +5291,8 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
@@ -5404,7 +5484,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 	};
 
 	beforeEach(() => {
-		win = new Window();
+		win = new Window({ url: "http://localhost/app/" });
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -5419,6 +5499,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
@@ -5435,6 +5516,8 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			if (url === "/api/app/projects") {
 				return Promise.resolve(jsonResponse({ projects: [] }));
@@ -5500,8 +5583,6 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		await settle();
 	};
 
-	const glyph = (label: string) => container.querySelector(`button[aria-label="${label}"]`);
-
 	const mount = async () => {
 		root = createRoot(container);
 		await act(async () => {
@@ -5516,80 +5597,93 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		await click(container.querySelector('[role="toolbar"] button[aria-label="Pin"]'));
 	};
 
-	test("a failing notes load marks the pane, not a silent empty state", async () => {
+	const panel = () => container.querySelector("aside.goblin-column")!;
+	const needsHead = () => panel().querySelector('[aria-label="Needs you"] h2')?.textContent ?? null;
+	const library = async () => {
+		await click(
+			[...panel().querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Library"),
+		);
+		return panel().querySelector('[role="tabpanel"]')!;
+	};
+	const reloadPanel = async () => {
+		await act(async () => {
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		await settle();
+	};
+	const goTo = async (path: string) => {
+		await act(async () => {
+			win.history.pushState(null, "", path);
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+	};
+
+	test("T8: a failing notes load shows an error in the Library tab, not a silent empty state", async () => {
 		notesFail = true;
 		await mount();
-		await click(glyph("Notes"));
-		const err = container.querySelector(".panes p.error");
-		expect(err).not.toBeNull();
-		expect(err?.textContent).toBe("Couldn't load notes.");
-		// No notes ever loaded: the pane must not fake the empty state
-		// next to the error, nor lose the error behind the null gate.
-		expect(container.textContent).not.toContain("No notes yet.");
-		expect(container.querySelector(".panes button.new")).toBeNull();
+		const tab = await library();
+		expect(tab.querySelector("p.error")?.textContent).toBe("Couldn't load notes.");
+		expect(tab.textContent).not.toContain("No notes yet.");
 	});
 
-	test("a failing attention load paints the error dot and names the miss", async () => {
+	test("T8: a failing attention load names the miss, and a healthy reload shows the item", async () => {
 		attnFail = true;
 		await mount();
-		const bell = glyph("Couldn't load attention");
-		expect(bell).not.toBeNull();
-		expect(bell?.getAttribute("title")).toBe("Couldn't load attention");
-		expect(bell?.querySelector(".dot.attention-dot-error")).not.toBeNull();
-	});
-
-	test("a healthy load on the Attention page clears the glyph's error", async () => {
-		attnFail = true;
-		await mount();
-		expect(glyph("Couldn't load attention")).not.toBeNull();
+		expect(needsHead()).toBe("Couldn't load what needs you.");
 
 		attnFail = false;
-		await click(glyph("Couldn't load attention"));
-		expect(container.querySelector(".attention-dot-error")).toBeNull();
-		expect(glyph("Couldn't load attention")).toBeNull();
+		attentionRows = [attnRow];
+		await reloadPanel();
+		expect(needsHead()).toBe("Needs you · 1");
+		expect(panel().textContent).not.toContain("Couldn't load what needs you.");
+		expect(panel().textContent).toContain("Delegation needs input — worker");
 	});
 
-	test("a later successful refresh clears both feed errors", async () => {
+	test("T8: a healthy load on the Attention page clears the panel's error", async () => {
+		attnFail = true;
+		await mount();
+		expect(needsHead()).toBe("Couldn't load what needs you.");
+
+		attnFail = false;
+		await goTo("/app/attention");
+		await goTo("/app/");
+		expect(panel().querySelector('[aria-label="Needs you"]')).toBeNull();
+	});
+
+	test("T8: a later successful refresh clears both feed errors", async () => {
 		notesFail = true;
 		attnFail = true;
 		await mount();
-		await click(glyph("Notes"));
-		expect(container.querySelector(".panes p.error")?.textContent).toBe("Couldn't load notes.");
-		expect(glyph("Couldn't load attention")).not.toBeNull();
+		expect((await library()).querySelector("p.error")?.textContent).toBe("Couldn't load notes.");
+		expect(needsHead()).toBe("Couldn't load what needs you.");
 
 		notesFail = false;
 		attnFail = false;
-		// Back to the chats pane — the notes pane replaced the rows the
-		// pin trigger lives in — pin, then return to the notes pane.
-		await click(glyph("Chats"));
 		await clickPin();
-		await click(glyph("Notes"));
-		expect(container.querySelector(".panes p.error")).toBeNull();
-		expect(container.textContent).toContain("No notes yet.");
-		expect(container.querySelector(".panes button.new")).not.toBeNull();
-		expect(glyph("Attention")).not.toBeNull();
-		expect(container.querySelector(".attention-dot-error")).toBeNull();
+		await reloadPanel();
+		const tab = await library();
+		expect(tab.querySelector("p.error")).toBeNull();
+		expect(tab.textContent).toContain("No notes yet.");
+		expect(panel().querySelector('[aria-label="Needs you"]')).toBeNull();
 	});
 
-	test("a failed feed load keeps the last good rows beside the error", async () => {
+	test("T8: a failed feed load keeps the last good rows beside the error", async () => {
 		notesRows = [noteRow];
 		attentionRows = [attnRow];
 		await mount();
-		await click(glyph("Notes"));
-		expect(container.textContent).toContain("shopping list");
-		const healthy = glyph("Attention — 1 item needs you");
-		expect(healthy?.querySelector(".dot")).not.toBeNull();
-		expect(healthy?.querySelector(".attention-dot-error")).toBeNull();
+		expect((await library()).textContent).toContain("shopping list");
+		expect(needsHead()).toBe("Needs you · 1");
 
 		notesFail = true;
 		attnFail = true;
-		await click(glyph("Chats"));
 		await clickPin();
-		await click(glyph("Notes"));
-		expect(container.querySelector(".panes p.error")?.textContent).toBe("Couldn't load notes.");
-		// The stale-but-good rows stay under the error, not cleared.
-		expect(container.textContent).toContain("shopping list");
-		expect(glyph("Couldn't load attention")?.querySelector(".dot.attention-dot-error")).not.toBeNull();
+		await reloadPanel();
+		const tab = await library();
+		expect(tab.querySelector("p.error")?.textContent).toBe("Couldn't load notes.");
+		expect(tab.textContent).toContain("shopping list");
+		expect(needsHead()).toBe("Couldn't load what needs you.");
+		expect(panel().textContent).toContain("Delegation needs input — worker");
 	});
 });
 
@@ -5620,6 +5714,7 @@ describe("chat width selector", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		// The command primitive's typeahead walks item text through the DOM
@@ -5628,6 +5723,8 @@ describe("chat width selector", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const feed = goblinFeedResponse(url);
+			if (feed !== null) return Promise.resolve(feed);
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));

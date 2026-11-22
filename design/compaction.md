@@ -28,19 +28,23 @@ Implementation and tests live in `src/agent/compaction*.ts` and
 
 ## Triggers
 
-A fold fires at the **lower** of:
+Ruling (operator, 2026-11-22):
 
-- **50%** of the catalog window (Hermes's default ratio), and
-- **256,000 tokens** absolute (Hermes's cap, kept for quality; every
-  call re-sends the whole context, so the cap also bounds the per-call
-  input bill on a 1M window). An earlier 128k cap was an agent's pick,
-  never the operator's ruling (#547); changing the cap needs measured
-  cost numbers, not a guess.
+- **Catalog window over 300k: 272,000 tokens.** Every call re-sends the
+  whole context, so the cap bounds the per-call input bill on a 1M
+  window and keeps the model in its good range.
+- **Window of 300k or less: the window minus 16,384** — pi's
+  `reserveTokens`, room for the reply. A window under 32k folds at half
+  instead, so the trigger never drops below half the window.
+- **Unknown window: 272,000.**
+- **An `uncapped` agent type** ([agents](agents.md#agent-types)) skips
+  the 272k cap: window minus 16,384 at any size.
 
-So a 1M window folds at 256k; a 200k window at 100k; a 64k window at 32k.
-The previous 75% pressure arm and the 120k span-fidelity arm are retired.
-Both values are named constants in `src/turn/overflow.ts` (the
-pre-emption arm needs them there without an import cycle).
+So a 1.1M window folds at 272k (or 1,083,616 uncapped); a 200k window at
+183,616; a 64k window at 47,616. The 50% ratio (Hermes) and the 256k cap
+(#547) are retired. The values are named constants in
+`src/turn/compact-trigger.ts`, a module with no imports, so the pre-emption
+arm, the landing and the app route can all read them without an import cycle.
 
 Hermes also runs an 85% check at the gateway, before each incoming message,
 for sessions that grew between turns. Goblin does not add one: the
@@ -84,9 +88,9 @@ re-arms at startup (goblin restarts on every release).
 
 Small windows keep the old ratio as a ceiling: tail ≤ 25% of the window.
 OpenClaw's shrink-to-fit (tail shrinks so prompt + tools + pending input +
-reserve fit) is not adopted: with the trigger at ≤50% of the window, a
-≤25% tail plus summary leaves the other quarter free. Revisit only if an
-overflow right after a fold is ever logged.
+reserve fit) is not adopted: the fold replaces everything but a ≤20k
+tail with a summary, so the folded view sits far below the trigger.
+Revisit only if an overflow right after a fold is ever logged.
 
 ## Cut rule: pi's cut, over causal order
 
@@ -198,7 +202,7 @@ Implementation rulings (2026-10-25):
 - **A pre-empt consumes the logical turn's one fold-resume** — the same
   budget overflow recovery draws on, enforced by the same `overflowed` flag
   on the recovery. A turn that keeps growing after a pre-empt is guarded by
-  the 85% context landing (tools-off prose ending) and the overflow error
+  the context landing (tools-off prose ending) and the overflow error
   path, in that order; both are terminal for the turn, never loops.
 - **Pressure budgets the upcoming request, not the last one**: the last
   completed step's reported input plus everything appended since its
@@ -218,6 +222,10 @@ Implementation rulings (2026-10-25):
   not a projection). Regression pin 2026-10-25 (a fresh conversation whose
   130k-token tool output crosses the trigger completes untouched) is
   settled by #403: with split turns that output folds at a step edge.
+- **The context landing never fires below the trigger.** It lands at the
+  higher of 85% of the window and the trigger (2026-11-22), so while a
+  fold can run, the pre-empt always reaches the boundary first. The
+  landing stays the backstop for a turn whose fold-resume is spent.
 - **A context landing that issues at the same boundary retracts** — the
   pre-empt supersedes the tools-off ending (`TurnState.retractContextLanding`);
   the resume starts unforced with tools on. A repeat/watchdog cut never

@@ -9,16 +9,7 @@ import type { ToolCallDigest } from "../reviewer-evidence.ts";
 import type { LoopTurnState } from "./state.ts";
 import type { StreamOutcome } from "./attempt-recorder.ts";
 import type { LiveChunks } from "./stream.ts";
-
-export const COMPACT_TRIGGER_RATIO = 0.5;
-export const COMPACT_TRIGGER_CAP_TOKENS = 256_000;
-
-export function compactTriggerTokens(contextWindow: number | undefined | null): number {
-	if (contextWindow === undefined || contextWindow === null) {
-		return COMPACT_TRIGGER_CAP_TOKENS;
-	}
-	return Math.min(Math.round(contextWindow * COMPACT_TRIGGER_RATIO), COMPACT_TRIGGER_CAP_TOKENS);
-}
+import { compactTriggerTokens } from "./compact-trigger.ts";
 
 export interface TurnRecovery {
 	conversation: Conversation;
@@ -81,12 +72,13 @@ export class PreemptCompactError extends ContextOverflowError {
 export interface PreemptInfo {
 	projectedInputTokens: number | null;
 	contextWindow: number | undefined;
+	uncapped: boolean;
 }
 
 export function preemptArm(info: PreemptInfo): "pressure" | null {
 	if (
 		info.projectedInputTokens !== null &&
-		info.projectedInputTokens >= compactTriggerTokens(info.contextWindow)
+		info.projectedInputTokens >= compactTriggerTokens(info.contextWindow, info.uncapped)
 	) {
 		return "pressure";
 	}

@@ -1,4 +1,5 @@
 import { log } from "../log.ts";
+import { compactTriggerTokens } from "./compact-trigger.ts";
 import { LOOP_DETECT_WARN, LoopDetector, type LoopDetectorState } from "../loop-detect.ts";
 import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "../loop-watchdog.ts";
 import { summarize, type ToolCallDigest, toolOk } from "../reviewer-evidence.ts";
@@ -63,9 +64,17 @@ export class TurnState {
 		this.forcedKind = loop?.forcedKind ?? null;
 	}
 
-	noteContextLanding(prevInput: number | undefined, contextWindow: number | undefined): void {
+	noteContextLanding(
+		prevInput: number | undefined,
+		contextWindow: number | undefined,
+		uncapped: boolean,
+	): void {
 		if (this.cutKind !== null || contextWindow === undefined || prevInput === undefined) return;
-		if (prevInput >= contextWindow * CONTEXT_LANDING_PCT) this.cutKind = "context";
+		const landAt = Math.max(
+			contextWindow * CONTEXT_LANDING_PCT,
+			compactTriggerTokens(contextWindow, uncapped),
+		);
+		if (prevInput >= landAt) this.cutKind = "context";
 	}
 
 	issueLanding(): ForcedKind | null {

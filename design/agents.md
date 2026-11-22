@@ -75,6 +75,7 @@ loud error that names the file, never a silent skip.
 description: Reads code and answers questions about it. No writes.
 model: claude-haiku        # optional; a configured model ref
 tools: [read, search, bash] # optional; absent = the default child set
+uncapped: true               # optional; absent = false
 ---
 System prompt for this agent type.
 ```
@@ -84,6 +85,9 @@ System prompt for this agent type.
 - Built in: `general`, which has the default child set (the parent's
   tools minus the exclusions above). An operator file with the same name
   replaces a built-in type.
+- `uncapped: true` drops the 272k compaction cap for the child: it folds
+  at its window minus 16,384 ([triggers](compaction.md#triggers)). Use it
+  for a type that reads long documents. The built-ins state `false`.
 - Types are read at turn start, like skills. A changed file applies on
   the next turn and needs no restart.
 - Less-trusted models get bounded tools: a type that names such a model

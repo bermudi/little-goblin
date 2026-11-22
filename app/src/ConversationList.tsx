@@ -12,6 +12,7 @@ import {
 import { Toolbar, ToolbarButton } from "@ui-sdk/react/toolbar";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
+import { GoblinAvatar } from "./GoblinAvatar.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import { flatLine, flatTitle } from "./flatText.ts";
 import {
@@ -75,11 +76,13 @@ export function RollingRow({
 	current,
 	preview,
 	updatedAt,
+	working,
 	onOpen,
 }: {
 	current: boolean;
 	preview: string | null;
 	updatedAt: string | null;
+	working: boolean;
 	onOpen: () => void;
 }) {
 	const line = flatLine(preview ?? "");
@@ -97,8 +100,9 @@ export function RollingRow({
 						onOpen();
 					}}
 				>
+					<GoblinAvatar size="md" working={working} />
 					<span className="conv-head">
-						<span className="conv-title">Rolling chat</span>
+						<span className="conv-title">Goblin</span>
 						{updatedAt !== null && <span className="conv-time">{relTime(updatedAt)}</span>}
 					</span>
 					<span className="conv-preview">{line || "Always here"}</span>

@@ -61,6 +61,20 @@ describe("agent types", () => {
 		});
 	});
 
+	test("uncapped is off unless a type file sets it; the built-ins state it", () => {
+		const dir = typeDir();
+		writeFileSync(join(dir, "reader.md"), "---\ndescription: Reads long.\nuncapped: true\n---\nRead.");
+		writeFileSync(join(dir, "plain.md"), "---\ndescription: Plain.\n---\nPlain.");
+		writeFileSync(join(dir, "wrong.md"), "---\ndescription: W.\nuncapped: yes please\n---\nW.");
+		expect(() => loadAgentTypes(dir)).toThrow(/wrong\.md: uncapped/);
+		writeFileSync(join(dir, "wrong.md"), "---\ndescription: W.\nuncapped: false\n---\nW.");
+		const types = loadAgentTypes(dir);
+		expect(types.get("reader")?.uncapped).toBe(true);
+		expect(types.get("plain")?.uncapped).toBe(false);
+		expect(GENERAL_AGENT_TYPE.uncapped).toBe(false);
+		expect(COMPUTER_AGENT_TYPE.uncapped).toBe(false);
+	});
+
 	test("a bad file fails loud naming the file", () => {
 		const dir = typeDir();
 		writeFileSync(join(dir, "broken.md"), "---\ndescription: x\nunknown: 1\n---\nBody.");

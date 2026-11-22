@@ -3,6 +3,8 @@ import type { Message } from "../message.ts";
 import { lastInputTokensOf } from "../conversation-read.ts";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
+import { codexContextWindow } from "../agent/codex/models.ts";
+import { agentTypeUncapped } from "../agent-types.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
 import { listCalls } from "../cache-observation.ts";
@@ -18,7 +20,7 @@ import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
 import { moveIntoProject } from "../conversation-move.ts";
 import { openRatings } from "../reply-ratings.ts";
-import { COMPACT_TRIGGER_RATIO, compactTriggerTokens } from "../turn/overflow.ts";
+import { compactTriggerTokens } from "../turn/compact-trigger.ts";
 import {
 	type AppChannelDeps,
 	configPatchBody,
@@ -573,13 +575,28 @@ export async function handleConversationsRoute(
 				rates.push(turnCacheRead / turnInput);
 			}
 		}
-		let limit: number | null = null;
+		let modelLimit: number | null = null;
 		try {
 			const { provider, modelId } = splitModelRef(model);
-			limit = contextLimitCached(provider, modelId);
+			const p = deps.configRef.current.providers[provider];
+			modelLimit =
+				(p?.kind === "codex" ? codexContextWindow(modelId, p.authFile) : null) ??
+				contextLimitCached(provider, modelId);
 		} catch {
-			limit = null;
+			modelLimit = null;
 		}
+		let uncapped = false;
+		try {
+			uncapped = agentTypeUncapped(row, paths.agentTypes());
+		} catch (err) {
+			log.warn("agent type unreadable — context view shows the capped limit", err, {
+				conversation: convId.id,
+			});
+		}
+		const limit = compactTriggerTokens(
+			modelLimit !== null && modelLimit > 0 ? modelLimit : null,
+			uncapped,
+		);
 		const input = last?.lastInput ?? null;
 		const cacheRead = last?.lastCacheRead ?? null;
 		const body: AppContextView = {
@@ -591,14 +608,8 @@ export async function handleConversationsRoute(
 			cacheHitRate: input !== null && input > 0 && cacheRead !== null ? cacheRead / input : null,
 			avgCacheHitRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
 			limit,
-			pct:
-				input !== null && limit !== null && limit > 0
-					? Math.round((input / limit) * 1000) / 10
-					: null,
-			compactAtPct:
-				limit !== null && limit > 0
-					? Math.round((compactTriggerTokens(limit) / limit) * 1000) / 10
-					: COMPACT_TRIGGER_RATIO * 100,
+			modelLimit,
+			pct: input !== null ? Math.round((input / limit) * 1000) / 10 : null,
 			turns: found.length,
 			segments: segmentsOf(last?.promptChars ?? null, input),
 			...(last?.quota !== null && last?.quota !== undefined
@@ -609,6 +620,7 @@ export async function handleConversationsRoute(
 			conversation: convId.id,
 			input,
 			limit,
+			modelLimit,
 			turns: body.turns,
 		});
 		return Response.json(body, { headers: NO_STORE });

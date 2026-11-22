@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { z } from "zod";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "../proc.ts";
+import { deadline } from "../timing.ts";
 
 export const healthResultSchema = z.object({
 	id: z.string(),
@@ -147,17 +148,13 @@ export async function command(
 	// Inherited probes never signal the caller group; the outer collector owns it.
 	const kill = () => killProc(proc, "SIGKILL", processGroup);
 	const controller = new AbortController();
-	let timedOut = false;
 	const abort = () => {
 		kill();
 		controller.abort();
 	};
-	signal?.addEventListener("abort", abort, { once: true });
-	if (signal?.aborted) abort();
-	const timer = setTimeout(() => {
-		timedOut = true;
-		abort();
-	}, timeoutMs);
+	using limit = deadline(timeoutMs, signal);
+	limit.signal.addEventListener("abort", abort, { once: true });
+	if (limit.signal.aborted) abort();
 	try {
 		const out = await boundedRun(proc, {
 			timeoutMs: timeoutMs + 500,
@@ -166,7 +163,7 @@ export async function command(
 			processGroup,
 		});
 		if (signal?.aborted) throw new ProbeError("cancelled");
-		if (timedOut || out.timedOut) throw new ProbeError("deadline");
+		if (limit.expired() || out.timedOut) throw new ProbeError("deadline");
 		if (out.truncated) {
 			kill();
 			throw new ProbeError("oversized-or-cut-output");
@@ -181,8 +178,6 @@ export async function command(
 			throw new ProbeError(`exit:${out.exitCode ?? "unreaped"}`);
 		return out.stdout;
 	} finally {
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", abort);
 		kill();
 	}
 }

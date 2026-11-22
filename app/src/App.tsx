@@ -918,7 +918,7 @@ function AppShell() {
 								event.altKey || event.button !== 0
 							) return;
 							event.preventDefault();
-							openProject(project.id);
+							void openProject(project.id);
 						}}
 					>
 						<span className="conv-head">

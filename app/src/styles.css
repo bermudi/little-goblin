@@ -531,10 +531,6 @@ p code,
 		-webkit-user-select: none;
 		user-select: none;
 	}
-	.folder-head .folder-actions {
-		opacity: 1;
-		pointer-events: auto;
-	}
 }
 .conv-main[data-holding],
 .conv-main[data-held] {
@@ -5579,65 +5575,6 @@ select.ui-input option {
 		max-width: none;
 		bottom: calc(4.5rem + env(safe-area-inset-bottom));
 	}
-}
-
-.proj-folder {
-	position: relative;
-}
-.folder-head {
-	position: relative;
-	display: flex;
-	align-items: center;
-	width: 100%;
-	border-radius: 8px;
-	transition: background-color 75ms;
-}
-.folder-head:hover {
-	background: var(--app-hover);
-}
-.folder-head.current {
-	background: var(--app-active);
-}
-.folder-toggle {
-	display: flex;
-	align-items: center;
-	gap: 0.35rem;
-	width: 100%;
-	min-width: 0;
-	padding: 0.4rem 0.6rem;
-	text-align: left;
-	font-size: 12.5px;
-	color: var(--app-fg-muted);
-}
-.folder-toggle:hover {
-	color: var(--app-fg);
-}
-.folder-toggle[aria-expanded="true"] .chev {
-	transform: rotate(90deg);
-}
-.folder-toggle .chev {
-	flex: none;
-	transition: transform 120ms ease;
-}
-.folder-name {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.folder-actions {
-	bottom: 0.2rem;
-}
-.folder-head:hover .conv-actions,
-.folder-actions:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-.folder-empty {
-	padding-left: 1.5rem;
-}
-.folder-chats {
-	padding-left: 0.75rem !important;
 }
 
 /* Chat rows outside the rail (a project page's chat list) — the rail

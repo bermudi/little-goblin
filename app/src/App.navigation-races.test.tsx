@@ -386,7 +386,8 @@ describe("navigation races: late completions", () => {
 	};
 	const openPage = async (page: DesktopPage) => openDesktopPage(container, click, page);
 	const openProject = async (name: string) =>
-		click(container.querySelector(`[aria-label="New chat in ${name}"]`));
+		click([...container.querySelectorAll<HTMLAnchorElement>(".rail-project-main")]
+			.find((link) => link.textContent?.trim() === name));
 
 	const submitNewProject = async (name: string) => {
 		await click(container.querySelector('.rail-project-head button[aria-label="New project"]'));

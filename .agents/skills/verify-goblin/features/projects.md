@@ -8,22 +8,22 @@ Create a project managed by goblin.
 
 With the desktop Chats pane showing, click New project to open a dialog.
 
-Project chats show in the Chats pane inside their project's folder. If the
-Projects section is closed, click `Show projects` first. Then
-`ab find role button click --name '<project name>'` opens the folder.
+Project chats show on the project page, not in the sidebar. If the Projects
+section is closed, click `Show projects` first. Then
+`ab find role link click --name '<project name>'` opens the project page.
 
 ## Projects section disclosure
 
 Use a fresh browser profile with an existing active project. In the desktop
 Chats pane:
 
-1. Before looking for a project folder, find the `Show projects` button. The
-   project folder should not be visible; the Projects label and New project
+1. Before looking for a project link, find the `Show projects` button. The
+   project link should not be visible; the Projects label and New project
    control should remain visible.
-2. Click `Show projects`. The active project folder should appear and the
+2. Click `Show projects`. The active project link should appear and the
    button should report expanded.
 3. Reload the page. The section should stay expanded.
-4. Click `Show projects` again. The folder should disappear while the label
+4. Click `Show projects` again. The link should disappear while the label
    remains.
 5. Click the `Projects` label. The all-projects page should open.
 

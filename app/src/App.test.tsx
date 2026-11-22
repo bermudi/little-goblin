@@ -3063,7 +3063,7 @@ describe("app projects surface", () => {
 		expect(win.location.pathname).toBe("/app/log");
 	});
 
-	test("the chats pane lists active project folders before loose chats", async () => {
+	test("the chats pane lists active project links before loose chats", async () => {
 		projs = [
 			projRow("Goblin Work"),
 			projRow("Old Stuff", { archivedAt: "2026-10-09T00:00:00.000Z" }),
@@ -3072,32 +3072,25 @@ describe("app projects surface", () => {
 		await mount();
 		const section = container.querySelector('[aria-label="Show projects"]')!;
 		expect(section.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".proj-folder")).toBeNull();
+		expect(container.querySelector(".rail-project")).toBeNull();
 		await click(section);
 
 		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
 			(t) => t.textContent,
 		);
 		expect(railTitles).toContain("loose chat");
-		const folder = container.querySelector(".proj-folder")!;
-		expect(folder.textContent).toContain("Goblin Work");
-		expect(folder.textContent).not.toContain("Old Stuff");
+		const projectLink = container.querySelector<HTMLAnchorElement>('.rail-project a[href="/app/p/p-goblin"]')!;
+		expect(projectLink.textContent).toContain("Goblin Work");
+		expect(container.querySelector(".rail")!.textContent).not.toContain("Old Stuff");
+		expect(container.querySelector(".rail")!.textContent).not.toContain("inside chat");
 		expect(container.querySelector(".rail")!.textContent!.indexOf("Goblin Work")).toBeLessThan(
 			container.querySelector(".rail")!.textContent!.indexOf("loose chat"),
 		);
-		const toggle = folder.querySelector<HTMLButtonElement>(".folder-toggle")!;
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
-		expect(folder.textContent).not.toContain("inside chat");
-		await click(toggle);
-		expect(folder.textContent).toContain("inside chat");
-		expect(container.querySelectorAll(".proj-folder .conv-title")).toHaveLength(1);
-		expect([...container.querySelectorAll(".rail .conv-title")].map((title) => title.textContent)).toContain(
-			"loose chat",
-		);
+		expect(projectLink.getAttribute("href")).toBe("/app/p/p-goblin");
 
 		await openPage("Projects");
 		expect(win.location.pathname).toBe("/app/projects");
-		expect(container.querySelector(".proj-folder")).not.toBeNull();
+		expect(container.querySelector(".rail-project")).not.toBeNull();
 		expect(container.querySelector("main .tuning")?.textContent).toContain("Archived projects (1)");
 		const details = container.querySelector("main .tuning");
 		expect(details).not.toBeNull();
@@ -3106,35 +3099,35 @@ describe("app projects surface", () => {
 		expect(details!.textContent).toContain("Old Stuff");
 	});
 
-	test("folder open state survives an App remount in localStorage", async () => {
+	test("the projects section open state survives an App remount in localStorage", async () => {
 		projs = [projRow("Goblin Work")];
-		convs = [convRow("inside chat", { projectId: "p-goblin" })];
 		await mount();
 		await click(container.querySelector('[aria-label="Show projects"]'));
-		await click(container.querySelector(".folder-toggle"));
-		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelector('[aria-label="Show projects"]')?.getAttribute("aria-expanded")).toBe("true");
 		await act(async () => {
 			root?.unmount();
 		});
 		root = null;
-		expect(win.localStorage.getItem("goblin.rail-folders.v1")).toContain("p-goblin");
 		await mount();
 		expect(container.querySelector('[aria-label="Show projects"]')?.getAttribute("aria-expanded")).toBe("true");
-		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
-		expect(container.textContent).toContain("inside chat");
 	});
 
-	test("opening a project chat URL reveals its folder and marks the row current", async () => {
+	test("project and project-chat routes mark the project link current; loose chats do not", async () => {
 		projs = [projRow("Goblin Work")];
 		convs = [convRow("inside chat", { id: "app/inside", projectId: "p-goblin" })];
 		win.history.replaceState(null, "", "/app/c/inside");
 		await mount();
-		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
-		expect(container.querySelector(".proj-folder .conv.current .conv-title")?.textContent).toBe("inside chat");
-		await click(container.querySelector(".folder-toggle"));
-		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("false");
-		await settle();
-		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("false");
+		const projectLink = () => container.querySelector<HTMLAnchorElement>(".rail-project-main");
+		expect(container.querySelector('[aria-label="Show projects"]')?.getAttribute("aria-expanded")).toBe("true");
+		expect(projectLink()?.getAttribute("aria-current")).toBe("page");
+		expect(container.querySelector(".rail")?.textContent).not.toContain("inside chat");
+		await click(projectLink());
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		expect(projectLink()?.getAttribute("aria-current")).toBe("page");
+		win.history.replaceState(null, "", "/app/c/loose");
+		convs = [convRow("loose chat", { id: "app/loose" })];
+		await mount();
+		expect(projectLink()?.getAttribute("aria-current")).toBeNull();
 	});
 
 	test("the projects section starts collapsed and folds back up", async () => {
@@ -3142,21 +3135,21 @@ describe("app projects surface", () => {
 		await mount();
 		const section = container.querySelector('[aria-label="Show projects"]')!;
 		expect(section.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".proj-folder")).toBeNull();
+		expect(container.querySelector(".rail-project")).toBeNull();
 		await click(section);
 		expect(section.getAttribute("aria-expanded")).toBe("true");
-		expect(container.querySelector(".proj-folder")?.textContent).toContain("Goblin Work");
+		expect(container.querySelector(".rail-project")?.textContent).toContain("Goblin Work");
 		await click(section);
 		expect(section.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".proj-folder")).toBeNull();
+		expect(container.querySelector(".rail-project")).toBeNull();
 		expect(win.location.pathname).toBe("/app/");
 	});
 
-	test("a folder's new-chat button opens that project page", async () => {
+	test("the project link opens that project's page", async () => {
 		projs = [projRow("Goblin Work")];
 		await mount();
 		await click(container.querySelector('[aria-label="Show projects"]'));
-		await click(container.querySelector('[aria-label="New chat in Goblin Work"]'));
+		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 	});
 
@@ -3530,7 +3523,7 @@ describe("app projects surface", () => {
 		createHold = gate.promise;
 		await sendComposer("come back to this");
 		await click(container.querySelector('[aria-label="Show projects"]'));
-		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
+		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
 		gate.resolve();
 		await settle();
 		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
@@ -5079,7 +5072,7 @@ describe("app projects surface", () => {
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
 		await click(container.querySelector('[aria-label="Show projects"]'));
-		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
+		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		expect(startAlert()).toBeNull();
 	});
@@ -5188,7 +5181,7 @@ describe("app projects surface", () => {
 		expect(startAlert()).toBeNull();
 
 		await click(container.querySelector('[aria-label="Show projects"]'));
-		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
+		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		failCreate = true;
 		gate.resolve();
@@ -5226,7 +5219,7 @@ describe("app projects surface", () => {
 			win.HTMLInputElement.prototype,
 		);
 
-		await click(container.querySelector('[aria-label="New chat in Beta"]'));
+		await click(container.querySelector('.rail-project-main[href="/app/p/p-beta"]'));
 		expect(win.location.pathname).toBe("/app/p/p-beta");
 		// B's own fresh state — and nothing of A's on the wire.
 		expect(instr().value).toBe("inst B");

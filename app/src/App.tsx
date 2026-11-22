@@ -883,14 +883,14 @@ function AppShell() {
 				}}
 			/>
 			<li className="rail-project-head">
-					<button type="button" onClick={openProjectsIndex}>Projects</button>
-					<button
-						type="button"
-						aria-label="New project"
-						onClick={() => setCreateProjectOpen(true)}
-					>
-						<NewProjectGlyph />
-					</button>
+				<button type="button" onClick={openProjectsIndex}>Projects</button>
+				<button
+					type="button"
+					aria-label="New project"
+					onClick={() => setCreateProjectOpen(true)}
+				>
+					<NewProjectGlyph />
+				</button>
 			</li>
 			{activeProjects.map((project) => {
 				const chats = projectChats(project.id);
@@ -984,7 +984,7 @@ function AppShell() {
 			}}
 		>
 			<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
-			<MenuContent>
+			<MenuContent className="title-menu">
 				<MenuItem value="settings">Settings</MenuItem>
 				<MenuItem value="archive">Archive</MenuItem>
 			</MenuContent>

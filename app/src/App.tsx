@@ -405,7 +405,13 @@ function AppShell() {
 	}, [token]);
 
 	useEffect(() => {
-		if (gate === "passed") void refresh();
+		if (gate !== "passed") return;
+		void refresh();
+		const resumed = () => {
+			if (document.visibilityState === "visible") void refresh();
+		};
+		document.addEventListener("visibilitychange", resumed);
+		return () => document.removeEventListener("visibilitychange", resumed);
 	}, [gate, refresh]);
 
 	// A /app/c/<id> load selects that conversation once the list

@@ -328,6 +328,10 @@ Plain sends on this page always go through the rolling lane, even while an
 older roll is open; retry and edit act on the roll on screen.
 A send that lands in another conversation hands its reply follow to the view
 mounted for that conversation.
+When the app becomes visible again (a phone PWA resumed from the
+background), it re-reads the chat list and the open transcript and reopens
+the conversation's event stream, so a roll or reply that landed while it was
+hidden shows without a force close.
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 

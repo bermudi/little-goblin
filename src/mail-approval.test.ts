@@ -67,7 +67,8 @@ describe("mail approval ticker", () => {
 		expect(sweeps).toBe(seen);
 	});
 
-	test("a sweep that fails outside its own catch is an error line with the ticker's label", async () => {
+	test.each(["startup", "interval"])("%s sweep failures log with the ticker's label", async (phase) => {
+		const atStartup = phase === "startup";
 		const outbox = openOutbox(tmpDb("goblin-mail-ticker-fail-"));
 		const lane: MailApprovalLane = {
 			present: async () => ({ kind: "posted", messageId: null, surface: "test" }),
@@ -75,7 +76,7 @@ describe("mail approval ticker", () => {
 			settle: async () => {},
 			strip: async () => {},
 		};
-		let clockBroken = false;
+		let clockBroken = atStartup;
 		const captured: string[] = [];
 		setLogFile("mail-approval-ticker-fail-test.log");
 		setLogWriter((_path, line) => {
@@ -92,13 +93,14 @@ describe("mail approval ticker", () => {
 					return new Date("2026-01-01T00:00:00.000Z");
 				},
 			},
-			5,
+			atStartup ? undefined : 5,
 		);
 		clockBroken = true;
 		try {
 			await waitUntil(
 				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
-				"the failed sweep logs through every()",
+				"the failed sweep logs with its ticker label",
+				1_000,
 			);
 		} finally {
 			await approval.stop();

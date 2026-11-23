@@ -156,9 +156,10 @@ describe("delegation watcher", () => {
 		expect(gets).toBe(seen);
 	});
 
-	test("a scan that fails outside its own catch is an error line with the ticker's label", async () => {
+	test.each(["startup", "interval"])("%s scan failures log with the ticker's label", async (phase) => {
 		const h = harness();
-		let storeBroken = false;
+		const atStartup = phase === "startup";
+		let storeBroken = atStartup;
 		const delegations: DelegationsStore = {
 			...h.store,
 			active: () => {
@@ -171,12 +172,13 @@ describe("delegation watcher", () => {
 		setLogWriter((_path, line) => {
 			captured.push(line);
 		});
-		const w = startDelegationLifecycle({ ...h.deps, delegations }, 5);
+		const w = startDelegationLifecycle({ ...h.deps, delegations }, atStartup ? undefined : 5);
 		storeBroken = true;
 		try {
 			await waitUntil(
 				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
-				"the failed scan logs through every()",
+				"the failed scan logs with its ticker label",
+				1_000,
 			);
 		} finally {
 			await w.stopTicker();

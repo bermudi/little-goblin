@@ -226,9 +226,10 @@ describe("mail watcher", () => {
 		expect(scans).toBe(seen);
 	});
 
-	test("a scan that fails outside its own catch is an error line with the ticker's label", async () => {
+	test.each(["startup", "interval"])("%s scan failures log with the ticker's label", async (phase) => {
 		const h = harness();
-		let clockBroken = false;
+		const atStartup = phase === "startup";
+		let clockBroken = atStartup;
 		const captured: string[] = [];
 		setLogFile("mail-watcher-ticker-fail-test.log");
 		setLogWriter((_path, line) => {
@@ -245,14 +246,15 @@ describe("mail watcher", () => {
 					return NOW;
 				},
 			},
-			5,
+			atStartup ? undefined : 5,
 		);
 		watchers.push(w);
 		clockBroken = true;
 		try {
 			await waitUntil(
 				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
-				"the failed scan logs through every()",
+				"the failed scan logs with its ticker label",
+				1_000,
 			);
 		} finally {
 			await w.stop();

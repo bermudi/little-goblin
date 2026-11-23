@@ -24,6 +24,7 @@ import {
 	type WorkerOutcome,
 } from "./queue.ts";
 import { screenMemoryText } from "./screen.ts";
+import { every } from "../timing.ts";
 
 // ---------- client ----------
 
@@ -796,17 +797,16 @@ export function startMemoryWorker(
 			if (!worked) return;
 		}
 	}
-	const timer = setInterval(() => {
+	const timer = every(opts.intervalMs ?? 5000, "memory worker tick", () => {
 		if (stopped || draining || pauses > 0) return;
 		draining = drain().finally(() => {
 			draining = null;
 		});
-	}, opts.intervalMs ?? 5000);
-	if (typeof timer.unref === "function") timer.unref();
+	}, { unref: true });
 	return {
 		async stop(): Promise<void> {
 			stopped = true;
-			clearInterval(timer);
+			timer.cancel();
 			stopping.abort();
 			if (draining) await draining;
 		},

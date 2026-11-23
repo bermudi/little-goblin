@@ -80,7 +80,6 @@ describe("timer guard", () => {
 });
 
 const FROZEN: Readonly<Record<string, number>> = {
-	"src/health/t3.ts": 1,
 	"src/http/app-sse.ts": 1,
 	"src/http/app-turns.ts": 1,
 	"src/idle-compaction.ts": 1,

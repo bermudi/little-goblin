@@ -3,6 +3,7 @@ import type { TtsConfig } from "../config-schema.ts";
 import type { ConversationReads } from "../conversation-read.ts";
 import { speakable } from "../agent/tts.ts";
 import { log } from "../log.ts";
+import { every } from "../timing.ts";
 import { withTimeout } from "./deadline.ts";
 
 // Callback-data id of the 🔊 button the delivery sink attaches to voice-capable replies.
@@ -92,10 +93,10 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 				"sendChatAction",
 			).catch((err: unknown) => log.error("record voice ping failed", err, { chat: message.chat.id }));
 		void action();
-		const recording = setInterval(action, 4_000);
+		const recording = every(4_000, "telegram speak button recording ping", action);
 		try {
 			const audio = await deps.synthesize(text, deps.tts);
-			clearInterval(recording);
+			recording.cancel();
 			for (const chunk of audio) {
 				await withTimeout(
 					deps.api.sendVoice(message.chat.id, new InputFile(chunk, "speech.ogg"), { ...thread }),
@@ -122,7 +123,7 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 				chunks: audio.length,
 			});
 		} catch (err) {
-			clearInterval(recording);
+			recording.cancel();
 			log.warn("voice button failed", err, {
 				chat: message.chat.id,
 				message: message.message_id,

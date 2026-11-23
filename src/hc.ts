@@ -35,6 +35,9 @@ const readSchema = z.object({
 	why: z.string().optional(),
 });
 const listSchema = z.object({ terminals: z.array(terminalSchema) }).passthrough();
+const coreVersionSchema = z.object({
+	version: z.string().max(64).regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/),
+});
 
 const envelopeSchema = z.object({
 	id: z.string(),
@@ -73,6 +76,7 @@ export interface Hc {
 	}): Promise<HcTerminal>;
 	get(terminal: string): Promise<HcTerminal | null>;
 	list(): Promise<HcTerminal[]>;
+	coreVersion(): Promise<string>;
 	read(terminal: string, lines: number): Promise<string>;
 	send(terminal: string, text: string, force?: boolean): Promise<void>;
 	keys(terminal: string, keys: string[]): Promise<void>;
@@ -255,6 +259,9 @@ export function makeHc(
 		},
 		async list() {
 			return parseReply(listSchema, "terminal.list", await call("terminal.list", { all: true })).terminals;
+		},
+		async coreVersion() {
+			return parseReply(coreVersionSchema, "server.status", await call("server.status", {})).version;
 		},
 		async read(terminal, lines) {
 			return parseReply(readSchema, "terminal.read", await call("terminal.read", { terminal, lines })).text;

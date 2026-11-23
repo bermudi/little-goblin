@@ -91,28 +91,55 @@ export async function hcCore(
 				failure.next,
 			);
 		}
-		const verified =
+		const installed =
 			binary.kind === "pinned"
-				? `Pinned herdr-core ${current} verified`
-				: `herdr-core ${binary.version} is a retired pin; the next delegate run replaces it with ${current} (download unverified)`;
+				? `installed herdr-core ${current} matches the pin`
+				: `installed herdr-core ${binary.version} is a retired pin; the next delegate run replaces it with ${current} (download unverified)`;
 		const session = hcSessionForHome(home);
 		if (!existsSync(hcSocketPath(session))) {
 			return result(
 				id,
 				scope,
 				"pass",
-				`${verified}; core ${session} is not running and starts on the first delegate run (start unverified)`,
+				`${installed}; core ${session} is not running and starts on the first delegate run (start unverified)`,
 				started,
 			);
 		}
 		try {
-			const terminals = await makeHc(session).list();
-			const reachable = `core is reachable; ${terminals.length} terminals`;
+			const hc = makeHc(session);
+			const terminals = await hc.list();
+			let runningVersion: string;
+			try {
+				runningVersion = await hc.coreVersion();
+			} catch {
+				return result(
+					id,
+					scope,
+					"fail",
+					`${installed}; server.status failed; cannot verify the running version`,
+					started,
+					"Inspect the hc core version response; doctor does not start or stop the core",
+				);
+			}
+			const reachable = `running herdr-core ${runningVersion}; ${terminals.length} terminals`;
+			if (runningVersion !== current) {
+				const retired = pins.retired.some((pin) => pin.version === runningVersion);
+				return result(
+					id,
+					scope,
+					"warn",
+					retired
+						? `${installed}; running herdr-core ${runningVersion} is retired; pinned herdr-core is ${current}; ${terminals.length} terminals`
+						: `${installed}; running herdr-core ${runningVersion} does not match pinned ${current}; ${terminals.length} terminals`,
+					started,
+					"The pinned version takes over on the next core start; Doctor does not start or stop it.",
+				);
+			}
 			return result(
 				id,
 				scope,
 				"pass",
-				binary.kind === "pinned" ? `Pinned ${reachable}` : `${verified}; ${reachable}`,
+				`${installed}; ${reachable}`,
 				started,
 			);
 		} catch (error) {

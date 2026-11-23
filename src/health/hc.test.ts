@@ -47,15 +47,15 @@ function socketPath(): string {
 	return path;
 }
 
-async function serveCore(reply: (id: string) => string): Promise<void> {
+async function serveCore(reply: (id: string, method: string) => string): Promise<void> {
 	const server = createServer((connection) => {
 		let buffer = "";
 		connection.on("data", (chunk) => {
 			buffer += chunk.toString("utf8");
 			const newline = buffer.indexOf("\n");
 			if (newline < 0) return;
-			const request = JSON.parse(buffer.slice(0, newline)) as { id: string };
-			connection.end(`${reply(request.id)}\n`);
+			const request = JSON.parse(buffer.slice(0, newline)) as { id: string; method: string };
+			connection.end(`${reply(request.id, request.method)}\n`);
 		});
 	});
 	servers.push(server);
@@ -91,9 +91,15 @@ test("a pinned binary that cannot execute stays red", async () => {
 
 test("a reachable core passes with its terminal count", async () => {
 	installBinary();
-	await serveCore((id) => JSON.stringify({ jsonrpc: "2.0", id, result: { terminals: [] } }));
+	await serveCore((id, method) => JSON.stringify({
+		jsonrpc: "2.0",
+		id,
+		result: method === "terminal.list" ? { terminals: [] } : { version: HC_VERSION },
+	}));
 	const result = await check();
-	expect(result).toMatchObject({ status: "pass", detail: "Pinned core is reachable; 0 terminals" });
+	expect(result).toMatchObject({ status: "pass" });
+	expect(result.detail).toContain(`installed herdr-core ${HC_VERSION} matches the pin`);
+	expect(result.detail).toContain(`running herdr-core ${HC_VERSION}; 0 terminals`);
 });
 
 test("after a pin bump, a retired-pin binary passes and names its replacement", async () => {
@@ -106,11 +112,75 @@ test("after a pin bump, a retired-pin binary passes and names its replacement", 
 
 test("after a pin bump, a retired-pin binary with a reachable core passes", async () => {
 	installBinary(retiredBinary);
-	await serveCore((id) => JSON.stringify({ jsonrpc: "2.0", id, result: { terminals: [] } }));
+	await serveCore((id, method) => JSON.stringify({
+		jsonrpc: "2.0",
+		id,
+		result: method === "terminal.list" ? { terminals: [] } : { version: HC_VERSION },
+	}));
 	const result = await check();
 	expect(result).toMatchObject({ status: "pass" });
 	expect(result.detail).toContain("herdr-core 0.0.9-retired is a retired pin");
-	expect(result.detail).toContain("core is reachable; 0 terminals");
+	expect(result.detail).toContain(`running herdr-core ${HC_VERSION}; 0 terminals`);
+});
+
+test("a running retired core warns even when the installed binary is current", async () => {
+	installBinary();
+	await serveCore((id, method) => JSON.stringify({
+		jsonrpc: "2.0",
+		id,
+		result: method === "terminal.list" ? { terminals: [] } : { version: "0.0.9-retired" },
+	}));
+	const result = await check();
+	expect(result).toMatchObject({ status: "warn" });
+	expect(result.detail).toContain(`running herdr-core 0.0.9-retired is retired; pinned herdr-core is ${HC_VERSION}`);
+	expect(result.detail).toContain("0 terminals");
+	expect(result.next).toContain("next core start");
+	expect(result.next).toContain("Doctor does not start or stop it");
+});
+
+test("a running core at an unrecognized valid version warns without calling it retired", async () => {
+	installBinary();
+	await serveCore((id, method) => JSON.stringify({
+		jsonrpc: "2.0",
+		id,
+		result: method === "terminal.list" ? { terminals: [] } : { version: "0.1.19" },
+	}));
+	const result = await check();
+	expect(result).toMatchObject({ status: "warn" });
+	expect(result.detail).toContain(`running herdr-core 0.1.19 does not match pinned ${HC_VERSION}`);
+	expect(result.detail).not.toContain("retired");
+});
+
+test.each([
+	["missing version", { other: "0.1.21" }],
+	["invalid version", { version: "untrusted server output" }],
+])("a core with %s status fails safely", async (_name, status) => {
+	installBinary();
+	await serveCore((id, method) => JSON.stringify({
+		jsonrpc: "2.0",
+		id,
+		result: method === "terminal.list" ? { terminals: [] } : status,
+	}));
+	const result = await check();
+	expect(result).toMatchObject({ status: "fail" });
+	expect(result.detail).toContain("server.status failed");
+	expect(result.detail).not.toContain("untrusted server output");
+});
+
+test("a server.status RPC error fails safely", async () => {
+	installBinary();
+	await serveCore((id, method) => method === "terminal.list"
+		? JSON.stringify({ jsonrpc: "2.0", id, result: { terminals: [] } })
+		: JSON.stringify({
+			jsonrpc: "2.0",
+			id,
+			error: { code: -1, message: "private core detail", data: { kind: "untrusted server output" } },
+		}));
+	const result = await check();
+	expect(result).toMatchObject({ status: "fail" });
+	expect(result.detail).toContain("server.status failed; cannot verify the running version");
+	expect(result.detail).not.toContain("private core detail");
+	expect(result.detail).not.toContain("untrusted server output");
 });
 
 test("a binary that matches no pin stays red, even with retired pins known", async () => {

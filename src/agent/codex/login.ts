@@ -16,6 +16,7 @@ import type { Config } from "../../config-schema.ts";
 import { paths } from "../../home-layout.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
+import { sleep as timingSleep } from "../../timing.ts";
 import { OAUTH_CLIENT_ID, resolveCodexAuthFile, type FetchLike } from "./auth.ts";
 
 export interface ChatGptStatus {
@@ -180,12 +181,12 @@ export function createChatGptLogin(deps: {
 	config: () => Config;
 	fetch?: FetchLike;
 	now?: () => number;
-	sleep?: (ms: number) => Promise<void>;
+	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	onSignedIn?(): void;
 }): ChatGptLogin {
 	const fetchImpl = deps.fetch ?? fetch;
 	const now = deps.now ?? (() => Date.now());
-	const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const wait = deps.sleep ?? timingSleep;
 
 	let starting: StartingLogin | null = null;
 	let pending: PendingLogin | null = null;
@@ -311,9 +312,10 @@ export function createChatGptLogin(deps: {
 				log.info("chatgpt login expired");
 				return;
 			}
-			await sleep(pending.intervalMs);
-			if (pending?.id !== id) return; // cancelled or superseded
 			const p = pending;
+			await wait(Math.min(p.intervalMs, p.deadlineMs - now()), p.abort.signal);
+			if (pending?.id !== id) return; // cancelled or superseded
+			if (now() >= p.deadlineMs) continue;
 			let res: Response;
 			try {
 				res = await fetchImpl(DEVICE_TOKEN_URL, {

@@ -1,10 +1,74 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, jest, spyOn, test } from "bun:test";
 import { log } from "./log.ts";
 import { after, deadline, every, sleep, within } from "./timing.ts";
 
 const tick = (ms: number) => new Promise<void>((resolve) => after(ms, "test tick", resolve));
 
+async function settle(): Promise<void> {
+	for (let i = 0; i < 4; i++) await Promise.resolve();
+}
+
 describe("sleep", () => {
+	test("waits across the maximum timer delay", async () => {
+		jest.useFakeTimers();
+		try {
+			let settled = false;
+			const waiting = sleep(2 ** 31 + 5).then(() => {
+				settled = true;
+			});
+			jest.advanceTimersByTime(2 ** 31 + 4);
+			await settle();
+			expect(settled).toBe(false);
+			jest.advanceTimersByTime(1);
+			await settle();
+			expect(settled).toBe(true);
+			await waiting;
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("abort cancels a wait across timer chunks", async () => {
+		jest.useFakeTimers();
+		try {
+			const controller = new AbortController();
+			let settled = false;
+			const waiting = sleep(2 ** 31 + 5, controller.signal).then(() => {
+				settled = true;
+			});
+			jest.advanceTimersByTime(2 ** 31);
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			controller.abort();
+			await Promise.resolve();
+			expect(settled).toBe(true);
+			await waiting;
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("an infinite wait stays pending until aborted", async () => {
+		jest.useFakeTimers();
+		try {
+			const controller = new AbortController();
+			let settled = false;
+			const waiting = sleep(Infinity, controller.signal).then(() => {
+				settled = true;
+			});
+			jest.advanceTimersByTime(2 ** 31);
+			jest.advanceTimersByTime(2 ** 31);
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			controller.abort();
+			await Promise.resolve();
+			expect(settled).toBe(true);
+			await waiting;
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("waits the full time without a signal", async () => {
 		const started = performance.now();
 		await sleep(30);
@@ -29,6 +93,26 @@ describe("sleep", () => {
 });
 
 describe("deadline", () => {
+	test("expires only after the full long delay and can be disposed", async () => {
+		jest.useFakeTimers();
+		try {
+			const limit = deadline(2 ** 31 + 5);
+			jest.advanceTimersByTime(2 ** 31 + 4);
+			await Promise.resolve();
+			expect(limit.signal.aborted).toBe(false);
+			expect(limit.expired()).toBe(false);
+			jest.advanceTimersByTime(1);
+			expect(limit.signal.aborted).toBe(true);
+			expect(limit.expired()).toBe(true);
+			const disposed = deadline(2 ** 31 + 5);
+			disposed[Symbol.dispose]();
+			jest.advanceTimersByTime(2 ** 31 + 10);
+			expect(disposed.signal.aborted).toBe(false);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("aborts its signal and reports expiry when time runs out", async () => {
 		using limit = deadline(10);
 		expect(limit.expired()).toBe(false);
@@ -64,6 +148,25 @@ describe("deadline", () => {
 });
 
 describe("within", () => {
+	test("times out only after the full long delay", async () => {
+		jest.useFakeTimers();
+		try {
+			let settled = false;
+			const waiting = within(new Promise<number>(() => {}), 2 ** 31 + 5).then((result) => {
+				settled = true;
+				return result;
+			});
+			jest.advanceTimersByTime(2 ** 31 + 4);
+			await settle();
+			expect(settled).toBe(false);
+			jest.advanceTimersByTime(1);
+			await settle();
+			expect(await waiting).toEqual({ kind: "timeout" });
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("returns the value when the work settles first", async () => {
 		expect(await within(Promise.resolve(7), 1_000)).toEqual({ kind: "settled", value: 7 });
 	});
@@ -87,6 +190,29 @@ describe("within", () => {
 });
 
 describe("after", () => {
+	test("waits across chunks and cancellation survives the first chunk", async () => {
+		jest.useFakeTimers();
+		try {
+			let runs = 0;
+			after(2 ** 31 + 5, "long after", () => {
+				runs += 1;
+			});
+			jest.advanceTimersByTime(2 ** 31 + 4);
+			expect(runs).toBe(0);
+			jest.advanceTimersByTime(1);
+			expect(runs).toBe(1);
+			const cancelled = after(2 ** 31 + 5, "cancelled long after", () => {
+				runs += 1;
+			});
+			jest.advanceTimersByTime(2 ** 31);
+			cancelled.cancel();
+			jest.advanceTimersByTime(2 ** 31);
+			expect(runs).toBe(1);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("runs the callback once after the delay", async () => {
 		let runs = 0;
 		after(10, "test run", () => {
@@ -123,6 +249,52 @@ describe("after", () => {
 });
 
 describe("every", () => {
+	test("long intervals repeat only after the full period and cancel", async () => {
+		jest.useFakeTimers();
+		try {
+			let runs = 0;
+			const ticker = every(2 ** 31 + 5, "long ticker", () => {
+				runs += 1;
+			});
+			jest.advanceTimersByTime(1);
+			expect(runs).toBe(0);
+			jest.advanceTimersByTime(2 ** 31 + 3);
+			expect(runs).toBe(0);
+			jest.advanceTimersByTime(1);
+			expect(runs).toBe(1);
+			jest.advanceTimersByTime(2 ** 31 + 5);
+			expect(runs).toBe(2);
+			ticker.cancel();
+			jest.advanceTimersByTime(2 ** 31 + 5);
+			expect(runs).toBe(2);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test("an immediate run of a long interval does not bring the next tick forward", () => {
+		jest.useFakeTimers();
+		try {
+			let runs = 0;
+			const ticker = every(
+				2 ** 31 + 5,
+				"long immediate ticker",
+				() => {
+					runs += 1;
+				},
+				{ immediate: true },
+			);
+			expect(runs).toBe(1);
+			jest.advanceTimersByTime(2 ** 31 + 4);
+			expect(runs).toBe(1);
+			jest.advanceTimersByTime(1);
+			expect(runs).toBe(2);
+			ticker.cancel();
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	function counter(target: number): { hit(): number; reached: Promise<void> } {
 		let runs = 0;
 		let reach!: () => void;

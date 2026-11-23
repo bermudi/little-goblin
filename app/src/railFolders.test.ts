@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { loadOpenFolders, saveOpenFolders } from "./railFolders.ts";
+import { loadOpenFolders, loadProjectsOpen, saveOpenFolders, saveProjectsOpen } from "./railFolders.ts";
 
 let win: Window | null = null;
 const oldStorage = Reflect.get(globalThis, "localStorage");
@@ -44,4 +44,13 @@ test("throwing storage loads empty and save is best-effort", () => {
 	});
 	expect(loadOpenFolders()).toEqual(new Set());
 	expect(() => saveOpenFolders(new Set(["p-one"]))).not.toThrow();
+});
+
+test("the projects section loads closed until saved open", () => {
+	storage();
+	expect(loadProjectsOpen()).toBe(false);
+	saveProjectsOpen(true);
+	expect(loadProjectsOpen()).toBe(true);
+	saveProjectsOpen(false);
+	expect(loadProjectsOpen()).toBe(false);
 });

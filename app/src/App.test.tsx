@@ -3070,6 +3070,10 @@ describe("app projects surface", () => {
 		];
 		convs = [convRow("loose chat"), convRow("inside chat", { projectId: "p-goblin" })];
 		await mount();
+		const section = container.querySelector('[aria-label="Show projects"]')!;
+		expect(section.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".proj-folder")).toBeNull();
+		await click(section);
 
 		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
 			(t) => t.textContent,
@@ -3106,6 +3110,7 @@ describe("app projects surface", () => {
 		projs = [projRow("Goblin Work")];
 		convs = [convRow("inside chat", { projectId: "p-goblin" })];
 		await mount();
+		await click(container.querySelector('[aria-label="Show projects"]'));
 		await click(container.querySelector(".folder-toggle"));
 		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
 		await act(async () => {
@@ -3114,6 +3119,7 @@ describe("app projects surface", () => {
 		root = null;
 		expect(win.localStorage.getItem("goblin.rail-folders.v1")).toContain("p-goblin");
 		await mount();
+		expect(container.querySelector('[aria-label="Show projects"]')?.getAttribute("aria-expanded")).toBe("true");
 		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
 		expect(container.textContent).toContain("inside chat");
 	});
@@ -3131,9 +3137,25 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("false");
 	});
 
+	test("the projects section starts collapsed and folds back up", async () => {
+		projs = [projRow("Goblin Work")];
+		await mount();
+		const section = container.querySelector('[aria-label="Show projects"]')!;
+		expect(section.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".proj-folder")).toBeNull();
+		await click(section);
+		expect(section.getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelector(".proj-folder")?.textContent).toContain("Goblin Work");
+		await click(section);
+		expect(section.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".proj-folder")).toBeNull();
+		expect(win.location.pathname).toBe("/app/");
+	});
+
 	test("a folder's new-chat button opens that project page", async () => {
 		projs = [projRow("Goblin Work")];
 		await mount();
+		await click(container.querySelector('[aria-label="Show projects"]'));
 		await click(container.querySelector('[aria-label="New chat in Goblin Work"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 	});
@@ -3507,6 +3529,7 @@ describe("app projects surface", () => {
 		const gate = hold();
 		createHold = gate.promise;
 		await sendComposer("come back to this");
+		await click(container.querySelector('[aria-label="Show projects"]'));
 		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		gate.resolve();
 		await settle();
@@ -5055,6 +5078,7 @@ describe("app projects surface", () => {
 		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
+		await click(container.querySelector('[aria-label="Show projects"]'));
 		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		expect(startAlert()).toBeNull();
@@ -5163,6 +5187,7 @@ describe("app projects surface", () => {
 		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(true);
 		expect(startAlert()).toBeNull();
 
+		await click(container.querySelector('[aria-label="Show projects"]'));
 		await click(container.querySelector('[aria-label="New chat in Goblin"]'));
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		failCreate = true;

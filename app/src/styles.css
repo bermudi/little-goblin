@@ -831,8 +831,25 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 }
 .rail-project-head {
 	display: flex;
-	justify-content: space-between;
 	align-items: center;
+	gap: 0.25rem;
+}
+.rail-section-toggle {
+	display: flex;
+	align-items: center;
+	color: inherit;
+}
+.rail-section-toggle:hover {
+	color: var(--app-fg);
+}
+.rail-section-toggle .chev {
+	transition: transform 120ms ease;
+}
+.rail-section-toggle[aria-expanded="true"] .chev {
+	transform: rotate(90deg);
+}
+.rail-section-label {
+	margin-right: auto;
 }
 .rail-project-head,
 .rail-chats-label {
@@ -843,7 +860,7 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	text-transform: uppercase;
 	padding: 0.5rem;
 }
-.rail-project-head > button:first-child {
+.rail-project-head > .rail-section-label {
 	color: inherit;
 	font: inherit;
 	letter-spacing: inherit;

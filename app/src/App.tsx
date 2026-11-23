@@ -43,7 +43,7 @@ import { conversationActions } from "./conversationActions.ts";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { ProjectFolder } from "./ProjectFolder.tsx";
-import { loadOpenFolders, saveOpenFolders } from "./railFolders.ts";
+import { loadOpenFolders, loadProjectsOpen, saveOpenFolders, saveProjectsOpen } from "./railFolders.ts";
 import {
 	ConversationNav,
 	ConversationHierarchy,
@@ -137,6 +137,11 @@ function AppShell() {
 	// per device (chatWidth.ts).
 	const [chatWidth, setChatWidthState] = useState<ChatWidth>(loadChatWidth);
 	const [openFolders, setOpenFolders] = useState(loadOpenFolders);
+	const [projectsOpen, setProjectsOpenState] = useState(loadProjectsOpen);
+	const setProjectsOpen = (open: boolean) => {
+		setProjectsOpenState(open);
+		saveProjectsOpen(open);
+	};
 	const setChatWidth = (width: ChatWidth) => {
 		setChatWidthState(width);
 		saveChatWidth(width);
@@ -240,6 +245,8 @@ function AppShell() {
 			: null) ?? (route.kind === "project" ? route.id : null);
 	useEffect(() => {
 		if (currentFolderId === null) return;
+		setProjectsOpenState(true);
+		saveProjectsOpen(true);
 		setOpenFolders((previous) => {
 			if (previous.has(currentFolderId)) return previous;
 			const next = new Set(previous).add(currentFolderId);
@@ -847,6 +854,7 @@ function AppShell() {
 		else setMoveError(null);
 		try {
 			await patchConversation(token, conversationId, { projectId: targetProjectId });
+			setProjectsOpen(true);
 			setFolderOpen(targetProjectId, true);
 			await refresh();
 		} catch (err) {
@@ -902,7 +910,29 @@ function AppShell() {
 				}}
 			/>
 			<li className="rail-project-head">
-				<button type="button" onClick={openProjectsIndex}>Projects</button>
+				<button
+					type="button"
+					className="rail-section-toggle"
+					aria-label="Show projects"
+					aria-expanded={projectsOpen}
+					onClick={() => setProjectsOpen(!projectsOpen)}
+				>
+					<svg
+						className="chev"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						strokeWidth="1.75"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+						width="12"
+						height="12"
+						aria-hidden="true"
+					>
+						<path d="M9 6l6 6-6 6" />
+					</svg>
+				</button>
+				<button type="button" className="rail-section-label" onClick={openProjectsIndex}>Projects</button>
 				<button
 					type="button"
 					aria-label="New project"
@@ -911,7 +941,7 @@ function AppShell() {
 					<NewProjectGlyph />
 				</button>
 			</li>
-			{activeProjects.map((project) => {
+			{projectsOpen && activeProjects.map((project) => {
 				const chats = projectChats(project.id);
 				return (
 					<ProjectFolder

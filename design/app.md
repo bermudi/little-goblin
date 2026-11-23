@@ -314,14 +314,19 @@ the server refuses it.
 
 The chats pane lists each active project as a folder above the loose chats,
 a mechanism borrowed from t3code's sidebar. A folder holds that project's
-active chats, pinned first. Folders start closed; opening a project chat or
-project page opens its folder, and which folders are open is kept per device
-in localStorage. A folder's + opens the project page, whose composer starts
-a chat in it. There is no Projects pane: the Projects head in the chat list
-opens the all-projects page and carries New project (#862). New project
-uses a folder-plus glyph so it never reads as New conversation. Which folders
-are open is a per-device preference, like the chat width: when storage is
-unavailable the rail only forgets it.
+active chats, pinned first. The separate Projects chevron controls whether
+the section's folders are shown; it starts closed when no preference is
+stored, and its open or closed state is kept per device in localStorage
+(ruling 2026-11-22, #889). Individual folders also start closed and remember
+their state per device.
+Landing in a project or one of its chats, or successfully moving a chat into
+a project, reveals the section and opens that project's folder. A folder's +
+opens the project page, whose composer starts a chat in it. There is no
+Projects pane: the Projects label in the chat list opens the all-projects
+page. Beside the label, New project uses a folder-plus glyph so it never
+reads as New conversation (#862).
+These per-device preferences are like the chat width: when storage is
+unavailable the rail only forgets them.
 
 ## [Rolling chat](../GLOSSARY.md#rolling-chat) (ruling 2026-11-21, #840)
 
@@ -682,9 +687,9 @@ console.
 
 **Desktop.** No glyph gutter. Three columns:
 - Left list: a search field and New chat on top; the Rolling chat as a
-  pinned row named **Goblin**, with Goblin's avatar; the Projects head,
-  which opens the all-projects page and carries New project; project
-  folders; loose chats; archived rows. A **You** control at the bottom
+  pinned row named **Goblin**, with Goblin's avatar; the collapsible Projects
+  section with project folders, its all-projects label, and New project
+  control; loose chats; archived rows. A **You** control at the bottom
   opens a menu with Settings and Archive. The sidebar toggle still hides
   the whole list.
 - Centre: the chat, unchanged.

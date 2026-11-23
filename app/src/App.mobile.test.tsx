@@ -821,8 +821,9 @@ describe("mobile: chats screen and navigation", () => {
 	test("the hold sheet switches to project choices and moves in place", async () => {
 		projects = [projRow("Goblin Work")];
 		await mount();
-		const folderToggle = container.querySelector<HTMLButtonElement>(".folder-toggle");
-		expect(folderToggle?.getAttribute("aria-expanded")).toBe("false");
+		const sectionToggle = container.querySelector('[aria-label="Show projects"]');
+		expect(sectionToggle?.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".proj-folder")).toBeNull();
 		await hold(
 			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
 			"touch",
@@ -847,7 +848,8 @@ describe("mobile: chats screen and navigation", () => {
 		await waitFor(() => patches.some((patch) => patch.body.projectId === "p-goblin"), "move PATCH");
 		expect(patches).toContainEqual({ id: "fixture", body: { projectId: "p-goblin" } });
 		expect(win.location.pathname).toBe("/app/");
-		expect(folderToggle?.getAttribute("aria-expanded")).toBe("true");
+		expect(sectionToggle?.getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
 		const movedLink = container.querySelector('.proj-folder .conv-main[href="/app/c/fixture"]');
 		expect(movedLink).toBeTruthy();
 		expect(
@@ -943,6 +945,7 @@ describe("mobile: chats screen and navigation", () => {
 		projects = [projRow("Goblin Work")];
 		conversations[0]!.projectId = "p-goblin";
 		await mount();
+		await click(container.querySelector('[aria-label="Show projects"]'));
 		await click(container.querySelector(".folder-toggle"));
 		await hold(container.querySelector('.proj-folder .conv-main[href="/app/c/fixture"]')!, "touch");
 		expect(

@@ -80,7 +80,6 @@ describe("timer guard", () => {
 });
 
 const FROZEN: Readonly<Record<string, number>> = {
-	"src/agent/onemin-speech.ts": 2,
 	"src/agent/skill-fetch.ts": 1,
 	"src/agent/tts.ts": 1,
 	"src/agent/vision.ts": 2,

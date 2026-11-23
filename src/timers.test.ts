@@ -80,5 +80,4 @@ describe("timer guard", () => {
 });
 
 const FROZEN: Readonly<Record<string, number>> = {
-	"src/testkit/memory-net/calm.fixture.ts": 1,
 };

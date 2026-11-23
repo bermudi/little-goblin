@@ -108,7 +108,7 @@ export interface AttemptRecorder {
 	textDelta(partId: string, delta: string): void;
 	reasoningDelta(delta: string): void;
 	appendPartial(message: PromptMessage): void;
-	toolInput(id: string, name: string, input: unknown, opts: { journal: boolean }): void;
+	toolInput(id: string, name: string, input: unknown): void;
 	toolInputRejected(name: string, input: unknown, errorText: string): void;
 	toolOutput(id: string, output: unknown): void;
 	toolError(id: string, errorText: string): void;
@@ -160,6 +160,7 @@ export function openAttemptRecorder(
 	let lastCacheRead: number | null = null;
 	let quota: AppQuota | null = null;
 	const partial: PromptMessage[] = [];
+	const journaledToolCallIds = new Set<string>();
 	const steers = openSteerLedger(deps);
 	const events = openToolEvents({ toolCalls: deps.toolCalls, digest: deps.digest });
 	const eventsDeps = {
@@ -238,23 +239,20 @@ export function openAttemptRecorder(
 		appendPartial(message) {
 			partial.push(message);
 		},
-		toolInput(id, name, input, opts) {
+		toolInput(id, name, input) {
 			noteToolInput(
 				events,
 				{
 					convId: deps.convId,
 					evidence: deps.evidence,
-					...(opts.journal
-						? {
-								noteJournal: (callId, toolName, toolInput) =>
-									deps.journal?.noteToolInput(deps.runId, callId, toolName, toolInput),
-							}
-						: {}),
+					noteJournal: (callId, toolName, toolInput) =>
+						deps.journal?.noteToolInput(deps.runId, callId, toolName, toolInput),
 				},
 				id,
 				name,
 				input,
 			);
+			if (deps.journal !== undefined) journaledToolCallIds.add(id);
 		},
 		toolInputRejected(name, input, errorText) {
 			noteToolInputRejected(eventsDeps, name, input, errorText);
@@ -264,6 +262,9 @@ export function openAttemptRecorder(
 		},
 		toolError(id, errorText) {
 			noteToolError(events, eventsDeps, id, errorText);
+			if (journaledToolCallIds.has(id)) {
+				deps.journal?.noteToolError(deps.runId, id, new Error(errorText));
+			}
 		},
 		stepEnded(input) {
 			stepCount += 1;

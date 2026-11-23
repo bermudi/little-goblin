@@ -670,7 +670,7 @@ export async function driveStream<M extends WireMember>(
 						providerExecutedIds.add(chunk.toolCallId);
 						break;
 					}
-					recorder.toolInput(chunk.toolCallId, chunk.toolName, chunk.input, { journal: true });
+					recorder.toolInput(chunk.toolCallId, chunk.toolName, chunk.input);
 					break;
 				case "tool-input-error":
 					if (providerExecutedIds.has(chunk.toolCallId)) break;

@@ -4,8 +4,13 @@ import { TurnState } from "./state.ts";
 import { emitChunk, openLive, type WireMember } from "./stream.ts";
 import { openAttemptRecorder } from "./attempt-recorder.ts";
 import type { StepRules } from "./step-rules.ts";
+import type { TurnJournal } from "../turn-journal.ts";
 
-function fixture(authority = true, holdZeroEffectError = false) {
+function fixture(
+	authority = true,
+	holdZeroEffectError = false,
+	journal?: TurnJournal,
+) {
 	const live = openLive();
 	const received: MessageChunk[] = [];
 	const member: WireMember = {
@@ -48,7 +53,7 @@ function fixture(authority = true, holdZeroEffectError = false) {
 		ownedInputSeqs: [1],
 		evidence: undefined,
 		skillWatch: undefined,
-		journal: undefined,
+		journal,
 		runId: "run-1",
 		saveStep: (patch: unknown) => patches.push(patch),
 		turnStartMs: 0,
@@ -182,7 +187,7 @@ describe("attempt recorder", () => {
 
 	test("outcomes null the window before the first step and retry reset keeps tool events", () => {
 		const { recorder } = fixture();
-		recorder.toolInput("call-1", "echo", {}, { journal: false });
+		recorder.toolInput("call-1", "echo", {});
 		recorder.resetForRetry();
 		expect(
 			recorder.ok({
@@ -192,5 +197,24 @@ describe("attempt recorder", () => {
 				window: { v: 1, system: "", tools: [], messages: [], segments: {} as never },
 			}),
 		).toMatchObject({ kind: "ok", window: null, toolCalls: ["echo"], steps: 0 });
+	});
+
+	test("tool errors settle journaled planned calls only", () => {
+		const writes: Array<{ runId: string; callId: string; error: unknown }> = [];
+		const journal = {
+			noteToolInput() {},
+			noteToolError: (runId: string, callId: string, error: unknown) => {
+				writes.push({ runId, callId, error });
+			},
+		} as unknown as TurnJournal;
+		const { recorder } = fixture(true, false, journal);
+		recorder.toolError("not-planned", "unplanned failure");
+		expect(writes).toEqual([]);
+		recorder.toolInput("planned", "echo", {});
+		recorder.toolError("planned", "planned failure");
+		expect(writes).toHaveLength(1);
+		expect(writes[0]!.runId).toBe("run-1");
+		expect(writes[0]!.callId).toBe("planned");
+		expect(writes[0]!.error).toMatchObject({ name: "Error", message: "planned failure" });
 	});
 });

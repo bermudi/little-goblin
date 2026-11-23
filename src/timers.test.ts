@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OWNER = "src/timing.ts";
-const RAW_TIMER_RE = /(?:\bglobalThis\.|(?<![\w.$]))(?:set(?:Timeout|Interval)\s*\(|Bun\.sleep\b)/g;
+const RAW_TIMER_RE =
+	/(?:\bglobalThis\.|(?<![\w.$]))(?:set(?:Timeout|Interval)\s*\(|Bun\s*(?:\.\s*sleep\b|\[\s*(["'`])sleep\1\s*\]))/g;
 
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -45,6 +46,11 @@ describe("timer guard", () => {
 			"await Bun.sleep(50);",
 			"globalThis.Bun.sleep(1);",
 			"const s = Bun.sleep;",
+			"await Bun .sleep(1);",
+			"await Bun\n\t.sleep(1);",
+			'Bun["sleep"](1);',
+			"Bun[ 'sleep' ](1);",
+			'Bun["sleepSync"](1);',
 			"myBun.sleep(1);",
 			"Bun.sleepSync(1);",
 			"clearTimeout(t);",
@@ -56,6 +62,10 @@ describe("timer guard", () => {
 			"Bun.sleep",
 			"globalThis.Bun.sleep",
 			"Bun.sleep",
+			"Bun .sleep",
+			"Bun\n\t.sleep",
+			'Bun["sleep"]',
+			"Bun[ 'sleep' ]",
 		]);
 	});
 

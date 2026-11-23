@@ -62,6 +62,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	let root: Root | null = null;
 	let uploads: Deferred[] = [];
 	const sent: UIMessage["parts"][] = [];
+	let phoneWidth = false;
 	// Globals the React tree expects; installed per test, removed after.
 	let installed: string[] = [];
 	const realFetch = globalThis.fetch;
@@ -77,6 +78,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
 		uploads = [];
+		phoneWidth = false;
 		sent.length = 0;
 		installed = [];
 		// React's client scheduler and event system need a coherent DOM
@@ -87,8 +89,28 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
+		installGlobal("PointerEvent", win.PointerEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
+		installGlobal("Element", win.Element);
+		installGlobal("Node", win.Node);
+		installGlobal("ShadowRoot", win.ShadowRoot);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("ResizeObserver", win.ResizeObserver);
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
+		Reflect.set(win, "matchMedia", (query: string) => ({
+			matches: phoneWidth && query.includes("max-width: 720"),
+			media: query,
+			addEventListener() {},
+			removeEventListener() {},
+		}));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, _init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -161,9 +183,9 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		);
 	}
 
-	const mount = () => {
+	const mount = async () => {
 		root = createRoot(container);
-		act(() => {
+		await act(async () => {
 			root?.render(
 				<ComposerHarness
 					onSend={(parts) => {
@@ -171,6 +193,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 					}}
 				/>,
 			);
+			await Promise.resolve();
 		});
 	};
 
@@ -217,6 +240,71 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	};
 	const textareaValue = () =>
 		container.querySelector<HTMLTextAreaElement>("form.composer textarea")?.value ?? null;
+
+	const click = async (element: Element | null) => {
+		expect(element).not.toBeNull();
+		await act(async () => {
+			element?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+	};
+
+	test("phone composer groups its add actions in one menu", async () => {
+		phoneWidth = true;
+		await mount();
+		const bar = container.querySelector(".composer-bar");
+		expect(bar?.querySelector('button[aria-label="Attach"]')).toBeNull();
+		expect(bar?.querySelector('button[aria-label="Attach a note"]')).toBeNull();
+		expect(bar?.querySelector('button[aria-label="Invoke a skill"]')).toBeNull();
+		await click(bar?.querySelector('button[aria-label="Add"]') ?? null);
+		expect(
+			[...win.document.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent?.trim()),
+		).toEqual(["Attach a file", "Attach a note", "Invoke a skill"]);
+	});
+
+	test("phone add menu opens note and skill pickers and clicks the file input", async () => {
+		phoneWidth = true;
+		await mount();
+		const fileInput = container.querySelector('input[type="file"]');
+		expect(fileInput).not.toBeNull();
+		let fileClicks = 0;
+		fileInput?.addEventListener("click", () => fileClicks++);
+		const choose = async (label: string) => {
+			await click(container.querySelector('button[aria-label="Add"]'));
+			const item = [...win.document.querySelectorAll('[role="menuitem"]')].find(
+				(candidate) => candidate.textContent?.trim() === label,
+			);
+			await click(item === undefined ? null : (item as unknown as Element));
+		};
+		await choose("Attach a note");
+		expect(container.querySelector(".note-pick")).not.toBeNull();
+		expect(win.document.querySelector('[role="menuitem"]')).toBeNull();
+		await choose("Invoke a skill");
+		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+		await click(container.querySelector('button[aria-label="Close"]'));
+		await choose("Attach a file");
+		expect(fileClicks).toBe(1);
+	});
+
+	test("phone keeps the supported voice-note button in the composer bar", async () => {
+		phoneWidth = true;
+		installGlobal("MediaRecorder", class {});
+		Object.defineProperty(win.navigator, "mediaDevices", {
+			value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+		});
+		await mount();
+		const mic = container.querySelector('button[aria-label="Record a voice note"]');
+		expect(mic).not.toBeNull();
+		expect(mic?.closest(".composer-bar")).not.toBeNull();
+	});
+
+	test("desktop keeps the three separate add buttons", async () => {
+		await mount();
+		const bar = container.querySelector(".composer-bar");
+		expect(bar?.querySelector('button[aria-label="Attach"]')).not.toBeNull();
+		expect(bar?.querySelector('button[aria-label="Attach a note"]')).not.toBeNull();
+		expect(bar?.querySelector('button[aria-label="Invoke a skill"]')).not.toBeNull();
+		expect(bar?.querySelector('button[aria-label="Add"]')).toBeNull();
+	});
 
 	test("one action switches between stop and send as the draft changes", async () => {
 		let stops = 0;

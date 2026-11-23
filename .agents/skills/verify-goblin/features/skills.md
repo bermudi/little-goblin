@@ -10,7 +10,8 @@ injected into that turn and the invocation is stored on the user message.
 
 - **Browse:** sidebar → Skills. Proposed skills appear before installed ones.
 - **Invoke:** Chat composer → **Invoke a skill** → select a catalog entry →
-  send a message.
+  send a message. On phone widths, **Invoke a skill** is an item in the
+  composer's **Add** menu, beside **Attach a file** and **Attach a note**.
 
 Skills are directories under `workspace/skills/` with a `SKILL.md` file.
 Goblin's seed includes built-in skills; the following small fixture gives a

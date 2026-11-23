@@ -2593,6 +2593,21 @@ button.pathchip:hover svg {
 		flex-wrap: wrap;
 	}
 }
+@media (max-width: 720px) {
+	.composer-bar > :not(.model-knob) {
+		flex-shrink: 0;
+	}
+	.composer-bar > .model-knob {
+		flex-shrink: 1;
+		min-width: 0;
+	}
+	.model-knob .knob-btn {
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+}
 .icon-btn {
 	display: inline-flex;
 	align-items: center;

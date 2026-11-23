@@ -297,13 +297,16 @@ the server refuses it.
 Each active project is one link row above the loose chats. It opens that
 project's page and is marked current on that page and in its chats. Project
 chats appear on the project page, not in the sidebar (ruling 2026-11-22,
-#894). The separate Projects chevron controls whether the project links are
-shown; it starts closed when no preference is stored, and its open or closed
-state is kept per device in localStorage (ruling 2026-11-22, #889).
+#894). The Projects button controls whether the project links are shown; it
+starts closed when no preference is stored, and its open or closed state is
+kept per device in localStorage (ruling 2026-11-22, #889). The all-projects
+page is in the You menu, between Settings and Archive.
+Pinned project chats appear at the top of Chats with their project's name.
+Unpinned project chats stay on the project page (ruling 2026-11-22, #894).
 Landing in a project or one of its chats, or successfully moving a chat into
 a project, reveals the section. There is no
-Projects pane: the Projects label in the chat list opens the all-projects
-page. Beside the label, New project uses a folder-plus glyph so it never
+Projects pane: the You menu opens the all-projects page. Beside the Projects
+button, New project uses a folder-plus glyph so it never
 reads as New conversation (#862).
 These per-device preferences are like the chat width: when storage is
 unavailable the rail only forgets them.
@@ -669,9 +672,11 @@ console.
 - Left list: a search field and New chat on top; the Rolling chat as a
   pinned row named **Goblin**, with Goblin's avatar; the collapsible Projects
   section with project link rows that open their project pages and are marked
-  current on those pages and in their chats, its all-projects label, and New project
-  control; loose chats; archived rows. A **You** control at the bottom
-  opens a menu with Settings and Archive. The sidebar toggle still hides
+  current on those pages and in their chats. Its Projects button folds the
+  section. Pinned project chats appear at the top of Chats with their project
+  names; unpinned project chats stay on their project pages. New project
+  remains beside the Projects button. A **You** control at the bottom opens a
+  menu with Settings, Projects and Archive. The sidebar toggle still hides
   the whole list.
 - Centre: the chat, unchanged.
 - Right: the [Goblin panel](../GLOSSARY.md#goblin-panel), beside chat pages

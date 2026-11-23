@@ -41,13 +41,9 @@ function byText(root: ParentNode, selector: string, text: string): Element | und
 }
 
 export async function openDesktopPage(root: ParentNode, click: Click, page: DesktopPage): Promise<void> {
-	if (page === "Settings" || page === "Archive") {
+	if (page === "Settings" || page === "Projects" || page === "Archive") {
 		await click(root.querySelector('nav[aria-label="Sidebar"] button[aria-label="You"]'));
 		await click(byText(root, '[role="menuitem"]', page));
-		return;
-	}
-	if (page === "Projects") {
-		await click(byText(root, ".rail-project-head button", "Projects"));
 		return;
 	}
 	if (page === "Notes" || page === "Delegations" || page === "Programs") {

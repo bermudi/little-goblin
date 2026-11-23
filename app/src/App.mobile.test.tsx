@@ -819,7 +819,7 @@ describe("mobile: chats screen and navigation", () => {
 	test("the hold sheet switches to project choices and moves in place", async () => {
 		projects = [projRow("Goblin Work")];
 		await mount();
-		const sectionToggle = container.querySelector('[aria-label="Show projects"]');
+		const sectionToggle = container.querySelector(".rail-section-toggle");
 		expect(sectionToggle?.getAttribute("aria-expanded")).toBe("false");
 		expect(container.querySelector(".rail-project")).toBeNull();
 		await hold(
@@ -849,7 +849,9 @@ describe("mobile: chats screen and navigation", () => {
 		expect(sectionToggle?.getAttribute("aria-expanded")).toBe("true");
 		expect(container.querySelector(".rail-project-main")?.textContent).toContain("Goblin Work");
 		expect(container.querySelector(".rail-project-main")?.getAttribute("href")).toBe("/app/p/p-goblin");
-		expect(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')).toBeNull();
+		const movedPinned = container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]');
+		expect(movedPinned?.querySelector(".conv-project")?.textContent).toBe("Goblin Work");
+		expect(movedPinned?.querySelector(".conv-pin")).not.toBeNull();
 	});
 
 	test("Back returns to row actions without moving the chat", async () => {
@@ -935,11 +937,12 @@ describe("mobile: chats screen and navigation", () => {
 		expect(win.location.pathname).toBe("/app/");
 	});
 
-	test("project-bound chats are not shown in the chat list", async () => {
+	test("unpinned project chats stay off the chat list", async () => {
 		projects = [projRow("Goblin Work")];
 		conversations[0]!.projectId = "p-goblin";
+		conversations[0]!.pinnedAt = null;
 		await mount();
-		await click(container.querySelector('[aria-label="Show projects"]'));
+		await click(container.querySelector(".rail-section-toggle"));
 		expect(container.querySelector(".rail-project-main")?.textContent).toContain("Goblin Work");
 		expect(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')).toBeNull();
 	});
@@ -1038,7 +1041,7 @@ describe("mobile: chats screen and navigation", () => {
 		conversations[0]!.archivedAt = "2026-10-24T00:00:00Z";
 		conversations[0]!.projectId = "p-goblin";
 		await mount();
-		await click(buttonText(".chatlist-screen .rail-project-head button", "Projects"));
+		await openYou("Projects");
 		await waitFor(
 			() => container.querySelector(".ops .ops-h2")?.textContent === "Projects",
 			"projects index",
@@ -1134,7 +1137,7 @@ describe("mobile: chats screen and navigation", () => {
 		projects = [projRow("Goblin Work")];
 		await mount();
 
-		await click(buttonText(".chatlist-screen .rail-project-head button", "Projects"));
+		await openYou("Projects");
 		await waitFor(
 			() =>
 				[...container.querySelectorAll("button.dt-row")].some((b) =>

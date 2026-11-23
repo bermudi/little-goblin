@@ -763,18 +763,25 @@ function AppShell() {
 	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
 	const unbound = all.filter((c) => (c.projectId ?? null) === null);
 	const active = unbound.filter((c) => c.archivedAt === null);
+	const projectList = projects ?? [];
+	const activeProjects = projectList
+		.filter((p) => p.archivedAt === null)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const activeProjectIds = new Set(activeProjects.map((project) => project.id));
+	const pinnedRail = all.filter(
+		(c) =>
+			c.archivedAt === null &&
+			c.pinnedAt !== null &&
+			(c.projectId === null || c.projectId === undefined || activeProjectIds.has(c.projectId)),
+	);
 	const rail = [
-		...active.filter((c) => c.pinnedAt !== null),
+		...pinnedRail,
 		...active.filter((c) => c.pinnedAt === null),
 	];
 	const archived = unbound
 		.filter((c) => c.archivedAt !== null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 
-	const projectList = projects ?? [];
-	const activeProjects = projectList
-		.filter((p) => p.archivedAt === null)
-		.sort((a, b) => a.name.localeCompare(b.name));
 	const currentProject =
 		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
 	// The crumb's name rides the same pool the rail lists.
@@ -837,6 +844,9 @@ function AppShell() {
 			<ConversationRow
 				conv={c}
 				orphaned={orphaned}
+				projectName={c.projectId === null
+					? undefined
+					: projectList.find((project) => project.id === c.projectId)?.name}
 				current={railCurrent}
 				token={token}
 				moveTargets={activeProjects.map(({ id, name }) => ({ id, name }))}
@@ -875,7 +885,6 @@ function AppShell() {
 				<button
 					type="button"
 					className="rail-section-toggle"
-					aria-label="Show projects"
 					aria-expanded={projectsOpen}
 					onClick={() => setProjectsOpen(!projectsOpen)}
 				>
@@ -893,8 +902,8 @@ function AppShell() {
 					>
 						<path d="M9 6l6 6-6 6" />
 					</svg>
+					Projects
 				</button>
-				<button type="button" className="rail-section-label" onClick={openProjectsIndex}>Projects</button>
 				<button
 					type="button"
 					aria-label="New project"
@@ -1006,12 +1015,14 @@ function AppShell() {
 		<Menu
 			onAction={(value) => {
 				if (value === "settings") void openPage("settings");
+				if (value === "projects") void openProjectsIndex();
 				if (value === "archive") void openArchive();
 			}}
 		>
 			<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
 			<MenuContent className="title-menu">
 				<MenuItem value="settings">Settings</MenuItem>
+				<MenuItem value="projects">Projects</MenuItem>
 				<MenuItem value="archive">Archive</MenuItem>
 			</MenuContent>
 		</Menu>

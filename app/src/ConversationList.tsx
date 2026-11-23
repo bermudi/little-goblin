@@ -147,6 +147,7 @@ export function ConversationRow({
 	onMoveToNewProject,
 	token,
 	orphaned = false,
+	projectName,
 }: {
 	conv: AppConversationList["conversations"][number];
 	current: string | null;
@@ -161,6 +162,7 @@ export function ConversationRow({
 	onMoveToNewProject: (conversationId: string) => void;
 	token: string | null;
 	orphaned?: boolean;
+	projectName?: string | undefined;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
@@ -253,6 +255,7 @@ export function ConversationRow({
 					<span className="conv-title">
 						{title ?? (preview === "" ? "new conversation" : preview)}
 					</span>
+					{projectName !== undefined && <span className="conv-project">{projectName}</span>}
 					{orphaned && <span className="conv-subagent-label">subagent</span>}
 					<span className="conv-time">{relTime(conv.updatedAt)}</span>
 				</span>

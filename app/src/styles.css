@@ -748,6 +748,15 @@ p code,
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+.conv-project {
+	flex: none;
+	max-width: 40%;
+	overflow: hidden;
+	color: var(--app-fg-muted);
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .conv-time {
 	flex: none;
 	font-family: var(--font-mono);
@@ -823,7 +832,12 @@ p code,
 .rail-section-toggle {
 	display: flex;
 	align-items: center;
+	gap: 0.25rem;
+	margin-right: auto;
 	color: inherit;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
 }
 .rail-section-toggle:hover {
 	color: var(--app-fg);
@@ -834,9 +848,6 @@ p code,
 .rail-section-toggle[aria-expanded="true"] .chev {
 	transform: rotate(90deg);
 }
-.rail-section-label {
-	margin-right: auto;
-}
 .rail-project-head,
 .rail-chats-label {
 	color: var(--app-fg-muted);
@@ -845,12 +856,6 @@ p code,
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	padding: 0.5rem;
-}
-.rail-project-head > .rail-section-label {
-	color: inherit;
-	font: inherit;
-	letter-spacing: inherit;
-	text-transform: inherit;
 }
 .rail-you {
 	margin-top: auto;

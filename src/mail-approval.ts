@@ -287,10 +287,7 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		if (rows.length > 0) log.info("outbox expiry swept", { count: rows.length });
 	};
 
-	const timer = every(tickMs, "mail approval sweep", () => {
-		void sweep();
-	});
-	void sweep();
+	const timer = every(tickMs, "mail approval sweep", sweep, { immediate: true });
 
 	return {
 		requestDraft,

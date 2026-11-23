@@ -82,9 +82,6 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		// again.
 		const work = (async () => {
 			const now = deps.now?.() ?? new Date();
-			// The reader and the filter query sit outside the per-program
-			// guard below; a throw here would otherwise leave scan() as a
-			// context-free unhandled rejection every tick.
 			let gmail: MailPoller | null;
 			let programs: Program[];
 			try {
@@ -118,10 +115,7 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		});
 		return current;
 	};
-	const ticker = every(tickMs, "mail watcher tick", () => {
-		void scan();
-	});
-	void scan(); // boot catch-up: the cursor persisted, missed mail fires
+	const ticker = every(tickMs, "mail watcher tick", scan, { immediate: true }); // boot catch-up: the cursor persisted, missed mail fires
 	return {
 		tick: scan,
 		stop: () => {

@@ -34,10 +34,11 @@ export function every(
 	ms: number,
 	label: string,
 	fn: () => unknown,
-	options: TimerOptions = {},
+	options: TimerOptions & { immediate?: boolean } = {},
 ): Timer {
 	const handle = setInterval(() => run(label, fn), ms);
 	if (options.unref === true) handle.unref();
+	if (options.immediate === true) run(label, fn);
 	return { cancel: () => clearInterval(handle) };
 }
 

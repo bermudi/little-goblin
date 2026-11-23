@@ -433,9 +433,7 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		},
 
 		startTicker(intervalMs = TICKER_MS) {
-			const ticker = every(intervalMs, "wake ticker", () => guard("ticker", () => dispatcher.pump()), {
-				unref: true,
-			});
+			const ticker = every(intervalMs, "wake ticker", () => dispatcher.pump(), { unref: true });
 			return () => ticker.cancel();
 		},
 

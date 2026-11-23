@@ -592,9 +592,7 @@ async function boot() {
 		now: wallClock,
 	});
 	const OBSERVE_MS = 60_000;
-	const watchTicker = every(OBSERVE_MS, "watch observe", () => {
-		watchObserver.observe().catch((err) => log.error("watch observe tick failed", err));
-	}, { unref: true });
+	const watchTicker = every(OBSERVE_MS, "watch observe", () => watchObserver.observe(), { unref: true });
 	const stopWatchTicker = () => watchTicker.cancel();
 	const stopWakeTicker = delivery.dispatcher.start();
 

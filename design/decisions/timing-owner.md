@@ -22,9 +22,14 @@ risks cache stability.
   error line with the label. A raw timer callback that throws reaches the
   process's uncaught-exception handler, which exits.
 - `every(ms, label, fn)` is the repeating form of `after`, with the same
-  error line per failed tick; the ticker keeps going. It does not skip a
-  tick while the previous one still runs: a module that must not overlap
-  keeps its own in-flight guard (#830).
+  error line per failed tick; the ticker keeps going. A ticker's callback
+  returns its promise, so a failure outside the module's own catch
+  reaches `every` and logs with the label (#903). A catch of its own
+  stays only where it says more than the label (the row, the chat, the
+  step) or where the failure is deliberately quiet, like a cosmetic
+  ping. It does not skip a tick while the previous one still runs: a
+  module that must not overlap keeps its own in-flight guard (#830).
+  An optional immediate run at startup uses the same error line as a tick.
 
 Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.

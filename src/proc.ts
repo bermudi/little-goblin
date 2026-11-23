@@ -1,4 +1,5 @@
 import { log } from "./log.ts";
+import { after, sleep } from "./timing.ts";
 
 export type ProcessGroupMode = "new" | "inherit";
 
@@ -14,8 +15,6 @@ const PIPE_DRAIN_MS = 250;
 // If even SIGKILL can't reap it (e.g. D-state), the caller gets an
 // honest null rather than a hang.
 const KILL_GRACE_MS = 1_000;
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Bun's pipe readers have cancel(), which the standard
 // ReadableStreamDefaultReader type doesn't declare.
@@ -182,8 +181,8 @@ async function runBounded<S>(
 
 	let stopDeadline!: () => void;
 	const deadline = new Promise<"timeout">((res) => {
-		const t = setTimeout(() => res("timeout"), timeoutMs);
-		stopDeadline = () => clearTimeout(t);
+		const timer = after(timeoutMs, "process deadline", () => res("timeout"));
+		stopDeadline = () => timer.cancel();
 	});
 	let triggerKill!: () => void;
 	const killP = new Promise<"killed">((res) => {

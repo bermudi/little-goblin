@@ -12,6 +12,7 @@ import type { Runtime } from "../runtime.ts";
 import type { HeadlessSink, TurnDone, TurnSink } from "../turn/sink.ts";
 import type { Message as GoblinMessage } from "../message.ts";
 import { log } from "../log.ts";
+import { after, type Timer } from "../timing.ts";
 import { withTimeout } from "./deadline.ts";
 import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
 import { makeDeliverySink } from "./delivery.ts";
@@ -151,7 +152,7 @@ export class GuestSink implements HeadlessSink {
 	private published = "";
 	private fenced = false;
 	private lastEdit = 0;
-	private timer: ReturnType<typeof setTimeout> | null = null;
+	private timer: Timer | null = null;
 	private edits = 0;
 	private authority: (() => boolean) | null = null;
 	private done = false;
@@ -171,10 +172,10 @@ export class GuestSink implements HeadlessSink {
 		this.text += delta;
 		if (this.timer === null) {
 			const wait = Math.max(0, this.editIntervalMs - (Date.now() - this.lastEdit));
-			this.timer = setTimeout(() => {
+			this.timer = after(wait, "telegram guest edit", () => {
 				this.timer = null;
 				void this.flush();
-			}, wait);
+			});
 		}
 	}
 
@@ -254,7 +255,7 @@ export class GuestSink implements HeadlessSink {
 
 	async onDone(doneResult: TurnDone): Promise<void> {
 		if (this.timer !== null) {
-			clearTimeout(this.timer);
+			this.timer.cancel();
 			this.timer = null;
 		}
 		this.done = true;

@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Config } from "../config-schema.ts";
+import { after, type Timer } from "../timing.ts";
 import { T3Error, makeT3, type T3Runner } from "../t3.ts";
 import {
 	errno,
@@ -73,13 +74,13 @@ export async function t3Health(
 		? AbortSignal.any([probe.signal, controller.signal])
 		: controller.signal;
 	let timedOut = false;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: Timer | undefined;
 	const deadline = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(() => {
+		timer = after(T3_PROBE_TIMEOUT_MS, "t3 health probe deadline", () => {
 			timedOut = true;
 			controller.abort(new ProbeError("deadline"));
 			reject(new ProbeError("deadline"));
-		}, T3_PROBE_TIMEOUT_MS);
+		});
 	});
 
 	const t3 = makeT3(runner);
@@ -126,6 +127,6 @@ export async function t3Health(
 			UNREACHABLE_HINT,
 		);
 	} finally {
-		if (timer !== undefined) clearTimeout(timer);
+		if (timer !== undefined) timer.cancel();
 	}
 }

@@ -44,6 +44,7 @@
 
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { after } from "../timing.ts";
 import type { AuthStore } from "../auth.ts";
 import type { TranscriptionConfig, TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
@@ -113,16 +114,18 @@ const assetEnvelope = z.object({
 // wedged poll cannot outlive the engine's budget.
 function budget(ms: number): { signal: AbortSignal; deadline: number; stop(): void } {
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), ms);
+	const timer = after(ms, "onemin speech budget", () => controller.abort());
 	return {
 		signal: controller.signal,
 		deadline: Date.now() + ms,
-		stop: () => clearTimeout(timer),
+		stop: () => timer.cancel(),
 	};
 }
 
 function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+	return new Promise((resolve) => {
+		after(ms, "onemin speech poll", resolve);
+	});
 }
 
 async function readEnvelope(kind: string, res: Response): Promise<FeatureRecord | null> {

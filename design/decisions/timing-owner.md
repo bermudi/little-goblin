@@ -29,8 +29,9 @@ risks cache stability.
 Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.
 
-**Consequences.** [`timers.test.ts`](../../src/timers.test.ts) freezes the raw
-`setTimeout`/`setInterval` count of every file not yet moved. A file may lose
-calls, never gain them, and a file that loses calls must update its entry.
-Modules move one at a time (#830). `every` arrived with the first
-`setInterval` user, the wake dispatcher's ticker.
+**Consequences.** [`timers.test.ts`](../../src/timers.test.ts) fails on any
+raw `setTimeout`/`setInterval` call in `src/` outside `timing.ts`, with no
+allowlist. The last modules moved in #830; each kept its own policy, and a
+site whose timer aborts with its own reason or may wait 0 ms uses `after`,
+not `deadline` or `sleep`. `every` arrived with the first `setInterval`
+user, the wake dispatcher's ticker.

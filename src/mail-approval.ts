@@ -7,6 +7,7 @@ import { AmbiguousSendError, domainOf, type MailPoller, type MailSender } from "
 import type { OutboxEntry, OutboxStore, QueueDraft } from "./mail-outbox.ts";
 import { log } from "./log.ts";
 import { telegramAddressOf, type ConversationTarget, type DecisionActor } from "./targets.ts";
+import { every } from "./timing.ts";
 
 const SWEEP_TICK_MS = 5 * 60_000;
 
@@ -286,9 +287,9 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		if (rows.length > 0) log.info("outbox expiry swept", { count: rows.length });
 	};
 
-	const timer = setInterval(() => {
+	const timer = every(tickMs, "mail approval sweep", () => {
 		void sweep();
-	}, tickMs);
+	});
 	void sweep();
 
 	return {
@@ -297,7 +298,7 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		pending: () => deps.outbox.pending(),
 		sweep,
 		stop: async () => {
-			clearInterval(timer);
+			timer.cancel();
 			const waits = [...inFlight.values()];
 			if (waits.length > 0) {
 				log.info("mail approval — joining in-flight send on shutdown", {

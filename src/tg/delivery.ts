@@ -4,6 +4,7 @@ import { channelOf } from "../conversation-address.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import { STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
+import { after, every, type Timer } from "../timing.ts";
 import { isNotModifiedError, isParseEntitiesError } from "./delivery-errors.ts";
 import { makeFileDelivery } from "./delivery-files.ts";
 import { makeRichDelivery } from "./delivery-rich.ts";
@@ -32,8 +33,6 @@ const MAX_STAGNANT = 3;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
 const TRUNCATED_NOTICE =
 	"⚠ Reply truncated — part of this reply didn't send. Ask me to repeat it if needed.";
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // The parsed-text length of a rendered window — tags removed, entities
 // decoded. Telegram's 4096 cap applies after entity parsing, so a code-
@@ -223,8 +222,8 @@ export function makeDeliverySink(
 			});
 		}
 	}
-	let typing = setInterval(sendTyping, typingIntervalMs);
-	const recordings = new Set<ReturnType<typeof setInterval>>();
+	let typing = every(typingIntervalMs, "telegram typing ping", sendTyping);
+	const recordings = new Set<Timer>();
 	let sinkDone = false;
 
 	let richMode = rich?.enabled === true && isPrivateDmAddress(conv.id) && !voice?.voiceMode;
@@ -307,9 +306,9 @@ export function makeDeliverySink(
 		markUncertain,
 		authoritative: () => authoritative(),
 		repingTyping,
-		clearTyping: () => clearInterval(typing),
+		clearTyping: () => typing.cancel(),
 		startTyping: () => {
-			typing = setInterval(sendTyping, typingIntervalMs);
+			typing = every(typingIntervalMs, "telegram typing ping", sendTyping);
 		},
 		sinkDone: () => sinkDone,
 		recordingIntervals: () => recordings,
@@ -714,8 +713,8 @@ export function makeDeliverySink(
 			if (done.kind === "fenced") cancelled = true;
 			const notice = forcedNotice(done);
 			if (notice !== null) text += `${STATUS_TAIL_MARK}${notice}`;
-			clearInterval(typing);
-			for (const interval of recordings) clearInterval(interval);
+			typing.cancel();
+			for (const interval of recordings) interval.cancel();
 			recordings.clear();
 			sinkDone = true;
 			if (uncertain) {
@@ -785,7 +784,9 @@ export function makeDeliverySink(
 					gaveUp = true;
 					break;
 				}
-				await sleep(300 * stagnant);
+				await new Promise<void>((resolve) => {
+					after(300 * stagnant, "telegram delivery retry", resolve);
+				});
 			}
 			flushPhotoBatch();
 			await chain;

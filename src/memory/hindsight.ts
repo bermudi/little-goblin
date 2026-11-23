@@ -6,6 +6,7 @@ import { log } from "../log.ts";
 import { ownedReader } from "../dispose.ts";
 import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./policy.ts";
 import { screenMemoryText } from "./screen.ts";
+import { after } from "../timing.ts";
 
 export const identifier = z
 	.string()
@@ -325,10 +326,10 @@ export class HindsightClient {
 		const started = Date.now();
 		const controller = new AbortController();
 		let timedOut = false;
-		const timeout = setTimeout(() => {
+		const timeout = after(options.timeoutMs ?? this.timeoutMs, "hindsight request timeout", () => {
 			timedOut = true;
 			controller.abort();
-		}, options.timeoutMs ?? this.timeoutMs);
+		});
 		const cancel = () => controller.abort();
 		options.signal?.addEventListener("abort", cancel, { once: true });
 		if (options.signal?.aborted) controller.abort();
@@ -400,7 +401,7 @@ export class HindsightClient {
 			});
 			throw failure;
 		} finally {
-			clearTimeout(timeout);
+			timeout.cancel();
 			options.signal?.removeEventListener("abort", cancel);
 			if (abortListener) controller.signal.removeEventListener("abort", abortListener);
 		}

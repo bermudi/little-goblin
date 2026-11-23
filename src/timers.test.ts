@@ -15,49 +15,25 @@ function walk(dir: string, out: string[] = []): string[] {
 	return out;
 }
 
-function liveCounts(): Map<string, number> {
-	const counts = new Map<string, number>();
-	for (const file of walk(join(ROOT, "src"))) {
-		const rel = file.slice(ROOT.length + 1);
-		if (rel === OWNER) continue;
-		const n = [...readFileSync(file, "utf8").matchAll(RAW_TIMER_RE)].length;
-		if (n > 0) counts.set(rel, n);
-	}
-	return counts;
-}
-
-function rawTimerGrowth(
-	live: ReadonlyMap<string, number>,
-	frozen: Readonly<Record<string, number>>,
-): string[] {
+function rawTimerSites(files: ReadonlyMap<string, string>): string[] {
 	const out: string[] = [];
-	for (const [file, n] of live) {
-		const allowed = frozen[file] ?? 0;
-		if (n > allowed) out.push(`${file}: ${n} raw setTimeout/setInterval calls, frozen at ${allowed} — use ${OWNER}`);
+	for (const [file, text] of files) {
+		if (file === OWNER) continue;
+		const n = [...text.matchAll(RAW_TIMER_RE)].length;
+		if (n > 0) out.push(`${file}: ${n} raw setTimeout/setInterval calls — use ${OWNER}`);
 	}
 	return out.sort();
 }
 
-function printed(live: ReadonlyMap<string, number>): string {
-	return [...live]
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([f, n]) => `\t"${f}": ${n},`)
-		.join("\n");
+function sourceFiles(): Map<string, string> {
+	const files = new Map<string, string>();
+	for (const file of walk(join(ROOT, "src"))) files.set(file.slice(ROOT.length + 1), readFileSync(file, "utf8"));
+	return files;
 }
 
 describe("timer guard", () => {
-	test("no file outside src/timing.ts gains a raw timer", () => {
-		const live = liveCounts();
-		if (process.env.GOBLIN_PRINT_RAW_TIMERS === "1") process.stderr.write(`raw timers:\n${printed(live)}\n`);
-		expect(rawTimerGrowth(live, FROZEN)).toEqual([]);
-	});
-
-	test("a file that moved onto src/timing.ts leaves the allowlist", () => {
-		const live = liveCounts();
-		const stale = Object.entries(FROZEN)
-			.filter(([file, n]) => (live.get(file) ?? 0) < n)
-			.map(([file, n]) => `${file}: frozen at ${n}, now ${live.get(file) ?? 0}`);
-		expect(stale).toEqual([]);
+	test("no file outside src/timing.ts calls a raw timer", () => {
+		expect(rawTimerSites(sourceFiles())).toEqual([]);
 	});
 
 	test("the pattern counts global timers, not socket timers", () => {
@@ -71,39 +47,14 @@ describe("timer guard", () => {
 		expect([...sample.matchAll(RAW_TIMER_RE)]).toHaveLength(3);
 	});
 
-	test("the guard fails on a new raw timer", () => {
-		expect(rawTimerGrowth(new Map([["src/new-module.ts", 1]]), {})).toEqual([
-			`src/new-module.ts: 1 raw setTimeout/setInterval calls, frozen at 0 — use ${OWNER}`,
-		]);
-		expect(rawTimerGrowth(new Map([["src/scheduler.ts", 3]]), { "src/scheduler.ts": 2 })).toHaveLength(1);
+	test("the guard fails on a new raw timer and spares the owner", () => {
+		expect(
+			rawTimerSites(
+				new Map([
+					["src/new-module.ts", "setTimeout(fn, 1);"],
+					[OWNER, "setInterval(fn, 1);"],
+				]),
+			),
+		).toEqual([`src/new-module.ts: 1 raw setTimeout/setInterval calls — use ${OWNER}`]);
 	});
 });
-
-const FROZEN: Readonly<Record<string, number>> = {
-	"src/agent/onemin-speech.ts": 2,
-	"src/agent/skill-fetch.ts": 1,
-	"src/agent/tts.ts": 1,
-	"src/agent/vision.ts": 2,
-	"src/health/t3.ts": 1,
-	"src/http/app-sse.ts": 1,
-	"src/http/app-turns.ts": 1,
-	"src/idle-compaction.ts": 1,
-	"src/index.ts": 2,
-	"src/mail-approval.ts": 1,
-	"src/memory/hindsight.ts": 1,
-	"src/memory/mod.ts": 1,
-	"src/proc.ts": 2,
-	"src/reviewer.ts": 1,
-	"src/rolling.ts": 1,
-	"src/scheduler.ts": 2,
-	"src/system1.ts": 2,
-	"src/test-memory-net.worker.ts": 1,
-	"src/testkit/memory-net/calm.fixture.ts": 1,
-	"src/tg/deadline.ts": 1,
-	"src/tg/delivery-files.ts": 1,
-	"src/tg/delivery-voice.ts": 2,
-	"src/tg/delivery.ts": 3,
-	"src/tg/guest.ts": 1,
-	"src/tg/refusals.ts": 1,
-	"src/tg/speak-button.ts": 1,
-};

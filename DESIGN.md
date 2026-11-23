@@ -83,7 +83,7 @@ Each engine translates vendor failures to Goblin's
 runtime makes one retry and fallback policy from that shared vocabulary.
 
 Timers, deadlines and bounded waits go through [`timing.ts`](src/timing.ts),
-and [`timers.test.ts`](src/timers.test.ts) stops new raw timers elsewhere
+and [`timers.test.ts`](src/timers.test.ts) forbids raw timers elsewhere
 ([decision](design/decisions/timing-owner.md), #738).
 
 Auxiliary model calls use [`generate.ts`](src/agent/generate.ts). Two cases

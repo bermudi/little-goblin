@@ -18,6 +18,7 @@ import type { ConfigRef } from "../config.ts";
 import { type Config, splitModelRef } from "../config-schema.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
+import { after, type Timer } from "../timing.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
@@ -240,11 +241,11 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	const idleTimeoutMs = deps.timeoutMs ?? VISION_IDLE_TIMEOUT_MS;
 	const totalTimeoutMs = deps.totalTimeoutMs ?? VISION_TOTAL_TIMEOUT_MS;
 	const totalController = new AbortController();
-	const totalTimer = setTimeout(() => {
+	const totalTimer = after(totalTimeoutMs, "vision total timeout", () => {
 		totalController.abort(
 			new DOMException(`Overall timeout of ${totalTimeoutMs}ms exceeded`, "TimeoutError"),
 		);
-	}, totalTimeoutMs);
+	});
 	const signal = AbortSignal.any([totalController.signal, ...(deps.signal ? [deps.signal] : [])]);
 
 	const started = Date.now();
@@ -272,15 +273,15 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 		// noise still times out.
 		const idle = new AbortController();
 		let sawOutput = false;
-		const armIdle = () =>
-			setTimeout(() => {
+		const armIdle = (): Timer =>
+			after(idleTimeoutMs, "vision idle timeout", () => {
 				idle.abort(
 					new DOMException(
 						`${sawOutput ? "Chunk" : "First chunk"} timeout of ${idleTimeoutMs}ms exceeded`,
 						"TimeoutError",
 					),
 				);
-			}, idleTimeoutMs);
+			});
 		let idleTimer = armIdle();
 		let abortReason: unknown;
 		let partialTextChars = 0;
@@ -322,16 +323,16 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 				if (part.type === "text-delta" && part.text.length > 0) {
 					sawOutput = true;
 					partialTextChars += part.text.length;
-					clearTimeout(idleTimer);
+					idleTimer.cancel();
 					idleTimer = armIdle();
 				} else if (part.type === "reasoning-delta" && part.text.length > 0) {
 					sawOutput = true;
 					partialReasoningChars += part.text.length;
-					clearTimeout(idleTimer);
+					idleTimer.cancel();
 					idleTimer = armIdle();
 				} else if (part.type === "file" || part.type === "reasoning-file") {
 					sawOutput = true;
-					clearTimeout(idleTimer);
+					idleTimer.cancel();
 					idleTimer = armIdle();
 				}
 			}
@@ -354,7 +355,7 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 			});
 			throw error;
 		} finally {
-			clearTimeout(idleTimer);
+			idleTimer.cancel();
 		}
 	};
 
@@ -405,7 +406,7 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 			}
 		}
 	} finally {
-		clearTimeout(totalTimer);
+		totalTimer.cancel();
 	}
 
 	threads.record(key, { question: query.prompt, answer }, query.followUp ? "follow" : "fresh");

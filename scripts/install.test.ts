@@ -62,6 +62,7 @@ function fixture(
 		);
 		copyFileSync(join(root, "src", "proc.ts"), join(repo, "src", "proc.ts"));
 		copyFileSync(join(root, "src", "log.ts"), join(repo, "src", "log.ts"));
+		copyFileSync(join(root, "src", "timing.ts"), join(repo, "src", "timing.ts"));
 		if (mode.startsWith("real-")) {
 			cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
 			copyFileSync(join(root, "scripts", "check-auth.ts"), join(repo, "scripts", "check-auth.ts"));

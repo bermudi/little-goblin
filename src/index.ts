@@ -90,6 +90,7 @@ import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
+import { every, sleep } from "./timing.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -102,7 +103,6 @@ process.on("uncaughtException", (err: unknown) => {
 	process.exit(1);
 });
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
 // confirm; short enough that a wedged Telegram API can't hold a deploy.
 // The startup-failure cleanup budgets a wedged close with it too.
@@ -592,11 +592,10 @@ async function boot() {
 		now: wallClock,
 	});
 	const OBSERVE_MS = 60_000;
-	const watchTicker = setInterval(() => {
+	const watchTicker = every(OBSERVE_MS, "watch observe", () => {
 		watchObserver.observe().catch((err) => log.error("watch observe tick failed", err));
-	}, OBSERVE_MS);
-	watchTicker.unref();
-	const stopWatchTicker = () => clearInterval(watchTicker);
+	}, { unref: true });
+	const stopWatchTicker = () => watchTicker.cancel();
 	const stopWakeTicker = delivery.dispatcher.start();
 
 	// App auth mode resolves once at boot: appToken set → bearer, unset →

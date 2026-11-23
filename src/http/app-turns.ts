@@ -1,7 +1,7 @@
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { z } from "zod";
 import { log } from "../log.ts";
-import { within } from "../timing.ts";
+import { every, type Timer, within } from "../timing.ts";
 import { appSseWriter } from "./app-sse.ts";
 import {
 	type AppChannelDeps,
@@ -51,7 +51,7 @@ export async function handleTurnsRoute(
 		let closed = false;
 		let cancelled = false;
 		let unsubscribe = () => {};
-		let keepalive: ReturnType<typeof setInterval> | undefined;
+		let keepalive: Timer | undefined;
 		const push = (event: AppConversationEvent | null) => {
 			if (closed) return;
 			try {
@@ -65,7 +65,7 @@ export async function handleTurnsRoute(
 		const close = () => {
 			if (closed) return;
 			closed = true;
-			if (keepalive !== undefined) clearInterval(keepalive);
+			keepalive?.cancel();
 			unsubscribe();
 			req.signal.removeEventListener("abort", onAbort);
 			if (!cancelled) controller.close();
@@ -77,8 +77,9 @@ export async function handleTurnsRoute(
 				controller = c;
 				unsubscribe = runtime.subscribeConversation(convId.id, (event) => push(event));
 				push({ type: "state", live: runtime.conversationLive(convId.id) });
-				keepalive = setInterval(() => push(null), EVENT_KEEPALIVE_MS);
-				(keepalive as unknown as { unref?: () => void }).unref?.();
+				keepalive = every(EVENT_KEEPALIVE_MS, "app conversation events keepalive", () => push(null), {
+					unref: true,
+				});
 				req.signal.addEventListener("abort", onAbort, { once: true });
 				log.info("app conversation events attach", { conversation: convId.id });
 				if (req.signal.aborted) close();

@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { generate, type Model, type ModelCall } from "./agent/generate.ts";
 import { loadCatalog } from "./agent/skills.ts";
+import { after } from "./timing.ts";
 import type { ConversationStore } from "./conversation.ts";
 import {
 	type CompletedTurn,
@@ -525,7 +526,7 @@ async function runStagedReview(
 		staged: reviewDir,
 	});
 	const timeoutController = new AbortController();
-	const timer = setTimeout(() => timeoutController.abort(), REVIEW_TIMEOUT_MS);
+	const timer = after(REVIEW_TIMEOUT_MS, "reviewer timeout", () => timeoutController.abort());
 	const controller = new AbortController();
 	const onAbort = () => controller.abort();
 	signal.addEventListener("abort", onAbort, { once: true });
@@ -747,6 +748,6 @@ async function runStagedReview(
 	} finally {
 		signal.removeEventListener("abort", onAbort);
 		timeoutController.signal.removeEventListener("abort", onAbort);
-		clearTimeout(timer);
+		timer.cancel();
 	}
 }

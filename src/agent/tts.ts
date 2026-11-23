@@ -4,6 +4,7 @@ import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
 import type { TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
+import { after } from "../timing.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
 import { oneminSpeech } from "./onemin-speech.ts";
 import { logfareSpeech, mimoSpeech, openrouterSpeech } from "./tts-cloud.ts";
@@ -512,7 +513,7 @@ const edgeSynthesize: ChunkSynthesizer = (text, options) =>
 		let settled = false;
 		let lastPath = "none";
 		const budgetMs = edgeTimeoutMs(text.length);
-		const timer = setTimeout(() => {
+		const timer = after(budgetMs, "edge tts timeout", () => {
 			if (settled) return;
 			settled = true;
 			socket.terminate();
@@ -521,11 +522,11 @@ const edgeSynthesize: ChunkSynthesizer = (text, options) =>
 					`Edge TTS timed out after ${budgetMs}ms (${text.length} chars, last path ${lastPath})`,
 				),
 			);
-		}, budgetMs);
+		});
 		const fail = (err: unknown) => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			timer.cancel();
 			socket.terminate();
 			reject(err instanceof Error ? err : new Error(String(err)));
 		};
@@ -575,7 +576,7 @@ const edgeSynthesize: ChunkSynthesizer = (text, options) =>
 			if (!/Path:turn\.end(?:\r?\n|$)/i.test(response)) return;
 			if (audio.length === 0) return fail(new Error("Edge TTS returned no audio"));
 			settled = true;
-			clearTimeout(timer);
+			timer.cancel();
 			socket.close();
 			resolve(Buffer.concat(audio));
 		});

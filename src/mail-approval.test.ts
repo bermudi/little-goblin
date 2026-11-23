@@ -9,7 +9,7 @@ import {
 import { AmbiguousSendError } from "./mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxEntry, type OutboxStore } from "./mail-outbox.ts";
 import { APP_ACTOR } from "./targets.ts";
-import { tmpDb } from "./testkit.ts";
+import { sleep, tmpDb, waitUntil } from "./testkit.ts";
 
 const row: OutboxEntry = {
 	id: 1,
@@ -29,6 +29,43 @@ const row: OutboxEntry = {
 	sentId: null,
 	decidedBy: null,
 };
+
+describe("mail approval ticker", () => {
+	test("the ticker sweeps on its interval and stops sweeping once stopped", async () => {
+		const real = openOutbox(tmpDb("goblin-mail-ticker-"));
+		let sweeps = 0;
+		const outbox: OutboxStore = {
+			...real,
+			expireDue: (...args) => {
+				sweeps += 1;
+				return real.expireDue(...args);
+			},
+		};
+		const lane: MailApprovalLane = {
+			present: async () => ({ kind: "posted", messageId: null, surface: "test" }),
+			notice: async () => {},
+			settle: async () => {},
+			strip: async () => {},
+		};
+		const approval = startMailApproval(
+			{
+				outbox,
+				sender: () => null,
+				reader: () => null,
+				lanes: { app: lane, telegram: lane },
+			},
+			10,
+		);
+		try {
+			await waitUntil(() => sweeps >= 3, "initial sweep plus two ticks");
+		} finally {
+			await approval.stop();
+		}
+		const seen = sweeps;
+		await sleep(30);
+		expect(sweeps).toBe(seen);
+	});
+});
 
 describe("send crash window", () => {
 	const T0 = new Date("2026-01-01T00:00:00.000Z");

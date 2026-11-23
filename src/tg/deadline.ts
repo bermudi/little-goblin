@@ -1,3 +1,5 @@
+import { after } from "../timing.ts";
+
 // Bounded Telegram API calls. Grammy's only knob is a client-wide
 // `timeoutSeconds` defaulting to 500s — long enough for a hung-but-alive
 // connection to stall whatever serial path the call sits on.
@@ -19,15 +21,19 @@ export class TelegramTimeoutError extends Error {
 
 export function withTimeout<T>(p: Promise<T>, label: string, ms = API_CALL_TIMEOUT_MS): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const t = setTimeout(() => reject(new TelegramTimeoutError(label, ms)), ms);
-		t.unref();
+		const t = after(
+			ms,
+			`telegram ${label} timeout`,
+			() => reject(new TelegramTimeoutError(label, ms)),
+			{ unref: true },
+		);
 		p.then(
 			(v) => {
-				clearTimeout(t);
+				t.cancel();
 				resolve(v);
 			},
 			(e: unknown) => {
-				clearTimeout(t);
+				t.cancel();
 				reject(e instanceof Error ? e : new Error(String(e)));
 			},
 		);

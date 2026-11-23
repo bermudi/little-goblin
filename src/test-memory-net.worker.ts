@@ -1,5 +1,6 @@
 import { writeSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
+import { every } from "./timing.ts";
 
 const MiB = 1024 ** 2;
 const GiB = 1024 ** 3;
@@ -54,10 +55,10 @@ function runningTest(): string {
 	return decoder.decode(slotBytes.subarray(0, length));
 }
 
-const poll = setInterval(() => {
+const poll = every(100, "test memory net poll", () => {
 	const rss = process.memoryUsage.rss();
 	if (rss < config.limitBytes) return;
-	clearInterval(poll);
+	poll.cancel();
 	const message = [
 		`memory runaway: bun test process ${process.pid} reached ${formatBytes(rss)} RSS, over its ${formatBytes(config.limitBytes)} limit (${config.why}).`,
 		runningTest(),
@@ -67,6 +68,6 @@ const poll = setInterval(() => {
 	].join("\n");
 	writeSync(2, message);
 	process.kill(process.pid, "SIGKILL");
-}, 100);
+});
 
 parentPort.postMessage({ type: "ready" });

@@ -37,7 +37,9 @@ codex login poll, stops at that deadline.
 
 **Consequences.** [`timers.test.ts`](../../src/timers.test.ts) fails on any
 raw `setTimeout`/`setInterval` call or `Bun.sleep` in `src/` outside
-`timing.ts`, with no allowlist (`Bun.sleep` since #900). The last modules
+`timing.ts`, with no allowlist (`Bun.sleep` since #900). It reads text: it
+sees `Bun.sleep` through whitespace, comments, `?.` and a quoted
+`["sleep"]`, not through an alias or parentheses. The last modules
 moved in #830; each kept its own policy, and a site whose timer aborts
 with its own reason or may wait 0 ms uses `after`, not `deadline` or
 `sleep`: `sleep(0)` resolves at once, where `Bun.sleep(0)` yields a timer

@@ -4,8 +4,10 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OWNER = "src/timing.ts";
-const RAW_TIMER_RE =
-	/(?:\bglobalThis\.|(?<![\w.$]))(?:set(?:Timeout|Interval)\s*\(|Bun\s*(?:\.\s*sleep\b|\[\s*(["'`])sleep\1\s*\]))/g;
+const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*`;
+const SET_TIMER = String.raw`(?:\bglobalThis\.|(?<![\w.$]))set(?:Timeout|Interval)\s*\(`;
+const BUN_SLEEP = String.raw`(?<![\w$])Bun${GAP}(?:\??\.${GAP}sleep\b|(?:\?\.)?${GAP}\[${GAP}(["'\`])sleep\1${GAP}\])`;
+const RAW_TIMER_RE = new RegExp(`${SET_TIMER}|${BUN_SLEEP}`, "g");
 
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -50,6 +52,11 @@ describe("timer guard", () => {
 			"await Bun\n\t.sleep(1);",
 			'Bun["sleep"](1);',
 			"Bun[ 'sleep' ](1);",
+			"await Bun?.sleep(1);",
+			'Bun?.["sleep"](1);',
+			"Bun/**/.sleep(1);",
+			"Bun // wait\n\t.sleep(1);",
+			"globalThis?.Bun.sleep(1);",
 			'Bun["sleepSync"](1);',
 			"myBun.sleep(1);",
 			"Bun.sleepSync(1);",
@@ -60,12 +67,17 @@ describe("timer guard", () => {
 			"setInterval(",
 			"globalThis.setTimeout(",
 			"Bun.sleep",
-			"globalThis.Bun.sleep",
+			"Bun.sleep",
 			"Bun.sleep",
 			"Bun .sleep",
 			"Bun\n\t.sleep",
 			'Bun["sleep"]',
 			"Bun[ 'sleep' ]",
+			"Bun?.sleep",
+			'Bun?.["sleep"]',
+			"Bun/**/.sleep",
+			"Bun // wait\n\t.sleep",
+			"Bun.sleep",
 		]);
 	});
 

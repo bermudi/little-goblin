@@ -329,6 +329,34 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		expect(container.querySelector(".send-btn")).toBeNull();
 	});
 
+	test("queue sits in the send group at the end of the bar (issue #901)", async () => {
+		root = createRoot(container);
+		const render = async (busy: boolean, onStop?: () => void) => {
+			await act(async () => {
+				root?.render(
+					<ComposerHarness
+						busy={busy}
+						{...(onStop === undefined ? {} : { onStop })}
+						onSend={(parts) => {
+							sent.push(parts);
+						}}
+					/>,
+				);
+			});
+		};
+		const barEnd = () => {
+			const end = container.querySelector(".composer-bar")?.lastElementChild ?? null;
+			if (end?.matches(".composer-send")) return [...end.children].map((child) => child.className);
+			return end?.className ?? null;
+		};
+		await render(false);
+		expect(barEnd()).toEqual(["send-btn"]);
+		await render(true, () => {});
+		expect(barEnd()).toBe("stop-btn");
+		await type("steer");
+		expect(barEnd()).toEqual(["queue-btn", "send-btn"]);
+	});
+
 	test("an attachment replaces stop with send, including while uploading", async () => {
 		root = createRoot(container);
 		await act(async () => {

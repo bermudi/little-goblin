@@ -83,7 +83,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/http/app-sse.ts": 1,
 	"src/http/app-turns.ts": 1,
 	"src/idle-compaction.ts": 1,
-	"src/index.ts": 2,
 	"src/mail-approval.ts": 1,
 	"src/reviewer.ts": 1,
 	"src/rolling.ts": 1,

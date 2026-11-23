@@ -279,6 +279,11 @@ export interface AppConfigPatch {
 	thinking?: string;
 }
 
+export interface AppModelSettings {
+	model: string;
+	thinking: string;
+}
+
 export interface AppConfigPatchResponse extends AppConfigView {
 	/** A turn is running — it keeps the model pair it admitted on; the
 	 *  stored pair binds the next turn. Absent when the lane is idle. */

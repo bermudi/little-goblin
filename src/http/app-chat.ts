@@ -8,6 +8,7 @@ import {
 	isStoredAttachmentPath,
 } from "../agent/attachments.ts";
 import { appIdOf } from "../conversation-address.ts";
+import type { ModelSettings } from "../conversation-settings.ts";
 import { hasUsableSkill } from "../agent/skills.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
@@ -17,7 +18,13 @@ import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { noteSkillUse } from "../skill-usage.ts";
 import { paths } from "../home-layout.ts";
 import { projectRollText, routeLaneMessage, type RollLane, type RollDeps } from "../rolling.ts";
-import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
+import {
+	type AppChannelDeps,
+	jsonBodyRefusal,
+	modelSettingsBody,
+	NO_STORE,
+	resolveModelSettings,
+} from "./app-shared.ts";
 import { appConversationSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
 
@@ -29,6 +36,7 @@ const chatBody = z
 	.object({
 		conversationId: conversationIdSchema.optional(),
 		rolling: z.literal(true).optional(),
+		initialModelSettings: modelSettingsBody.optional(),
 		whenBusy: z.enum(["steer", "followUp"]).optional(),
 		retry: z.literal(true).optional(),
 		// Edit-in-place: the durable user event this message replaces. The
@@ -124,6 +132,13 @@ const chatBody = z
 				ctx.addIssue({ code: "custom", path: ["message"], message: "rolling requires a message" });
 			}
 			return;
+		}
+		if (d.initialModelSettings !== undefined) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["initialModelSettings"],
+				message: "initialModelSettings is only valid for a new rolling chat",
+			});
 		}
 		if (d.conversationId === undefined) {
 			ctx.addIssue({ code: "custom", path: ["conversationId"], message: "conversationId is required" });
@@ -485,9 +500,26 @@ export async function handleChatRoute(
 
 		let rolled = false;
 		if (rolling) {
+			let initialSettings: ModelSettings | undefined;
+			if (parsed.data.initialModelSettings !== undefined) {
+				const resolved = resolveModelSettings(deps.configRef.current, parsed.data.initialModelSettings);
+				if (resolved instanceof Response) return resolved;
+				initialSettings = resolved.settings;
+				if (store.currentAppRoll() !== null) {
+					return Response.json(
+						{ error: "rolling chat already exists — its model settings cannot be changed at creation" },
+						{ status: 409, headers: NO_STORE },
+					);
+				}
+			}
 			const lane: RollLane = {
 				current: () => store.currentAppRoll(),
-				mint: () => store.rollApp(deps.configRef.current),
+				mint: () =>
+					store.rollApp(
+						initialSettings === undefined
+							? deps.configRef.current
+							: { ...deps.configRef.current, ...initialSettings },
+					),
 				logs: {
 					rolled: "app lane rolled",
 					continued: "app lane continued past gap",

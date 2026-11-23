@@ -14,6 +14,7 @@ import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type {
 	AppConversationList,
 	AppChatResponse,
+	AppModelSettings,
 	AppNote,
 	AppNoteSummary,
 	AppProject,
@@ -707,6 +708,7 @@ function AppShell() {
 		projectId: string | null,
 		parts: UIMessage["parts"],
 		composerScope?: string,
+		initialModelSettings?: AppModelSettings,
 	): Promise<boolean> => {
 		if (!(await leaveDirty())) return false;
 		if (startBusyRef.current) {
@@ -730,6 +732,7 @@ function AppShell() {
 				// note-originated chats have no visible toggle and must not
 				// inherit a sticky exclusion.
 				...(composerScope === undefined ? {} : { memoryExcluded: stagedMemoryExcluded }),
+				...(initialModelSettings === undefined ? {} : { initialModelSettings }),
 			});
 			// A navigation while the create was in flight bumped the
 			// sequence — this continuation closes over the old page, so
@@ -762,8 +765,6 @@ function AppShell() {
 			setStarting(false);
 		}
 	};
-
-	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts, "chat");
 
 	// Composer sends are fire-and-forget — the only rejection startChat
 	// produces is the deliberate busy refusal, so it surfaces on the
@@ -1593,8 +1594,13 @@ function AppShell() {
 										onStagedMemoryToggle={setStagedMemoryExcluded}
 										draftRestore={draftRestores[currentProject.id] ?? null}
 										onDraftRestored={() => consumeRestore(currentProject.id)}
-										onSend={(parts) =>
-											startChat(currentProject.id, parts, currentProject.id).catch(
+										onSend={(parts, _whenBusy, initialModelSettings) =>
+											startChat(
+												currentProject.id,
+												parts,
+												currentProject.id,
+												initialModelSettings,
+											).catch(
 												(err: unknown) => {
 													reportStartRefusal(err);
 													return false;
@@ -1627,6 +1633,7 @@ function AppShell() {
 								</div>
 							</div>
 							<Composer
+								key={`home-composer:${composerFocus}`}
 								token={token}
 								draftScope="new"
 								busy={starting}
@@ -1641,8 +1648,8 @@ function AppShell() {
 								focusSignal={composerFocus}
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}
-								onSend={(parts) =>
-									startConversation(parts).catch((err: unknown) => {
+								onSend={(parts, _whenBusy, initialModelSettings) =>
+									startChat(null, parts, "chat", initialModelSettings).catch((err: unknown) => {
 										reportStartRefusal(err);
 										return false;
 									})
@@ -1710,7 +1717,7 @@ function AppShell() {
 								setStagedSkills={setStagedSkills}
 								stagedMemory={{ excluded: false, locked: true }}
 								onStagedMemoryToggle={() => {}}
-								onSend={async (parts) => {
+								onSend={async (parts, _whenBusy, initialModelSettings) => {
 									setStarting(true);
 									setStartFailed(false);
 									try {
@@ -1721,7 +1728,11 @@ function AppShell() {
 												"content-type": "application/json",
 												...(token === null ? {} : { authorization: `Bearer ${token}` }),
 											},
-											body: JSON.stringify({ rolling: true, message }),
+											body: JSON.stringify({
+												rolling: true,
+												message,
+												...(initialModelSettings === undefined ? {} : { initialModelSettings }),
+											}),
 										});
 										if (response.status !== 202) throw new Error(`send failed (${response.status})`);
 										const result = (await response.json()) as AppChatResponse;

@@ -443,10 +443,16 @@ a finished-looking chat whose next send steered a ghost turn (#43).
 
 ## Model/thinking scope (ruling 2026-10-06)
 
-Each app conversation snapshots root `model` and `thinking` at creation and
-retains both until the operator changes that conversation; new conversations
-and Telegram spin-offs use **app defaults**, never Telegram's selection, and
-Spin-off copies history and memory policy, not model settings. Patches never
+Each app conversation stores its model and thinking level at creation and
+retains both until the operator changes that conversation. An untouched new
+chat uses **app defaults**, never Telegram's selection. A model or thinking
+choice before the first send (ruling 2026-11-23, #911) stays in that composer:
+preview validates and clamps it without writing defaults, then creation
+receives the pair before the first turn. The first rolling send can carry the
+same choice. If another tab has already started the first roll, the send
+refuses the draft choice rather than changing that roll. Later automatic
+rolls use app defaults. Telegram spin-offs also use app defaults; Spin-off
+copies history and memory policy, not model settings. Patches never
 create rows or expose Telegram settings and precede any snapshot/config
 mutation; favorites and the provider registry stay shared, not
 per-conversation. Removing a provider still selected is refused, naming the

@@ -3,11 +3,11 @@ import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import type { AuthStore } from "../auth.ts";
-import type { ConfigRef } from "../config.ts";
+import { ConfigValidationError, type ConfigRef, parseConfig } from "../config.ts";
 import { type Config, splitModelRef, thinkingLevels } from "../config-schema.ts";
 import { appIdSchema } from "../conversation-address.ts";
 import type { ConversationStore } from "../conversation.ts";
-import type { ModelSettings } from "../conversation-settings.ts";
+import { type ModelSettings, modelSettingsSchema } from "../conversation-settings.ts";
 import type { NoteStore } from "../notes.ts";
 import type { Posts } from "../posts.ts";
 import type { ProjectStore } from "../projects.ts";
@@ -18,7 +18,7 @@ import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { ProgramOps } from "../program-ops.ts";
 import type { AppPush } from "../app-push.ts";
-import type { AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
+import type { AppConfigPatchResponse, AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
 import type { OperatorDeps } from "./operator-deps.ts";
 
 export const NO_STORE = { "cache-control": "no-store" };
@@ -105,6 +105,30 @@ export const configPatchBody = z
 	.refine((p) => p.model !== undefined || p.thinking !== undefined, {
 		message: "nothing to write",
 	});
+
+export const modelSettingsBody = modelSettingsSchema.strict();
+
+export function resolveModelSettings(
+	cfg: Config,
+	requested: ModelSettings,
+): Response | ({ settings: ModelSettings } & Pick<AppConfigPatchResponse, "thinkingClamped">) {
+	let model: string;
+	try {
+		model = parseConfig({ ...cfg, ...requested }).model;
+	} catch (err) {
+		if (err instanceof ConfigValidationError) {
+			return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
+		}
+		throw err;
+	}
+	const thinking = clampThinkingFor(cfg.providers, model, requested.thinking);
+	return {
+		settings: { model, thinking },
+		...(requested.thinking !== thinking
+			? { thinkingClamped: { from: requested.thinking, to: thinking } }
+			: {}),
+	};
+}
 
 export function configView(cfg: Config, settings: ModelSettings = cfg): AppConfigView {
 	const { provider, modelId } = splitModelRef(settings.model);

@@ -4,6 +4,34 @@ import { join } from "node:path";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
 describe("app config", () => {
+	test("draft model preview returns the requested pair without changing app defaults", async () => {
+		const { http, call, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const preview = await call("/api/app/config/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "zai/glm-5.3", thinking: "xhigh" }),
+			});
+			expect(preview.status).toBe(200);
+			expect(await preview.json()).toMatchObject({
+				model: "zai/glm-5.3",
+				thinking: "max",
+				thinkingClamped: { from: "xhigh", to: "max" },
+			});
+			expect(configRef.current).toMatchObject({ model: "zai/m", thinking: "medium" });
+			expect(configWrites.count).toBe(0);
+			const invalid = await call("/api/app/config/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "ghost/x", thinking: "medium" }),
+			});
+			expect(invalid.status).toBe(422);
+			expect(configWrites.count).toBe(0);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("config GET reports the live knobs; POST patches model and thinking", async () => {
 		const { http, call, configRef, configWrites, home } = setup({ token: APP_TOKEN_NAME });
 		try {

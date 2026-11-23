@@ -19,6 +19,7 @@ import type {
 	AppSuggestTitleResponse,
 	AppConfigPatch,
 	AppConfigPatchResponse,
+	AppModelSettings,
 	AppConfigView,
 	AppContextView,
 	AppConversationBranch,
@@ -214,7 +215,12 @@ export function branchConversation(
 
 export function createConversation(
 	token: string | null,
-	opts?: { title?: string; projectId?: string; memoryExcluded?: boolean },
+	opts?: {
+		title?: string;
+		projectId?: string;
+		memoryExcluded?: boolean;
+		initialModelSettings?: AppModelSettings;
+	},
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",
@@ -594,6 +600,17 @@ export function patchConfig(
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(patch),
+	});
+}
+
+export function previewConfig(
+	token: string | null,
+	settings: AppModelSettings,
+): Promise<AppConfigPatchResponse> {
+	return request(token, "/api/app/config/preview", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(settings),
 	});
 }
 

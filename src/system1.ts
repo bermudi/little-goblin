@@ -11,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { ownedReader } from "./dispose.ts";
+import { after } from "./timing.ts";
 
 export const DEFAULT_MODEL = "typesafe/jev-1.13";
 export const FALLBACK_MODEL = DEFAULT_MODEL;
@@ -120,7 +121,7 @@ export class System1Client {
 		const timeoutMs = Math.min(this.timeoutMs, options.timeoutMs ?? this.timeoutMs);
 		const started = performance.now();
 		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), timeoutMs);
+		const timeout = after(timeoutMs, "system1 request timeout", () => controller.abort());
 		const remaining = (): number => Math.max(0, timeoutMs - (performance.now() - started));
 		let model = this.model;
 		try {
@@ -188,7 +189,7 @@ export class System1Client {
 			}
 			throw err;
 		} finally {
-			clearTimeout(timeout);
+			timeout.cancel();
 			controller.abort();
 		}
 	}
@@ -223,7 +224,7 @@ export class System1Client {
 		const controller = new AbortController();
 		const abort = (): void => controller.abort();
 		parent.addEventListener("abort", abort, { once: true });
-		const timeout = setTimeout(abort, timeoutMs);
+		const timeout = after(timeoutMs, "system1 attempt timeout", abort);
 		try {
 			if (parent.aborted || timeoutMs <= 0) throw new System1Error("timeout");
 			const response = await fetch(this.url, {
@@ -258,7 +259,7 @@ export class System1Client {
 			if (err instanceof System1Error) throw err;
 			throw new System1Error(controller.signal.aborted ? "timeout" : "transport");
 		} finally {
-			clearTimeout(timeout);
+			timeout.cancel();
 			parent.removeEventListener("abort", abort);
 			// Also abort a failed/oversized body after readJson releases its
 			// lock, so a rejected attempt cannot stream behind the backup.

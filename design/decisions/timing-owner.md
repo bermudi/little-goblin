@@ -29,9 +29,17 @@ risks cache stability.
 Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.
 
+Every helper holds a wait of 2^31 ms or more for its full length, and
+cancel or abort still ends it. A raw timer fires such a wait after 1 ms,
+so `timing.ts` re-arms in steps of 2^31-1 ms (#900). No caller caps its
+own delay for the timer's sake; a caller with its own deadline, like the
+codex login poll, stops at that deadline.
+
 **Consequences.** [`timers.test.ts`](../../src/timers.test.ts) fails on any
-raw `setTimeout`/`setInterval` call in `src/` outside `timing.ts`, with no
-allowlist. The last modules moved in #830; each kept its own policy, and a
-site whose timer aborts with its own reason or may wait 0 ms uses `after`,
-not `deadline` or `sleep`. `every` arrived with the first `setInterval`
-user, the wake dispatcher's ticker.
+raw `setTimeout`/`setInterval` call or `Bun.sleep` in `src/` outside
+`timing.ts`, with no allowlist (`Bun.sleep` since #900). The last modules
+moved in #830; each kept its own policy, and a site whose timer aborts
+with its own reason or may wait 0 ms uses `after`, not `deadline` or
+`sleep`: `sleep(0)` resolves at once, where `Bun.sleep(0)` yields a timer
+turn first. `every` arrived with the first `setInterval` user, the wake
+dispatcher's ticker.

@@ -1,7 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { appSseWriter } from "./app-sse.ts";
 
 describe("app SSE writer", () => {
+	test("writes a heartbeat while the stream is idle", async () => {
+		jest.useFakeTimers();
+		try {
+			const writer = appSseWriter("app/heartbeat", 1);
+			const reader = writer.body.getReader();
+			jest.advanceTimersByTime(200);
+			expect(new TextDecoder().decode((await reader.read()).value)).toBe(": ping\n\n");
+			writer.dispose();
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	test("writes chunks and finishes a live response", async () => {
 		const writer = appSseWriter("app/live", 0);
 		const reader = writer.body.getReader();

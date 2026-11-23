@@ -1,6 +1,7 @@
 import type { MessageChunk } from "../message.ts";
 import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.ts";
 import { log } from "../log.ts";
+import { every, type Timer } from "../timing.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
 
 const SSE_HEARTBEAT_MS = 5_000;
@@ -23,9 +24,9 @@ export function appSseWriter(
 	let errorWritten = false;
 	let finishWritten = false;
 	let lastByte = Date.now();
-	let beat: ReturnType<typeof setInterval> | undefined;
+	let beat: Timer | undefined;
 	const stopBeat = () => {
-		if (beat !== undefined) clearInterval(beat);
+		beat?.cancel();
 		beat = undefined;
 	};
 	const push = (line: string) => {
@@ -53,13 +54,14 @@ export function appSseWriter(
 		start(c) {
 			controller = c;
 			if (heartbeatMs > 0) {
-				beat = setInterval(
+				beat = every(
+					Math.max(200, Math.floor(heartbeatMs / 4)),
+					"app stream heartbeat",
 					() => {
 						if (!closed && Date.now() - lastByte >= heartbeatMs) push(": ping\n\n");
 					},
-					Math.max(200, Math.floor(heartbeatMs / 4)),
+					{ unref: true },
 				);
-				(beat as unknown as { unref?: () => void }).unref?.();
 			}
 		},
 		cancel() {

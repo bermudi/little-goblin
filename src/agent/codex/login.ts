@@ -16,6 +16,7 @@ import type { Config } from "../../config-schema.ts";
 import { paths } from "../../home-layout.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
+import { sleep } from "../../timing.ts";
 import { OAUTH_CLIENT_ID, resolveCodexAuthFile, type FetchLike } from "./auth.ts";
 
 export interface ChatGptStatus {
@@ -43,6 +44,7 @@ export const VERIFICATION_URL = "https://auth.openai.com/codex/device";
 // Codex gives the pairing up to 15 minutes.
 const LOGIN_DEADLINE_MS = 15 * 60 * 1000;
 const MIN_POLL_INTERVAL_S = 5;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 // Every request in the flow hangs for at most this long.
 const FETCH_TIMEOUT_MS = 30_000;
 
@@ -185,7 +187,7 @@ export function createChatGptLogin(deps: {
 }): ChatGptLogin {
 	const fetchImpl = deps.fetch ?? fetch;
 	const now = deps.now ?? (() => Date.now());
-	const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
+	const wait = deps.sleep ?? sleep;
 
 	let starting: StartingLogin | null = null;
 	let pending: PendingLogin | null = null;
@@ -311,7 +313,7 @@ export function createChatGptLogin(deps: {
 				log.info("chatgpt login expired");
 				return;
 			}
-			await sleep(pending.intervalMs);
+			await wait(pending.intervalMs);
 			if (pending?.id !== id) return; // cancelled or superseded
 			const p = pending;
 			let res: Response;
@@ -466,11 +468,13 @@ export function createChatGptLogin(deps: {
 			return fail("usercode", "device login answered no user code");
 		}
 		const intervalS = Number(parsed.interval ?? MIN_POLL_INTERVAL_S);
-		const intervalMs =
+		const intervalMs = Math.min(
 			Math.max(
 				MIN_POLL_INTERVAL_S,
 				Number.isFinite(intervalS) && intervalS > 0 ? intervalS : MIN_POLL_INTERVAL_S,
-			) * 1000;
+			) * 1000,
+			MAX_TIMER_MS,
+		);
 		const deadlineMs = now() + LOGIN_DEADLINE_MS;
 		pending = {
 			id,

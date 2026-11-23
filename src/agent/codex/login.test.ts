@@ -55,6 +55,7 @@ function rig(opts: {
 	// instead; the CLI-adoption test uses a child with a fixture HOME.
 	let t = 1_000_000;
 	const calls: { url: string; init: RequestInit | undefined }[] = [];
+	const sleeps: number[] = [];
 	const fetchImpl: FetchLike = async (url, init) => {
 		calls.push({ url: String(url), init });
 		return opts.respond(String(url), init);
@@ -71,12 +72,13 @@ function rig(opts: {
 		fetch: fetchImpl,
 		now: () => t,
 		sleep: (ms) => {
+			sleeps.push(ms);
 			t += ms;
 			return Promise.resolve();
 		},
 		...(opts.onSignedIn !== undefined ? { onSignedIn: opts.onSignedIn } : {}),
 	});
-	return { home, calls, login };
+	return { home, calls, sleeps, login };
 }
 
 const json = (body: unknown, status = 200) =>
@@ -351,6 +353,25 @@ describe("chatgpt device login", () => {
 		const s = login.status();
 		expect(s.state).toBe("error");
 		expect(s.error).toContain("expired");
+	});
+
+	test("an advised interval past the timer range waits the longest a timer holds", async () => {
+		const { login, sleeps } = rig({
+			respond: (url) => {
+				if (url.endsWith("/deviceauth/usercode")) {
+					return json({
+						device_auth_id: "dev-1",
+						user_code: "ABCD-1234",
+						interval: "30000000",
+					});
+				}
+				return url.endsWith("/deviceauth/token") ? json({}, 403) : happyFlow(url);
+			},
+		});
+		await login.start();
+		await flush();
+		expect(sleeps).toEqual([2 ** 31 - 1]);
+		expect(login.status().error).toContain("expired");
 	});
 
 	test("a malformed auth file is an error state; a missing one is signed-out", async () => {

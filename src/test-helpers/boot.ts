@@ -4,6 +4,7 @@
 
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { sleep } from "../timing.ts";
 
 const REPO = join(dirname(import.meta.dir), "..");
 const PRELOAD = join(import.meta.dir, "loopback-preload.ts");
@@ -88,7 +89,7 @@ export function fakeTelegram(opts: FakeTelegramOpts): FakeTelegram {
 			const deadline = Date.now() + timeoutMs;
 			while (methods.filter((m) => m === name).length < count) {
 				if (Date.now() > deadline) throw new Error(`timed out waiting for ${name} x${count}`);
-				await Bun.sleep(15);
+				await sleep(15);
 			}
 		},
 		stop: () => {
@@ -203,7 +204,7 @@ export function bootChild(opts: {
 						`child exited while waiting for '${fragment}' — saw:\n${lines.join("\n")}\n${stderrChunks.join("\n")}`,
 					);
 				}
-				await Bun.sleep(25);
+				await sleep(25);
 			}
 		},
 		async http(path, init) {

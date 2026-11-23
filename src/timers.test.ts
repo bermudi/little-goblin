@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OWNER = "src/timing.ts";
-const RAW_TIMER_RE = /(?:\bglobalThis\.|(?<![\w.$]))set(?:Timeout|Interval)\s*\(/g;
+const RAW_TIMER_RE = /(?:\bglobalThis\.|(?<![\w.$]))(?:set(?:Timeout|Interval)|Bun\.sleep)\s*\(/g;
 
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -20,7 +20,9 @@ function rawTimerSites(files: ReadonlyMap<string, string>): string[] {
 	for (const [file, text] of files) {
 		if (file === OWNER) continue;
 		const n = [...text.matchAll(RAW_TIMER_RE)].length;
-		if (n > 0) out.push(`${file}: ${n} raw setTimeout/setInterval calls — use ${OWNER}`);
+		if (n > 0) {
+			out.push(`${file}: ${n} raw setTimeout/setInterval/Bun.sleep calls — use ${OWNER}`);
+		}
 	}
 	return out.sort();
 }
@@ -36,25 +38,36 @@ describe("timer guard", () => {
 		expect(rawTimerSites(sourceFiles())).toEqual([]);
 	});
 
-	test("the pattern counts global timers, not socket timers", () => {
+	test("the pattern counts global timers and Bun.sleep, not member timers", () => {
 		const sample = [
 			"const t = setTimeout(fn, 10);",
 			"setInterval(tick, 5)",
 			"connection.setTimeout(15_000, onIdle);",
 			"globalThis.setTimeout(fn, 1);",
 			"clearTimeout(t);",
+			"await Bun.sleep(50);",
+			"globalThis.Bun.sleep(1);",
+			"myBun.sleep(1);",
 		].join("\n");
-		expect([...sample.matchAll(RAW_TIMER_RE)]).toHaveLength(3);
+		expect([...sample.matchAll(RAW_TIMER_RE)].map((m) => m[0])).toEqual([
+			"setTimeout(",
+			"setInterval(",
+			"globalThis.setTimeout(",
+			"Bun.sleep(",
+			"globalThis.Bun.sleep(",
+		]);
 	});
 
 	test("the guard fails on a new raw timer and spares the owner", () => {
 		expect(
 			rawTimerSites(
 				new Map([
-					["src/new-module.ts", "setTimeout(fn, 1);"],
-					[OWNER, "setInterval(fn, 1);"],
+					["src/new-module.ts", "setTimeout(fn, 1); await Bun.sleep(1);"],
+					[OWNER, "setInterval(fn, 1); await Bun.sleep(1);"],
 				]),
 			),
-		).toEqual([`src/new-module.ts: 1 raw setTimeout/setInterval calls — use ${OWNER}`]);
+		).toEqual([
+			`src/new-module.ts: 2 raw setTimeout/setInterval/Bun.sleep calls — use ${OWNER}`,
+		]);
 	});
 });

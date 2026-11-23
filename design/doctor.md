@@ -49,12 +49,24 @@ Delegation checks target active projects, not Goblin's own workspace
 without resetting them or probing the named thread.
 
 The herdr-core check must not call its CLI: `server status` can start a
-core (#739). Before first use or after a reboot, not installed or not
-running is expected. A setup failure for the current binary pin matters;
-a failure for a retired pin does not. After a release bumps the pin, a
-binary that matches a retired pin passes: the next delegate run replaces
-it. A binary that matches no pin stays red, since it can be tampered or
-corrupt (#809).
+core (#739). Doctor uses read-only socket RPCs instead: `terminal.list`
+proves the core is reachable, then `server.status` reports the version of
+the running core. Compare that version with the current pin, not just the
+installed file. Atomic replacement can update the file while a process
+continues to run code loaded from the old file. Report installed-file state
+separately from running-core state.
+
+Before first use or after a reboot, not installed or not running is
+expected. A setup failure for the current binary pin matters; a failure
+for a retired pin does not. After a release bumps the pin, a binary that
+matches a retired pin passes when no core is running: the next delegate
+run replaces it. If a reachable core reports a version in the retired
+pin list, warn that the running core is retired and the pinned version
+takes over on the next core start; do not start or stop it. A valid
+running version that is not the current or a known retired pin also warns,
+without calling it retired. A missing, malformed or failed status reply
+fails safely because Doctor cannot verify the running version. A binary
+that matches no pin stays red, since it can be tampered or corrupt (#809).
 
 ## Reports, failures and execution
 

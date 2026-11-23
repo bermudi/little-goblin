@@ -263,7 +263,10 @@ it is disabled anyway.
 Rejected: wrapping onto two rows (takes transcript room on a small
 screen), a ⋯ menu for memory and thinking (hides whether memory is on),
 and shrinking alone (cannot fit the busy bar without going under the
-2.25rem tap minimum).
+2.25rem tap minimum). Accepted limit (ruling 2026-11-23, #904): the
+supported floor stays 360px. Under it the knob has no room left and
+Send sits past the composer box — 2.6px at a measured 320px; that
+spill is accepted, not fixed.
 
 **Box-drawing runs (ruling 2026-10-24, operator paste rendered as
 proportional-font noise).** A pasted ╔═╗ table, a file tree, a

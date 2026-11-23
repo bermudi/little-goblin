@@ -28,7 +28,7 @@ import { HcError, makeHcDelegation, type HcRunInfo, type HcDelegation } from "./
 import { makeHc } from "./hc.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { paths } from "./home-layout.ts";
-import { setLogFile } from "./log.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 import { sleep, waitUntil } from "./testkit.ts";
 
 
@@ -154,6 +154,44 @@ describe("delegation watcher", () => {
 		const seen = gets;
 		await sleep(30);
 		expect(gets).toBe(seen);
+	});
+
+	test("a scan that fails outside its own catch is an error line with the ticker's label", async () => {
+		const h = harness();
+		let storeBroken = false;
+		const delegations: DelegationsStore = {
+			...h.store,
+			active: () => {
+				if (storeBroken) throw new Error("store closed");
+				return h.store.active();
+			},
+		};
+		const captured: string[] = [];
+		setLogFile("delegation-ticker-fail-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const w = startDelegationLifecycle({ ...h.deps, delegations }, 5);
+		storeBroken = true;
+		try {
+			await waitUntil(
+				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
+				"the failed scan logs through every()",
+			);
+		} finally {
+			await w.stopTicker();
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(lines).toContainEqual(
+			expect.objectContaining({
+				level: "error",
+				msg: "timer callback failed",
+				error: "store closed",
+				timer: "delegation watcher tick",
+			}),
+		);
 	});
 
 	test("shutdown joins a late scan without recording a history-only notice as landed", async () => {

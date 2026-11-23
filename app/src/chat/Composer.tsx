@@ -149,20 +149,19 @@ export function Composer({
 			);
 		}
 	}, [draft, draftScope]);
-	// Existing chats own their settings. The empty start screen edits only
-	// the app's new-chat defaults; neither path changes Telegram.
 	const [cfg, setCfg] = useState<AppConfigView | null>(null);
 	const [configError, setConfigError] = useState<string | null>(null);
 	const [configNote, setConfigNote] = useState<string | null>(null);
 	const [configSaving, setConfigSaving] = useState(false);
 	const [draftModelSelected, setDraftModelSelected] = useState(false);
-	const configSaveSeq = useRef(0);
+	const configSave = useRef({ seq: 0 });
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [modelSheetOpen, setModelSheetOpen] = useState(false);
 	const modelKnobRef = useRef<HTMLSpanElement | null>(null);
 	const modelBtnRef = useRef<HTMLButtonElement | null>(null);
 	useEffect(() => {
 		let live = true;
+		const save = configSave.current;
 		setCfg(null);
 		setConfigError(null);
 		setConfigNote(null);
@@ -180,12 +179,13 @@ export function Composer({
 		);
 		return () => {
 			live = false;
-			configSaveSeq.current++;
+			save.seq++;
 		};
 	}, [token, conversationId, draftScope]);
 	const setKnob = (patch: { model?: string; thinking?: string }) => {
 		if (cfg === null) return;
-		const seq = ++configSaveSeq.current;
+		const scope = configSave.current;
+		const seq = ++scope.seq;
 		setConfigSaving(true);
 		setConfigError(null);
 		setConfigNote(null);
@@ -199,7 +199,7 @@ export function Composer({
 		void save
 			.then(
 				(c) => {
-					if (configSaveSeq.current !== seq) return;
+					if (scope.seq !== seq) return;
 					setCfg(c);
 					if (conversationId === undefined) setDraftModelSelected(true);
 					const notes: string[] = [];
@@ -214,11 +214,11 @@ export function Composer({
 					setConfigNote(notes.length === 0 ? null : notes.join(" · "));
 				},
 				(err: unknown) => {
-					if (configSaveSeq.current === seq) setConfigError(String(err));
+					if (scope.seq === seq) setConfigError(String(err));
 				},
 			)
 			.finally(() => {
-				if (configSaveSeq.current === seq) setConfigSaving(false);
+				if (scope.seq === seq) setConfigSaving(false);
 			});
 	};
 

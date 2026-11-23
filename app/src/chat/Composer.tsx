@@ -913,7 +913,7 @@ export function Composer({
 						</svg>
 					</button>
 				) : (
-				<>
+				<div className="composer-send">
 				{busy && onStop !== undefined && (
 					<button
 						type="button"
@@ -956,7 +956,7 @@ export function Composer({
 						/>
 					</svg>
 				</button>
-				</>
+				</div>
 				)}
 			</div>
 			{sendError !== null && (

@@ -240,7 +240,10 @@ header's other controls; the header overflowed at about 290px.
 Below 400px the column is far narrower than the 46rem narrow width, so
 the selector changes nothing there anyway. The desktop composer bar
 wraps its controls onto more rows instead of spilling past the box;
-phones keep the one-row bar. In a child chat, the `↑ parent` link gives
+phones keep the one-row bar. During a turn, Queue sits directly left of
+Send at every width (#901): the two share one group at the bar's end,
+and a wrapped bar carries both to the next row together. In a child
+chat, the `↑ parent` link gives
 up space first, down to 2.5rem, before the chat's own title shrinks: the
 chat's own name matters more than its parent's. Accepted limit: at
 721–790px with a chat and both side panes open, the title gets 0–60px;

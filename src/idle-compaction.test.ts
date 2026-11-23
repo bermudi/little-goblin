@@ -5,6 +5,7 @@ import {
 	IDLE_FOLD_LEAD_MS,
 	idleFoldPlan,
 } from "./idle-compaction.ts";
+import { deferred } from "./testkit.ts";
 
 const call = (over: Partial<IdleCacheCall> = {}): IdleCacheCall => ({
 	callId: "c1",
@@ -64,6 +65,27 @@ describe("idleFoldPlan", () => {
 });
 
 describe("createIdleCompactor", () => {
+	test("the default timer fires the fold", async () => {
+		const now = 1_600_000;
+		const finished = deferred<void>();
+		const compactor = createIdleCompactor({
+			call: () => call({ startedMs: now, ttlMs: IDLE_FOLD_LEAD_MS + 10 }),
+			lastFoldMs: () => null,
+			recentConversations: () => [],
+			fold: async () => {
+				finished.resolve();
+				return "compacted";
+			},
+			now: () => now,
+		});
+		compactor.arm("app/chat-01");
+		try {
+			await finished.promise;
+		} finally {
+			compactor.stop();
+		}
+	});
+
 	test("replaces timers and rechecks call identity before folding", async () => {
 		let now = 1_600_000;
 		let current = call();
@@ -82,10 +104,7 @@ describe("createIdleCompactor", () => {
 			setTimer: (callback) => {
 				const id = ++next;
 				callbacks.set(id, callback);
-				return id as unknown as ReturnType<typeof setTimeout>;
-			},
-			clearTimer: (timer) => {
-				callbacks.delete(timer as unknown as number);
+				return { cancel: () => { callbacks.delete(id); } };
 			},
 		});
 		compactor.arm("app/chat-01");
@@ -119,9 +138,8 @@ describe("createIdleCompactor", () => {
 			now: () => 1_600_000,
 			setTimer: (callback) => {
 				callbacks.push(callback);
-				return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+				return { cancel: () => {} };
 			},
-			clearTimer: () => {},
 		});
 		compactor.arm("app/chat-01");
 		callbacks[0]?.();
@@ -149,9 +167,8 @@ describe("createIdleCompactor", () => {
 			now: () => 4_000_000,
 			setTimer: (callback) => {
 				callbacks.push(callback);
-				return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+				return { cancel: () => {} };
 			},
-			clearTimer: () => {},
 		});
 		compactor.armAll();
 		expect(callbacks).toHaveLength(2);

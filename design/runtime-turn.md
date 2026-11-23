@@ -84,6 +84,16 @@ record or a failure notice, the dispatcher can re-admit the same trigger.
 Store the reply and its landed flag atomically, so a crash cannot leave a
 durable reply that recovery treats as unlanded.
 
+Both lanes journal a `planned` row when the model asks for a tool, so a crash
+before dispatch leaves the same row and crash notice on either lane. The
+Claude Code lane writes that row before its bridge checks the args, so a call
+the bridge rejects or the CLI denies settles its row as `failed`; otherwise it
+would stay `planned` and inflate a later crash notice. The API lane writes no
+row for a rejected call. The unlanded-turn progress note therefore can show a
+"failed: invalid arguments" line on the Claude Code lane only. Keep it: it is
+true (operator, 2026-11-22, #888). See
+[`attempt-recorder.ts`](../src/turn/attempt-recorder.ts).
+
 ## Unlanded-turn progress
 
 If work happened, make it visible even when no final reply lands. Record

@@ -11,6 +11,7 @@ import {
 } from "./system1.ts";
 import { log } from "./log.ts";
 import type { Runtime } from "./runtime.ts";
+import { after, type Timer } from "./timing.ts";
 
 
 // Telegram: private chat ids are positive, group ids negative.
@@ -182,12 +183,12 @@ export function checkState(history: Message[], gapMinutes: number, burstText: st
 }
 
 function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: Timer | undefined;
 	const deadline = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(() => reject(new RollDeadlineError()), ms);
+		timer = after(ms, "rolling deadline", () => reject(new RollDeadlineError()));
 	});
 	return Promise.race([p, deadline]).finally(() => {
-		if (timer !== undefined) clearTimeout(timer);
+		if (timer !== undefined) timer.cancel();
 	});
 }
 

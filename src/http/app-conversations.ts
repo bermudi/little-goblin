@@ -15,6 +15,7 @@ import { DeleteRefused } from "../conversation-delete.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
+import type { ModelSettings } from "../conversation-settings.ts";
 import { log } from "../log.ts";
 import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
@@ -27,8 +28,10 @@ import {
 	configView,
 	conversationFromSegment,
 	jsonBodyRefusal,
+	modelSettingsBody,
 	NO_STORE,
 	parsedJson,
+	resolveModelSettings,
 } from "./app-shared.ts";
 import type {
 	AppSuggestTitleResponse,
@@ -56,6 +59,7 @@ const createBody = z.object({
 	title: z.string().min(1).max(200).optional(),
 	projectId: z.string().min(1).optional(),
 	memoryExcluded: z.boolean().optional(),
+	initialModelSettings: modelSettingsBody.optional(),
 });
 
 const branchBody = z.object({ messageId: z.string().min(1).max(200) });
@@ -301,6 +305,13 @@ export async function handleConversationsRoute(
 					{ status: 422, headers: NO_STORE },
 				);
 			}
+			const cfg = deps.configRef.current;
+			let initialSettings: ModelSettings | undefined;
+			if (parsed.data.initialModelSettings !== undefined) {
+				const resolved = resolveModelSettings(cfg, parsed.data.initialModelSettings);
+				if (resolved instanceof Response) return resolved;
+				initialSettings = resolved.settings;
+			}
 			const appId = parsed.data.id ?? randomUUID();
 			const convId = `app/${appId}`;
 			const outcome = store.db.transaction(
@@ -308,6 +319,7 @@ export async function handleConversationsRoute(
 					| { kind: "ok"; conv: NonNullable<ReturnType<typeof store.get>> }
 					| { kind: "conflict"; bound: string | null }
 					| { kind: "memoryConflict" }
+					| { kind: "settingsConflict" }
 					| { kind: "noProject" }
 					| { kind: "archived" } => {
 					const existing = store.get(convId);
@@ -330,13 +342,26 @@ export async function handleConversationsRoute(
 							return { kind: "memoryConflict" };
 						}
 					}
+					if (existing !== null && initialSettings !== undefined) {
+						const stored = store.readAppSettings(existing.id, cfg);
+						if (
+							stored.model !== initialSettings.model ||
+							clampThinkingFor(cfg.providers, stored.model, stored.thinking) !== initialSettings.thinking
+						) {
+							return { kind: "settingsConflict" };
+						}
+					}
 					let project: Project | null = null;
 					if (existing === null && parsed.data.projectId !== undefined) {
 						project = deps.projects.get(parsed.data.projectId);
 						if (project === null) return { kind: "noProject" };
 						if (project.archivedAt !== null) return { kind: "archived" };
 					}
-					const row = store.resolve(appAddress(appId), paths.workspace(), deps.configRef.current);
+					const row = store.resolve(
+						appAddress(appId),
+						paths.workspace(),
+						existing !== null || initialSettings === undefined ? cfg : { ...cfg, ...initialSettings },
+					);
 					if (existing === null && project !== null) {
 						store.bindProject(row.id, project.id);
 					}
@@ -368,6 +393,12 @@ export async function handleConversationsRoute(
 					{
 						error: `conversation ${convId} already exists — its memory flag is unchanged; PATCH its /memory instead`,
 					},
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			if (outcome.kind === "settingsConflict") {
+				return Response.json(
+					{ error: `conversation ${convId} already exists — its model settings are unchanged` },
 					{ status: 409, headers: NO_STORE },
 				);
 			}

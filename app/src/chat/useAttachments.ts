@@ -64,6 +64,8 @@ export function useAttachments({
 	// through a ref, not the prop captured when recording started.
 	const busyRef = useRef(busy);
 	busyRef.current = busy;
+	const onSendRef = useRef(onSend);
+	onSendRef.current = onSend;
 	const micSupported =
 		typeof navigator !== "undefined" &&
 		navigator.mediaDevices !== undefined &&
@@ -102,13 +104,13 @@ export function useAttachments({
 						// turn streams is the fork send()'s busy gate exists to
 						// prevent. Stage the ref instead: the chip shows it, the
 						// next send carries it with speech intact.
-						if (busyRef.current) {
+						if (busyRef.current || recDead.current) {
 							setStaged((p) => [...p, { key: stagedKey(), ref, speech: true }]);
 						} else {
 							// A declined send (failed lazy create) re-stages the
 							// note — the upload already landed server-side.
 							void Promise.resolve(
-								onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]),
+								onSendRef.current([{ type: "data-attachment", data: { ...ref, speech: true } }]),
 							).then((accepted) => {
 								if (accepted === false)
 									// Cancellation can restore this ref before onSend settles.

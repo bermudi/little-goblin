@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	describeMailDecision,
 	startMailApproval,
@@ -64,6 +65,58 @@ describe("mail approval ticker", () => {
 		const seen = sweeps;
 		await sleep(30);
 		expect(sweeps).toBe(seen);
+	});
+
+	test.each(["startup", "interval"])("%s sweep failures log with the ticker's label", async (phase) => {
+		const atStartup = phase === "startup";
+		const outbox = openOutbox(tmpDb("goblin-mail-ticker-fail-"));
+		const lane: MailApprovalLane = {
+			present: async () => ({ kind: "posted", messageId: null, surface: "test" }),
+			notice: async () => {},
+			settle: async () => {},
+			strip: async () => {},
+		};
+		let clockBroken = atStartup;
+		const captured: string[] = [];
+		setLogFile("mail-approval-ticker-fail-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const approval = startMailApproval(
+			{
+				outbox,
+				sender: () => null,
+				reader: () => null,
+				lanes: { app: lane, telegram: lane },
+				now: () => {
+					if (clockBroken) throw new Error("clock broke");
+					return new Date("2026-01-01T00:00:00.000Z");
+				},
+			},
+			atStartup ? undefined : 5,
+		);
+		clockBroken = true;
+		try {
+			await waitUntil(
+				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
+				"the failed sweep logs with its ticker label",
+				1_000,
+			);
+		} finally {
+			await approval.stop();
+			setLogFile(null);
+			setLogWriter(null);
+			outbox.close();
+		}
+		const lines = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(lines).toContainEqual(
+			expect.objectContaining({
+				level: "error",
+				msg: "timer callback failed",
+				error: "clock broke",
+				timer: "mail approval sweep",
+			}),
+		);
 	});
 });
 

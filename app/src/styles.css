@@ -1473,7 +1473,6 @@ main[data-cramped] .width-seg {
 	color: var(--app-fg-muted);
 }
 .queue-btn {
-	margin-left: auto;
 	padding: 0.3rem 0.55rem;
 	border-radius: 6px;
 	color: var(--app-fg-muted);
@@ -2626,6 +2625,15 @@ button.pathchip:hover svg {
 		white-space: nowrap;
 	}
 }
+/* Queue and Send ride in one group at the bar's end: a wrapped bar
+   carries them to the next row together, and the free space gathers
+   before both instead of between two auto margins (#901). */
+.composer-send {
+	display: flex;
+	align-items: center;
+	flex: none;
+	margin-left: auto;
+}
 .icon-btn {
 	display: inline-flex;
 	align-items: center;
@@ -2641,7 +2649,6 @@ button.pathchip:hover svg {
 	color: var(--app-fg);
 }
 .send-btn {
-	margin-left: auto;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;

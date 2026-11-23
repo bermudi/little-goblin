@@ -12,9 +12,9 @@ import {
 	getConfig,
 	getConversationConfig,
 	getConversationMemory,
-	patchConfig,
 	patchConversationConfig,
 	patchConversationMemory,
+	previewConfig,
 	toggleFavorite,
 } from "../api.ts";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
@@ -35,6 +35,7 @@ import type {
 	AppConfigView,
 	AppConversationMemoryView,
 	AppLiveContext,
+	AppModelSettings,
 } from "../../../src/http/app-wire.ts";
 
 // Always present — on an empty conversation too. The draft is local;
@@ -89,6 +90,7 @@ export function Composer({
 	onSend: (
 		parts: UIMessage["parts"],
 		whenBusy?: "steer" | "followUp",
+		initialModelSettings?: AppModelSettings,
 	) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
@@ -147,21 +149,24 @@ export function Composer({
 			);
 		}
 	}, [draft, draftScope]);
-	// Existing chats own their settings. The empty start screen edits only
-	// the app's new-chat defaults; neither path changes Telegram.
 	const [cfg, setCfg] = useState<AppConfigView | null>(null);
 	const [configError, setConfigError] = useState<string | null>(null);
 	const [configNote, setConfigNote] = useState<string | null>(null);
 	const [configSaving, setConfigSaving] = useState(false);
+	const [draftModelSelected, setDraftModelSelected] = useState(false);
+	const configSave = useRef({ seq: 0 });
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [modelSheetOpen, setModelSheetOpen] = useState(false);
 	const modelKnobRef = useRef<HTMLSpanElement | null>(null);
 	const modelBtnRef = useRef<HTMLButtonElement | null>(null);
 	useEffect(() => {
 		let live = true;
+		const save = configSave.current;
 		setCfg(null);
 		setConfigError(null);
 		setConfigNote(null);
+		setConfigSaving(false);
+		setDraftModelSelected(false);
 		setModelMenuOpen(false);
 		setModelSheetOpen(false);
 		const load =
@@ -174,20 +179,29 @@ export function Composer({
 		);
 		return () => {
 			live = false;
+			save.seq++;
 		};
-	}, [token, conversationId]);
+	}, [token, conversationId, draftScope]);
 	const setKnob = (patch: { model?: string; thinking?: string }) => {
+		if (cfg === null) return;
+		const scope = configSave.current;
+		const seq = ++scope.seq;
 		setConfigSaving(true);
 		setConfigError(null);
 		setConfigNote(null);
 		const save =
 			conversationId === undefined
-				? patchConfig(token, patch)
+				? previewConfig(token, {
+						model: patch.model ?? cfg.model,
+						thinking: patch.thinking ?? cfg.thinking,
+					})
 				: patchConversationConfig(token, conversationId, patch);
 		void save
 			.then(
 				(c) => {
+					if (scope.seq !== seq) return;
 					setCfg(c);
+					if (conversationId === undefined) setDraftModelSelected(true);
 					const notes: string[] = [];
 					if (c.thinkingClamped !== undefined) {
 						notes.push(
@@ -199,9 +213,13 @@ export function Composer({
 					}
 					setConfigNote(notes.length === 0 ? null : notes.join(" · "));
 				},
-				(err: unknown) => setConfigError(String(err)),
+				(err: unknown) => {
+					if (scope.seq === seq) setConfigError(String(err));
+				},
 			)
-			.finally(() => setConfigSaving(false));
+			.finally(() => {
+				if (scope.seq === seq) setConfigSaving(false);
+			});
 	};
 
 	// Dismiss the model menu on any outside press or Escape — mirrors
@@ -272,6 +290,17 @@ export function Composer({
 			)
 			.finally(() => setMemorySaving(false));
 	};
+	const sendWithModelSettings = (
+		parts: UIMessage["parts"],
+		whenBusy?: "steer" | "followUp",
+	) =>
+		onSend(
+			parts,
+			whenBusy,
+			conversationId === undefined && draftModelSelected && cfg !== null
+				? { model: cfg.model, thinking: cfg.thinking }
+				: undefined,
+		);
 
 	const { send, sendError, editedAfterSend, dropEntry } = useSubmit({
 		busy,
@@ -286,7 +315,7 @@ export function Composer({
 		setStagedNotes,
 		stagedSkills,
 		setStagedSkills,
-		onSend,
+		onSend: sendWithModelSettings,
 	});
 	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
 		useSkillNoteStaging({ setStagedNotes, setStagedSkills });
@@ -401,7 +430,12 @@ export function Composer({
 		}
 	}, [draftRestore]);
 	const { fileInput, micError, micSupported, recording, recSec, startRecording, stopRecording, pickFile } =
-		useAttachments({ token, busy, onSend, setStaged });
+		useAttachments({
+			token,
+			busy: busy || (conversationId === undefined && configSaving),
+			onSend: sendWithModelSettings,
+			setStaged,
+		});
 	useKeyboard({
 		textareaRef,
 		focusSignal,
@@ -736,7 +770,7 @@ export function Composer({
 								type="button"
 								className="knob-btn"
 								aria-label={
-									conversationId === undefined ? "New app chat model" : "Conversation model"
+									conversationId === undefined ? "Model for this chat" : "Conversation model"
 								}
 								title={cfg.model}
 								aria-haspopup="menu"
@@ -819,7 +853,7 @@ export function Composer({
 							className="knob"
 							title={
 								conversationId === undefined
-									? "Default thinking level for new app chats"
+									? "Thinking level for this chat"
 									: "Thinking level for this conversation"
 							}
 						>
@@ -842,7 +876,7 @@ export function Composer({
 							<ModelPicker
 								title={
 									conversationId === undefined
-										? "Default model for new app chats"
+										? "Model for this chat"
 										: "Model for this conversation"
 								}
 								current={cfg.model}
@@ -879,7 +913,7 @@ export function Composer({
 						</svg>
 					</button>
 				) : (
-				<>
+				<div className="composer-send">
 				{busy && onStop !== undefined && (
 					<button
 						type="button"
@@ -922,7 +956,7 @@ export function Composer({
 						/>
 					</svg>
 				</button>
-				</>
+				</div>
 				)}
 			</div>
 			{sendError !== null && (

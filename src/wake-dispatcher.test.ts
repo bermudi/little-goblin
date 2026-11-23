@@ -11,7 +11,7 @@ import { defineTool, type Tools } from "./tool.ts";
 import type { Message } from "./message.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
-import { setLogFile } from "./log.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 
 import type { TurnToolMaker } from "./turn/tool-authority.ts";
@@ -21,7 +21,7 @@ import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import { claudeScript } from "./testkit/turn-script-claude.ts";
 import type { ScriptedModel } from "./testkit/turn-script.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
-import { openWakeStore, type WakeStore } from "./wake-store.ts";
+import { openWakeStore, type ReconcilePlan, type WakeStore } from "./wake-store.ts";
 
 setLogFile(null);
 
@@ -816,6 +816,50 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		await sleep(30);
 		expect(pumps.mock.calls.length).toBe(seen);
 		store.close();
+	});
+
+	test("a tick whose pump throws is an error line with the ticker's label", async () => {
+		const unreadable = {
+			toAppend: [],
+			toResubmit: [],
+			waitingBackoff: [],
+			toFail: [],
+			preserved: [],
+			toSettle: {
+				[Symbol.iterator](): never {
+					throw new Error("plan unreadable");
+				},
+			},
+		} as unknown as ReconcilePlan;
+		const captured: string[] = [];
+		setLogFile("wake-dispatcher-ticker-fail-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const r = createRig({
+			wrapWakes: (base) => ({ ...base, reconcile: () => unreadable }),
+		});
+		const stop = r.dispatcher.startTicker(5);
+		try {
+			await waitUntil(
+				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
+				"the failed tick logs through every()",
+			);
+		} finally {
+			stop();
+			setLogFile(null);
+			setLogWriter(null);
+			r.store.close();
+		}
+		const lines = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(lines).toContainEqual(
+			expect.objectContaining({
+				level: "error",
+				msg: "timer callback failed",
+				error: "plan unreadable",
+				timer: "wake ticker",
+			}),
+		);
 	});
 
 	test("claimedForEvents matches seq + conversation — never a reused client id", () => {

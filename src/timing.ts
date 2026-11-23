@@ -50,11 +50,12 @@ export function every(
 	ms: number,
 	label: string,
 	fn: () => unknown,
-	options: TimerOptions = {},
+	options: TimerOptions & { immediate?: boolean } = {},
 ): Timer {
 	if (!(ms > MAX_TIMER_MS)) {
 		const handle = setInterval(() => run(label, fn), ms);
 		if (options.unref === true) handle.unref();
+		if (options.immediate === true) run(label, fn);
 		return { cancel: () => clearInterval(handle) };
 	}
 	const step = (): void => {
@@ -62,6 +63,7 @@ export function every(
 		run(label, fn);
 	};
 	let cancelArm = arm(ms, step, options.unref === true);
+	if (options.immediate === true) run(label, fn);
 	return { cancel: () => cancelArm() };
 }
 

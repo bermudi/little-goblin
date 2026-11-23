@@ -18,6 +18,53 @@ const engineName = (make: (typeof adapters)[number]) =>
 	make === sdkScript ? "ai-sdk" : "claude-code";
 
 describe("app chat", () => {
+	test("draft model choice applies only to a newly minted rolling chat", async () => {
+		const { http, call, store, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const sent = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					rolling: true,
+					initialModelSettings: { model: "zai/m2", thinking: "high" },
+					message: {
+						id: "draft-model-roll",
+						role: "user",
+						parts: [{ type: "text", text: "hello" }],
+					},
+				}),
+			});
+			expect(sent.status).toBe(202);
+			const roll = store.currentAppRoll();
+			expect(roll).not.toBeNull();
+			expect(store.readAppSettings(roll!.id, configRef.current)).toEqual({
+				model: "zai/m2",
+				thinking: "high",
+			});
+			expect(configRef.current).toMatchObject({ model: "zai/m", thinking: "medium" });
+			expect(configWrites.count).toBe(0);
+			await waitUntil(() => store.history(roll!.id).length === 2, "first rolling reply");
+			const historyLength = store.history(roll!.id).length;
+			const staleChoice = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					rolling: true,
+					initialModelSettings: { model: "zai/m", thinking: "medium" },
+					message: {
+						id: "stale-draft-model-roll",
+						role: "user",
+						parts: [{ type: "text", text: "second" }],
+					},
+				}),
+			});
+			expect(staleChoice.status).toBe(409);
+			expect(store.history(roll!.id)).toHaveLength(historyLength);
+		} finally {
+			http.stop();
+		}
+	});
+
 	// This uses a real OpenAI-compatible HTTP provider to verify request rejection and error framing.
 	test("a provider rejection before streaming emits one error and an error finish", async () => {
 		let announceRequest!: () => void;

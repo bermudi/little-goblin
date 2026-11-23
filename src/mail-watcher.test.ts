@@ -226,6 +226,52 @@ describe("mail watcher", () => {
 		expect(scans).toBe(seen);
 	});
 
+	test.each(["startup", "interval"])("%s scan failures log with the ticker's label", async (phase) => {
+		const h = harness();
+		const atStartup = phase === "startup";
+		let clockBroken = atStartup;
+		const captured: string[] = [];
+		setLogFile("mail-watcher-ticker-fail-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const w = startMailWatcher(
+			{
+				programs: h.programs,
+				reader: () => null,
+				fire: async () => {},
+				notify: async () => {},
+				now: () => {
+					if (clockBroken) throw new Error("clock broke");
+					return NOW;
+				},
+			},
+			atStartup ? undefined : 5,
+		);
+		watchers.push(w);
+		clockBroken = true;
+		try {
+			await waitUntil(
+				() => captured.some((line) => (JSON.parse(line) as { msg?: string }).msg === "timer callback failed"),
+				"the failed scan logs with its ticker label",
+				1_000,
+			);
+		} finally {
+			await w.stop();
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(lines).toContainEqual(
+			expect.objectContaining({
+				level: "error",
+				msg: "timer callback failed",
+				error: "clock broke",
+				timer: "mail watcher tick",
+			}),
+		);
+	});
+
 	test("a new filter baselines at the head — the backlog never fires", async () => {
 		const h = harness();
 		const p = mailProgram(h);

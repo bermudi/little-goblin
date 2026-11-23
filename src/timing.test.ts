@@ -271,6 +271,30 @@ describe("every", () => {
 			jest.useRealTimers();
 		}
 	});
+
+	test("an immediate run of a long interval does not bring the next tick forward", () => {
+		jest.useFakeTimers();
+		try {
+			let runs = 0;
+			const ticker = every(
+				2 ** 31 + 5,
+				"long immediate ticker",
+				() => {
+					runs += 1;
+				},
+				{ immediate: true },
+			);
+			expect(runs).toBe(1);
+			jest.advanceTimersByTime(2 ** 31 + 4);
+			expect(runs).toBe(1);
+			jest.advanceTimersByTime(1);
+			expect(runs).toBe(2);
+			ticker.cancel();
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
 	function counter(target: number): { hit(): number; reached: Promise<void> } {
 		let runs = 0;
 		let reach!: () => void;

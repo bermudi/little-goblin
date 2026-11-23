@@ -62,6 +62,8 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	let root: Root | null = null;
 	let uploads: Deferred[] = [];
 	const sent: UIMessage["parts"][] = [];
+	let sentModelSettings: { model: string; thinking: string } | undefined;
+	const configCalls: { url: string; method: string }[] = [];
 	let phoneWidth = false;
 	// Globals the React tree expects; installed per test, removed after.
 	let installed: string[] = [];
@@ -80,6 +82,8 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		uploads = [];
 		phoneWidth = false;
 		sent.length = 0;
+		sentModelSettings = undefined;
+		configCalls.length = 0;
 		installed = [];
 		// React's client scheduler and event system need a coherent DOM
 		// world; happy-dom's window provides it, Bun provides the rest
@@ -112,8 +116,14 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			removeEventListener() {},
 		}));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-		globalThis.fetch = ((input: RequestInfo | URL, _init?: RequestInit) => {
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes("/api/app/config")) {
+				configCalls.push({
+					url,
+					method: init?.method ?? "GET",
+				});
+			}
 			// The mount-time config load answers immediately; uploads queue
 			// and settle only when the test says so — that is the overlap.
 			if (url === "/api/app/attachments") {
@@ -121,13 +131,27 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				uploads.push(d);
 				return d.promise;
 			}
+			if (url === "/api/app/config/preview") {
+				const requested = JSON.parse(String(init?.body)) as {
+					model: string;
+					thinking: string;
+				};
+				return Promise.resolve(
+					jsonResponse({
+						...requested,
+						favorites: [],
+						catalog: [],
+						thinkingLevels: ["off", "high"],
+					}),
+				);
+			}
 			return Promise.resolve(
 				jsonResponse({
 					model: "prov/model",
 					thinking: "off",
-					favorites: [],
+					favorites: ["prov/chat-only"],
 					catalog: [],
-					thinkingLevels: ["off"],
+					thinkingLevels: ["off", "high"],
 				}),
 			);
 		}) as typeof fetch;
@@ -156,7 +180,11 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		busy = false,
 		onStop,
 	}: {
-		onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
+		onSend: (
+			parts: UIMessage["parts"],
+			whenBusy?: "steer" | "followUp",
+			initialModelSettings?: { model: string; thinking: string },
+		) => void | boolean | Promise<boolean>;
 		draftRestore?: { parts: UIMessage["parts"] } | null;
 		draftScope?: string;
 		busy?: boolean;
@@ -183,14 +211,16 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		);
 	}
 
-	const mount = async () => {
+	const mount = async (draftRestore: { parts: UIMessage["parts"] } | null = null) => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(
 				<ComposerHarness
-					onSend={(parts) => {
+					onSend={(parts, _whenBusy, settings) => {
 						sent.push(parts);
+						sentModelSettings = settings;
 					}}
+					draftRestore={draftRestore}
 				/>,
 			);
 			await Promise.resolve();
@@ -218,6 +248,39 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			);
 		});
 	};
+
+	test("draft model selection is staged for this chat without writing defaults", async () => {
+		await mount({ parts: [{ type: "text", text: "hello" }] });
+		const model = container.querySelector<HTMLButtonElement>('button[aria-label="Model for this chat"]');
+		expect(model).not.toBeNull();
+		await act(async () => model!.click());
+		const alternate = container.querySelector<HTMLButtonElement>('button[role="menuitemradio"][title="prov/chat-only"]');
+		expect(alternate).not.toBeNull();
+		await act(async () => alternate!.click());
+		expect(model!.title).toBe("prov/chat-only");
+		const thinking = container.querySelector(
+			'select[aria-label="New app chat thinking"]',
+		) as HTMLSelectElement | null;
+		expect(thinking).not.toBeNull();
+		await act(async () => {
+			thinking!.value = "high";
+			thinking!.dispatchEvent(
+				new win.Event("change", { bubbles: true }) as unknown as Event,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await submit();
+		expect(sent).toHaveLength(1);
+		expect(sentModelSettings).toEqual({ model: "prov/chat-only", thinking: "high" });
+		expect(configCalls.some((call) => call.url === "/api/app/config" && call.method !== "GET")).toBe(false);
+	});
+
+	test("untouched draft model settings do not override the defaults at creation", async () => {
+		await mount({ parts: [{ type: "text", text: "hello" }] });
+		await submit();
+		expect(sent).toHaveLength(1);
+		expect(sentModelSettings).toBeUndefined();
+	});
 
 	// Type through the real textarea — native value setter + input +
 	// keyup, React's text-input fallback included (same as ChatView's
@@ -327,6 +390,34 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await type("");
 		expect(container.querySelector(".stop-btn")).not.toBeNull();
 		expect(container.querySelector(".send-btn")).toBeNull();
+	});
+
+	test("queue sits in the send group at the end of the bar (issue #901)", async () => {
+		root = createRoot(container);
+		const render = async (busy: boolean, onStop?: () => void) => {
+			await act(async () => {
+				root?.render(
+					<ComposerHarness
+						busy={busy}
+						{...(onStop === undefined ? {} : { onStop })}
+						onSend={(parts) => {
+							sent.push(parts);
+						}}
+					/>,
+				);
+			});
+		};
+		const barEnd = () => {
+			const end = container.querySelector(".composer-bar")?.lastElementChild ?? null;
+			if (end?.matches(".composer-send")) return [...end.children].map((child) => child.className);
+			return end?.className ?? null;
+		};
+		await render(false);
+		expect(barEnd()).toEqual(["send-btn"]);
+		await render(true, () => {});
+		expect(barEnd()).toBe("stop-btn");
+		await type("steer");
+		expect(barEnd()).toEqual(["queue-btn", "send-btn"]);
 	});
 
 	test("an attachment replaces stop with send, including while uploading", async () => {

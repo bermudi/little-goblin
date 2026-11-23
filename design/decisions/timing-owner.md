@@ -22,9 +22,14 @@ risks cache stability.
   error line with the label. A raw timer callback that throws reaches the
   process's uncaught-exception handler, which exits.
 - `every(ms, label, fn)` is the repeating form of `after`, with the same
-  error line per failed tick; the ticker keeps going. It does not skip a
-  tick while the previous one still runs: a module that must not overlap
-  keeps its own in-flight guard (#830).
+  error line per failed tick; the ticker keeps going. A ticker's callback
+  returns its promise, so a failure outside the module's own catch
+  reaches `every` and logs with the label (#903). A catch of its own
+  stays only where it says more than the label (the row, the chat, the
+  step) or where the failure is deliberately quiet, like a cosmetic
+  ping. It does not skip a tick while the previous one still runs: a
+  module that must not overlap keeps its own in-flight guard (#830).
+  An optional immediate run at startup uses the same error line as a tick.
 
 Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.
@@ -39,7 +44,10 @@ codex login poll, stops at that deadline.
 raw `setTimeout`/`setInterval` call or `Bun.sleep` in `src/` outside
 `timing.ts`, with no allowlist (`Bun.sleep` since #900). It reads text: it
 sees `Bun.sleep` through whitespace, comments, `?.` and a quoted
-`["sleep"]`, not through an alias or parentheses. The last modules
+`["sleep"]`, not through an alias, parentheses or a bracketed `["Bun"]`,
+and it misses `setTimeout`/`setInterval` with a comment before the
+parenthesis, or reached through `globalThis` with a space or `?.` at the dot (won't
+fix, #913). The last modules
 moved in #830; each kept its own policy, and a site whose timer aborts
 with its own reason or may wait 0 ms uses `after`, not `deadline` or
 `sleep`: `sleep(0)` resolves at once, where `Bun.sleep(0)` yields a timer

@@ -9,7 +9,10 @@ import {
 	configPatchBody,
 	configView,
 	jsonBodyRefusal,
+	modelSettingsBody,
 	NO_STORE,
+	parsedJson,
+	resolveModelSettings,
 } from "./app-shared.ts";
 import type { AppConfigPatchResponse } from "./app-wire.ts";
 
@@ -27,6 +30,20 @@ export async function handleConfigRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store } = deps;
+
+	if (path === "/api/app/config/preview") {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const parsed = await parsedJson(req, modelSettingsBody);
+		if (parsed instanceof Response) return parsed;
+		const cfg = deps.configRef.current;
+		const resolved = resolveModelSettings(cfg, parsed);
+		if (resolved instanceof Response) return resolved;
+		const { settings, ...extras } = resolved;
+		const body: AppConfigPatchResponse = { ...configView(cfg, settings), ...extras };
+		return Response.json(body, { headers: NO_STORE });
+	}
 
 	if (path === "/api/app/config") {
 		if (req.method === "GET") {

@@ -19,6 +19,12 @@ sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select count(*) from conversa
 
 Proof: the reply is on screen, the conversation is in the rail, the meta line names `fake/verify-model`, the row exists, and `fake-model.log` has a `POST /v1/chat/completions`.
 
+Before sending, open the model picker and choose another model. The control
+is for this chat, not the app default. Send a message and verify the new
+conversation uses that model; Settings > Models > Default models > App chats
+must still show its prior value. An untouched composer must still use the
+current default.
+
 ### Sent files
 
 Send `[sent-media]` and wait for `verify-sent-media: sent both copies`.

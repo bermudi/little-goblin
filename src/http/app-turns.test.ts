@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { waitUntil } from "../testkit.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
@@ -24,6 +24,27 @@ async function nextEvent(reader: EventReader): Promise<unknown> {
 }
 
 describe("app conversation events", () => {
+	test("sends keepalives while an event stream is idle", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "events-keepalive" }),
+			});
+			jest.useFakeTimers();
+			const response = await call("/api/app/conversations/events-keepalive/events");
+			const reader = response.body!.getReader();
+			expect(await nextEvent(reader as unknown as EventReader)).toEqual({ type: "state", live: false });
+			jest.advanceTimersByTime(25_000);
+			expect(new TextDecoder().decode((await reader.read()).value)).toBe(": keepalive\n\n");
+			await reader.cancel();
+		} finally {
+			jest.useRealTimers();
+			http.stop();
+		}
+	});
+
 	test("idle state, authentication, unknown conversation and abort unsubscribe", async () => {
 		const { http, call, runtime } = setup({ token: APP_TOKEN_NAME });
 		try {

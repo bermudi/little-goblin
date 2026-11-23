@@ -38,6 +38,7 @@ import { durableWriteBytes, durableWriteFile } from "../durable.ts";
 import { NAME_RE as SKILL_NAME_RE, parseSkill, readHead } from "./skills.ts";
 import type { CachedSkillDescriptor } from "../skill-part.ts";
 import { paths } from "../home-layout.ts";
+import { after } from "../timing.ts";
 
 // Bounds enforced from the listing BEFORE any extraction write —
 // resource refusal is a typed oversized/invalid, never a disk event.
@@ -376,7 +377,7 @@ async function download(
 		`tarball download exceeded the ${timeoutMs}ms deadline for ${tarballUrl}`,
 		"unreachable",
 	);
-	const timer = setTimeout(() => controller.abort(deadline), timeoutMs);
+	const timer = after(timeoutMs, "skill fetch deadline", () => controller.abort(deadline));
 	try {
 		let response: Response;
 		try {
@@ -404,7 +405,7 @@ async function download(
 		}
 		throw err;
 	} finally {
-		clearTimeout(timer);
+		timer.cancel();
 	}
 }
 

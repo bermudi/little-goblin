@@ -8,24 +8,32 @@ Create a project managed by goblin.
 
 With the desktop Chats pane showing, click New project to open a dialog.
 
-Project chats show in the Chats pane inside their project's folder. If the
-Projects section is closed, click `Show projects` first. Then
-`ab find role button click --name '<project name>'` opens the folder.
+Project chats show on the project page, not in the sidebar unless pinned.
+If the Projects section is closed, click the `Projects` button first. Then
+`ab find role link click --name '<project name>'` opens the project page.
+The all-projects page is in the You menu: click You, then Projects.
 
 ## Projects section disclosure
 
 Use a fresh browser profile with an existing active project. In the desktop
 Chats pane:
 
-1. Before looking for a project folder, find the `Show projects` button. The
-   project folder should not be visible; the Projects label and New project
-   control should remain visible.
-2. Click `Show projects`. The active project folder should appear and the
-   button should report expanded.
+1. Before looking for a project link, find the `Projects` button. Its
+   `aria-expanded` value should be `false`; the project link should not be
+   visible, and New project should remain visible.
+2. Click `Projects`. The active project link should appear and the button
+   should report `aria-expanded="true"`.
 3. Reload the page. The section should stay expanded.
-4. Click `Show projects` again. The folder should disappear while the label
-   remains.
-5. Click the `Projects` label. The all-projects page should open.
+4. Click `Projects` again. The link should disappear and the button should
+   report `aria-expanded="false"`.
+5. Open You, then Projects. The all-projects page should open.
+
+## Pin a project chat
+
+Open an unpinned chat from its project page. Open the chat title menu and
+choose Pin. The chat should appear at the top of Chats, with its project name
+beside the title. Unpinned project chats should remain on the project page,
+not in Chats.
 
 ## Driving it with agent-browser
 

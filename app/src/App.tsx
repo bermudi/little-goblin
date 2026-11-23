@@ -42,8 +42,7 @@ import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
-import { ProjectFolder } from "./ProjectFolder.tsx";
-import { loadOpenFolders, loadProjectsOpen, saveOpenFolders, saveProjectsOpen } from "./railFolders.ts";
+import { loadProjectsOpen, saveProjectsOpen } from "./railFolders.ts";
 import {
 	ConversationNav,
 	ConversationHierarchy,
@@ -136,7 +135,6 @@ function AppShell() {
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
 	const [chatWidth, setChatWidthState] = useState<ChatWidth>(loadChatWidth);
-	const [openFolders, setOpenFolders] = useState(loadOpenFolders);
 	const [projectsOpen, setProjectsOpenState] = useState(loadProjectsOpen);
 	const setProjectsOpen = (open: boolean) => {
 		setProjectsOpenState(open);
@@ -247,12 +245,6 @@ function AppShell() {
 		if (currentFolderId === null) return;
 		setProjectsOpenState(true);
 		saveProjectsOpen(true);
-		setOpenFolders((previous) => {
-			if (previous.has(currentFolderId)) return previous;
-			const next = new Set(previous).add(currentFolderId);
-			saveOpenFolders(next);
-			return next;
-		});
 	}, [currentFolderId]);
 	const noteId = route.kind === "note" ? route.id : null;
 	const windowConv = route.kind === "window" ? route.id : null;
@@ -784,25 +776,25 @@ function AppShell() {
 	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
 	const unbound = all.filter((c) => (c.projectId ?? null) === null);
 	const active = unbound.filter((c) => c.archivedAt === null);
+	const projectList = projects ?? [];
+	const activeProjects = projectList
+		.filter((p) => p.archivedAt === null)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const activeProjectIds = new Set(activeProjects.map((project) => project.id));
+	const pinnedRail = all.filter(
+		(c) =>
+			c.archivedAt === null &&
+			c.pinnedAt !== null &&
+			(c.projectId === null || c.projectId === undefined || activeProjectIds.has(c.projectId)),
+	);
 	const rail = [
-		...active.filter((c) => c.pinnedAt !== null),
+		...pinnedRail,
 		...active.filter((c) => c.pinnedAt === null),
 	];
 	const archived = unbound
 		.filter((c) => c.archivedAt !== null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 
-	const projectList = projects ?? [];
-	const activeProjects = projectList
-		.filter((p) => p.archivedAt === null)
-		.sort((a, b) => a.name.localeCompare(b.name));
-	const projectChats = (id: string) => {
-		const chats = all.filter((c) => c.projectId === id && c.archivedAt === null);
-		return [
-			...chats.filter((c) => c.pinnedAt !== null),
-			...chats.filter((c) => c.pinnedAt === null),
-		];
-	};
 	const currentProject =
 		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
 	// The crumb's name rides the same pool the rail lists.
@@ -836,15 +828,6 @@ function AppShell() {
 		currentConv?.projectId != null
 			? projectList.find((p) => p.id === currentConv.projectId)
 			: undefined;
-	const setFolderOpen = (id: string, open: boolean) => {
-		setOpenFolders((previous) => {
-			const next = new Set(previous);
-			if (open) next.add(id);
-			else next.delete(id);
-			saveOpenFolders(next);
-			return next;
-		});
-	};
 	const moveChatToProject = async (
 		conversationId: string,
 		targetProjectId: string,
@@ -855,7 +838,6 @@ function AppShell() {
 		try {
 			await patchConversation(token, conversationId, { projectId: targetProjectId });
 			setProjectsOpen(true);
-			setFolderOpen(targetProjectId, true);
 			await refresh();
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
@@ -875,6 +857,9 @@ function AppShell() {
 			<ConversationRow
 				conv={c}
 				orphaned={orphaned}
+				projectName={c.projectId === null
+					? undefined
+					: projectList.find((project) => project.id === c.projectId)?.name}
 				current={railCurrent}
 				token={token}
 				moveTargets={activeProjects.map(({ id, name }) => ({ id, name }))}
@@ -913,7 +898,6 @@ function AppShell() {
 				<button
 					type="button"
 					className="rail-section-toggle"
-					aria-label="Show projects"
 					aria-expanded={projectsOpen}
 					onClick={() => setProjectsOpen(!projectsOpen)}
 				>
@@ -931,8 +915,8 @@ function AppShell() {
 					>
 						<path d="M9 6l6 6-6 6" />
 					</svg>
+					Projects
 				</button>
-				<button type="button" className="rail-section-label" onClick={openProjectsIndex}>Projects</button>
 				<button
 					type="button"
 					aria-label="New project"
@@ -941,22 +925,30 @@ function AppShell() {
 					<NewProjectGlyph />
 				</button>
 			</li>
-			{projectsOpen && activeProjects.map((project) => {
-				const chats = projectChats(project.id);
-				return (
-					<ProjectFolder
-						key={project.id}
-						project={project}
-						open={openFolders.has(project.id)}
-						onOpenChange={(open) => setFolderOpen(project.id, open)}
-						current={page === "project" && projectId === project.id}
-						onNewChat={() => openProject(project.id)}
-						empty={chats.length === 0}
+			{projectsOpen && activeProjects.map((project) => (
+				<li
+					key={project.id}
+					className={`conv rail-project${currentFolderId === project.id ? " current" : ""}`}
+				>
+					<a
+						className="conv-main rail-project-main"
+						href={`/app/p/${project.id}`}
+						aria-current={currentFolderId === project.id ? "page" : undefined}
+						onClick={(event) => {
+							if (
+								event.metaKey || event.ctrlKey || event.shiftKey ||
+								event.altKey || event.button !== 0
+							) return;
+							event.preventDefault();
+							void openProject(project.id);
+						}}
 					>
-						<ConversationHierarchy conversations={chats} renderItem={renderRow} />
-					</ProjectFolder>
-				);
-			})}
+						<span className="conv-head">
+							<span className="conv-title">{project.name}</span>
+						</span>
+					</a>
+				</li>
+			))}
 			<li className="rail-chats-label">Chats</li>
 			<ConversationHierarchy conversations={rail} renderItem={renderRow} />
 		</>
@@ -1036,12 +1028,14 @@ function AppShell() {
 		<Menu
 			onAction={(value) => {
 				if (value === "settings") void openPage("settings");
+				if (value === "projects") void openProjectsIndex();
 				if (value === "archive") void openArchive();
 			}}
 		>
 			<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
 			<MenuContent className="title-menu">
 				<MenuItem value="settings">Settings</MenuItem>
+				<MenuItem value="projects">Projects</MenuItem>
 				<MenuItem value="archive">Archive</MenuItem>
 			</MenuContent>
 		</Menu>

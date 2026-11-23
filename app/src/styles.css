@@ -535,10 +535,6 @@ p code,
 		-webkit-user-select: none;
 		user-select: none;
 	}
-	.folder-head .folder-actions {
-		opacity: 1;
-		pointer-events: auto;
-	}
 }
 .conv-main[data-holding],
 .conv-main[data-held] {
@@ -762,6 +758,15 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+.conv-project {
+	flex: none;
+	max-width: 40%;
+	overflow: hidden;
+	color: var(--app-fg-muted);
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .conv-time {
 	flex: none;
 	font-family: var(--font-mono);
@@ -837,7 +842,12 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 .rail-section-toggle {
 	display: flex;
 	align-items: center;
+	gap: 0.25rem;
+	margin-right: auto;
 	color: inherit;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
 }
 .rail-section-toggle:hover {
 	color: var(--app-fg);
@@ -848,9 +858,6 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 .rail-section-toggle[aria-expanded="true"] .chev {
 	transform: rotate(90deg);
 }
-.rail-section-label {
-	margin-right: auto;
-}
 .rail-project-head,
 .rail-chats-label {
 	color: var(--app-fg-muted);
@@ -859,12 +866,6 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	padding: 0.5rem;
-}
-.rail-project-head > .rail-section-label {
-	color: inherit;
-	font: inherit;
-	letter-spacing: inherit;
-	text-transform: inherit;
 }
 .rail-you {
 	margin-top: auto;
@@ -5600,65 +5601,6 @@ select.ui-input option {
 		max-width: none;
 		bottom: calc(4.5rem + env(safe-area-inset-bottom));
 	}
-}
-
-.proj-folder {
-	position: relative;
-}
-.folder-head {
-	position: relative;
-	display: flex;
-	align-items: center;
-	width: 100%;
-	border-radius: 8px;
-	transition: background-color 75ms;
-}
-.folder-head:hover {
-	background: var(--app-hover);
-}
-.folder-head.current {
-	background: var(--app-active);
-}
-.folder-toggle {
-	display: flex;
-	align-items: center;
-	gap: 0.35rem;
-	width: 100%;
-	min-width: 0;
-	padding: 0.4rem 0.6rem;
-	text-align: left;
-	font-size: 12.5px;
-	color: var(--app-fg-muted);
-}
-.folder-toggle:hover {
-	color: var(--app-fg);
-}
-.folder-toggle[aria-expanded="true"] .chev {
-	transform: rotate(90deg);
-}
-.folder-toggle .chev {
-	flex: none;
-	transition: transform 120ms ease;
-}
-.folder-name {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.folder-actions {
-	bottom: 0.2rem;
-}
-.folder-head:hover .conv-actions,
-.folder-actions:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-.folder-empty {
-	padding-left: 1.5rem;
-}
-.folder-chats {
-	padding-left: 0.75rem !important;
 }
 
 /* Chat rows outside the rail (a project page's chat list) — the rail

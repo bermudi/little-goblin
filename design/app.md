@@ -294,7 +294,7 @@ See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
 One assistant card per reply: the "…" waiting row shows only until the
 reply has a part to draw (#415).
 
-## Chat rail rows and project folders (ruling 2026-11-21, #838)
+## Chat rail rows and project links (ruling 2026-11-21, #838; #894)
 
 Conversation rows are thread links with icon buttons on hover or keyboard
 focus: Pin or Unpin, Rename, Archive; archived rows show Rename, Unarchive,
@@ -309,21 +309,22 @@ Move to project (ruling 2026-11-21, #859) sits in the hold sheet and the
 title menu, for loose, unarchived, non-child chats only: the sheet switches
 in place to the active projects and New project…, with Back; the title menu
 opens them as a sub-menu. Hover buttons have no Move. A move from the list
-stays on the list and opens the project's folder. A roll cannot move, and
+stays on the list and reveals the Projects section. A roll cannot move, and
 the server refuses it.
 
-The chats pane lists each active project as a folder above the loose chats,
-a mechanism borrowed from t3code's sidebar. A folder holds that project's
-active chats, pinned first. The separate Projects chevron controls whether
-the section's folders are shown; it starts closed when no preference is
-stored, and its open or closed state is kept per device in localStorage
-(ruling 2026-11-22, #889). Individual folders also start closed and remember
-their state per device.
+Each active project is one link row above the loose chats. It opens that
+project's page and is marked current on that page and in its chats. Project
+chats appear on the project page, not in the sidebar (ruling 2026-11-22,
+#894). The Projects button controls whether the project links are shown; it
+starts closed when no preference is stored, and its open or closed state is
+kept per device in localStorage (ruling 2026-11-22, #889). The all-projects
+page is in the You menu, between Settings and Archive.
+Pinned project chats appear at the top of Chats with their project's name.
+Unpinned project chats stay on the project page (ruling 2026-11-22, #894).
 Landing in a project or one of its chats, or successfully moving a chat into
-a project, reveals the section and opens that project's folder. A folder's +
-opens the project page, whose composer starts a chat in it. There is no
-Projects pane: the Projects label in the chat list opens the all-projects
-page. Beside the label, New project uses a folder-plus glyph so it never
+a project, reveals the section. There is no
+Projects pane: the You menu opens the all-projects page. Beside the Projects
+button, New project uses a folder-plus glyph so it never
 reads as New conversation (#862).
 These per-device preferences are like the chat width: when storage is
 unavailable the rail only forgets them.
@@ -340,7 +341,7 @@ one roll at a time with a link to the previous one. Stitched scrolling across
 rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
-**Client.** The PWA keeps all ordinary chat and folder rows and adds a
+**Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, named Goblin and shown with
 Goblin's avatar (#862). `/app/rolling` shows one roll
 at a time; when a newer roll begins, its transcript starts with
@@ -688,9 +689,12 @@ console.
 **Desktop.** No glyph gutter. Three columns:
 - Left list: a search field and New chat on top; the Rolling chat as a
   pinned row named **Goblin**, with Goblin's avatar; the collapsible Projects
-  section with project folders, its all-projects label, and New project
-  control; loose chats; archived rows. A **You** control at the bottom
-  opens a menu with Settings and Archive. The sidebar toggle still hides
+  section with project link rows that open their project pages and are marked
+  current on those pages and in their chats. Its Projects button folds the
+  section. Pinned project chats appear at the top of Chats with their project
+  names; unpinned project chats stay on their project pages. New project
+  remains beside the Projects button. A **You** control at the bottom opens a
+  menu with Settings, Projects and Archive. The sidebar toggle still hides
   the whole list.
 - Centre: the chat, unchanged.
 - Right: the [Goblin panel](../GLOSSARY.md#goblin-panel), beside chat pages
@@ -874,7 +878,7 @@ with a client-side filter over title and preview and 100 rows per slice
 ("Show more"). Each row: title (the open link) · archived · last active ·
 Unarchive · Delete. Rename is not offered there — open the chat to rename.
 Project-bound archived chats stay off the Chats pane; active project chats
-appear inside their project folders. The rail's archived list, its disclosure
+appear on their project pages, not in the sidebar. The rail's archived list, its disclosure
 state and the chevron are gone.
 Options not taken: a capped rail list with "Show all", and search-only
 (no browse).

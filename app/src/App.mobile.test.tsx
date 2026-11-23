@@ -821,9 +821,9 @@ describe("mobile: chats screen and navigation", () => {
 	test("the hold sheet switches to project choices and moves in place", async () => {
 		projects = [projRow("Goblin Work")];
 		await mount();
-		const sectionToggle = container.querySelector('[aria-label="Show projects"]');
+		const sectionToggle = container.querySelector(".rail-section-toggle");
 		expect(sectionToggle?.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".proj-folder")).toBeNull();
+		expect(container.querySelector(".rail-project")).toBeNull();
 		await hold(
 			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
 			"touch",
@@ -849,13 +849,11 @@ describe("mobile: chats screen and navigation", () => {
 		expect(patches).toContainEqual({ id: "fixture", body: { projectId: "p-goblin" } });
 		expect(win.location.pathname).toBe("/app/");
 		expect(sectionToggle?.getAttribute("aria-expanded")).toBe("true");
-		expect(container.querySelector(".folder-toggle")?.getAttribute("aria-expanded")).toBe("true");
-		const movedLink = container.querySelector('.proj-folder .conv-main[href="/app/c/fixture"]');
-		expect(movedLink).toBeTruthy();
-		expect(
-			[...container.querySelectorAll('.chatlist-screen .conv-main[href="/app/c/fixture"]')]
-				.some((link) => !link.closest(".proj-folder")),
-		).toBe(false);
+		expect(container.querySelector(".rail-project-main")?.textContent).toContain("Goblin Work");
+		expect(container.querySelector(".rail-project-main")?.getAttribute("href")).toBe("/app/p/p-goblin");
+		const movedPinned = container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]');
+		expect(movedPinned?.querySelector(".conv-project")?.textContent).toBe("Goblin Work");
+		expect(movedPinned?.querySelector(".conv-pin")).not.toBeNull();
 	});
 
 	test("Back returns to row actions without moving the chat", async () => {
@@ -941,18 +939,14 @@ describe("mobile: chats screen and navigation", () => {
 		expect(win.location.pathname).toBe("/app/");
 	});
 
-	test("the hold sheet hides Move for project-bound chats", async () => {
+	test("unpinned project chats stay off the chat list", async () => {
 		projects = [projRow("Goblin Work")];
 		conversations[0]!.projectId = "p-goblin";
+		conversations[0]!.pinnedAt = null;
 		await mount();
-		await click(container.querySelector('[aria-label="Show projects"]'));
-		await click(container.querySelector(".folder-toggle"));
-		await hold(container.querySelector('.proj-folder .conv-main[href="/app/c/fixture"]')!, "touch");
-		expect(
-			[...container.querySelectorAll(".row-sheet-action")].some((button) =>
-				button.textContent?.includes("Move to project"),
-			),
-		).toBe(false);
+		await click(container.querySelector(".rail-section-toggle"));
+		expect(container.querySelector(".rail-project-main")?.textContent).toContain("Goblin Work");
+		expect(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')).toBeNull();
 	});
 
 	test("the hold sheet hides Move for child chats", async () => {
@@ -1049,7 +1043,7 @@ describe("mobile: chats screen and navigation", () => {
 		conversations[0]!.archivedAt = "2026-10-24T00:00:00Z";
 		conversations[0]!.projectId = "p-goblin";
 		await mount();
-		await click(buttonText(".chatlist-screen .rail-project-head button", "Projects"));
+		await openYou("Projects");
 		await waitFor(
 			() => container.querySelector(".ops .ops-h2")?.textContent === "Projects",
 			"projects index",
@@ -1145,7 +1139,7 @@ describe("mobile: chats screen and navigation", () => {
 		projects = [projRow("Goblin Work")];
 		await mount();
 
-		await click(buttonText(".chatlist-screen .rail-project-head button", "Projects"));
+		await openYou("Projects");
 		await waitFor(
 			() =>
 				[...container.querySelectorAll("button.dt-row")].some((b) =>

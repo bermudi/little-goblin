@@ -92,6 +92,5 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/system1.ts": 2,
 	"src/test-memory-net.worker.ts": 1,
 	"src/testkit/memory-net/calm.fixture.ts": 1,
-	"src/tg/refusals.ts": 1,
 	"src/tg/speak-button.ts": 1,
 };

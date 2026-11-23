@@ -1,5 +1,6 @@
 import type { Api } from "grammy";
 import { log } from "../log.ts";
+import { after } from "../timing.ts";
 
 const REFUSAL_SEND_SLOTS = 8;
 const REFUSAL_TIMEOUT_MS = 30_000;
@@ -29,8 +30,12 @@ export function refusalDispatcher(refusalTimeoutMs: number) {
 			return;
 		}
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), refusalTimeoutMs);
-		timer.unref?.();
+		const timer = after(
+			refusalTimeoutMs,
+			"telegram refusal timeout",
+			() => controller.abort(),
+			{ unref: true },
+		);
 		log.info("telegram refusal scheduled", {
 			userId: id,
 			chat,
@@ -60,7 +65,7 @@ export function refusalDispatcher(refusalTimeoutMs: number) {
 				});
 			})
 			.finally(() => {
-				clearTimeout(timer);
+				timer.cancel();
 				pendingRefusals.delete(key);
 			});
 		pendingRefusals.set(key, send);

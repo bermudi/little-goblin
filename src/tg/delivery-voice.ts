@@ -3,6 +3,7 @@ import type { Conversation } from "../conversation-read.ts";
 import type { TurnDone } from "../turn/sink.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
+import { every, type Timer } from "../timing.ts";
 import { isParseEntitiesError } from "./delivery-errors.ts";
 import {
 	chunkWindows,
@@ -33,9 +34,9 @@ export interface VoiceDeliveryCtx {
 	repingTyping(): void;
 	clearTyping(): void;
 	startTyping(): void;
-	recordingIntervals(): ReadonlySet<ReturnType<typeof setInterval>>;
-	addRecording(interval: ReturnType<typeof setInterval>): void;
-	removeRecording(interval: ReturnType<typeof setInterval>): void;
+	recordingIntervals(): ReadonlySet<Timer>;
+	addRecording(interval: Timer): void;
+	removeRecording(interval: Timer): void;
 	richMode(): boolean;
 	refreshRichDrafts(): void;
 }
@@ -108,10 +109,10 @@ export function makeVoiceDelivery(ctx: VoiceDeliveryCtx): {
 	function onVoiceSynthesisStart(): () => void {
 		ctx.clearTyping();
 		sendRecording();
-		const interval = setInterval(sendRecording, ctx.typingIntervalMs);
+		const interval = every(ctx.typingIntervalMs, "telegram recording ping", sendRecording);
 		ctx.addRecording(interval);
 		return () => {
-			clearInterval(interval);
+			interval.cancel();
 			ctx.removeRecording(interval);
 			if (ctx.recordingIntervals().size === 0 && !ctx.sinkDone() && ctx.authoritative()) {
 				ctx.startTyping();
@@ -158,11 +159,15 @@ export function makeVoiceDelivery(ctx: VoiceDeliveryCtx): {
 			let audio: Uint8Array[] = [];
 			if (content.spoken !== "") {
 				sendRecording();
-				const synthesisPing = setInterval(sendRecording, TYPING_INTERVAL_MS);
+				const synthesisPing = every(
+					TYPING_INTERVAL_MS,
+					"telegram synthesis recording ping",
+					sendRecording,
+				);
 				try {
 					audio = await voice.synthesize(content.spoken);
 				} finally {
-					clearInterval(synthesisPing);
+					synthesisPing.cancel();
 				}
 			}
 			if (!ctx.authoritative()) {

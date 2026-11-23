@@ -4,6 +4,7 @@ import type { Conversation } from "../conversation-read.ts";
 import { sniffImage } from "../agent/tools/read.ts";
 import { DeliveryUncertainError, MAX_SEND_BYTES, type OutgoingFile } from "../agent/tools/send.ts";
 import { log } from "../log.ts";
+import { after, type Timer } from "../timing.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 
 // The files/albums cluster of the Telegram delivery sink — photo
@@ -45,12 +46,12 @@ export function makeFileDelivery(
 	let photoQueue: QueuedPhoto[] = [];
 	let photoBatchWait: Promise<void> | null = null;
 	let photoBatchResolve: (() => void) | null = null;
-	let photoKick: ReturnType<typeof setTimeout> | null = null;
+	let photoKick: Timer | null = null;
 
 	function flushPhotoBatch(): void {
 		if (photoBatchResolve === null) return;
 		if (photoKick !== null) {
-			clearTimeout(photoKick);
+			photoKick.cancel();
 			photoKick = null;
 		}
 		const batch = photoQueue;
@@ -73,7 +74,7 @@ export function makeFileDelivery(
 			photoBatchWait = new Promise<void>((resolve) => {
 				photoBatchResolve = resolve;
 			});
-			photoKick = setTimeout(flushPhotoBatch, opts.mediaGroupWindowMs);
+			photoKick = after(opts.mediaGroupWindowMs, "telegram photo batch", flushPhotoBatch);
 		}
 		return photoBatchWait;
 	}

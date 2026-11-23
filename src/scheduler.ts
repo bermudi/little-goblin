@@ -9,6 +9,7 @@ import { latestFireAtOrBefore, missedCount, type Program, type ProgramsStore } f
 import type { Runtime } from "./runtime.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
+import { after, every, type Timer } from "./timing.ts";
 
 export interface SchedulerDeps extends WakeDeps {
 	programs: ProgramsStore;
@@ -69,7 +70,7 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			}
 		}
 	};
-	const timer = setInterval(scan, tickMs);
+	const timer = every(tickMs, "program scan", scan);
 	// First scan at boot: catch-up for everything missed while down.
 	scan();
 	return {
@@ -78,9 +79,9 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			if (stopped) return;
 			stopped = true;
 			activeSchedulers.delete(deps.programs);
-			clearInterval(timer);
+			timer.cancel();
 			ladder.stopped = true;
-			for (const t of ladder.timers.values()) clearTimeout(t);
+			for (const t of ladder.timers.values()) t.cancel();
 			ladder.timers.clear();
 		},
 	};
@@ -95,7 +96,7 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 // is the no-ladder behavior — the cursor already advanced.
 const RETRY_DELAYS_MS = [5, 15, 30].map((m) => m * 60_000);
 interface RetryLadder {
-	timers: Map<string, ReturnType<typeof setTimeout>>;
+	timers: Map<string, Timer>;
 	stopped: boolean;
 }
 const ladders = new WeakMap<SchedulerDeps, RetryLadder>();
@@ -584,8 +585,8 @@ function considerRetry(
 	// must not cancel the previous occurrence's pending rung.
 	const key = `${program.id}:${scheduledFor.getTime()}`;
 	const prior = ladder.timers.get(key);
-	if (prior !== undefined) clearTimeout(prior);
-	const timer = setTimeout(() => {
+	if (prior !== undefined) prior.cancel();
+	const timer = after(delayMs, "schedule fire retry", () => {
 		ladder.timers.delete(key);
 		// The timer callback has no caller left to fail into — a storage
 		// or resolution error here is an error line, not a process exit.
@@ -597,8 +598,7 @@ function considerRetry(
 				name: program.name,
 			});
 		}
-	}, delayMs);
-	timer.unref?.();
+	}, { unref: true });
 	ladder.timers.set(key, timer);
 }
 

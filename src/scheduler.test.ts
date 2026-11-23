@@ -27,7 +27,7 @@ import {
 	type SchedulerDeps,
 } from "./scheduler.ts";
 import { System1Error } from "./system1.ts";
-import { useHome, waitUntil } from "./testkit.ts";
+import { sleep, useHome, waitUntil } from "./testkit.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -200,6 +200,28 @@ describe("scoredMailEvent", () => {
 });
 
 describe("scheduler", () => {
+	test("the ticker scans on its interval and stops scanning once stopped", async () => {
+		const h = harness();
+		let scans = 0;
+		const programs = h.deps.programs;
+		h.deps.programs = {
+			...programs,
+			due: () => {
+				scans += 1;
+				return [];
+			},
+		} as ProgramsStore;
+		const scheduler = startScheduler(h.deps, 10);
+		try {
+			await waitUntil(() => scans >= 3, "boot scan plus two ticks");
+		} finally {
+			scheduler.stop();
+		}
+		const seen = scans;
+		await sleep(30);
+		expect(scans).toBe(seen);
+	});
+
 	test("a telegram-targeted due program holds while delivery is unattached; app fires anyway", async () => {
 		const h = harness();
 		const createdAt = new Date("2026-09-20T10:00:00");
@@ -1611,4 +1633,3 @@ test("scheduler rejects duplicate owners and stopped handles cannot scan or stop
 		s.stop();
 	}
 });
-

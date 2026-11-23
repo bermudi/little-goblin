@@ -86,7 +86,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/mail-approval.ts": 1,
 	"src/reviewer.ts": 1,
 	"src/rolling.ts": 1,
-	"src/scheduler.ts": 2,
 	"src/system1.ts": 2,
 	"src/test-memory-net.worker.ts": 1,
 	"src/testkit/memory-net/calm.fixture.ts": 1,

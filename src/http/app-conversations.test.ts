@@ -30,6 +30,74 @@ function streamedText(body: string): string {
 }
 
 describe("app conversations", () => {
+	test("draft model choice is captured before the first turn and never changes defaults", async () => {
+		const { http, call, store, projects, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					id: "draft-model",
+					initialModelSettings: { model: "zai/m2", thinking: "high" },
+				}),
+			});
+			expect(created.status).toBe(201);
+			expect(store.readAppSettings("app/draft-model", configRef.current)).toEqual({
+				model: "zai/m2",
+				thinking: "high",
+			});
+			expect(configRef.current).toMatchObject({ model: "zai/m", thinking: "medium" });
+			expect(configWrites.count).toBe(0);
+
+			const conflict = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					id: "draft-model",
+					initialModelSettings: { model: "zai/m", thinking: "medium" },
+				}),
+			});
+			expect(conflict.status).toBe(409);
+			const invalid = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					id: "invalid-draft-model",
+					initialModelSettings: { model: "ghost/x", thinking: "medium" },
+				}),
+			});
+			expect(invalid.status).toBe(422);
+			expect(store.get("app/invalid-draft-model")).toBeNull();
+			const defaults = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "default-draft-model" }),
+			});
+			expect(defaults.status).toBe(201);
+			expect(store.readAppSettings("app/default-draft-model", configRef.current)).toEqual({
+				model: "zai/m",
+				thinking: "medium",
+			});
+			const project = projects.create({ name: "draft-model-project" });
+			const projectChat = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					id: "project-draft-model",
+					projectId: project.id,
+					initialModelSettings: { model: "zai/m2", thinking: "high" },
+				}),
+			});
+			expect(projectChat.status).toBe(201);
+			expect(store.readAppSettings("app/project-draft-model", configRef.current)).toEqual({
+				model: "zai/m2",
+				thinking: "high",
+			});
+		} finally {
+			http.stop();
+		}
+	});
+
 	const engines = [sdkScript, claudeScript] as const;
 	const engineName = (make: (typeof engines)[number]) => make === sdkScript ? "ai-sdk" : "claude-code";
 	test("create, list, and history ride the app pool only", async () => {

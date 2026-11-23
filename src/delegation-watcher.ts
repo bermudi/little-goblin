@@ -117,9 +117,7 @@ export function startDelegationLifecycle(
 		});
 		return current;
 	};
-	const ticker = every(tickMs, "delegation watcher tick", () => {
-		void scan();
-	});
+	const ticker = every(tickMs, "delegation watcher tick", scan);
 	void scan();
 	return {
 		launch: (input) => tracked(launch(deps, input)),

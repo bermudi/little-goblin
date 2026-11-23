@@ -48,6 +48,7 @@ function rig(opts: {
 	respond: (url: string, init?: RequestInit) => Response | Promise<Response>;
 	onSignedIn?(): void;
 	config?: () => Config;
+	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }) {
 	const home = useHome("goblin-login-");
 	// Bun caches homedir() at process start: changing HOME here cannot
@@ -55,6 +56,7 @@ function rig(opts: {
 	// instead; the CLI-adoption test uses a child with a fixture HOME.
 	let t = 1_000_000;
 	const calls: { url: string; init: RequestInit | undefined }[] = [];
+	const sleeps: { ms: number; signal: AbortSignal | undefined }[] = [];
 	const fetchImpl: FetchLike = async (url, init) => {
 		calls.push({ url: String(url), init });
 		return opts.respond(String(url), init);
@@ -70,13 +72,15 @@ function rig(opts: {
 		config: cfg,
 		fetch: fetchImpl,
 		now: () => t,
-		sleep: (ms) => {
+		sleep: (ms, signal) => {
+			sleeps.push({ ms, signal });
+			if (opts.sleep !== undefined) return opts.sleep(ms, signal);
 			t += ms;
 			return Promise.resolve();
 		},
 		...(opts.onSignedIn !== undefined ? { onSignedIn: opts.onSignedIn } : {}),
 	});
-	return { home, calls, login };
+	return { home, calls, login, sleeps };
 }
 
 const json = (body: unknown, status = 200) =>
@@ -112,6 +116,47 @@ function happyFlow(url: string): Response {
 }
 
 describe("chatgpt device login", () => {
+	test("a long advised interval stops at the login deadline", async () => {
+		const { calls, login, sleeps } = rig({
+			respond: (url) =>
+				url.endsWith("/deviceauth/usercode")
+					? json({
+							device_auth_id: "dev-1",
+							user_code: "ABCD-1234",
+							interval: "30000000",
+							expires_at: "2099-01-01T00:00:00Z",
+						})
+					: happyFlow(url),
+		});
+		await login.start();
+		await flush();
+		expect(sleeps.map(({ ms }) => ms)).toEqual([15 * 60 * 1000]);
+		expect(login.status().state).toBe("error");
+		expect(login.status().error).toContain("expired");
+		expect(calls.some((call) => call.url.endsWith("/deviceauth/token"))).toBe(false);
+	});
+
+	test("cancel aborts the signal for a pending poll sleep", async () => {
+		let wake!: () => void;
+		const { calls, login, sleeps } = rig({
+			respond: happyFlow,
+			sleep: (_ms, signal) =>
+				new Promise<void>((resolve) => {
+					wake = resolve;
+					signal?.addEventListener("abort", () => resolve(), { once: true });
+				}),
+		});
+		await login.start();
+		await waitUntil(() => sleeps.length === 1, "poll sleep");
+		const signal = sleeps[0]!.signal!;
+		expect(signal.aborted).toBe(false);
+		login.cancel();
+		expect(signal.aborted).toBe(true);
+		wake();
+		await flush();
+		expect(calls.some((call) => call.url.endsWith("/deviceauth/token"))).toBe(false);
+	});
+
 	test("start → pending → poll 403s → exchange once → signed-in file", async () => {
 		let polls = 0;
 		const { calls, login } = rig({

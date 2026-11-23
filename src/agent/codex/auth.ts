@@ -9,6 +9,7 @@ import { z } from "zod";
 import { paths } from "../../home-layout.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
+import { sleep } from "../../timing.ts";
 
 const OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 // Codex CLI's public OAuth client id — published in the CLI source and
@@ -167,7 +168,7 @@ async function refreshAuth(path: string, fetchImpl: FetchLike): Promise<CodexAut
 					authFile: path,
 				});
 			} else {
-				await Bun.sleep(50);
+				await sleep(50);
 			}
 		}
 	}

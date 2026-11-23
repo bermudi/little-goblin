@@ -332,6 +332,12 @@ function mountDom() {
     install("CustomEvent", dom.win.CustomEvent);
     install("getComputedStyle", dom.win.getComputedStyle);
     install("requestAnimationFrame", dom.win.requestAnimationFrame.bind(dom.win));
+    Reflect.set(dom.win, "matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
     // The command primitive's typeahead walks item text through the DOM
     // global NodeFilter; browsers have it, bare bun:test doesn't.
     install("NodeFilter", (dom.win as unknown as { NodeFilter: unknown }).NodeFilter);

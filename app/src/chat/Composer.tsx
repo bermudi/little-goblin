@@ -7,6 +7,7 @@ import {
 	type SetStateAction,
 } from "react";
 import type { UIMessage } from "ai";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import {
 	getConfig,
 	getConversationConfig,
@@ -29,6 +30,7 @@ import { useAttachments } from "./useAttachments.ts";
 import { skillRefEquals, useSkillNoteStaging } from "./useSkillNoteStaging.ts";
 import { useSubmit } from "./useSubmit.ts";
 import { useKeyboard } from "./useKeyboard.ts";
+import { usePhoneWidth } from "../usePhoneWidth.ts";
 import type {
 	AppConfigView,
 	AppConversationMemoryView,
@@ -108,6 +110,7 @@ export function Composer({
 	draftRestore?: { parts: UIMessage["parts"]; source?: "pending-edit" } | null;
 	onDraftRestored?: () => void;
 }) {
+	const phoneWidth = usePhoneWidth();
 	// The draft is durable per scope: restored at mount, stored on every
 	// change. No debounce and no close guard — a tab close at any
 	// instant (the Ctrl+W habit this exists for) finds the last
@@ -557,71 +560,103 @@ export function Composer({
 				/>
 			)}
 			<div className="composer-bar">
-				<button
-					type="button"
-					className="icon-btn"
-					aria-label="Attach"
-					title="Attach"
-					onClick={() => fileInput.current?.click()}
-				>
-					<svg
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						strokeWidth="1.75"
-						strokeLinecap="round"
-						width="16"
-						height="16"
+				{phoneWidth ? (
+					<Menu
+						onAction={(value) => {
+							if (value === "file") fileInput.current?.click();
+							else if (value === "note") setNotePickerOpen(true);
+							else if (value === "skill") setSkillPickerOpen(true);
+						}}
 					>
-						<line x1="12" y1="5" x2="12" y2="19" />
-						<line x1="5" y1="12" x2="19" y2="12" />
-					</svg>
-				</button>
-				<button
-					type="button"
-					ref={noteBtnRef}
-					className="icon-btn"
-					aria-label="Attach a note"
-					aria-expanded={notePickerOpen}
-					title="Attach a note"
-					onClick={() => setNotePickerOpen((v) => !v)}
-				>
-					<svg
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						strokeWidth="1.75"
-						strokeLinecap="round"
-						strokeLinejoin="round"
-						width="16"
-						height="16"
-					>
-						<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-						<polyline points="14 2 14 8 20 8" />
-						<line x1="9" y1="13" x2="15" y2="13" />
-						<line x1="9" y1="17" x2="13" y2="17" />
-					</svg>
-				</button>
-				<button
-					type="button"
-					className="icon-btn"
-					aria-label="Invoke a skill"
-					title="Invoke a skill"
-					onClick={() => setSkillPickerOpen(true)}
-				>
-					<svg
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						strokeWidth="1.75"
-						strokeLinecap="round"
-						strokeLinejoin="round"
-						width="16"
-						height="16"
-					>
-						<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
-					</svg>
-				</button>
+						<MenuTrigger ref={noteBtnRef} className="icon-btn" aria-label="Add" title="Add">
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								width="16"
+								height="16"
+							>
+								<line x1="12" y1="5" x2="12" y2="19" />
+								<line x1="5" y1="12" x2="19" y2="12" />
+							</svg>
+						</MenuTrigger>
+						<MenuContent className="title-menu">
+							<MenuItem value="file">Attach a file</MenuItem>
+							<MenuItem value="note">Attach a note</MenuItem>
+							<MenuItem value="skill">Invoke a skill</MenuItem>
+						</MenuContent>
+					</Menu>
+				) : (
+					<>
+						<button
+							type="button"
+							className="icon-btn"
+							aria-label="Attach"
+							title="Attach"
+							onClick={() => fileInput.current?.click()}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								width="16"
+								height="16"
+							>
+								<line x1="12" y1="5" x2="12" y2="19" />
+								<line x1="5" y1="12" x2="19" y2="12" />
+							</svg>
+						</button>
+						<button
+							type="button"
+							ref={noteBtnRef}
+							className="icon-btn"
+							aria-label="Attach a note"
+							aria-expanded={notePickerOpen}
+							title="Attach a note"
+							onClick={() => setNotePickerOpen((v) => !v)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="16"
+								height="16"
+							>
+								<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+								<polyline points="14 2 14 8 20 8" />
+								<line x1="9" y1="13" x2="15" y2="13" />
+								<line x1="9" y1="17" x2="13" y2="17" />
+							</svg>
+						</button>
+						<button
+							type="button"
+							className="icon-btn"
+							aria-label="Invoke a skill"
+							title="Invoke a skill"
+							onClick={() => setSkillPickerOpen(true)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="16"
+								height="16"
+							>
+								<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
+							</svg>
+						</button>
+					</>
+				)}
 				{micSupported && (
 					<button
 						type="button"

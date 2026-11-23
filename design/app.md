@@ -246,6 +246,22 @@ chat's own name matters more than its parent's. Accepted limit: at
 721–790px with a chat and both side panes open, the title gets 0–60px;
 hiding a pane gives it room, and rename stays available from the list.
 
+**The phone bar folds three tools into a + menu (ruling 2026-11-22,
+#897).** On phone widths, Attach a file, Attach a note and Invoke a
+skill sit behind one **Add** (+) button; Mic stays on the bar, since
+voice notes are a main phone action. The tools are gated in JSX on
+`usePhoneWidth`, not hidden by CSS. Send, Stop and Queue never shrink;
+the model knob cuts its name short with an ellipsis and gives up the
+remaining space. At 360px the bar has 326px of room; summed from the
+measured item widths, the unfolded bar needed 409px idle and 463px
+during a turn with a draft (Queue beside Send). The fold saves 72px;
+the knob gives up the rest, down to about 28px during that turn, where
+it is disabled anyway.
+Rejected: wrapping onto two rows (takes transcript room on a small
+screen), a ⋯ menu for memory and thinking (hides whether memory is on),
+and shrinking alone (cannot fit the busy bar without going under the
+2.25rem tap minimum).
+
 **Box-drawing runs (ruling 2026-10-24, operator paste rendered as
 proportional-font noise).** A pasted ╔═╗ table, a file tree, a
 diagram — alignment-dependent art that collapses in proportional

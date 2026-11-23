@@ -29,6 +29,7 @@ risks cache stability.
   step) or where the failure is deliberately quiet, like a cosmetic
   ping. It does not skip a tick while the previous one still runs: a
   module that must not overlap keeps its own in-flight guard (#830).
+  An optional immediate run at startup uses the same error line as a tick.
 
 Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.

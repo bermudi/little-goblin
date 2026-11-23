@@ -115,8 +115,7 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		});
 		return current;
 	};
-	const ticker = every(tickMs, "mail watcher tick", scan);
-	void scan(); // boot catch-up: the cursor persisted, missed mail fires
+	const ticker = every(tickMs, "mail watcher tick", scan, { immediate: true }); // boot catch-up: the cursor persisted, missed mail fires
 	return {
 		tick: scan,
 		stop: () => {

@@ -63,6 +63,7 @@
 - **Subagent:** a child conversation that Goblin starts with the `agent` tool. It runs on Goblin's own runtime, with an agent type's prompt, model and tools (design/agents.md).
 - **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
 - **Temp skill:** a fetched, one-turn skill copy from a GitHub URL. It is injection-scored, never installed, and never a catalog entry.
+- **Timer guard:** `src/timers.test.ts`. It fails on any raw `setTimeout`, `setInterval` or `Bun.sleep` call in `src/` outside `timing.ts`, so that every wait goes through the one module that owns waiting, cancelling and deadlines. For example, a `Bun.sleep(50)` left in `src/agent/codex/auth.ts` fails it.
 - **Turn:** one model run from an admitted trigger, including its tool calls and reply.
 - **Turn script:** an engine-neutral list of scripted model calls (reply, hold, fail) that a test queues to drive turns through the real Runtime. One adapter per engine renders it: `sdkScript` (AI SDK) and `claudeScript` (Claude Code). See `src/testkit/turn-script.ts`.
 - **Unlanded turn:** a turn whose reply never landed — terminal error, fence, or process death. Its completed steps and the reply as streamed reach history as one system event; a journaled live turn stopped or failed before any output still records its outcome (design/runtime-turn.md → Unlanded-turn progress).

@@ -30,8 +30,12 @@ Policy stays in its module: retry counts and backoff, the buffer's
 one-flush-per-key rule, model fallback after a zero-effect failure.
 
 **Consequences.** [`timers.test.ts`](../../src/timers.test.ts) fails on any
-raw `setTimeout`/`setInterval` call in `src/` outside `timing.ts`, with no
-allowlist. The last modules moved in #830; each kept its own policy, and a
-site whose timer aborts with its own reason or may wait 0 ms uses `after`,
-not `deadline` or `sleep`. `every` arrived with the first `setInterval`
-user, the wake dispatcher's ticker.
+raw `setTimeout`/`setInterval`/`Bun.sleep` call in `src/` outside `timing.ts`,
+with no allowlist (#830; `Bun.sleep` joined the pattern in #900). The last
+modules moved in #830; each kept its own policy, and a site whose timer
+aborts with its own reason or may wait 0 ms uses `after`, not `deadline` or
+`sleep`: `Bun.sleep(0)` yields a timer turn first, `sleep(0)` resolves at
+once. A `sleep` is one `setTimeout`: a wait of 2^31 ms or more fires at
+once, so a caller that takes its delay from outside bounds it first (the
+codex login poll caps its server-advised interval, #900). `every` arrived
+with the first `setInterval` user, the wake dispatcher's ticker.

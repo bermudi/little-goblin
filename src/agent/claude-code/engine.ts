@@ -1156,7 +1156,7 @@ function wireFromBlock(
 			run.toolNameById.set(id, name);
 			run.pendingToolUse.set(id, { name, input });
 			head.onToolCall(name, input);
-			recorder.toolInput(id, name, input, { journal: false });
+			recorder.toolInput(id, name, input);
 			run.parts.push({
 				type: `tool-${name}` as never,
 				toolCallId: id,

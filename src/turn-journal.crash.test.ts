@@ -60,11 +60,15 @@ function probeRunStatuses(db: Database): string[] {
 	}
 }
 
-function spawn(mode: string, name: string): { child: Subprocess; dbPath: string; marker: string } {
+function spawn(
+	mode: string,
+	name: string,
+	script = "test-helpers/turn-crash-child.ts",
+): { child: Subprocess; dbPath: string; marker: string } {
 	const dbPath = join(dir, `${name}.sqlite`);
 	const marker = join(dir, `${name}.marker`);
 	const child = Bun.spawn(
-		["bun", "run", join(import.meta.dir, "test-helpers/turn-crash-child.ts")],
+		["bun", "run", join(import.meta.dir, script)],
 		{
 			env: { ...process.env, DB_PATH: dbPath, MARKER_PATH: marker, MODE: mode },
 			stdout: "ignore",
@@ -119,30 +123,45 @@ describe("turn journal — a real killed process", () => {
 		}
 	}, 60_000);
 
-	test("kill with a call never dispatched: the row stays 'planned'", async () => {
-		// plan-only's execute-less call is journaled at the chunk seam
-		// but nothing can ever dispatch it.
-		const { child, dbPath, marker } = spawn("plan-only", "planned");
-		const probe = new Database(dbPath);
-		try {
-			await until(child, () => probeCallState(probe).includes("planned"), "planned row in child");
-		} finally {
-			probe.close();
+	test("kill with a call never dispatched: both lanes retain the same 'planned' row and notice", async () => {
+		for (const lane of [
+			{ name: "api", script: "test-helpers/turn-crash-child.ts", mode: "plan-only" },
+			{ name: "claude", script: "test-helpers/turn-crash-child-claude.ts", mode: "" },
+		]) {
+			const { child, dbPath, marker } = spawn(
+				lane.mode,
+				`planned-${lane.name}`,
+				lane.script,
+			);
+			const probe = new Database(dbPath);
+			try {
+				await until(child, () => probeCallState(probe).includes("planned"), `${lane.name} planned row`);
+			} finally {
+				probe.close();
+			}
+			const { store, journal } = await killAndReopen(child, dbPath);
+			try {
+				const runs = journal.interrupted();
+				expect(runs).toHaveLength(1);
+				expect(runs[0]!.status).toBe("interrupted");
+				expect(runs[0]!.calls).toEqual({
+					planned: 1,
+					dispatched: 0,
+					completed: 0,
+					failed: 0,
+					resolved: 0,
+				});
+				const calls = journal.callsFor(runs[0]!.runId);
+				expect(calls).toHaveLength(1);
+				expect(calls[0]!.name).toBe("declared");
+				expect(calls[0]!.state).toBe("planned");
+				expect(calls[0]!.beganMs).toBeNull();
+				expect(calls[0]!.settledMs).toBeNull();
+			} finally {
+				store.close();
+			}
+			expect(existsSync(marker)).toBe(false);
 		}
-		const { store, journal } = await killAndReopen(child, dbPath);
-		try {
-			const runs = journal.interrupted();
-			expect(runs).toHaveLength(1);
-			const calls = journal.callsFor(runs[0]!.runId);
-			expect(calls).toHaveLength(1);
-			expect(calls[0]!.state).toBe("planned");
-			expect(calls[0]!.beganMs).toBeNull();
-			expect(calls[0]!.settledMs).toBeNull();
-		} finally {
-			store.close();
-		}
-		// the tool has no execute — it could not have been entered.
-		expect(existsSync(marker)).toBe(false);
 	}, 60_000);
 
 	test("kill after the result lands: call stays 'completed'", async () => {

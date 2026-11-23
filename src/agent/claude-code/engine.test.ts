@@ -35,10 +35,14 @@ import { createToolBridge, type ToolBridge } from "./tools.ts";
 // pin that the engine makes the calls a resume would replay.
 function recordingJournal() {
 	const inputs: Array<{ callId: string; name: string; args: unknown }> = [];
+	const errors: Array<{ runId: string; callId: string; error: unknown }> = [];
 	const checkpoints: unknown[] = [];
 	const journal = {
 		noteToolInput: (_runId: string, callId: string, name: string, args: unknown) => {
 			inputs.push({ callId, name, args });
+		},
+		noteToolError: (runId: string, callId: string, error: unknown) => {
+			errors.push({ runId, callId, error });
 		},
 	} as unknown as TurnJournal;
 	// The engines checkpoint through the saveStep seam (#195), never the
@@ -46,7 +50,7 @@ function recordingJournal() {
 	const saveStep = (patch: unknown): void => {
 		checkpoints.push(patch);
 	};
-	return { journal, inputs, checkpoints, saveStep };
+	return { journal, inputs, errors, checkpoints, saveStep };
 }
 
 const fakeAuth: AuthStore = {
@@ -643,7 +647,7 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 		expect(toolPart).toMatchObject({ state: "output-error" });
 	});
 
-	test("the journal writes no stale planned rows and records checkpoint partials", async () => {
+	test("the journal records tool plans and checkpoint partials", async () => {
 		const { outcome, rec } = await run(
 			(getBridge) => [
 				{
@@ -657,12 +661,40 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 			{ tools: echoTools() },
 		);
 		expect(outcome.kind).toBe("ok");
-		expect(rec.inputs).toEqual([]);
+		expect(rec.inputs).toHaveLength(1);
+		expect(rec.inputs[0]).toMatchObject({
+			name: "echo",
+			args: { message: "journaled" },
+		});
 		expect(rec.checkpoints.length).toBeGreaterThanOrEqual(2);
 		const last = rec.checkpoints.at(-1) as { partial?: PromptMessage[] };
 		const partial = last.partial ?? [];
 		// assistant(tool-call) → tool(result) → assistant(text), in order.
 		expect(partial.map((m) => m.role)).toEqual(["assistant", "tool", "assistant"]);
+	});
+
+	test("a bridge-rejected call settles its planned journal row as failed", async () => {
+		const { outcome, rec } = await run(
+			(getBridge) => [
+				{
+					kind: "tool",
+					name: "echo",
+					input: { message: 42 },
+					run: () => getBridge()!.invoke("echo", { message: 42 }),
+				},
+				{ kind: "text", text: "recovered" },
+			],
+			{ tools: echoTools() },
+		);
+		expect(outcome.kind).toBe("ok");
+		expect(rec.inputs).toHaveLength(1);
+		expect(rec.errors).toHaveLength(1);
+		expect(rec.errors[0]!.runId).toBe("run-claude-1");
+		expect(rec.errors[0]!.callId).toBe(rec.inputs[0]!.callId);
+		expect(rec.errors[0]!.error).toMatchObject({
+			name: "Error",
+			message: expect.stringContaining("invalid arguments for echo"),
+		});
 	});
 });
 

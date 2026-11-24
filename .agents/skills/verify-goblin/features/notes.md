@@ -6,12 +6,13 @@ Create a note, edit its title, list it.
 
 ## How to get to it (user POV)
 
-Sidebar → Notes → New note.
+Goblin panel → Library → All notes → New note. On a phone, open a chat first: the avatar in its header (`Goblin`) opens the panel.
 
 ## Driving it with agent-browser
 
 ```sh
-ab click 'button[aria-label="Notes"]'
+ab find role tab click --name 'Library'
+ab find role button click --name 'All notes'
 ab find role button click --name 'New note'
 ab fill '[aria-label="Note title"]' 'verify note'
 ab press Tab

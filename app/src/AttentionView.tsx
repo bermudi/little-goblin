@@ -265,7 +265,7 @@ export function AttentionView({
 		else onConversation(target.conversationId);
 	};
 	const reloadAll = async () => {
-		await Promise.all([approvals.refresh(), skills.refresh(), attention.refresh()]);
+		await Promise.all([approvals.refresh(), skills.refresh()]);
 	};
 
 	const isBroken = (i: AppAttentionItem) => i.kind === "memory-blocked" && i.memory !== undefined;

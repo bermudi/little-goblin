@@ -120,6 +120,7 @@ describe("DelegationsView", () => {
 				?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event),
 		);
 		expect(calls).toContain("POST /api/app/delegations/3/stop");
+		expect(calls).toContain("GET /api/app/attention");
 		expect(container.querySelectorAll(".deleg-now").length).toBe(0);
 		expect(container.textContent).toContain("stopped");
 	});

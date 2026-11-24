@@ -5,7 +5,7 @@ import { type CSSProperties, useState } from "react";
 import { stopDelegation } from "./api.ts";
 import { useConfirm } from "./confirm.tsx";
 import { describe, ts } from "./opsShared.tsx";
-import { useLive } from "./useLive.tsx";
+import { useLive, useLiveStore } from "./useLive.tsx";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
 
 const PAGE = 15;
@@ -196,7 +196,8 @@ export function DelegationsView({
 	token: string | null;
 	onOpenConversation?: ((id: string) => void) | undefined;
 }) {
-	const { data, error, refresh } = useLive("delegations");
+	const store = useLiveStore();
+	const { data, error } = useLive("delegations");
 	const [openId, setOpenId] = useState<number | null>(null);
 	const [shown, setShown] = useState(PAGE);
 	// Stop warnings outlive the row's move to Earlier: "stopped" with notes
@@ -205,7 +206,7 @@ export function DelegationsView({
 	const onStopped = (name: string, notes: string[]) => {
 		setWarn(notes.length > 0 ? { name, notes } : null);
 		setOpenId(null);
-		void refresh();
+		void store.refresh("delegations", "attention");
 	};
 	if (data === null)
 		return (

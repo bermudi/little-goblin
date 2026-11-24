@@ -112,7 +112,7 @@ export function ProgramsView({
 				<Tile n={late} label="late" warn={late > 0} />
 			</div>
 			<h2 className="ops-h2">Pending approvals ({waiting})</h2>
-			<ApprovalsPanel token={token} approvals={approvals} onChanged={reload} />
+			<ApprovalsPanel token={token} approvals={approvals} />
 			<h2 className="ops-h2">Programs ({data.programs.length})</h2>
 			{data.programs.length === 0 ? (
 				<p className="empty">No programs defined.</p>

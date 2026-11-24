@@ -1681,6 +1681,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								setStagedSkills={setStagedSkills}
 								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
+								onSendAccepted={() => void acted("conversations")}
 								onOpenNote={openNote}
 								onBranched={(id) => {
 									void acted("conversations");
@@ -1764,12 +1765,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							noteProjectId={null}
 							rolling
 							onSeeded={() => {}}
+							onSendAccepted={() => void acted("conversations")}
 							onRollingAccepted={(id, _rolled, messageId) => {
 								if (id === rollingId) return;
 								setRollingViewing(null);
 								setRollingRouted(id);
 								setRollingFollow({ conversationId: id, messageId });
-								void acted("conversations");
 							}}
 							followAfter={
 								rollingFollow?.conversationId === rollingId

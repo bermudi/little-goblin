@@ -10,7 +10,7 @@ import type {
 import { decideMailApproval, decideProgramApproval } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { describe } from "./opsShared.tsx";
-import { useLive } from "./useLive.tsx";
+import { useLive, useLiveStore } from "./useLive.tsx";
 
 export interface ApprovalState {
 	data: AppApprovalsResponse | null;
@@ -20,12 +20,13 @@ export interface ApprovalState {
 }
 
 export function useApprovals(): ApprovalState {
-	const { data, error, refresh } = useLive("approvals");
+	const store = useLiveStore();
+	const { data, error } = useLive("approvals");
 	return {
 		data,
 		err: error === null ? null : describe(error),
 		loading: data === null && error === null,
-		refresh,
+		refresh: () => store.refresh("approvals", "attention", "programs"),
 	};
 }
 
@@ -59,17 +60,12 @@ export function ApprovalCard({
 	);
 }
 
-/** The pending list on the Programs page: cards in the wide layout (reason
- *  left, evidence right). The page owns the load, so its summary strip and
- *  this list read one answer; `onChanged` lets it reload what a decision moved. */
 export function ApprovalsPanel({
 	token,
 	approvals,
-	onChanged,
 }: {
 	token: string | null;
 	approvals: ApprovalState;
-	onChanged?(): void;
 }) {
 	if (approvals.loading) return <p className="empty">Loading approvals…</p>;
 	if (approvals.err !== null) return <p className="error">{approvals.err}</p>;
@@ -78,10 +74,6 @@ export function ApprovalsPanel({
 	if (programs.length === 0 && mail.length === 0) {
 		return <p className="empty">No pending approvals.</p>;
 	}
-	const onDone = async () => {
-		await approvals.refresh();
-		onChanged?.();
-	};
 	return (
 		<div className="approval-list ap-list">
 			{programs.map((proposal) => (
@@ -89,7 +81,7 @@ export function ApprovalsPanel({
 					key={`p${proposal.id}`}
 					token={token}
 					proposal={proposal}
-					onDone={onDone}
+					onDone={approvals.refresh}
 					layout="page"
 					serverTimeZone={approvals.data?.serverTimeZone ?? ""}
 				/>
@@ -99,7 +91,7 @@ export function ApprovalsPanel({
 					key={`m${draft.id}`}
 					token={token}
 					draft={draft}
-					onDone={onDone}
+					onDone={approvals.refresh}
 					layout="page"
 				/>
 			))}

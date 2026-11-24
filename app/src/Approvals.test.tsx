@@ -126,12 +126,17 @@ test("a granted hook URL stays on screen until the operator dismisses it", async
 
 test("a decision without a hook URL refreshes immediately", async () => {
 	let lists = 0;
+	const others: string[] = [];
 	globalThis.fetch = Object.assign(
 		async (input: string | URL | Request, init?: RequestInit) => {
 			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
 			if (url.pathname === "/api/app/approvals") {
 				lists++;
 				return Response.json({ programs: lists === 1 ? [PROPOSAL] : [], mail: [] });
+			}
+			if (url.pathname === "/api/app/attention" || url.pathname === "/api/app/programs") {
+				others.push(url.pathname);
+				return Response.json({ items: [], unavailable: [], programs: [] });
 			}
 			if (url.pathname === "/api/app/approvals/program/7" && init?.method === "POST") {
 				return Response.json({ status: "rejected", message: "Proposal rejected." });
@@ -147,6 +152,7 @@ test("a decision without a hook URL refreshes immediately", async () => {
 	await act(async () => reject?.click());
 	// Nothing one-time to protect — the row drops on the response.
 	expect(lists).toBe(2);
+	expect(others).toEqual(["/api/app/attention", "/api/app/programs"]);
 	expect(container.querySelector(".approval-card")).toBeNull();
 });
 

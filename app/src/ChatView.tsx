@@ -53,6 +53,7 @@ import type {
 } from "../../src/http/app-wire.ts";
 import { ResumeGate } from "./chat/resumeGate.ts";
 import { makeSseParser } from "./sse.ts";
+import { useLiveStoreOrNull } from "./useLive.tsx";
 import { useReplyRatings } from "./chat/useReplyRatings.ts";
 
 // ---------- the chat ----------
@@ -164,6 +165,7 @@ export function ChatView({
   setStagedSkills,
   noteProjectId,
   onSeeded,
+  onSendAccepted,
   onOpenNote,
   onBranched,
   rolling = false,
@@ -193,6 +195,7 @@ export function ChatView({
   // The conversation's project — a note-card "New note" binds to it.
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
+  onSendAccepted?: (() => void) | undefined;
   // Note chips + fenced note cards navigate to the note page in-app.
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch opened a new conversation — the host refreshes and opens it.
@@ -260,6 +263,7 @@ export function ChatView({
       setStagedSkills={setStagedSkills}
       noteProjectId={noteProjectId}
       onSeeded={onSeeded}
+      onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
       rolling={rolling}
@@ -291,6 +295,7 @@ function Chat({
   setStagedSkills,
   noteProjectId,
   onSeeded,
+  onSendAccepted,
   onOpenNote,
   onBranched,
   rolling = false,
@@ -321,6 +326,7 @@ function Chat({
   setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
+  onSendAccepted?: (() => void) | undefined;
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
@@ -633,6 +639,7 @@ function Chat({
         console.error("Couldn't resume stream", err),
       );
   };
+  const live = useLiveStoreOrNull();
   const onConversationEvent = useEffectEvent(
     (event: AppConversationEvent, firstState: boolean) => {
       const activeReader = gate.readerAttached;
@@ -657,6 +664,7 @@ function Chat({
         setSubmitPending(false);
         refreshTranscript();
         refreshPending();
+        if (live !== null && live.status() !== "live") void live.refresh("conversations");
       } else if (event.type === "rewound") {
         setMessages((current) => rewindTranscript(current, event));
         refreshTranscript();
@@ -703,6 +711,7 @@ function Chat({
       conversationId?: unknown;
       rolled?: unknown;
     };
+    onSendAccepted?.();
     if (rolling && typeof result.conversationId === "string" && postedMessageId !== undefined)
       onRollingAccepted?.(result.conversationId, result.rolled === true, postedMessageId);
     return result;

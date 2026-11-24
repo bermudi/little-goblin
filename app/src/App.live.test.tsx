@@ -63,6 +63,7 @@ describe("app live feed", () => {
 	let phone: boolean;
 	let failArchive: boolean;
 	let parentRunning: boolean;
+	let chatEvents: ReadableStreamDefaultController<Uint8Array> | null;
 	const realFetch = globalThis.fetch;
 
 	const bodies = new Map<string, unknown>();
@@ -121,6 +122,7 @@ describe("app live feed", () => {
 		phone = false;
 		failArchive = false;
 		parentRunning = false;
+		chatEvents = null;
 		bodies.clear();
 		versions.clear();
 		requests.length = 0;
@@ -180,6 +182,7 @@ describe("app live feed", () => {
 						new Response(
 							new ReadableStream({
 								start(controller) {
+									chatEvents = controller;
 									if (parentRunning)
 									controller.enqueue(
 										new TextEncoder().encode('data: {"type":"state","live":true}\n\n'),
@@ -214,6 +217,8 @@ describe("app live feed", () => {
 					}),
 				);
 			}
+			if (path === "/api/app/chat" && method === "POST")
+				return Promise.resolve(Response.json({ submitted: true }, { status: 202 }));
 			if (path === "/api/app/projects" && method === "POST") {
 				const body = JSON.parse(String(init?.body ?? "{}")) as { name: string };
 				return Promise.resolve(Response.json(projectFixture(body.name)));
@@ -284,6 +289,29 @@ describe("app live feed", () => {
 		await click(container.querySelector('[role="toolbar"] button[aria-label="Archive"]'));
 		await waitFor(() => rowErrorText().includes("Couldn't archive"), "the row error");
 	};
+	const send = async (text: string) => {
+		const box = container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+		await act(async () => {
+			box.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				box,
+				text,
+			);
+			box.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			box.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "o" }) as unknown as Event,
+			);
+		});
+		await act(async () => {
+			container.querySelector("form.composer")!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+	};
+	const turnEnds = () =>
+		act(async () => {
+			chatEvents!.enqueue(new TextEncoder().encode('data: {"type":"turn-end"}\n\n'));
+		});
 	const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 	const mount = async () => {
@@ -781,4 +809,34 @@ describe("app live feed", () => {
 		await waitFor(() => requestsTo("/api/app/conversations") > before, "the branch refresh");
 		expect(rowErrorText()).not.toContain("Couldn't archive");
 	});
+
+	test(
+		"C10: a send and the end of its turn reach the rail while the feed is down",
+		async () => {
+			const list = (preview: string) => convList([conv("one", "first chat", { preview })]);
+			await mount();
+			await emit({ conversations: "v1" });
+			await click(rows().find((r) => r.getAttribute("href") === "/app/c/one"));
+			await waitFor(() => chatEvents !== null, "the chat open");
+			const live = requestsTo("/api/app/conversations");
+			await turnEnds();
+			await pause(50);
+			expect(requestsTo("/api/app/conversations")).toBe(live);
+
+			await archiveFails();
+			closeFeed();
+			await waitFor(() => container.querySelector(".live-lost") !== null, "the lost line");
+			bump("/api/app/conversations", list("sent from here"));
+			await send("hello");
+			await waitFor(() => rowText().includes("sent from here"), "the send in the rail");
+			expect(rowErrorText()).not.toContain("Couldn't archive");
+
+			await archiveFails();
+			bump("/api/app/conversations", list("the end of the reply"));
+			await turnEnds();
+			await waitFor(() => rowText().includes("the end of the reply"), "the reply in the rail");
+			expect(rowErrorText()).toContain("Couldn't archive");
+		},
+		20000,
+	);
 });

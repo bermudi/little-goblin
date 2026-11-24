@@ -68,12 +68,17 @@ function diskServer(
 	skills: string,
 	proposed: string,
 	posts: { name: string; action: string }[] = [],
+	attentionReads: number[] = [],
 ) {
 	const workspaceDir = join(home, "workspace");
 	globalThis.fetch = Object.assign(
 		async (input: string | URL | Request, init?: RequestInit) => {
 			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
 			if (url.pathname === "/api/app/skills") return Response.json(listSkills(skills, proposed));
+			if (url.pathname === "/api/app/attention") {
+				attentionReads.push(listSkills(skills, proposed).proposed.length);
+				return Response.json({ items: [], unavailable: [] });
+			}
 			if (url.pathname === "/api/app/skills/file") {
 				const origin = url.searchParams.get("origin");
 				if (origin !== "skills" && origin !== "proposed")
@@ -177,11 +182,13 @@ test("Install update puts the proposed files on disk and the proposal leaves the
 	writeSkill(skills, "weather", "Old.", "live body");
 	writeSkill(proposed, "weather", "New.", "updated body", ["extra.md", "added"]);
 	const posts: { name: string; action: string }[] = [];
-	diskServer(skills, proposed, posts);
+	const attentionReads: number[] = [];
+	diskServer(skills, proposed, posts, attentionReads);
 	root = createRoot(container);
 	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 	await act(async () => button(container, "Install update")?.click());
 	expect(posts).toEqual([{ name: "weather", action: "install" }]);
+	expect(attentionReads).toEqual([0]);
 	expect(readFileSync(join(skills, "weather/SKILL.md"), "utf8")).toContain("updated body");
 	expect(readFileSync(join(skills, "weather/extra.md"), "utf8")).toBe("added");
 	expect(container.querySelector(".skill-proposal")).toBeNull();

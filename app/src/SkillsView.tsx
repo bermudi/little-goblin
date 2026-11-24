@@ -19,7 +19,7 @@ import type {
 import { decideSkill, getSkillFile } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { bytes, describe, KV, ts } from "./opsShared.tsx";
-import { useLive } from "./useLive.tsx";
+import { useLive, useLiveStore } from "./useLive.tsx";
 
 function plural(n: number, one: string): string {
 	return `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -330,7 +330,8 @@ function SkillDetail({
 }
 
 export function SkillsView({ token }: { token: string | null }) {
-	const { data, error, refresh } = useLive("skills");
+	const store = useLiveStore();
+	const { data, error } = useLive("skills");
 	const [openName, setOpenName] = useState<string | null>(null);
 	if (data === null)
 		return (
@@ -370,7 +371,12 @@ export function SkillsView({ token }: { token: string | null }) {
 			) : (
 				<div className="skill-proposals">
 					{d.proposed.map((p) => (
-						<ProposalCard key={p.name} proposal={p} token={token} onDecided={() => void refresh()} />
+						<ProposalCard
+							key={p.name}
+							proposal={p}
+							token={token}
+							onDecided={() => void store.refresh("skills", "attention")}
+						/>
 					))}
 				</div>
 			)}

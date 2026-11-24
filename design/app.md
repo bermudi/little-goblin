@@ -711,14 +711,18 @@ channel addresses.
 
 ## App navigation (ruling 2026-11-21, #862, operator pick)
 
-> **Amended (operator, 2026-11-24, not built):** the app opens in the Rolling
-> chat and New chat becomes a smaller button; old chats stay
-> ([decision](decisions/one-assistant.md), #919).
-
 Goblin is someone you message. The chat is the main surface, and one panel
 shows Goblin itself. This replaces the glyph gutter and thumb bar of
 2026-10-24: thirteen equal glyphs made the app read as an operations
 console.
+
+**Start** (operator ruling 2026-11-24,
+[decision](decisions/one-assistant.md), #919). The app opens in the Rolling
+chat, at its newest roll. New chat is a small button, and old chats stay. This
+is for a fresh open of `/app/`, on a desktop and on a phone, and the URL becomes
+`/app/rolling`. A link or a notification opens its own page. A reload of the
+chats screen or of New chat stays there: its history entry already carries the
+app's tag.
 
 **Desktop.** No glyph gutter. Three columns:
 - Left list: a search field and New chat on top; then the Rolling chat,
@@ -755,10 +759,10 @@ console.
   Status, Memory, Skills and Log pages under one header that links them.
 - No Computer tab until the app can show desktops (#863).
 
-**Phone.** No tab bar and no More sheet. The chats screen is home. Goblin's
-avatar, in the chats bar and in a chat's header, opens the Goblin panel as a
-bottom sheet. Every other page has a back control to the chats screen. The
-Telegram door keeps its drawer: its two pages don't warrant more.
+**Phone.** No tab bar and no More sheet. The chats screen is one back step
+from every page, the Rolling chat included. Goblin's avatar, in the chats bar
+and in a chat's header, opens the Goblin panel as a bottom sheet. The Telegram
+door keeps its drawer: its two pages don't warrant more.
 
 **Data.** The panel's lists are live topics: attention, delegations,
 programs and activity refetch when `/api/app/live` announces their version

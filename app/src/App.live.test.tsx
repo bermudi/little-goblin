@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import type { AppConversationSummary } from "../../src/conversation-read.ts";
 import { App } from "./App.tsx";
-import { openDesktopPage } from "./testkit.ts";
+import { LIST_ENTRY, openDesktopPage } from "./testkit.ts";
 
 const conv = (
 	id: string,
@@ -115,6 +115,7 @@ describe("app live feed", () => {
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;

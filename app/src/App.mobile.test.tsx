@@ -17,7 +17,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
-import { clickConfirm, confirmSheet, confirmText, goblinFeedResponse } from "./testkit.ts";
+import { LIST_ENTRY, clickConfirm, confirmSheet, confirmText, goblinFeedResponse } from "./testkit.ts";
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -89,6 +89,7 @@ describe("mobile: chats screen and navigation", () => {
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -794,7 +795,7 @@ describe("mobile: chats screen and navigation", () => {
 			root?.unmount();
 			root = null;
 			container.replaceChildren();
-			win.history.replaceState(null, "", "/app/");
+			win.history.replaceState(LIST_ENTRY, "", "/app/");
 		});
 		await openRolling();
 		await typeDraft("keep open draft");

@@ -20,6 +20,7 @@ import {
 	confirmSheet,
 	confirmText,
 	type DesktopPage,
+	LIST_ENTRY,
 	goblinFeedResponse,
 	openDesktopPage,
 } from "./testkit.ts";
@@ -104,6 +105,7 @@ describe("navigation races: late completions", () => {
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;

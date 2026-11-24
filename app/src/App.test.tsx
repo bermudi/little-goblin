@@ -27,6 +27,7 @@ import {
 	confirmSheet,
 	confirmText,
 	type DesktopPage,
+	LIST_ENTRY,
 	emitLiveVersions,
 	goblinFeedResponse,
 	openDesktopPage,
@@ -102,6 +103,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 
 	beforeEach(() => {
 		win = new Window();
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -296,6 +298,7 @@ describe("rail row actions and the pinned pool", () => {
 
 	beforeEach(() => {
 		win = new Window();
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -649,6 +652,7 @@ describe("rename editor with the AI button", () => {
 
 	beforeEach(() => {
 		win = new Window();
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -1831,7 +1835,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	});
 
 	test("a create resolving after navigation to dirty Settings is dropped — no silent close", async () => {
-		win.history.replaceState(null, "", "/app/");
+		win.history.replaceState(LIST_ENTRY, "", "/app/");
 		let releaseCreate!: () => void;
 		createGate = new Promise<void>((r) => (releaseCreate = r));
 		root = createRoot(container);
@@ -1863,7 +1867,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	});
 
 	test("a start fenced by navigation hands the composer its input back", async () => {
-		win.history.replaceState(null, "", "/app/");
+		win.history.replaceState(LIST_ENTRY, "", "/app/");
 		let releaseCreate!: () => void;
 		createGate = new Promise<void>((r) => (releaseCreate = r));
 		root = createRoot(container);
@@ -2476,6 +2480,7 @@ describe("app projects surface", () => {
 	beforeEach(() => {
 		// A real URL — history.pushState can't leave about:blank.
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -5415,6 +5420,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 
 	beforeEach(() => {
 		win = new Window();
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -5635,6 +5641,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -5854,6 +5861,7 @@ describe("chat width selector", () => {
 
 	beforeEach(() => {
 		win = new Window();
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;

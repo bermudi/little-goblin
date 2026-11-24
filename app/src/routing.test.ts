@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pathOfRoute, routeFromPath, sameRoute, type Route } from "./routing.ts";
+import { openingRoute, pathOfRoute, routeFromPath, sameRoute, type Route } from "./routing.ts";
 
 describe("route conversion", () => {
 	test.each([
@@ -26,6 +26,16 @@ describe("route conversion", () => {
 	test("rolling chat is a PWA-only page", () => {
 		expect(routeFromPath("/app/rolling")).toEqual({ kind: "page", page: "rolling" });
 		expect(routeFromPath("/t/rolling")).toEqual({ kind: "home", composing: false });
+	});
+
+	test.each([
+		["/app/", null, { kind: "page", page: "rolling" }],
+		["/app/nope", { other: 1 }, { kind: "page", page: "rolling" }],
+		["/app/", { goblinIndex: 0, goblinSegment: "a" }, { kind: "home", composing: false }],
+		["/app/settings", null, { kind: "page", page: "settings" }],
+		["/app/c/abc", null, { kind: "home", composing: false }],
+	] as const)("opens %s with history %j as %j", (path, state, route) => {
+		expect(openingRoute(path, state)).toEqual(route);
 	});
 
 	test("conversation and window ids include their channel prefix", () => {

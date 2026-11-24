@@ -66,6 +66,7 @@ import {
 	browserNavigation,
 	historyPosition,
 	newHistorySegment,
+	openingRoute,
 	pathOfRoute,
 	routeFromPath,
 	sameRoute,
@@ -298,12 +299,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
 	const deepApplied = useRef(false);
-	const [route, setRoute] = useState<Route>(() => {
-		const initialRoute = routeFromPath(window.location.pathname);
-		return initialRoute.kind === "conversation"
-			? { kind: "home", composing: false }
-			: initialRoute;
-	});
+	const [route, setRoute] = useState<Route>(() =>
+		openingRoute(window.location.pathname, window.history.state)
+	);
 	// Async completions and dirty guards must read the mounted route, not
 	// the route where their callback was created.
 	const routeRef = useRef(route);
@@ -432,6 +430,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		setRoute(next);
 		if (path !== mountedPath) pushRoute(path);
 	};
+
+	useEffect(() => {
+		if (
+			routeRef.current.kind === "page" &&
+			routeFromPath(window.location.pathname).kind === "home"
+		)
+			window.history.replaceState(window.history.state, "", pathOfRoute(routeRef.current));
+	}, []);
 
 	useEffect(() => {
 		if (navigation !== null) return;

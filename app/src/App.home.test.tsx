@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { AppAttentionItem, AppConversationList } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
-import { emitLiveVersions, goblinFeedResponse, goblinLive } from "./testkit.ts";
+import { LIST_ENTRY, emitLiveVersions, goblinFeedResponse, goblinLive } from "./testkit.ts";
 
 type Conv = AppConversationList["conversations"][number];
 
@@ -214,8 +214,8 @@ describe("home screen", () => {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 	};
-	const open = async (path: string) => {
-		win.history.replaceState(null, "", path);
+	const open = async (path: string, entry: typeof LIST_ENTRY | null = LIST_ENTRY) => {
+		win.history.replaceState(entry, "", path);
 		root = createRoot(container);
 		await act(async () => root?.render(<App />));
 		await waitFor(
@@ -477,5 +477,49 @@ describe("home screen", () => {
 		await click('.conv[data-mark="needs"] a[href="/app/programs"]');
 		expect(win.location.pathname).toBe("/app/programs");
 		expect(posts).toEqual([]);
+	});
+
+	for (const width of ["desktop", "phone"] as const) {
+		test(`T29: on a ${width} the app opens in the newest roll; the lists are one step away`, async () => {
+			phone = width === "phone";
+			chain = [conv("newest"), conv("older")];
+			conversations = [conv("one")];
+			await open("/app/", null);
+			expect(win.location.pathname).toBe("/app/rolling");
+			expect([...new Set(messageGets)]).toEqual(["newest"]);
+			expect(container.querySelector("main > header .header-title")?.textContent).toBe("Rolling chat");
+			if (phone) {
+				expect(container.querySelector(".chatlist-screen")).toBeNull();
+				await click(".mobile-back");
+				expect(win.location.pathname).toBe("/app/");
+				expect(container.querySelector(".chatlist-screen")).not.toBeNull();
+			}
+			expect(list().slice(0, 2)).toEqual(["Rolling chat", "# Projects"]);
+		});
+	}
+
+	test("T30: the app opens in the Rolling chat before the first roll exists", async () => {
+		await open("/app/", null);
+		expect(win.location.pathname).toBe("/app/rolling");
+		expect(container.querySelector("main")?.textContent).toContain("your rolling chat starts here");
+	});
+
+	test("T31: a link to a chat opens that chat, and a reload of the list stays on the list", async () => {
+		phone = true;
+		chain = [conv("newest")];
+		conversations = [conv("one")];
+		await open("/app/c/one", null);
+		expect(win.location.pathname).toBe("/app/c/one");
+		expect([...new Set(messageGets)]).toEqual(["one"]);
+		await click(".mobile-back");
+		expect(win.location.pathname).toBe("/app/");
+		await act(async () => root?.unmount());
+		goblinLive.feed = null;
+		root = createRoot(container);
+		await act(async () => root?.render(<App />));
+		await waitFor(() => goblinLive.feed !== null, "the reload");
+		await quiet();
+		expect(win.location.pathname).toBe("/app/");
+		expect(container.querySelector(".chatlist-screen")).not.toBeNull();
 	});
 });

@@ -84,7 +84,9 @@ Rulings:
   fencing applies. A program born in the bot DM pins the DM's rolling
   address (Telegram → Rolling DM, 2026-10-03): a fire within the gap
   joins the current conversation; past it, it starts a fresh one without
-  the follow-up check — a fire is self-contained, never a follow-up.
+  the follow-up check — a fire is self-contained, never a follow-up. A
+  program born in the app's Rolling chat fires into the newest roll and
+  never starts one ([wakes](app.md#rolling-chat-ruling-2026-11-21-840)).
 - **Management is the `program` tool** — zod-validated, one tool, not a
   CLI: state mutation belongs behind validation and logging. Firing
   turns may use it too (a program retiring itself when its charter says

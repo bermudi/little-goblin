@@ -1,7 +1,7 @@
 // Channel destinations are canonical conversation addresses, not
 // transport coordinates. A Telegram target is its durable address (the
 // rolling DM pins dm:<chat>, never one concrete row); an app target is
-// the conversation id it replies into.
+// a conversation id.
 
 import type { Conversation } from "./conversation-read.ts";
 import { appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";

@@ -255,8 +255,8 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		}
 		const claimed = wakes.commit(
 			rec.wakeId,
-			({ id, text }) =>
-				store.append(conv.id, [{ id, role: "user", parts: [{ type: "text", text }] }]),
+			({ id, text, conversationId }) =>
+				store.append(conversationId, [{ id, role: "user", parts: [{ type: "text", text }] }]),
 		);
 		submitGuarded(claimed);
 	}

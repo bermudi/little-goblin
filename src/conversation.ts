@@ -21,7 +21,7 @@ import { makeConversationCompaction } from "./conversation-compaction.ts";
 import { makeConversationDelete } from "./conversation-delete.ts";
 import { makeConversationFork } from "./conversation-fork.ts";
 import { makeConversationRolling } from "./conversation-rolling.ts";
-import { makeConversationAppRolling } from "./conversation-app-rolling.ts";
+import { makeAppRollDestination, makeConversationAppRolling } from "./conversation-app-rolling.ts";
 import { type MessageEdit, makeConversationTranscript } from "./conversation-transcript.ts";
 import { prepareConversationQueries, type Row } from "./conversation-queries.ts";
 import { ensureConversationSchema } from "./conversation-schema.ts";
@@ -106,6 +106,7 @@ export interface ConversationStore extends ConversationReads {
 	rollApp(config: Config): Conversation;
 	appRollChain(limit: number): AppConversationSummary[];
 	isAppRoll(id: string): boolean;
+	appRollDestination(id: string): string;
 	// Atomically select the predecessor and reset the quiet-gap clock;
 	// null = no state change. No history replays; the caller owns logs
 	// and pending input.
@@ -347,6 +348,7 @@ export function openStore(dbPath: string): ConversationStore {
 		(id, config) => resolveConversation(appAddress(id), paths.workspace(), config),
 		summarizeAppConversation,
 	);
+	const appRollDestination = makeAppRollDestination(db);
 
 	const lastAppEventCache = new Map<
 		string,
@@ -384,6 +386,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 		...rolling,
 		...appRolling,
+		appRollDestination,
 
 		lastActivityAt(id) {
 			const conv = qGet.get(id);

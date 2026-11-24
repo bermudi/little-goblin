@@ -97,6 +97,7 @@ const memoryItem = (error: string, count: number): AppAttentionResponse["items"]
 	title: `Memory can't save ${count} exchanges`,
 	detail: error,
 	createdAt: "2026-10-01T00:00:00.000Z",
+	conversationId: null,
 	target: { kind: "page", page: "memory" },
 	memory: {
 		error,
@@ -242,6 +243,7 @@ test("a program approval shows its changes open and approves from the card", asy
 					title: "Program update — garden-care",
 					detail: "needs approval",
 					createdAt: "2026-11-05T00:00:00.000Z",
+					conversationId: null,
 					target: { kind: "page", page: "programs" },
 				},
 			],
@@ -316,6 +318,7 @@ test("other items keep an Open action", async () => {
 					title: "Delegation needs input — worker",
 					detail: "finish the report",
 					createdAt: "2026-11-05T00:00:00.000Z",
+					conversationId: "app/chat-01",
 					target: { kind: "conversation", conversationId: "app/chat-01" },
 				},
 			],

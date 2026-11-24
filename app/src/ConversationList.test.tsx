@@ -28,6 +28,8 @@ const conv: AppConversationList["conversations"][number] & { parentId: string | 
 	pinnedAt: null,
 	projectId: null,
 	parentId: null,
+	newReply: null,
+	busy: false,
 };
 
 let win: Window | null = null;

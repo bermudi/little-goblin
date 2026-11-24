@@ -32,6 +32,8 @@ const roll = (id: string, preview = id): AppConversationList["rolling"]["chain"]
 	pinnedAt: null,
 	projectId: null,
 	parentId: null,
+	newReply: null,
+	busy: false,
 });
 
 const SETTINGS = parseConfig({
@@ -118,6 +120,8 @@ describe("mobile: chats screen and navigation", () => {
 				pinnedAt: "2026-10-23T00:00:00Z",
 				projectId: null,
 				parentId: null,
+				newReply: null,
+				busy: false,
 			},
 			{
 				id: "app/second",
@@ -129,6 +133,8 @@ describe("mobile: chats screen and navigation", () => {
 				pinnedAt: null,
 				projectId: null,
 				parentId: null,
+				newReply: null,
+				busy: false,
 			},
 		];
 		installGlobal("window", win);
@@ -336,6 +342,8 @@ describe("mobile: chats screen and navigation", () => {
 					pinnedAt: null,
 					projectId: null,
 					parentId: null,
+					newReply: null,
+					busy: false,
 				};
 				rollingHistories.set(reply.conversationId, [
 					...(rollingHistories.get(reply.conversationId) ?? []),
@@ -485,6 +493,7 @@ describe("mobile: chats screen and navigation", () => {
 		title: `Review ${id}`,
 		detail: "Evidence",
 		createdAt: "2026-11-20T00:00:00.000Z",
+		conversationId: null,
 		target: { kind: "page", page: "programs" },
 	});
 

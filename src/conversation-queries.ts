@@ -47,6 +47,9 @@ export const HISTORY_CAUSAL_SQL = `SELECT seq, anchor_seq, role, data, created_a
 // Causal-last event of one role — ORDER BY the causal key, not seq:
 // a late answer (high seq, early anchor) is causally earlier.
 export const LAST_BY_ROLE_SQL = `SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND role = ? ORDER BY ${CAUSAL_KEY_SQL} DESC, seq DESC LIMIT 1`;
+export const NEW_REPLY_SEQ_SQL = `(SELECT e.seq FROM events e WHERE e.conversation_id = conversations.id
+	AND e.role = 'assistant' AND e.seq > conversations.read_seq
+	AND conversations.agent_type IS NULL ORDER BY e.seq DESC LIMIT 1)`;
 // A branch's copy source: the causal prefix, cut exactly where the
 // compaction cut reads — a late answer to an earlier question rides
 // with its question, never past the branch point. Ordered by seq (the
@@ -330,12 +333,14 @@ export function prepareConversationQueries(db: Database) {
 			project_id: string | null;
 			parent_conversation_id: string | null;
 			last_event_id: number | null;
+			new_reply: number | null;
 		},
 		[]
 	>(
 		`SELECT id, title, created_at, archived_at, pinned_at, project_id, parent_conversation_id,
 			(SELECT e.id FROM events e WHERE e.conversation_id = conversations.id
-				ORDER BY e.seq DESC LIMIT 1) AS last_event_id
+				ORDER BY e.seq DESC LIMIT 1) AS last_event_id,
+			${NEW_REPLY_SEQ_SQL} AS new_reply
 			FROM conversations
 			WHERE id LIKE 'app/%' AND NOT EXISTS (
 				SELECT 1 FROM app_rolls WHERE app_rolls.conversation_id = conversations.id
@@ -384,6 +389,9 @@ export function prepareConversationQueries(db: Database) {
 	>(
 		`SELECT id, seq, role, data, created_at FROM events
 			WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1`,
+	);
+	const qNewReply = db.query<{ new_reply: number | null }, [string]>(
+		`SELECT ${NEW_REPLY_SEQ_SQL} AS new_reply FROM conversations WHERE id = ?`,
 	);
 	// deleteConversation's sweep — children before the row (the FK
 	// demands it); the events delete fires the FTS trigger per row.
@@ -477,6 +485,7 @@ export function prepareConversationQueries(db: Database) {
 		qInsertAppRoll,
 		qProjectConvs,
 		qLastAppEvent,
+		qNewReply,
 		qDeleteEvents,
 		qDeleteCompactions,
 		qDeleteContexts,

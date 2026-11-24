@@ -1285,6 +1285,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				pinnedAt: null,
 				projectId: null,
 				parentId: null,
+				newReply: null,
+				busy: false,
 			},
 		];
 	};
@@ -1547,6 +1549,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			pinnedAt: null,
 			projectId: null,
 			parentId: null,
+			newReply: null,
+			busy: false,
 		});
 		await mount();
 		await click(container.querySelector(".rail-archived"));
@@ -2431,6 +2435,8 @@ describe("app projects surface", () => {
 		pinnedAt: null,
 		projectId: null,
 		parentId: null,
+		newReply: null,
+		busy: false,
 		...over,
 	});
 
@@ -5361,6 +5367,7 @@ describe("app projects surface", () => {
 				title: `Delegation needs input — worker ${n}`,
 				detail: "finish the report",
 				createdAt: "2026-11-05T00:00:00.000Z",
+				conversationId: "app/fixture",
 				target: { kind: "conversation", conversationId: "app/fixture" },
 			}),
 		);
@@ -5542,6 +5549,8 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 							pinnedAt: null,
 							projectId: null,
 							parentId: null,
+							newReply: null,
+							busy: false,
 						},
 					],
 					rolling: { chain: [] },
@@ -5597,6 +5606,8 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		pinnedAt: null,
 		projectId: null,
 		parentId: null,
+		newReply: null,
+		busy: false,
 	};
 	const noteRow: AppNoteSummary = {
 		id: "n-shopping",
@@ -5615,6 +5626,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		title: "Delegation needs input — worker",
 		detail: "finish the report",
 		createdAt: "2026-11-05T00:00:00.000Z",
+		conversationId: "app/fixture",
 		target: { kind: "conversation", conversationId: "app/fixture" },
 	};
 

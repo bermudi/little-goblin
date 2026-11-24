@@ -105,6 +105,12 @@ export function makeConversationFork<TConversation>(
 					e.memory_eligible,
 				);
 			}
+			db.run(
+				`UPDATE conversations SET read_seq = COALESCE(
+					(SELECT MAX(seq) FROM events WHERE conversation_id = conversations.id), 0
+				) WHERE id = ?`,
+				[id],
+			);
 			// Only the latest pointer copies — it alone steers the model
 			// view — and its eligibility with it: the fork's memory-bound
 			// view must match the source's. A branch drops a pointer whose

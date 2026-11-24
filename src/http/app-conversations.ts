@@ -44,6 +44,9 @@ import type {
 	AppConversationBranch,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationListItem,
+	AppConversationReadRequest,
+	AppConversationReadResponse,
 	AppConversationMemoryResponse,
 	AppConversationMemoryView,
 	AppConversationPatch,
@@ -181,6 +184,10 @@ function segmentsOf(
 
 const memoryBody = z.object({ memoryExcluded: z.boolean() }).strict();
 
+const readBody: z.ZodType<AppConversationReadRequest> = z
+	.object({ seq: z.number().int().positive() })
+	.strict();
+
 const replyRatingBody = z.object({
 	messageId: z.string().min(1).max(200),
 	rating: z.enum(["up", "down"]),
@@ -270,10 +277,21 @@ export function titleDigest(history: readonly Message[]): string {
 	return [`Opening message: ${clip(first)}`, ...recent.map((t) => `Later: ${clip(t)}`)].join("\n\n");
 }
 
-export function conversationListBody(deps: Pick<AppChannelDeps, "store">): AppConversationList {
+export function conversationListBody(
+	deps: Pick<AppChannelDeps, "store" | "runtime">,
+): AppConversationList {
+	const busy = new Set(deps.runtime.busyConversations());
 	return {
-		conversations: deps.store.listAppConversations(),
-		rolling: { chain: deps.store.appRollChain(50) },
+		conversations: deps.store.listAppConversations().map((conversation): AppConversationListItem => ({
+			...conversation,
+			busy: busy.has(conversation.id),
+		})),
+		rolling: {
+			chain: deps.store.appRollChain(50).map((conversation): AppConversationListItem => ({
+				...conversation,
+				busy: busy.has(conversation.id),
+			})),
+		},
 	};
 }
 
@@ -284,6 +302,41 @@ export async function handleConversationsRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
+
+	const readMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/read$/);
+	if (readMatch) {
+		const convId = conversationFromSegment(readMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = readBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const moved = store.markRead(convId.id, parsed.data.seq);
+		const body: AppConversationReadResponse = { ok: true };
+		if (moved) {
+			log.info("app conversation marked read", { conversation: convId.id, seq: parsed.data.seq });
+		} else {
+			log.debug("app conversation already read", { conversation: convId.id, seq: parsed.data.seq });
+		}
+		return Response.json(body, { headers: NO_STORE });
+	}
 
 	if (path === "/api/app/conversations") {
 		if (req.method === "GET") {

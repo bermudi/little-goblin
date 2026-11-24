@@ -446,6 +446,8 @@ describe("project page layout (#171)", () => {
 		pinnedAt: null,
 		projectId: project.id,
 		parentId: null,
+		newReply: null,
+		busy: false,
 		...over,
 	});
 	const view = (over: Partial<AppProject> = {}, convs: Summary[] = []) => {

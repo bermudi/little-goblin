@@ -13,7 +13,7 @@ const realFetch = globalThis.fetch;
 const target: AppAttentionItem["target"] = { kind: "page", page: "programs" };
 const item: AppAttentionItem = {
 	id: "one", kind: "program-approval", title: "Review program", detail: "Evidence",
-	createdAt: "2026-11-20T00:00:00.000Z", target,
+	createdAt: "2026-11-20T00:00:00.000Z", conversationId: null, target,
 };
 const baseData = (working: number, attention: AppAttentionItem[] = []) => ({
 	attention, attentionError: false, delegations: [], programs: [], activity: { busy: [], otherBusy: 0, posts: [] },

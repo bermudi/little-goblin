@@ -20,6 +20,7 @@ import {
 	type AppLiveVersions,
 } from "./app-live-topics.ts";
 import { APP_TOKEN_NAME, APP_TOKEN_VALUE, setup } from "./app-testing.ts";
+import type { AppConversationList } from "./app-wire.ts";
 import type { AppLive } from "./live-version.ts";
 
 interface EventReader {
@@ -463,6 +464,7 @@ describe("app live feed", () => {
 		const { http, call, runtime } = setup({ token: APP_TOKEN_NAME, scriptedModel: script, liveSweepMs: 60_000 });
 		try {
 			await postJson(call, "/api/app/conversations", { id: "live-busy" });
+			await postJson(call, "/api/app/conversations", { id: "live-idle" });
 			const { reader, events, pump } = await liveStream(call);
 			const first = events[0]!.versions;
 			const gate = deferred();
@@ -484,7 +486,19 @@ describe("app live feed", () => {
 				() => runtime.busyConversations().includes("app/live-busy"),
 				"busy lane open",
 			);
+			const busyList = await call("/api/app/conversations");
+			const busyRows = ((await busyList.json()) as AppConversationList).conversations;
+			expect(Object.fromEntries(busyRows.map((row) => [row.id, row.busy]))).toEqual({
+				"app/live-busy": true,
+				"app/live-idle": false,
+			});
+			await moved(events, fromActivity, "conversations", first.conversations, "busy list moved");
 			await moved(events, fromActivity, "activity", first.activity, "activity moved busy");
+			expect(events.slice(fromActivity).some(
+				(event) =>
+					event.versions.conversations !== first.conversations &&
+					event.versions.activity !== first.activity,
+			)).toBe(true);
 			gate.resolve();
 			await waitUntil(
 				() => !runtime.busyConversations().includes("app/live-busy"),
@@ -496,6 +510,32 @@ describe("app live feed", () => {
 					events.at(-1)!.versions.activity === first.activity,
 				"activity moved back",
 			);
+			const settledList = await call("/api/app/conversations");
+			expect(
+				((await settledList.json()) as AppConversationList).conversations.find(
+					(row) => row.id === "app/live-busy",
+				),
+			).toMatchObject({ busy: false, newReply: 2 });
+			await reader.cancel();
+			await pump;
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("marking a chat read moves only the conversations topic", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME, liveSweepMs: 60_000 });
+		try {
+			const chat = store.resolve(appAddress("live-read"), "/w");
+			store.append(chat.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }] }]);
+			const { reader, events, pump } = await liveStream(call);
+			const first = events[0]!.versions;
+			const from = events.length;
+			expect((await postJson(call, "/api/app/conversations/live-read/read", { seq: 1 })).status).toBe(200);
+			await moved(events, from, "conversations", first.conversations, "read mark announced");
+			await sleep(100);
+			const { conversations: _, ...others } = first;
+			for (const event of events.slice(from)) expect(event.versions).toMatchObject(others);
 			await reader.cancel();
 			await pump;
 		} finally {

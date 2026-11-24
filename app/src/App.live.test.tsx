@@ -21,11 +21,12 @@ const conv = (
 	pinnedAt: null,
 	projectId: null,
 	parentId: null,
+	newReply: null,
 	...over,
 });
 
 const convList = (rows: AppConversationSummary[]): AppConversationList => ({
-	conversations: rows,
+	conversations: rows.map((row) => ({ ...row, busy: false })),
 	rolling: { chain: [] },
 });
 
@@ -519,6 +520,7 @@ describe("app live feed", () => {
 					title: "Delegation needs input — worker",
 					detail: "finish the report",
 					createdAt: "2026-11-05T00:00:00.000Z",
+					conversationId: "app/one",
 					target: { kind: "conversation", conversationId: "app/one" },
 				},
 			],

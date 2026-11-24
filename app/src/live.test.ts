@@ -139,6 +139,8 @@ const list = (preview: string): AppConversationList => ({
 			pinnedAt: null,
 			projectId: null,
 			parentId: null,
+			newReply: null,
+			busy: false,
 		},
 	],
 	rolling: { chain: [] },

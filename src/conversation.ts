@@ -94,6 +94,7 @@ export interface ConversationStore extends ConversationReads {
 	// previous bank's client.
 	readonly memoryDestinations: MemoryDestinations;
 	setCompaction(id: string, compaction: CompactionWrite): void;
+	markRead(id: string, seq: number): boolean;
 	// Get-or-create. Private DMs route through rolling.ts — a legacy
 	// dm:<chat> row here is history, never current. (cwd is a legacy
 	// NOT NULL column: stamped, ignored.)
@@ -250,6 +251,7 @@ export function openStore(dbPath: string): ConversationStore {
 		qListApp,
 		qProjectConvs,
 		qLastAppEvent,
+		qNewReply,
 	} = queries;
 
 	const rolling = makeConversationRolling(db, queries, toConversation);
@@ -334,6 +336,7 @@ export function openStore(dbPath: string): ConversationStore {
 			pinnedAt: row.pinned_at,
 			projectId: row.project_id,
 			parentId: row.parent_conversation_id,
+			newReply: qNewReply.get(id)?.new_reply ?? null,
 		};
 	}
 
@@ -584,6 +587,7 @@ export function openStore(dbPath: string): ConversationStore {
 					pinnedAt: r.pinned_at,
 					projectId: r.project_id,
 					parentId: r.parent_conversation_id,
+					newReply: r.new_reply,
 					activity: lastId ?? 0,
 				});
 			}
@@ -604,6 +608,17 @@ export function openStore(dbPath: string): ConversationStore {
 			const pinned = out.filter((r) => r.pinnedAt !== null);
 			return [...pinned, ...out.filter((r) => r.pinnedAt === null)].map(
 				({ activity: _activity, ...summary }) => summary,
+			);
+		},
+
+		markRead(id, seq) {
+			return (
+				db.run(
+					`UPDATE conversations SET read_seq = last.seq
+						FROM (SELECT MIN(?1, MAX(seq)) AS seq FROM events WHERE conversation_id = ?2) AS last
+						WHERE id = ?2 AND read_seq < last.seq`,
+					[seq, id],
+				).changes > 0
 			);
 		},
 

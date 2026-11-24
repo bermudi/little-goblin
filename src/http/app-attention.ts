@@ -2,6 +2,7 @@
 // the surface that can resolve them; this module records no second state.
 
 import { listProposedSkills, type ProposedSkillItem } from "../stateview.ts";
+import { appConversationOf } from "../targets.ts";
 import { conversationName } from "./operator-memory.ts";
 import { changesSummary, programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
@@ -69,6 +70,7 @@ export function attentionBody(
 								? `needs approval — ${changesSummary(programChanges(base, candidate))}`
 								: "standing-authority update needs approval",
 					createdAt: proposal.createdAt,
+					conversationId: appConversationOf(proposal.target),
 					page: "programs",
 				}),
 			);
@@ -84,6 +86,7 @@ export function attentionBody(
 							? `send outcome unresolved — check Gmail Sent — to ${draft.to.join(", ")}`
 							: `send approval — to ${draft.to.join(", ")}`,
 					createdAt: draft.createdAt,
+					conversationId: appConversationOf(draft.target),
 					page: "programs",
 				}),
 			);
@@ -109,6 +112,7 @@ export function attentionBody(
 					title: "Memory can't reach its service",
 					detail: `${queued} exchange${queued === 1 ? "" : "s"} queued locally, nothing lost — saves keep retrying on their own.`,
 					createdAt: new Date(outage.startedAt).toISOString(),
+					conversationId: null,
 					page: "memory",
 				}),
 			);
@@ -122,6 +126,7 @@ export function attentionBody(
 					detail:
 						"The last recall failed — turns run without long-term memory until one succeeds.",
 					createdAt: memory.lastRecallAt(),
+					conversationId: null,
 					page: "memory",
 				}),
 			);
@@ -141,6 +146,7 @@ export function attentionBody(
 								: `Memory can't save ${cause.count} exchanges`,
 						detail: cause.error ?? "Saving failed; no error was recorded.",
 						createdAt: cause.since,
+						conversationId: null,
 						page: "memory",
 						memory: {
 							error: cause.error,
@@ -177,6 +183,7 @@ export function attentionBody(
 							? `${counts.length === 0 ? "no file differs from the installed copy" : counts.join(", ")} — review the diff, then install or discard`
 							: `${skill.files.length} ${skill.files.length === 1 ? "file" : "files"} — review, then install or discard`,
 					createdAt: skill.updatedAt,
+					conversationId: null,
 					page: "skills",
 				}),
 			);
@@ -195,6 +202,7 @@ export function attentionBody(
 				title: `Delegation needs input — ${delegation.name}`,
 				detail: delegation.task,
 				createdAt: delegation.promptedAt,
+				conversationId: delegation.appConversation,
 				target:
 					delegation.appConversation === null
 						? { kind: "page", page: "delegations" }

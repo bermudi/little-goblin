@@ -20,9 +20,12 @@ B set viewport 1280 800; B open "$URL"
 A eval 'window.__mark = "not reloaded"'
 ```
 
+Both open in the Rolling chat.
+
 A chat from the other browser:
 
 ```sh
+B click 'button[aria-label="New chat"]'
 B fill '[aria-label="Message draft"]' 'made on the other device'
 B click 'button[aria-label="Send"]'
 A wait --text 'made on the other device'
@@ -37,7 +40,7 @@ B click 'button[aria-label="Send"]'
 A wait --text 'verify-reply: research the launch date'
 ```
 
-The child's row is indented under the parent's row, and `goblin.log` has `agent child spawned` with both ids.
+`B` has the parent open, so its row there has a closed "1 subagent" fold; open it to see the child's row. In `A` the fold shows only while the child runs or asks. `goblin.log` has `agent child spawned` with both ids.
 
 A rename and a child row, written by another process. Goblin's own stores do not see these writes, so the row proves that the server watches the database:
 
@@ -46,15 +49,18 @@ DB="$HOME_DIR/state/goblin.sqlite"
 CID=$(sqlite3 -readonly "$DB" 'select id from conversations where parent_conversation_id is null order by created_at desc limit 1')
 sqlite3 "$DB" "update conversations set title = 'renamed elsewhere' where id = '$CID'"
 A wait --text 'renamed elsewhere'
+A click "a[href='/app/c/${CID#app/}']"    # its fold shows while it is open
 sqlite3 "$DB" "insert into conversations (id, chat_id, title, cwd, created_at, parent_conversation_id, agent_type, memory_excluded)
   values ('app/11111111-2222-4333-8444-555555555555', 0, 'Research the launch date', '$HOME_DIR/workspace', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), '$CID', 'general', 1)"
+A wait --text '2 subagents'
+A find role button click --name '2 subagents'
 A wait --text 'Research the launch date'
 ```
 
 Busy state. The fake model streams `[slow]` for 16 seconds:
 
 ```sh
-B open "$URL"
+B click 'button[aria-label="New chat"]'
 B fill '[aria-label="Message draft"]' '[slow] count for me'
 B click 'button[aria-label="Send"]'
 A wait --text 'Working · 1 job'
@@ -74,7 +80,7 @@ A eval 'document.querySelectorAll(".live-lost").length'    # 0
 A eval 'window.__mark'                                     # not reloaded
 ```
 
-Proof: each text shows in `A` within about a second, `window.__mark` is still set at the end, the open chat's header in `B` shows the new title, and `goblin.log` has `app live attach` and `app live detach` for each browser and outage. Do it once more with `B` at 390 × 844: the phone shows the subagent row and the lost line too.
+Proof: each text shows in `A` within about a second, `window.__mark` is still set at the end, the open chat's header in `B` shows the new title, and `goblin.log` has `app live attach` and `app live detach` for each browser and outage. Do it once more with `B` at 390 × 844: the phone's chats screen shows the fold and the lost line too.
 
 A skill folder is outside the database, so the 10 s sweep finds it. A broken one must warn once:
 
@@ -93,6 +99,6 @@ rg -c 'skill catalog problem cleared' "$HOME_DIR/state/goblin.log"    # 1
 ## Gotchas
 
 "Nothing running." gives way to the newest posts once a post exists; then wait for "Idle" under Goblin's name.
-Once the Rolling chat has a preview, its row no longer reads "Goblin Always here". Use `a[href="/app/rolling"]`. On a phone the page also holds a hidden copy of the sidebar, so use `.chatlist-screen a[href="/app/rolling"]`.
+The Rolling chat's row reads "Always here" only until it has a message. Use `a[href="/app/rolling"]`. On a phone the page also holds a hidden copy of the sidebar, so use `.chatlist-screen a[href="/app/rolling"]`.
 
 `set offline on` tells the page that it is offline. A server that dies without notice is a different path: stop the server process and start it again on the same port and home.

@@ -149,6 +149,54 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("read route clears an unread reply, is idempotent, and validates the request", async () => {
+		const { http, call, store, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const chat = store.resolve(appAddress("read-route"), "/w");
+			store.append(chat.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }] }]);
+			const post = (body: string, method = "POST") =>
+				call(`/api/app/conversations/${encodeURIComponent("read-route")}/read`, {
+					method,
+					headers: { "content-type": "application/json" },
+					...(method === "POST" ? { body } : {}),
+				});
+			const marked = await post(JSON.stringify({ seq: 1 }));
+			expect(marked.status).toBe(200);
+			expect(await marked.json()).toEqual({ ok: true });
+			const list = await call("/api/app/conversations");
+			expect((await list.json() as { conversations: { newReply: number | null }[] }).conversations[0]?.newReply).toBeNull();
+			const version = list.headers.get("x-goblin-version");
+			expect((await post(JSON.stringify({ seq: 1 }))).status).toBe(200);
+			expect((await call("/api/app/conversations")).headers.get("x-goblin-version")).toBe(version);
+			expect((await post("", "GET")).status).toBe(405);
+			expect((await call("/api/app/conversations/missing/read", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ seq: 1 }),
+			})).status).toBe(404);
+			for (const body of ["{}", '{"seq":0}', '{"seq":-1}', '{"seq":1.5}', '{"seq":"1"}', '{"seq":1,"extra":true}']) {
+				expect((await post(body)).status).toBe(422);
+			}
+			expect((await post("{")).status).toBe(400);
+			store.deleteConversation(chat.id);
+			expect((await post(JSON.stringify({ seq: 1 }))).status).toBe(404);
+			const rolling = store.rollApp(configRef.current);
+			store.append(rolling.id, [{ id: "roll-reply", role: "assistant", parts: [{ type: "text", text: "roll" }] }]);
+			const rollRead = await call(
+				`/api/app/conversations/${encodeURIComponent(rolling.id.slice("app/".length))}/read`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ seq: 1 }),
+				},
+			);
+			expect(rollRead.status).toBe(200);
+			expect(store.appRollChain(1)[0]?.newReply).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("list keeps ordinary chats separate from the newest-first rolling chain", async () => {
 		const { http, call, store, configRef } = setup({ token: APP_TOKEN_NAME });
 		try {

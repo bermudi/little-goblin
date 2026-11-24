@@ -2,8 +2,9 @@
 
 ## How to get to it
 
-Open the PWA Chats list. "Rolling chat" is the first row, above projects and
-ordinary chats. Open it and send a message.
+The app opens in it, at the newest roll. "Rolling chat" is also the first row
+of the list, above Active. Its mark is that of any of its rolls, and it opens
+the roll that has the mark ([home.md](home.md)).
 
 ## Driving it
 

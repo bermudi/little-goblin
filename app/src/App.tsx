@@ -18,6 +18,7 @@ import type {
 	AppNote,
 	AppNoteSummary,
 	AppProject,
+	AppAttentionTarget,
 } from "../../src/http/app-wire.ts";
 import { ArchiveView } from "./ArchiveView.tsx";
 import { ActivityView } from "./ActivityView.tsx";
@@ -44,18 +45,15 @@ import { conversationActions } from "./conversationActions.ts";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { loadProjectsOpen, saveProjectsOpen } from "./railFolders.ts";
-import {
-	ConversationNav,
-	ConversationHierarchy,
-	ConversationRow,
-	RollingRow,
-	relTime,
-} from "./ConversationList.tsx";
+import { ConversationRow, relTime } from "./ConversationList.tsx";
+import { HomeList, type RenderRow, useHomeList } from "./HomeList.tsx";
+import { useMarkRead } from "./useMarkRead.ts";
+import { useFlip } from "./useFlip.ts";
+import { GoblinFace } from "./GoblinFace.tsx";
 import { flatLine, flatTitle } from "./flatText.ts";
 import { DelegationsView } from "./DelegationsView.tsx";
 import {
 	ChevronDownGlyph,
-	NewProjectGlyph,
 } from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
@@ -68,6 +66,7 @@ import {
 	browserNavigation,
 	historyPosition,
 	newHistorySegment,
+	openingRoute,
 	pathOfRoute,
 	routeFromPath,
 	sameRoute,
@@ -194,6 +193,7 @@ function LiveLost() {
 function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: () => void }) {
 	const phone = usePhoneWidth();
 	const live = useLiveStore();
+	const liveStatus = useLiveStatus();
 	const goblin = useGoblinActivity();
 	const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
 	const conversationsLive = useLive("conversations");
@@ -299,12 +299,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
 	const deepApplied = useRef(false);
-	const [route, setRoute] = useState<Route>(() => {
-		const initialRoute = routeFromPath(window.location.pathname);
-		return initialRoute.kind === "conversation"
-			? { kind: "home", composing: false }
-			: initialRoute;
-	});
+	const [route, setRoute] = useState<Route>(() =>
+		openingRoute(window.location.pathname, window.history.state)
+	);
 	// Async completions and dirty guards must read the mounted route, not
 	// the route where their callback was created.
 	const routeRef = useRef(route);
@@ -334,6 +331,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const windowConv = route.kind === "window" ? route.id : null;
 	const composeStaged = route.kind === "home" && route.composing;
 	const railCurrent = route.kind === "conversation" || route.kind === "window" ? route.id : null;
+	const openRoll = route.kind === "page" && route.page === "rolling" ? rollingId : null;
+	const seen = useMarkRead(token, current ?? openRoll);
 	const page: Page = route.kind === "home" || route.kind === "conversation"
 		? "chat"
 		: route.kind === "page" ? route.page : route.kind;
@@ -431,6 +430,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		setRoute(next);
 		if (path !== mountedPath) pushRoute(path);
 	};
+
+	useEffect(() => {
+		if (
+			routeRef.current.kind === "page" &&
+			routeFromPath(window.location.pathname).kind === "home"
+		)
+			window.history.replaceState(window.history.state, "", pathOfRoute(routeRef.current));
+	}, []);
 
 	useEffect(() => {
 		if (navigation !== null) return;
@@ -568,6 +575,25 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		return () => window.removeEventListener("beforeunload", onUnload);
 	}, [route]);
 
+	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
+	const unbound = all.filter((c) => (c.projectId ?? null) === null);
+	const projectList = projects ?? [];
+	const activeProjects = projectList
+		.filter((p) => p.archivedAt === null)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const home = useHomeList({
+		conversations: all,
+		chain: rollingChain,
+		projects: projectList.map(({ id, name, archivedAt }) => ({ id, name, archivedAt })),
+		attention: goblin.attention ?? [],
+		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
+		open: railCurrent,
+		openRoll,
+		seen,
+	}, activeProjects, projectsOpen);
+	const desktopFlipRef = useFlip(home.orderSignature);
+	const phoneFlipRef = useFlip(home.orderSignature);
+
 	// A dead token means 401s forever — offer a way back to the gate.
 	if (listError === "unauthorized") {
 		return (
@@ -700,6 +726,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const openConversation = (id: string) => {
 		void select(id);
 	};
+	const openAttentionTarget = (target: AppAttentionTarget) => {
+		if (target.kind === "page") void openPage(target.page);
+		else openConversation(target.conversationId);
+	};
 
 	const startChat = async (
 		projectId: string | null,
@@ -771,24 +801,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
-	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
-	const unbound = all.filter((c) => (c.projectId ?? null) === null);
-	const active = unbound.filter((c) => c.archivedAt === null);
-	const projectList = projects ?? [];
-	const activeProjects = projectList
-		.filter((p) => p.archivedAt === null)
-		.sort((a, b) => a.name.localeCompare(b.name));
-	const activeProjectIds = new Set(activeProjects.map((project) => project.id));
-	const pinnedRail = all.filter(
-		(c) =>
-			c.archivedAt === null &&
-			c.pinnedAt !== null &&
-			(c.projectId === null || c.projectId === undefined || activeProjectIds.has(c.projectId)),
-	);
-	const rail = [
-		...pinnedRail,
-		...active.filter((c) => c.pinnedAt === null),
-	];
 	const archived = unbound
 		.filter((c) => c.archivedAt !== null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
@@ -844,18 +856,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 
 	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
 
-	const renderRow = (
-		c: AppConversationList["conversations"][number],
-		orphaned = false,
-	) => {
-		const callbacks = rowActionCallbacks(c);
+	const renderRow: RenderRow = (conv, options) => {
+		const callbacks = rowActionCallbacks(conv);
 		return (
 			<ConversationRow
-				conv={c}
-				orphaned={orphaned}
-				projectName={c.projectId === null
-					? undefined
-					: projectList.find((project) => project.id === c.projectId)?.name}
+				conv={conv}
+				{...options}
 				current={railCurrent}
 				token={token}
 				moveTargets={activeProjects.map(({ id, name }) => ({ id, name }))}
@@ -876,77 +882,43 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			/>
 		);
 	};
-	const chatFolders = (
-		<>
-			<RollingRow
-				current={page === "rolling"}
-				preview={rollingCurrent?.preview ?? null}
-				updatedAt={rollingCurrent?.updatedAt ?? null}
-				working={goblin.working > 0}
-				onOpen={() => {
-					setRollingViewing(null);
-					setRollingRouted(null);
-					void openPage("rolling");
-				}}
-			/>
-			<li className="rail-project-head">
-				<button
-					type="button"
-					className="rail-section-toggle"
-					aria-expanded={projectsOpen}
-					onClick={() => setProjectsOpen(!projectsOpen)}
-				>
-					<svg
-						className="chev"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						strokeWidth="1.75"
-						strokeLinecap="round"
-						strokeLinejoin="round"
-						width="12"
-						height="12"
-						aria-hidden="true"
-					>
-						<path d="M9 6l6 6-6 6" />
-					</svg>
-					Projects
-				</button>
-				<button
-					type="button"
-					aria-label="New project"
-					onClick={() => setCreateProjectOpen(true)}
-				>
-					<NewProjectGlyph />
-				</button>
-			</li>
-			{projectsOpen && activeProjects.map((project) => (
-				<li
-					key={project.id}
-					className={`conv rail-project${currentFolderId === project.id ? " current" : ""}`}
-				>
-					<a
-						className="conv-main rail-project-main"
-						href={`/app/p/${project.id}`}
-						aria-current={currentFolderId === project.id ? "page" : undefined}
-						onClick={(event) => {
-							if (
-								event.metaKey || event.ctrlKey || event.shiftKey ||
-								event.altKey || event.button !== 0
-							) return;
-							event.preventDefault();
-							void openProject(project.id);
-						}}
-					>
-						<span className="conv-head">
-							<span className="conv-title">{project.name}</span>
-						</span>
-					</a>
-				</li>
-			))}
-			<li className="rail-chats-label">Chats</li>
-			<ConversationHierarchy conversations={rail} renderItem={renderRow} />
-		</>
+	const openRollingFromList = () => {
+		const target = home.list.rolling.target;
+		setRollingViewing(target === rollingChain[0]?.id ? null : target);
+		setRollingRouted(null);
+		void openPage("rolling");
+	};
+	const renderHomeList = (navRef: (node: HTMLElement | null) => void) => (
+		<HomeList
+			home={home}
+			projects={activeProjects}
+			projectsOpen={projectsOpen}
+			currentFolderId={currentFolderId}
+			rollingCurrent={page === "rolling"}
+			onToggleProjects={() => setProjectsOpen(!projectsOpen)}
+			onNewProject={() => setCreateProjectOpen(true)}
+			onOpenProject={(id) => void openProject(id)}
+			onOpenTarget={openAttentionTarget}
+			onOpenRolling={openRollingFromList}
+			renderRow={renderRow}
+			navRef={navRef}
+		/>
+	);
+	const renderGoblinFace = (destination: "panel" | "sheet") => (
+		<GoblinFace
+			working={goblin.working}
+			needs={goblin.attention?.length ?? null}
+			failed={goblin.attentionError}
+			{...(destination === "panel" ? { expanded: panelOpen } : {})}
+			onClick={() => {
+				if (destination === "sheet") {
+					setGoblinSheetOpen(true);
+					return;
+				}
+				setPanelOpen(!panelOpen);
+				savePanelOpen(!panelOpen);
+			}}
+		/>
 	);
 
 	// The search hits and the archived disclosure serve two hosts — the
@@ -1011,7 +983,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		</button>
 	);
 
-	const needsCount = goblin.attention?.length ?? 0;
 	const backFromWindow = () => {
 		if (windowConv === null) return;
 		void leaveDirty().then((ok) => {
@@ -1037,7 +1008,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	);
 
 	return (
-		<div className="shell">
+		<div className="shell" data-live={liveStatus === "lost" ? "lost" : undefined}>
 			{!railHidden && (
 				<nav className="rail app-rail" aria-label="Sidebar">
 					<div className="rail-top">
@@ -1073,7 +1044,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							searchBody
 						) : (
 							<>
-								<ConversationNav loop={false}>{chatFolders}</ConversationNav>
+								{renderHomeList(desktopFlipRef)}
 								{archivedRows}
 							</>
 						)}
@@ -1249,7 +1220,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
-					{page === "rolling" && <span className="header-title">Goblin</span>}
+					{page === "rolling" && <span className="header-title">Rolling chat</span>}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -1329,28 +1300,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 					{!phone && (page === "chat" || page === "rolling") && (
-						<button
-							type="button"
-							className="goblin-panel-toggle"
-							aria-label="Goblin panel"
-							aria-expanded={panelOpen}
-							onClick={() => {
-								setPanelOpen(!panelOpen);
-								savePanelOpen(!panelOpen);
-							}}
-						>
-							<GoblinAvatar size="sm" working={goblin.working > 0} />
-						</button>
+						renderGoblinFace("panel")
 					)}
 					{phone && !chatListMode && (page === "chat" || page === "rolling") && (
-						<button
-							type="button"
-							className="goblin-panel-toggle"
-							aria-label="Goblin"
-							onClick={() => setGoblinSheetOpen(true)}
-						>
-							<GoblinAvatar size="sm" working={goblin.working > 0} />
-						</button>
+						renderGoblinFace("sheet")
 					)}
 				</header>
 				{/* Mobile (M): the chats surface is a screen. Desktop never sees
@@ -1380,6 +1333,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									<path d="M12 5v14M5 12h14" />
 								</svg>
 							</button>
+							{renderGoblinFace("sheet")}
 						</div>
 						<input
 							className="rail-search chatlist-search"
@@ -1392,25 +1346,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							}}
 						/>
 						<LiveLost />
-						{(goblin.attentionError || needsCount > 0) && (
-							<button
-								type="button"
-								className="needs-banner"
-								onClick={() => setGoblinSheetOpen(true)}
-							>
-								{goblin.attentionError
-									? "Couldn't load what needs you"
-									: `${needsCount} ${needsCount === 1 ? "thing needs" : "things need"} you`}
-							</button>
-						)}
 						{searchBody}
 						{hits === null && (
 							<>
-								<ConversationNav loop={false}>
-									{chatFolders}
-								</ConversationNav>
+								{renderHomeList(phoneFlipRef)}
 								{archivedRows}
-								{conversations !== null && rail.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
+								{conversations !== null && home.list.active.length === 0 && home.list.chats.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
 									<p className="empty">Nothing here yet — start a conversation.</p>
 								)}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
@@ -1828,10 +1769,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						data={goblin}
 						notes={notes}
 						notesError={notesError}
-						onOpenTarget={(target) => {
-							if (target.kind === "page") void openPage(target.page);
-							else openConversation(target.conversationId);
-						}}
+						onOpenTarget={openAttentionTarget}
 						onOpenConversation={openConversation}
 						onOpenPage={openPage}
 						onOpenNote={openNote}
@@ -1856,8 +1794,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							notesError={notesError}
 							onOpenTarget={(target) => {
 								setGoblinSheetOpen(false);
-								if (target.kind === "page") void openPage(target.page);
-								else openConversation(target.conversationId);
+								openAttentionTarget(target);
 							}}
 							onOpenConversation={(id) => {
 								setGoblinSheetOpen(false);

@@ -106,6 +106,7 @@ export interface AppConversationSummary {
 	// Native subagents: non-null = a child conversation; the app can list
 	// it under its parent. Null after the parent's delete.
 	parentId: string | null;
+	newReply: number | null;
 }
 
 export interface ConversationReads {

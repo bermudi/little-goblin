@@ -32,6 +32,14 @@ export function routeFromPath(pathname: string): Route {
 	}
 }
 
+export function openingRoute(pathname: string, historyState: unknown): Route {
+	const route = routeFromPath(pathname);
+	if (route.kind === "conversation") return { kind: "home", composing: false };
+	if (route.kind === "home" && historyPosition(historyState) === null)
+		return { kind: "page", page: "rolling" };
+	return route;
+}
+
 export function pathOfRoute(route: Route): string {
 	switch (route.kind) {
 		case "home":

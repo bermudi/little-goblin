@@ -32,7 +32,7 @@ Chats pane:
 
 Open an unpinned chat from its project page. Open the chat title menu and
 choose Pin. The chat should appear at the top of Chats, with its project name
-beside the title. Unpinned project chats should remain on the project page,
+at the end of its second line. Unpinned project chats should remain on the project page,
 not in Chats.
 
 ## Driving it with agent-browser

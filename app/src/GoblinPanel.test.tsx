@@ -13,7 +13,7 @@ const realFetch = globalThis.fetch;
 const target: AppAttentionItem["target"] = { kind: "page", page: "programs" };
 const item: AppAttentionItem = {
 	id: "one", kind: "program-approval", title: "Review program", detail: "Evidence",
-	createdAt: "2026-11-20T00:00:00.000Z", target,
+	createdAt: "2026-11-20T00:00:00.000Z", conversationId: null, target,
 };
 const baseData = (working: number, attention: AppAttentionItem[] = []) => ({
 	attention, attentionError: false, delegations: [], programs: [], activity: { busy: [], otherBusy: 0, posts: [] },
@@ -120,7 +120,7 @@ test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", asy
 		),
 	);
 	const row = [...container.querySelectorAll("button.goblin-panel-row")].find((el) =>
-		el.textContent?.startsWith("Replying in the Goblin chat"),
+		el.textContent?.startsWith("Replying in the Rolling chat"),
 	);
 	expect(row).toBeDefined();
 	await act(async () =>

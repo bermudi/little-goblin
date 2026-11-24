@@ -125,6 +125,19 @@ export function ensureConversationSchema(db: Database): void {
 				memory_eligible INTEGER NOT NULL DEFAULT 0,
 				UNIQUE(conversation_id, seq)
 			)`);
+	if (!convCols.has("read_seq")) {
+		db.transaction(() => {
+			db.run("ALTER TABLE conversations ADD COLUMN read_seq INTEGER NOT NULL DEFAULT 0");
+			const stamped = db.run(
+				`UPDATE conversations SET read_seq = COALESCE(
+					(SELECT MAX(seq) FROM events WHERE conversation_id = conversations.id), 0
+				)`,
+			).changes;
+			log.info("conversation read marks stamped — prior replies historical", {
+				conversations: stamped,
+			});
+		})();
+	}
 	const eventCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(events)")

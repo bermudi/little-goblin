@@ -20,6 +20,7 @@ import {
 	confirmSheet,
 	confirmText,
 	type DesktopPage,
+	LIST_ENTRY,
 	goblinFeedResponse,
 	openDesktopPage,
 } from "./testkit.ts";
@@ -104,6 +105,7 @@ describe("navigation races: late completions", () => {
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -698,6 +700,8 @@ describe("navigation races: late completions", () => {
 			updatedAt: "2026-10-10T00:00:00Z",
 			projectId: null,
 			parentId: null,
+			newReply: null,
+			busy: false,
 			pinnedAt: null,
 			archivedAt: null,
 			preview: "",
@@ -746,6 +750,8 @@ describe("navigation races: late completions", () => {
 		updatedAt: "2026-10-10T00:00:00Z",
 		projectId: null,
 		parentId: null,
+		newReply: null,
+		busy: false,
 		pinnedAt: null,
 		archivedAt: null,
 		preview: "",

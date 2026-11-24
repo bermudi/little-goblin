@@ -95,13 +95,13 @@ describe("app attention", () => {
 			token: APP_TOKEN_NAME,
 			approvals: {
 				program: {
-					pending: () => [proposal],
+					pending: () => [proposal, { ...proposal, id: 8, target: "dm:99" }],
 					candidate: () => proposal.draft!,
 					base: () => null,
 					decide: async () => ({ kind: "refused", proposal, refusal: "gone" }),
 				},
 				mail: {
-					pending: () => [draft],
+					pending: () => [draft, { ...draft, id: 10, target: "topic:-100:3" }],
 					decide: async () => ({ kind: "gone" }),
 				},
 			},
@@ -142,6 +142,25 @@ describe("app attention", () => {
 							promptedAt: "2026-10-21T00:03:00.000Z",
 							promptPending: false,
 							createdAt: "2026-10-21T00:02:30.000Z",
+							finishedAt: null,
+						},
+						{
+							id: 4,
+							name: "worker without chat",
+							harness: "pi",
+							cwd: "/tmp",
+							task: "wait for a decision",
+							chatId: 0,
+							threadId: null,
+							appConversation: null,
+							agentName: "g1-worker-2",
+							workspaceId: "w2",
+							paneId: "w2:p1",
+							status: "needs_input" as const,
+							baselineSeq: null,
+							promptedAt: "2026-10-21T00:04:00.000Z",
+							promptPending: false,
+							createdAt: "2026-10-21T00:03:30.000Z",
 							finishedAt: null,
 						},
 					],
@@ -192,12 +211,29 @@ describe("app attention", () => {
 			expect(new Map(body.items.map((i) => [i.id, i.target]))).toEqual(
 				new Map([
 					["program-approval:7", { kind: "page", page: "programs" }],
+					["program-approval:8", { kind: "page", page: "programs" }],
 					["mail-approval:9", { kind: "page", page: "programs" }],
+					["mail-approval:10", { kind: "page", page: "programs" }],
 					["memory-blocked:HTTP 401", { kind: "page", page: "memory" }],
 					["memory-blocked:HTTP 500", { kind: "page", page: "memory" }],
 					["skill-proposal:radar", { kind: "page", page: "skills" }],
 					["skill-proposal:watcher", { kind: "page", page: "skills" }],
 					["delegation-input:3", { kind: "conversation", conversationId: "app/chat-01" }],
+					["delegation-input:4", { kind: "page", page: "delegations" }],
+				]),
+			);
+			expect(new Map(body.items.map((i) => [i.id, i.conversationId]))).toEqual(
+				new Map([
+					["program-approval:7", "app/chat-01"],
+					["program-approval:8", null],
+					["mail-approval:9", "app/chat-01"],
+					["mail-approval:10", null],
+					["memory-blocked:HTTP 401", null],
+					["memory-blocked:HTTP 500", null],
+					["skill-proposal:radar", null],
+					["skill-proposal:watcher", null],
+					["delegation-input:3", "app/chat-01"],
+					["delegation-input:4", null],
 				]),
 			);
 		} finally {

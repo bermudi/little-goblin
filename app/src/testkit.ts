@@ -21,6 +21,8 @@ export function clickConfirm(root: ParentNode, ok: boolean): void {
 	button.click();
 }
 
+export const LIST_ENTRY = { goblinIndex: 0, goblinSegment: "test" };
+
 const liveEncoder = new TextEncoder();
 
 export const goblinLive: {

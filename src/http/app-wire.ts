@@ -8,8 +8,20 @@ import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
 
 export interface AppConversationList {
-	conversations: AppConversationSummary[];
-	rolling: { chain: AppConversationSummary[] };
+	conversations: AppConversationListItem[];
+	rolling: { chain: AppConversationListItem[] };
+}
+
+export interface AppConversationListItem extends AppConversationSummary {
+	busy: boolean;
+}
+
+export interface AppConversationReadRequest {
+	seq: number;
+}
+
+export interface AppConversationReadResponse {
+	ok: true;
 }
 
 export interface AppConversationCreate {
@@ -540,6 +552,7 @@ export interface AppAttentionItem {
 	title: string;
 	detail: string;
 	createdAt: string | null;
+	conversationId: string | null;
 	target: AppAttentionTarget;
 	/** Only on `memory-blocked` items. */
 	memory?: AppAttentionMemoryCause;

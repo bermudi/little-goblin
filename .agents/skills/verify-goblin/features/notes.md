@@ -6,7 +6,7 @@ Create a note, edit its title, list it.
 
 ## How to get to it (user POV)
 
-Goblin panel → Library → All notes → New note. On a phone, open a chat first: the avatar in its header (`Goblin`) opens the panel.
+Goblin panel → Library → All notes → New note. On a phone, the avatar (`Goblin`) in the chats bar or in a chat's header opens the panel.
 
 ## Driving it with agent-browser
 

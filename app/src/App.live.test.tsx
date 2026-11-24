@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import type { AppConversationSummary } from "../../src/conversation-read.ts";
 import { App } from "./App.tsx";
-import { openDesktopPage } from "./testkit.ts";
+import { LIST_ENTRY, openDesktopPage } from "./testkit.ts";
 
 const conv = (
 	id: string,
@@ -21,11 +21,12 @@ const conv = (
 	pinnedAt: null,
 	projectId: null,
 	parentId: null,
+	newReply: null,
 	...over,
 });
 
 const convList = (rows: AppConversationSummary[]): AppConversationList => ({
-	conversations: rows,
+	conversations: rows.map((row) => ({ ...row, busy: false })),
 	rolling: { chain: [] },
 });
 
@@ -114,6 +115,7 @@ describe("app live feed", () => {
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/" });
+		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
@@ -379,7 +381,9 @@ describe("app live feed", () => {
 			]),
 		);
 		await announce("/api/app/conversations", "conversations");
-		await waitFor(() => rowText().includes("child worker"), "the child row");
+		await waitFor(() => container.querySelector(".home-kids button") !== null, "the folded child count");
+		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
+		await waitFor(() => rowText().includes("child worker"), "the expanded child row");
 		expect(container.querySelector('button[aria-label="Stop"]')).not.toBeNull();
 	});
 
@@ -519,6 +523,7 @@ describe("app live feed", () => {
 					title: "Delegation needs input — worker",
 					detail: "finish the report",
 					createdAt: "2026-11-05T00:00:00.000Z",
+					conversationId: "app/one",
 					target: { kind: "conversation", conversationId: "app/one" },
 				},
 			],
@@ -582,6 +587,7 @@ describe("app live feed", () => {
 
 			closeFeed();
 			await waitFor(() => container.querySelector(".live-lost") !== null, "the lost line");
+			expect(container.querySelector(".shell")?.getAttribute("data-live")).toBe("lost");
 			bump(
 				"/api/app/conversations",
 				convList([
@@ -612,6 +618,7 @@ describe("app live feed", () => {
 			await waitFor(() => feeds.length === 2, "the reconnect");
 			await emit({ conversations: "v1" });
 			await waitFor(() => container.querySelector(".live-lost") === null, "the line clears");
+			expect(container.querySelector(".shell")?.hasAttribute("data-live")).toBe(false);
 
 			await act(async () => root?.unmount());
 			root = null;

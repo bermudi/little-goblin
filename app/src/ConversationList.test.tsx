@@ -6,9 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { checkServer, mount } from "@ui-sdk/core/testing";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import {
-	ConversationHierarchy,
 	ConversationNav,
-	ConversationNavLink,
 	ConversationRow,
 	RollingRow,
 } from "./ConversationList.tsx";
@@ -28,6 +26,8 @@ const conv: AppConversationList["conversations"][number] & { parentId: string | 
 	pinnedAt: null,
 	projectId: null,
 	parentId: null,
+	newReply: null,
+	busy: false,
 };
 
 let win: Window | null = null;
@@ -141,16 +141,28 @@ test("conversation row keeps link navigation and exposes the row actions in a to
 test("rolling row is a plain PWA link with no conversation actions", () => {
 	const html = renderToStaticMarkup(
 		<ConversationNav loop={false}>
-			<RollingRow current working={false} preview="latest message" updatedAt={conv.updatedAt} onOpen={() => {}} />
+			<RollingRow
+				current
+				line="**latest** message"
+				updatedAt={conv.updatedAt}
+				mark={null}
+				onOpen={() => {}}
+			/>
 		</ConversationNav>,
 	);
 	expect(html).toContain('href="/app/rolling"');
 	expect(html).toContain('aria-current="page"');
-	expect(html).toContain("Goblin");
-	expect(html).toContain('src="/app/goblin-avatar.webp"');
-	expect(html).toContain("latest message");
+	expect(html).toContain("Rolling chat");
+	expect(html).toContain("<svg");
+	expect(html).not.toContain("goblin-avatar");
+	expect(html).toContain(">latest message<");
 	expect(html).not.toContain("toolbar");
 	expect(html).not.toContain("button");
+	expect(renderToStaticMarkup(
+		<ConversationNav loop={false}>
+			<RollingRow current={false} line="" updatedAt={null} mark={null} onOpen={() => {}} />
+		</ConversationNav>,
+	)).toContain(">Always here<");
 });
 
 test("the row toolbar has one tab stop and arrow keys move between its buttons", async () => {
@@ -218,61 +230,4 @@ test("the roving-focus primitive keeps one link tabbable and server-renders", as
 	} finally {
 		view.unmount();
 	}
-});
-
-test("conversation hierarchy nests children and grandchildren, and labels an orphan", () => {
-	const parent = { ...conv, id: "app/parent", title: "Parent" };
-	const child = { ...conv, id: "app/child", title: "Child", parentId: parent.id };
-	const grandchild = { ...conv, id: "app/grandchild", title: "Grandchild", parentId: child.id };
-	const orphan = { ...conv, id: "app/orphan", title: "Orphan", parentId: "app/missing" };
-	const html = renderToStaticMarkup(
-		<ConversationNav loop={false}>
-			<ConversationHierarchy
-				conversations={[parent, child, grandchild, orphan]}
-				renderItem={(item, isOrphan) => (
-					<ConversationNavLink id={item.id} href={`/${item.id}`}>
-						{item.title}
-						{isOrphan && <span>subagent</span>}
-					</ConversationNavLink>
-				)}
-			/>
-		</ConversationNav>,
-	);
-	expect(html.indexOf("Parent")).toBeLessThan(html.indexOf("Child"));
-	expect(html.indexOf("Child")).toBeLessThan(html.indexOf("Grandchild"));
-	expect(html).toContain('<ul class="conversation-children"><li><a');
-	expect(html).toContain("Orphan<span>subagent</span>");
-	expect(html.match(/href="\/app\/child"/)).toHaveLength(1);
-	expect(html.match(/href="\/app\/grandchild"/)).toHaveLength(1);
-	expect(html.match(/href="\/app\/orphan"/)).toHaveLength(1);
-});
-
-test("arrow navigation includes links inside nested conversation lists", async () => {
-	const parent = { ...conv, id: "app/parent", title: "Parent" };
-	const child = { ...conv, id: "app/child", title: "Child", parentId: parent.id };
-	renderRow();
-	await act(async () =>
-		root?.render(
-			<ConversationNav loop={false}>
-				<ConversationHierarchy
-					conversations={[parent, child]}
-					renderItem={(item) => (
-						<ConversationNavLink id={item.id} href={`/${item.id}`}>
-							{item.title}
-						</ConversationNavLink>
-					)}
-				/>
-			</ConversationNav>,
-		),
-	);
-	const links = [...container!.querySelectorAll<HTMLAnchorElement>("a")];
-	expect(links.map((link) => link.tabIndex)).toEqual([0, -1]);
-	links[0]!.focus();
-	await act(async () => {
-		links[0]!.dispatchEvent(
-			new win!.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }) as unknown as Event,
-		);
-	});
-	expect(win!.document.activeElement?.getAttribute("href")).toBe("/app/child");
-	expect(links.map((link) => link.tabIndex)).toEqual([-1, 0]);
 });

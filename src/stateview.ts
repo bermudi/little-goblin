@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { join, sep } from "node:path";
 import { loadCatalog, parseSkill, readHead } from "./agent/skills.ts";
-import { LEVELS, type LogLevel } from "./log.ts";
+import { LEVELS, type LogLevel, log } from "./log.ts";
 import { readSkillUsage } from "./skill-usage.ts";
 import { diffSkill, type SkillDiff } from "./skill-diff.ts";
 
@@ -89,11 +89,31 @@ export interface PickerSkillItem {
 	bodyBytes: number;
 }
 
+type CatalogProblems = Map<string, { msg: string; fields: Record<string, unknown> }>;
+
+const loggedProblems = new Map<string, CatalogProblems>();
+
+function logCatalogChanges(skillsDir: string, problems: CatalogProblems): void {
+	const before = loggedProblems.get(skillsDir);
+	for (const [key, { msg, fields }] of problems) {
+		if (before?.has(key) !== true) log.warn(msg, fields);
+	}
+	for (const [key, { msg, fields }] of before ?? []) {
+		if (!problems.has(key)) log.info("skill catalog problem cleared", { problem: msg, ...fields });
+	}
+	if (problems.size === 0) loggedProblems.delete(skillsDir);
+	else loggedProblems.set(skillsDir, problems);
+}
+
 // Catalog entries + a stat — the picker is the one skills surface that
 // must include manual-only entries (design/skills.md → Skill
 // invocation). Malformed dirs the catalog skipped simply don't appear.
 export function listPickerSkills(skillsDir: string): PickerSkillItem[] {
-	const catalog = loadCatalog(skillsDir);
+	const problems: CatalogProblems = new Map();
+	const catalog = loadCatalog(skillsDir, (msg, fields) => {
+		problems.set(JSON.stringify([msg, fields]), { msg, fields });
+	});
+	logCatalogChanges(skillsDir, problems);
 	const items: PickerSkillItem[] = [];
 	for (const e of catalog.entries) {
 		let bodyBytes: number;

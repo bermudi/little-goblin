@@ -8,6 +8,7 @@ import { openOutbox } from "../mail-outbox.ts";
 import { startProgramApproval } from "../program-approval.ts";
 import { openPrograms } from "../programs.ts";
 import { appAddress } from "../conversation-address.ts";
+import { setLogFile, setLogWriter } from "../log.ts";
 import { deferred, sleep, waitUntil } from "../testkit.ts";
 import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { openAppLive } from "./app-live.ts";
@@ -96,12 +97,12 @@ const skillOperator = (home: string) => ({
 	},
 });
 
-const writeSkill = (home: string) => {
+const writeSkill = (home: string, name = "live-skill") => {
 	const dir = join(home, "live-skills", "live-skill");
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, "SKILL.md"),
-		"---\nname: live-skill\ndescription: proves the sweep\n---\nbody\n",
+		`---\nname: ${name}\ndescription: proves the sweep\n---\nbody\n`,
 	);
 };
 
@@ -619,6 +620,38 @@ describe("app live feed", () => {
 			await back.reader.cancel();
 			await back.pump;
 		} finally {
+			http.stop();
+		}
+	});
+
+	test("a broken skill folder warns once, not on every sweep", async () => {
+		const { http, call, appDeps, posts, home } = setup({
+			token: APP_TOKEN_NAME,
+			liveSweepMs: 40,
+		});
+		appDeps.operator = skillOperator(home);
+		writeSkill(home, "another-name");
+		let sweeps = 0;
+		appDeps.posts = {
+			recent: (limit, before) => {
+				sweeps += 1;
+				return posts.recent(limit, before);
+			},
+		};
+		let warnings = 0;
+		setLogFile(join(home, "live-sweep.log"));
+		setLogWriter((_path, line) => {
+			if (line.includes('"skill skipped"')) warnings += 1;
+		});
+		try {
+			const { reader, pump } = await liveStream(call);
+			await waitUntil(() => sweeps >= 4, "several sweeps");
+			expect(warnings).toBe(1);
+			await reader.cancel();
+			await pump;
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
 			http.stop();
 		}
 	});

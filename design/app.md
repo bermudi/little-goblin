@@ -794,7 +794,9 @@ its own body.
   conversation, so an open app still gets its notifications.
 - **A topic that cannot be read** gets an `error:` version, with one warning
   when it starts and one line when it recovers. The other topics still
-  announce. The client re-reads it and shows the GET's own error.
+  announce. The client re-reads it and shows the GET's own error. A skill
+  folder with a problem follows the same rule: the sweep reads it every 10 s,
+  so `listPickerSkills` logs when a problem starts and when it ends.
 - **Cost, measured.** 1000 chats, 500 delegations with 5 KB briefs, 200
   notes and 50 skills: 25 ms for one read after a change, at most twice a
   second. `listAppConversations` keeps each chat's preview until its last

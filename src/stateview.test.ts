@@ -228,6 +228,37 @@ describe("listPickerSkills", () => {
 		expect(byName.get("secret")?.manualOnly).toBe(true);
 	});
 
+	test("a catalog problem logs once when it starts and once when it ends", () => {
+		const lines: { level: string; msg: string; reason?: string }[] = [];
+		setLogFile(join(home, "test.log"));
+		setLogWriter((_path, line) => lines.push(JSON.parse(line) as (typeof lines)[number]));
+		const list = () => listPickerSkills(join(home, "skills"));
+		const said = () => lines.splice(0).map((l) => `${l.level} ${l.msg}: ${l.reason}`);
+		try {
+			writeRel("skills/broken/SKILL.md", "---\nname: other\ndescription: b\n---\nx");
+			list();
+			expect(said()).toEqual([
+				'warn skill skipped: name "other" does not match directory "broken"',
+			]);
+			list();
+			list();
+			expect(said()).toEqual([]);
+			writeRel("skills/broken/SKILL.md", "---\nname: broken\ndescription: b\n---\nx");
+			list();
+			expect(said()).toEqual([
+				'info skill catalog problem cleared: name "other" does not match directory "broken"',
+			]);
+			list();
+			expect(said()).toEqual([]);
+			writeRel("skills/broken/SKILL.md", "---\nname: other\ndescription: b\n---\nx");
+			list();
+			expect(said()).toHaveLength(1);
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+	});
+
 	// The race between the catalog scan and the picker's per-row stat
 	// can't interpose inside a synchronous call — except through the
 	// catalog's own post-scan signal: past MAX_ENTRIES it warns "skill

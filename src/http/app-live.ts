@@ -52,10 +52,9 @@ export function openAppLive(
 
 	const listeners = new Set<(versions: AppLiveVersions) => void>();
 	const failing = new Set<AppLiveTopic>();
-	let versions: AppLiveVersions | null = null;
-	let timer: Timer | undefined;
+	let versions = {} as AppLiveVersions;
+	let timers: Timer[] = [];
 	let lastStamp = "";
-	let lastSweep = 0;
 
 	const stamp = (): string =>
 		`${qDataVersion.get()?.data_version ?? 0}:${qTotalChanges.get()?.n ?? 0}:${deps.runtime.busyConversations().join()}`;
@@ -75,7 +74,7 @@ export function openAppLive(
 	};
 
 	const read = (topics: readonly AppLiveTopic[]): AppLiveVersions => {
-		const next = { ...(versions ?? ({} as AppLiveVersions)) };
+		const next = { ...versions };
 		for (const topic of topics) next[topic] = readTopic(topic);
 		return next;
 	};
@@ -83,7 +82,7 @@ export function openAppLive(
 	const publish = (next: AppLiveVersions) => {
 		const prev = versions;
 		versions = next;
-		if (prev !== null && APP_LIVE_TOPICS.every((t) => prev[t] === next[t])) return;
+		if (APP_LIVE_TOPICS.every((t) => prev[t] === next[t])) return;
 		for (const listener of listeners) {
 			try {
 				listener(next);
@@ -94,32 +93,27 @@ export function openAppLive(
 	};
 
 	const tick = () => {
-		const sweep = Date.now() - lastSweep >= sweepMs;
-		const nowStamp = stamp();
-		if (!sweep && nowStamp === lastStamp) return;
-		lastStamp = nowStamp;
-		if (sweep) lastSweep = Date.now();
-		publish(read(sweep ? APP_LIVE_TOPICS : FAST_TOPICS));
-	};
-
-	const freshen = () => {
 		const nowStamp = stamp();
 		if (nowStamp === lastStamp) return;
 		lastStamp = nowStamp;
 		publish(read(FAST_TOPICS));
 	};
 
+	const sweep = () => {
+		lastStamp = stamp();
+		publish(read(APP_LIVE_TOPICS));
+	};
+
 	return {
 		subscribe(listener) {
-			if (versions === null) {
-				lastStamp = stamp();
-				lastSweep = Date.now();
-				versions = read(APP_LIVE_TOPICS);
+			if (timers.length === 0) {
+				sweep();
+				timers = [
+					every(tickMs, "app live tick", tick, { unref: true }),
+					every(sweepMs, "app live sweep", sweep, { unref: true }),
+				];
 			} else {
-				freshen();
-			}
-			if (timer === undefined) {
-				timer = every(tickMs, "app live tick", tick, { unref: true });
+				tick();
 			}
 			listeners.add(listener);
 			return {
@@ -127,8 +121,8 @@ export function openAppLive(
 				unsubscribe() {
 					listeners.delete(listener);
 					if (listeners.size === 0) {
-						timer?.cancel();
-						timer = undefined;
+						for (const timer of timers) timer.cancel();
+						timers = [];
 					}
 				},
 			};

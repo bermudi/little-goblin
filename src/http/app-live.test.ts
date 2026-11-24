@@ -84,6 +84,27 @@ const moved = (
 		label,
 	);
 
+const skillOperator = (home: string) => ({
+	skillSources: {
+		forConversation: () => [],
+		forgetConversation: () => 0,
+		managedNames: () => new Set<string>(),
+		skillsDir: join(home, "live-skills"),
+		proposedDir: join(home, "live-skills-proposed"),
+		archiveDir: join(home, "live-skills-archive"),
+		usagePath: join(home, "live-skill-usage.json"),
+	},
+});
+
+const writeSkill = (home: string) => {
+	const dir = join(home, "live-skills", "live-skill");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(
+		join(dir, "SKILL.md"),
+		"---\nname: live-skill\ndescription: proves the sweep\n---\nbody\n",
+	);
+};
+
 describe("app live feed", () => {
 	test("announces a complete version map matching every wired GET's version header", async () => {
 		const { http, call, home, appDeps } = setup({ token: APP_TOKEN_NAME, liveSweepMs: 60_000 });
@@ -332,27 +353,12 @@ describe("app live feed", () => {
 
 	test("a skill directory written to disk announces skills on the sweep", async () => {
 		const { http, call, appDeps, home } = setup({ token: APP_TOKEN_NAME });
-		const skillsDir = join(home, "live-skills");
-		appDeps.operator = {
-			skillSources: {
-				forConversation: () => [],
-				forgetConversation: () => 0,
-				managedNames: () => new Set(),
-				skillsDir,
-				proposedDir: join(home, "live-skills-proposed"),
-				archiveDir: join(home, "live-skills-archive"),
-				usagePath: join(home, "live-skill-usage.json"),
-			},
-		};
+		appDeps.operator = skillOperator(home);
 		try {
 			const { reader, events, pump } = await liveStream(call);
 			const first = events[0]!.versions;
 			const fromSkills = events.length;
-			mkdirSync(join(skillsDir, "live-skill"), { recursive: true });
-			writeFileSync(
-				join(skillsDir, "live-skill", "SKILL.md"),
-				"---\nname: live-skill\ndescription: proves the sweep\n---\nbody\n",
-			);
+			writeSkill(home);
 			await moved(events, fromSkills, "skills", first.skills, "skills announced on sweep");
 			await reader.cancel();
 			await pump;
@@ -610,6 +616,23 @@ describe("app live feed", () => {
 			expect(list.headers.get(APP_LIVE_VERSION_HEADER)).toBe(
 				back.events[0]!.versions.conversations,
 			);
+			await back.reader.cancel();
+			await back.pump;
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a skill written while nobody listens is in the next first event", async () => {
+		const { http, call, appDeps, home } = setup({ token: APP_TOKEN_NAME, liveSweepMs: 60_000 });
+		appDeps.operator = skillOperator(home);
+		try {
+			const gone = await liveStream(call);
+			await gone.reader.cancel();
+			await gone.pump;
+			writeSkill(home);
+			const back = await liveStream(call);
+			expect(back.events[0]!.versions.skills).not.toBe(gone.events[0]!.versions.skills);
 			await back.reader.cancel();
 			await back.pump;
 		} finally {

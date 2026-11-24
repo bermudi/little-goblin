@@ -17,7 +17,7 @@ ab fill '[aria-label="Message draft"]' '[post Backup finished.
 All 3 disks OK.] check the disks'
 ab click 'button[aria-label="Send"]'
 ab wait --text 'verify-reply: [post'
-ab wait 11000   # the panel polls activity every 10 s
+ab wait 2000    # the server looks every 500 ms, then the panel re-reads
 ab snapshot -i | grep 'post ·'
 ab find role button click --name "Backup finished. All 3 disks OK. post · now"
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select id, conversation_id, text from posts'
@@ -47,5 +47,4 @@ Proof: the panel keeps eight rows, the page reaches the oldest post, "Show older
 
 `bun run try` restarts the instance on a new commit or a dirty tree, with a fresh home: seed again after it.
 
-
-The panel refreshes on a 10 s poll, so wait before looking for the row.
+The panel re-reads when the live feed announces a change, about a second after the post.

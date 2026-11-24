@@ -8,6 +8,7 @@ How to reach and prove each feature from the user's point of view. Every entry h
 | Delegation on Herdr: delegate start on a throwaway herdr server, watcher settle, done notice | [delegation.md](delegation.md) |
 | Document viewer: copy published or live text | [doc-viewer.md](doc-viewer.md) |
 | Feed posts: Goblin's `post` tool and the Activity tab | [posts.md](posts.md) |
+| Live app state: lists update on a feed announcement, reconnect line | [live.md](live.md) |
 | Notes: create and rename | [notes.md](notes.md) |
 | Projects: create one | [projects.md](projects.md) |
 | Rolling chat: continue and start a new conversation | [rolling.md](rolling.md) |

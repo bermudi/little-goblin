@@ -460,7 +460,18 @@ p code,
 .conv[data-mark="needs"] .conv-preview {
 	color: var(--app-warning);
 }
+.conv-preview:has(> .conv-project) {
+	display: flex;
+	gap: 0.4em;
+}
+.conv-line,
 .conv-project {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.conv-project {
+	flex: none;
+	max-width: 50%;
 	color: var(--app-fg-muted);
 	font-weight: 400;
 }

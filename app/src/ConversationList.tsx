@@ -248,7 +248,9 @@ export function ConversationRow({
 					</span>
 					{hasLine && (
 						<span className="conv-preview">
-							{displayLine}
+							{projectName === undefined
+								? displayLine
+								: displayLine !== "" && <span className="conv-line">{displayLine}</span>}
 							{projectName !== undefined && (
 								<span className="conv-project">
 									{displayLine === "" ? `In ${projectName}` : ` in ${projectName}`}

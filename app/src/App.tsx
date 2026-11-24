@@ -575,6 +575,25 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		return () => window.removeEventListener("beforeunload", onUnload);
 	}, [route]);
 
+	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
+	const unbound = all.filter((c) => (c.projectId ?? null) === null);
+	const projectList = projects ?? [];
+	const activeProjects = projectList
+		.filter((p) => p.archivedAt === null)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const home = useHomeList({
+		conversations: all,
+		chain: rollingChain,
+		projects: projectList.map(({ id, name, archivedAt }) => ({ id, name, archivedAt })),
+		attention: goblin.attention ?? [],
+		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
+		open: railCurrent,
+		openRoll,
+		seen,
+	}, activeProjects, projectsOpen);
+	const desktopFlipRef = useFlip(home.orderSignature);
+	const phoneFlipRef = useFlip(home.orderSignature);
+
 	// A dead token means 401s forever — offer a way back to the gate.
 	if (listError === "unauthorized") {
 		return (
@@ -782,24 +801,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
-	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
-	const unbound = all.filter((c) => (c.projectId ?? null) === null);
-	const projectList = projects ?? [];
-	const activeProjects = projectList
-		.filter((p) => p.archivedAt === null)
-		.sort((a, b) => a.name.localeCompare(b.name));
-	const home = useHomeList({
-		conversations: all,
-		chain: rollingChain,
-		projects: projectList.map(({ id, name, archivedAt }) => ({ id, name, archivedAt })),
-		attention: goblin.attention ?? [],
-		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
-		open: railCurrent,
-		openRoll,
-		seen,
-	}, activeProjects, projectsOpen);
-	const desktopFlipRef = useFlip(home.orderSignature);
-	const phoneFlipRef = useFlip(home.orderSignature);
 	const archived = unbound
 		.filter((c) => c.archivedAt !== null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));

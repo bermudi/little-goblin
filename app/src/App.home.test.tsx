@@ -46,6 +46,7 @@ describe("home screen", () => {
 	let otherBusy: number;
 	let listVersion: number;
 	let listGets: number;
+	let tokenDead: boolean;
 	let messageGets: string[];
 	let posts: string[];
 	let reads: { id: string; body: unknown; settle: (ok: boolean) => Promise<void> }[];
@@ -89,6 +90,7 @@ describe("home screen", () => {
 		if (feed !== null) return feed;
 		if (path === "/api/app/conversations") {
 			listGets++;
+			if (tokenDead) return Response.json({ error: "unauthorized" }, { status: 401 });
 			return Response.json(
 				{ conversations, rolling: { chain } } satisfies AppConversationList,
 				{ headers: { "x-goblin-version": `v${listVersion}` } },
@@ -149,6 +151,7 @@ describe("home screen", () => {
 		otherBusy = 0;
 		listVersion = 1;
 		listGets = 0;
+		tokenDead = false;
 		messageGets = [];
 		posts = [];
 		reads = [];
@@ -471,6 +474,14 @@ describe("home screen", () => {
 		expect(face?.getAttribute("aria-label")).toBe("Goblin, 2 jobs, 1 needs you");
 		expect(face?.querySelector(".goblin-avatar")?.hasAttribute("data-working")).toBe(true);
 		expect(face?.textContent).toBe("1");
+	});
+
+	test("T32: a token that dies while the list is on screen shows the way back in", async () => {
+		conversations = [conv("one", { newReply: 2 })];
+		await open("/app/");
+		tokenDead = true;
+		await publish();
+		expect(container.querySelector(".gate")?.textContent).toContain("The stored token stopped working.");
 	});
 
 	test("T25: an approval without a chat is a row that opens its page and posts nothing", async () => {

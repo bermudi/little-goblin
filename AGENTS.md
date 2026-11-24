@@ -2,6 +2,23 @@
 
 A personal AI agent for one operator, with one app and an optional Telegram channel.
 
+## What Goblin is for
+
+Goblin is the operator's personal assistant, in one place
+([decision](design/decisions/one-assistant.md), operator, 2026-11-24).
+
+- **One chat.** The operator brings everything to the
+  [Rolling chat](GLOSSARY.md#rolling-chat): book this, track that, make the
+  appointment. Results and questions come back there.
+- **Errands and lasting work.** Goblin does errands itself. Work that lasts
+  gets its own [bot](GLOSSARY.md#bot) (not built yet).
+- **Goblin in the middle.** Goblin messages and reads the bots. They do not
+  message or read each other.
+- **Ask first.** Goblin asks before it spends money or sends mail.
+- **Elsewhere.** Coding stays in T3 Code; Goblin starts and watches threads.
+- **Frozen.** Telegram and [delegation](GLOSSARY.md#delegation) get fixes,
+  not features.
+
 ## Goblin Is A Loop With Tools And Connectors. That's It.
 
 This rule outranks every other doc in this repo (operator, 2026-11-21).

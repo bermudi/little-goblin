@@ -1,5 +1,9 @@
 # Projects & Notes — goblin design
 
+> **Amended (operator, 2026-11-24, not built):** projects become
+> [bots](../GLOSSARY.md#bot) after a first new bot works. Notes stay
+> ([decision](decisions/one-assistant.md)).
+
 ## Projects & Notes (ruling 2026-10-10)
 
 Operator ask: projects — a named home for related app chats, with their own
@@ -12,8 +16,8 @@ its source). Classified **machinery** (DESIGN.md → Non-goals): returned on
 demand, designed here before any code.
 
 A project is a scope over the existing turn loop; long work in its directory
-already has a path — delegation through `delegate` (a T3 Code thread),
-cwd = the project's `dir`.
+already has a path — delegation through `delegate` (a terminal on Goblin's
+private hc core, [delegation](delegation.md)), cwd = the project's `dir`.
 
 ### Projects
 

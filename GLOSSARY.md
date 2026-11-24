@@ -1,5 +1,6 @@
 # Glossary
 
+- **Active:** the part of the chat list for chats that have something going on: one that needs you, has a new reply, or is working. It exists so the operator sees at the top what to look at, and it is gone when nothing is going on. For example, while a subagent of a pinned chat runs, that chat moves from Chats to Active, and it goes back when the work is done and read (design/app.md → Home screen).
 - **Agent type:** a markdown file in `$GOBLIN_HOME/agents/` that sets a subagent's description, model, tools and system prompt. `general` and `computer` are built in.
 - **Anchor:** the sequence number of the user message that a recall block or a retention attaches to.
 - **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
@@ -37,7 +38,8 @@
 - **Memory net:** the first `bun test` preload, `src/test-memory-net.ts`. A worker thread watches the process RSS and, past 75% of the cgroup memory cap (at most 3 GiB), prints the running test's name and kills the process before the kernel does (DESIGN.md → Test posture → Memory net, #818).
 - **Memory runaway:** a test process stuck in synchronous code that keeps allocating, such as bun printing a whole happy-dom tree for a failed assertion (#798). Its main thread never yields, so test timeouts and `afterEach` never run. The memory net ends it with a `memory runaway:` report on stderr.
 - **Mission:** the plain-language rule that guides a Hindsight step. `retain_mission` guides extraction and `observations_mission` guides consolidation.
-- **Needs you:** the top of the Goblin panel, listing what waits on the operator: approvals, delegation questions, memory problems. It is the old Attention list under a plainer name. An item opens where its evidence shows, such as a new program's diff; the panel never approves anything itself.
+- **Needs you:** what waits on the operator: approvals, delegation questions, memory problems. The top of the Goblin panel lists it, and the number on Goblin's avatar counts it. It is the old Attention list under a plainer name. An item opens where its evidence shows, such as a new program's diff; the panel never approves anything itself. In the chat list it is also the amber `!` on the chat that the item belongs to; for example, a delegation's question marks the chat that started the delegation until it is answered.
+- **New reply:** the accent dot on a chat whose newest reply the operator has not seen. The server holds what was seen, so opening the chat on the phone clears the dot on the desktop. For example, a reply that ended while the laptop was closed shows as a new reply the next morning (design/app.md → Home screen).
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.
 - **Observation:** a merged statement that consolidation builds from facts.
 - **Outbox:** the durable table `memory_outbox`. Retentions wait in it until the service accepts them.

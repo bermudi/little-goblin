@@ -335,14 +335,15 @@ stays on the list and reveals the Projects section. A roll cannot move, and
 the server refuses it.
 
 Each active project is one link row above the loose chats. It opens that
-project's page and is marked current on that page and in its chats. Project
-chats appear on the project page, not in the sidebar (ruling 2026-11-22,
-#894). The Projects button controls whether the project links are shown; it
+project's page and is marked current on that page and in its chats. A project
+chat appears on the project page. It is in the sidebar only while it is
+pinned (ruling 2026-11-22, #894) or has a mark (ruling 2026-11-23, #919, see
+[Home screen](#home-screen-rulings-2026-11-23-919)). The Projects button controls whether the project links are shown; it
 starts closed when no preference is stored, and its open or closed state is
 kept per device in localStorage (ruling 2026-11-22, #889). The all-projects
 page is in the You menu, between Settings and Archive.
-Pinned project chats appear at the top of Chats with their project's name.
-Unpinned project chats stay on the project page (ruling 2026-11-22, #894).
+A pinned project chat without a mark is at the top of Chats, with its
+project's name on the second line (ruling 2026-11-22, #894).
 Landing in a project or one of its chats, or successfully moving a chat into
 a project, reveals the section. There is no
 Projects pane: the You menu opens the all-projects page. Beside the Projects
@@ -364,8 +365,8 @@ rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
 **Client.** The PWA keeps all ordinary chat rows and adds a
-Rolling chat row at the top of the chat list, named Goblin and shown with
-Goblin's avatar (#862). `/app/rolling` shows one roll
+Rolling chat row at the top of the chat list, with its own loop icon and no
+avatar (#919; until then it was named Goblin, #862). `/app/rolling` shows one roll
 at a time; when a newer roll begins, its transcript starts with
 "— new conversation —" and a link to the previous conversation. Older rolls
 show an "Earlier conversation" bar with "Back to latest". A `/app/c/<id>` link
@@ -716,12 +717,12 @@ shows Goblin itself. This replaces the glyph gutter and thumb bar of
 console.
 
 **Desktop.** No glyph gutter. Three columns:
-- Left list: a search field and New chat on top; the Rolling chat as a
-  pinned row named **Goblin**, with Goblin's avatar; the collapsible Projects
-  section with project link rows that open their project pages and are marked
+- Left list: a search field and New chat on top; then the Rolling chat,
+  [Active](../GLOSSARY.md#active), Projects and Chats (see [Home
+  screen](#home-screen-rulings-2026-11-23-919)). The collapsible Projects
+  section has project link rows that open their project pages and are marked
   current on those pages and in their chats. Its Projects button folds the
-  section. Pinned project chats appear at the top of Chats with their project
-  names; unpinned project chats stay on their project pages. New project
+  section. New project
   remains beside the Projects button. A **You** control at the bottom opens a
   menu with Settings, Projects and Archive. The sidebar toggle still hides
   the whole list.
@@ -750,10 +751,9 @@ console.
   Status, Memory, Skills and Log pages under one header that links them.
 - No Computer tab until the app can show desktops (#863).
 
-**Phone.** No tab bar and no More sheet. The chats screen is home. When
-Attention has items it shows a "N things need you" banner. The banner, and
-Goblin's avatar in a chat's header, open the Goblin panel as a bottom
-sheet. Every other page has a back control to the chats screen. The
+**Phone.** No tab bar and no More sheet. The chats screen is home. Goblin's
+avatar, in the chats bar and in a chat's header, opens the Goblin panel as a
+bottom sheet. Every other page has a back control to the chats screen. The
 Telegram door keeps its drawer: its two pages don't warrant more.
 
 **Data.** The panel's lists are live topics: attention, delegations,
@@ -761,6 +761,61 @@ programs and activity refetch when `/api/app/live` announces their version
 moved (see "Live state" below). The activity route lists busy app
 conversations and counts busy conversations on other channels, so a
 Telegram turn still counts as work.
+
+### Home screen (rulings 2026-11-23, #919)
+
+The list could not say which chat was busy, waiting or unread, and Goblin's
+avatar stood for both the agent and the Rolling chat: its ring meant "busy
+anywhere", so a tap on it opened a chat that was not the busy one. The list
+is now the home screen, and the avatar means only the agent.
+
+- **Order.** The Rolling chat (always first, never moves), Active, Projects,
+  Chats with pinned chats first.
+- **[Active](../GLOSSARY.md#active)** holds every chat with a mark, and shows
+  only when there is one: needs you, then [new
+  reply](../GLOSSARY.md#new-reply), then working, newest first inside each. A
+  chat shows once: a pinned chat with a mark is only in Active, a project chat
+  with a mark is in Active with its project's name.
+- **[Needs you](../GLOSSARY.md#needs-you)** (amber `!`). The second line is
+  what waits. It stays until answered; opening the chat does not clear it. An
+  approval or delegation question without a chat is a row of its own and opens
+  its target. A memory problem is not a row: it has no answer to give, it
+  counts in the avatar's number and shows in the Goblin panel.
+- **New reply** (accent dot, bold title). `read_seq` on the conversation is
+  the newest event the operator has seen; a newer assistant event is new. The
+  app marks it when the chat is on screen in a visible tab and no reply runs,
+  so one device clears it for all. It marks the seq it showed, so a reply that
+  lands meanwhile stays new. The upgrade stamps every old chat as read. A
+  branch or spin-off is born read. A subagent chat is never new: its parent
+  relays the result.
+- **Working** (accent ring). A reply, a subagent or a delegation of that chat
+  runs. If one chat could have several marks, the first of these wins: needs
+  you, its own reply runs, new reply, a subagent or delegation runs. So an
+  unfinished reply is not "new", and an unread one is not hidden by work
+  behind it.
+- **The list item carries `busy` and `newReply` together**, from one read, so
+  a chat does not fall out of Active between "working" and "new reply".
+- **A row you open stays where it is until you leave it.** The client holds
+  the place the row had when it was opened. Pinning, archiving and moving to a
+  project still act at once.
+- **Subagents** fold under their parent as "N subagents", closed. The fold
+  shows while one runs or asks, or the parent or one of them is open. A pinned
+  subagent, and one whose parent is archived, is its own row with the
+  "subagent" label. The Rolling chat row folds the subagents of its rolls the
+  same way.
+- **The Rolling chat row** shows the mark of any of its rolls (the newest 50)
+  and opens the roll that has it, otherwise the newest.
+- **Goblin's avatar** is in the chat header, and on a phone also in the chats
+  bar. It opens the Goblin panel. Ring: busy anywhere, Telegram included.
+  Number: the Attention items; `?` when they cannot be loaded.
+- **Connection lost:** the marks go grey and stop.
+- Marks differ in shape, not only in colour, and carry words for screen
+  readers. Moves animate, except under `prefers-reduced-motion`.
+
+Not chosen: the same marks with rows that stay in place; today's layout with
+correct marks. Accepted limits: a finished subagent of an unpinned project
+chat has no row, because its parent has none; another device can show a new
+reply for a moment before the open one marks it read.
 
 ### Live state (ruling 2026-11-23, #918)
 
@@ -1023,7 +1078,8 @@ Missing delivery evidence is not permission to try again. See the
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation
-floats above the activity stream, so a slow thread the operator always
+floats above the activity stream in Chats (while it has a mark it is in
+[Active](../GLOSSARY.md#active) instead, #919), so a slow thread the operator always
 wants reachable stops sinking. Pinning changes a row's group, never its
 position inside it; **pins survive activity** (the exact opposite of
 archive's auto-unarchive), and **archiving clears the pin** — a row hidden

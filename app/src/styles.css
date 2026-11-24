@@ -608,7 +608,7 @@ p code,
 	opacity: 1;
 	pointer-events: auto;
 }
-.conv:hover .conv-preview,
+.conv:has(.conv-actions):hover .conv-preview,
 .conv:has(.conv-actions:focus-within) .conv-preview {
 	-webkit-mask-image: var(--conv-fade);
 	mask-image: var(--conv-fade);
@@ -1107,6 +1107,8 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	margin: 0;
 }
 .chatlist-bar .header-action {
+	align-items: center;
+	justify-content: center;
 	width: 2.25rem;
 	height: 2.25rem;
 }

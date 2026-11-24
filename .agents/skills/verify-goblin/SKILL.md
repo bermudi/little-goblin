@@ -27,7 +27,7 @@ Each instance gets:
 
 - Its own `GOBLIN_HOME` and `HOME` under `/tmp/goblin-verify/<name>`, created empty.
 - A free loopback port.
-- A scripted fake model that replies `verify-reply: <last user message>`.
+- A scripted fake model that replies `verify-reply: <last user message>`. A marker in the message makes it do more, with the real tools: `[agent <task>]` starts a subagent, `[delegate <harness> <cwd> <task>]` a delegation, `[post <text>]` a post, `[slow]` a 16 s reply. Read `scripts/fake-model.ts` for all of them before you say that something cannot be driven.
 - A minimal environment. The checkout's `.env` is not loaded.
 - Telegram, TTS, memory, delegation and mail off.
 

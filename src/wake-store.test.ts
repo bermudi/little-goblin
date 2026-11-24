@@ -8,6 +8,7 @@ import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import type { JournalStatus } from "./turn-journal.ts";
 import { openWakeStore } from "./wake-store.ts";
+import type { Config } from "./config-schema.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -31,11 +32,25 @@ const trigger = (id: string, text: string): Message => ({
 	parts: [{ type: "text", text }],
 });
 
+const rollConfig = {
+	model: "unused/m",
+	thinking: "medium",
+	providers: {},
+	tts: false,
+	favorites: [],
+	modelFallbacks: [],
+	operators: [],
+	allowedUsers: [],
+	telegram: { enabled: false, dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	http: { port: 8787 },
+	logLevel: "info",
+} as unknown as Config;
+
 // The append the dispatcher will run: the wake's stable message into
 // history, inside the wake store's own transaction.
 function appendInto(store: ConversationStore, conversationId: string) {
-	const calls: { id: string; text: string }[] = [];
-	const append = (t: { id: string; text: string }) => {
+	const calls: { id: string; text: string; conversationId: string }[] = [];
+	const append = (t: { id: string; text: string; conversationId: string }) => {
 		calls.push(t);
 		store.append(conversationId, [trigger(t.id, t.text)]);
 	};
@@ -43,6 +58,133 @@ function appendInto(store: ConversationStore, conversationId: string) {
 }
 
 describe("wake store", () => {
+	test("pending roll wake moves its event, trigger and claim authority to newest at commit", () => {
+		const { store, wakes } = setup();
+		const a = store.rollApp(rollConfig);
+		const rec = wakes.record({
+			sourceKey: "roll-commit",
+			conversationId: a.id,
+			kind: "done",
+			text: "finished",
+			facts: {},
+			origin: "test",
+		});
+		const b = store.rollApp(rollConfig);
+		let appended = "";
+		const claimed = wakes.commit(rec.wakeId, (t) => {
+			appended = t.conversationId;
+			store.append(t.conversationId, [trigger(t.id, t.text)]);
+		});
+		expect(appended).toBe(b.id);
+		expect(claimed.conversationId).toBe(b.id);
+		expect(claimed.claimEpoch).toBe(b.epoch);
+		expect(store.history(a.id)).toEqual([]);
+		expect(store.history(b.id).map((m) => m.id)).toContain(claimed.messageId);
+		expect(store.db.query("SELECT conversation_id FROM work_events WHERE event_id = ?").get(rec.eventId))
+			.toEqual({ conversation_id: b.id });
+		store.close();
+	});
+
+	test("claimed roll wake stays on its original roll after a newer roll is minted", () => {
+		const { store, wakes } = setup();
+		const a = store.rollApp(rollConfig);
+		const rec = wakes.record({
+			sourceKey: "claimed-stays",
+			conversationId: a.id,
+			kind: "done",
+			text: "finished",
+			facts: {},
+			origin: "test",
+		});
+		const claimed = wakes.commit(rec.wakeId, (t) => {
+			store.append(t.conversationId, [trigger(t.id, t.text)]);
+		});
+		store.rollApp(rollConfig);
+		expect(wakes.commit(rec.wakeId, () => { throw new Error("must not append twice"); })).toEqual(claimed);
+		store.close();
+	});
+
+	test("replayed source identity follows roll destinations but rejects ordinary chats", () => {
+		const { store, wakes } = setup();
+		const a = store.rollApp(rollConfig);
+		const input = {
+			sourceKey: "roll-replay",
+			conversationId: a.id,
+			kind: "done",
+			text: "finished",
+			facts: {},
+			origin: "test",
+		};
+		const first = wakes.record(input);
+		store.rollApp(rollConfig);
+		expect(wakes.record(input).created).toBe(false);
+		const newest = store.currentAppRoll()!;
+		expect(
+			wakes.commit(first.wakeId, (t) => {
+				store.append(t.conversationId, [trigger(t.id, t.text)]);
+			}).conversationId,
+		).toBe(newest.id);
+		expect(wakes.record(input).created).toBe(false);
+		expect(wakes.record({ ...input, conversationId: newest.id }).created).toBe(false);
+		store.rollApp(rollConfig);
+		expect(wakes.record(input).created).toBe(false);
+		const ordinary = store.resolve({ kind: "dm", chatId: 44 }, "/w");
+		expect(() => wakes.record({ ...input, conversationId: ordinary.id }))
+			.toThrow(/replayed with a different identity/);
+		expect(first.created).toBe(true);
+		store.close();
+	});
+
+	test("failed append rolls a pending wake retarget back", () => {
+		const { store, wakes } = setup();
+		const a = store.rollApp(rollConfig);
+		const rec = wakes.record({
+			sourceKey: "rollback-move",
+			conversationId: a.id,
+			kind: "done",
+			text: "finished",
+			facts: {},
+			origin: "test",
+		});
+		const b = store.rollApp(rollConfig);
+		expect(() => wakes.commit(rec.wakeId, (t) => {
+			store.append(t.conversationId, [trigger(t.id, t.text)]);
+			throw new Error("append failed");
+		})).toThrow("append failed");
+		expect(wakes.get(rec.wakeId)?.conversationId).toBe(a.id);
+		expect(wakes.get(rec.wakeId)?.state).toBe("pending");
+		expect(store.db.query("SELECT conversation_id FROM work_events WHERE event_id = ?").get(rec.eventId))
+			.toEqual({ conversation_id: a.id });
+		expect(store.history(b.id)).toEqual([]);
+		store.close();
+	});
+
+	test("moving a wake makes only its destination own the wake and event during deletion", () => {
+		const { store, wakes } = setup();
+		const a = store.rollApp(rollConfig);
+		const rec = wakes.record({
+			sourceKey: "delete-after-move",
+			conversationId: a.id,
+			kind: "done",
+			text: "finished",
+			facts: {},
+			origin: "test",
+		});
+		const b = store.rollApp(rollConfig);
+		wakes.commit(rec.wakeId, (t) => {
+			store.append(t.conversationId, [trigger(t.id, t.text)]);
+		});
+		store.deleteConversation(a.id);
+		expect(wakes.get(rec.wakeId)?.conversationId).toBe(b.id);
+		expect(store.db.query("SELECT event_id FROM work_events WHERE event_id = ?").get(rec.eventId))
+			.toEqual({ event_id: rec.eventId });
+		store.deleteConversation(b.id);
+		expect(wakes.get(rec.wakeId)).toBeNull();
+		expect(store.db.query("SELECT event_id FROM work_events WHERE event_id = ?").get(rec.eventId)).toBeNull();
+		expect(store.db.query("SELECT wake_id FROM wake_events WHERE wake_id = ?").get(rec.wakeId)).toBeNull();
+		store.close();
+	});
+
 	test("opening a pre-epoch wake table migrates without restoring unknown authority", () => {
 		const store = openStore(":memory:");
 		const conv = store.resolve({ kind: "dm", chatId: 9 }, "/w");
@@ -243,7 +385,9 @@ describe("wake store", () => {
 		expect(claimed.state).toBe("claimed");
 		expect(claimed.historySeq).toBe(1);
 		expect(claimed.claimedAt).not.toBeNull();
-		expect(calls).toEqual([{ id: claimed.messageId, text: "the one line" }]);
+		expect(calls).toEqual([
+			{ id: claimed.messageId, text: "the one line", conversationId: conv.id },
+		]);
 		const entries = store.historyEntries(conv.id);
 		expect(entries).toHaveLength(1);
 		expect(entries[0]!.seq).toBe(claimed.historySeq!);

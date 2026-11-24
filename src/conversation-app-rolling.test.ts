@@ -28,6 +28,22 @@ describe("app rolling store", () => {
 		store.close();
 	});
 
+	test("app roll destination resolves only rolls to the newest extant roll", () => {
+		const store = storeFixture();
+		const first = store.rollApp(config);
+		const middle = store.rollApp(config);
+		const newest = store.rollApp(config);
+		const ordinary = store.resolve(appAddress("ordinary-destination"), paths.workspace(), config);
+		expect(store.appRollDestination(middle.id)).toBe(newest.id);
+		expect(store.appRollDestination(newest.id)).toBe(newest.id);
+		expect(store.appRollDestination(ordinary.id)).toBe(ordinary.id);
+		expect(store.appRollDestination("dm:7:1")).toBe("dm:7:1");
+		expect(store.appRollDestination("unknown")).toBe("unknown");
+		store.deleteConversation(newest.id);
+		expect(store.appRollDestination(first.id)).toBe(middle.id);
+		store.close();
+	});
+
 	test("list excludes rolls and includes ordinary app conversations", () => {
 		const store = storeFixture();
 		const ordinary = store.resolve(appAddress("ordinary"), paths.workspace(), config);

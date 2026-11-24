@@ -14,6 +14,7 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import type { JournalStatus } from "./turn-journal.ts";
+import { makeAppRollDestination } from "./conversation-app-rolling.ts";
 
 export type WakeState = "pending" | "claimed" | "settled" | "failed";
 
@@ -133,7 +134,7 @@ export interface WakeStore {
 	 *  A wake past pending is returned unchanged, never appended twice. */
 	commit(
 		wakeId: number,
-		append: (trigger: { id: string; text: string }) => void,
+		append: (trigger: { id: string; text: string; conversationId: string }) => void,
 	): WakeRecord;
 	/** The run that will process this wake — called before model/tool
 	 *  execution. Idempotent for the same run. */
@@ -240,6 +241,7 @@ export function sweepConversationWakes(
 
 export function openWakeStore(db: Database): WakeStore {
 	ensureWakeSchema(db);
+	const appRollDestination = makeAppRollDestination(db);
 
 	const qEventByKey = db.query<z.infer<typeof eventIdentitySchema>, [string]>(
 		"SELECT event_id, conversation_id, kind, text FROM work_events WHERE source_key = ?",
@@ -255,6 +257,12 @@ export function openWakeStore(db: Database): WakeStore {
 	);
 	const qInsertWake = db.prepare(
 		"INSERT INTO wake_deliveries (conversation_id, message_id, state, created_at) VALUES (?, ?, 'pending', ?)",
+	);
+	const qMoveWake = db.prepare(
+		"UPDATE wake_deliveries SET conversation_id = ? WHERE wake_id = ? AND state = 'pending'",
+	);
+	const qMoveEvents = db.prepare(
+		"UPDATE work_events SET conversation_id = ? WHERE event_id IN (SELECT event_id FROM wake_events WHERE wake_id = ?)",
 	);
 	const qLinkEvent = db.prepare("INSERT INTO wake_events (wake_id, event_id) VALUES (?, ?)");
 	const qWake = db.query<WakeRow, [number]>("SELECT * FROM wake_deliveries WHERE wake_id = ?");
@@ -343,7 +351,10 @@ export function openWakeStore(db: Database): WakeStore {
 				const existing = qEventByKey.get(input.sourceKey);
 				if (existing != null) {
 					const identity = eventIdentitySchema.parse(existing);
-					if (identity.conversation_id !== input.conversationId || identity.kind !== input.kind) {
+					if (
+						appRollDestination(identity.conversation_id) !== appRollDestination(input.conversationId) ||
+						identity.kind !== input.kind
+					) {
 						throw new Error(`work event ${input.sourceKey} replayed with a different identity`);
 					}
 					if (identity.text !== input.text) {
@@ -436,7 +447,14 @@ export function openWakeStore(db: Database): WakeStore {
 			return db.transaction(() => {
 				let rec = requireWake(wakeId);
 				if (rec.state !== "pending") return rec;
-				append({ id: rec.messageId, text: rec.text });
+				const recordedFor = rec.conversationId;
+				const destination = appRollDestination(recordedFor);
+				if (destination !== recordedFor) {
+					qMoveWake.run(destination, wakeId);
+					qMoveEvents.run(destination, wakeId);
+					rec = requireWake(wakeId);
+				}
+				append({ id: rec.messageId, text: rec.text, conversationId: rec.conversationId });
 				// The stamp is the durable history reference: verify the
 				// append actually landed this trigger, don't trust it.
 				const last = qLastEvent.get(rec.conversationId);
@@ -450,6 +468,13 @@ export function openWakeStore(db: Database): WakeStore {
 				const claimed = qClaim.run(last.seq, now, wakeId);
 				if (claimed.changes !== 1) {
 					throw new Error(`wake ${wakeId} claim raced`);
+				}
+				if (destination !== recordedFor) {
+					log.info("wake retargeted to the newest roll", {
+						wake: wakeId,
+						from: recordedFor,
+						to: destination,
+					});
 				}
 				log.info("wake trigger appended", {
 					wake: wakeId,

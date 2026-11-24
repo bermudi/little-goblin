@@ -67,6 +67,5 @@ one endless chat each, and work that returns to whoever asked for it.
   a wall. A wall needs a sandbox.
 - Each handover costs a model run. Goblin must write handovers that stand
   alone, because the bot cannot read the Rolling chat.
-- A program made in the Rolling chat reports to the roll it was made in
-  (#923). Handover needs that fixed first.
+- Work started in the Rolling chat wakes the newest roll (#923).
 - Revisit "in the middle" if Goblin mostly relays between two bots.

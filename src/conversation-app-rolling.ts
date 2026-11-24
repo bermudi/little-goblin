@@ -1,6 +1,17 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
+export function makeAppRollDestination(db: Database): (conversationId: string) => string {
+	const qDestination = db.query<{ conversation_id: string }, [string, string]>(`
+		SELECT CASE WHEN EXISTS (
+			SELECT 1 FROM app_rolls WHERE conversation_id = ?
+		) THEN (
+			SELECT conversation_id FROM app_rolls ORDER BY n DESC LIMIT 1
+		) ELSE ? END AS conversation_id
+	`);
+	return (conversationId) => qDestination.get(conversationId, conversationId)!.conversation_id;
+}
+
 interface AppRollQueries {
 	qAppRollCurrent: {
 		get(): { n: number; conversation_id: string } | null;

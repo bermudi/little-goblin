@@ -363,6 +363,14 @@ one roll at a time with a link to the previous one. Stitched scrolling across
 rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
+**Wakes (2026-11-24, #923).** Work started in any roll wakes the newest roll:
+programs, delegation notices, subagent results and watches. A wake joins the
+newest roll and never starts one. The destination is read when the wake is
+delivered, not when the work starts. A durable wake moves in the transaction
+that appends its trigger; after that it stays where its trigger is, so a later
+roll cannot run it twice. Mail and program approval notices stay beside their
+card, because they start no turn. Ordinary app chats keep their own wakes.
+
 **Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, named Goblin and shown with
 Goblin's avatar (#862). `/app/rolling` shows one roll

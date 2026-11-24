@@ -94,7 +94,11 @@ export function wake(
 // or failed submit stays retryable; a deleted row is the intentional drop.
 export function wakeApp(deps: WakeDeps, conversationId: string, text: string): boolean {
 	if (!deps.runtime.accepting()) return false;
-	const conv = deps.store.get(conversationId);
+	const destination = deps.store.appRollDestination(conversationId);
+	if (destination !== conversationId) {
+		log.info("app wake retargeted to the newest roll", { from: conversationId, to: destination });
+	}
+	const conv = deps.store.get(destination);
 	if (conv === null) {
 		log.warn("delegation notice dropped — app conversation deleted", {
 			conversation: conversationId,
@@ -119,8 +123,6 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 	return true;
 }
 
-// Canonical program targets route by channel: Telegram addresses keep
-// the rolling-DM rules; app targets submit into the exact conversation.
 export function wakeTarget(deps: WakeDeps, target: ConversationTarget, text: string): boolean {
 	const telegram = telegramAddressOf(target);
 	if (telegram !== null) return wake(deps, telegram, text);

@@ -16,7 +16,10 @@ import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import { claudeScript } from "./testkit/turn-script-claude.ts";
 import type { ScriptCall, ScriptedModel } from "./testkit/turn-script.ts";
 import type { TurnSink } from "./turn/sink.ts";
-import type { DevelopmentInput } from "./wake-store.ts";
+import { makeWakeDispatcher } from "./wake-dispatcher.ts";
+import { openWakeStore, type DevelopmentInput } from "./wake-store.ts";
+import { openTurnJournal } from "./turn-journal.ts";
+import type { Config } from "./config-schema.ts";
 
 const adapters = [sdkScript, claudeScript] as const;
 const engineName = (make: (typeof adapters)[number]) =>
@@ -310,6 +313,73 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 		expect(second.result).toBe("SECOND");
 		expect(r.recorded).toHaveLength(2);
 		expect(r.recorded[1]!.sourceKey).toBe(`agent:${child.conversationId}:2`);
+	});
+
+	test("a child started in an old roll reports its settlements to the newest roll", async () => {
+		useHome("goblin-agent-children-");
+		const store = openStore(tmpDb("goblin-agent-children-"));
+		const config = { model: "fake/parent", thinking: "low" } as Config;
+		const old = store.rollApp(config);
+		const queue: ScriptCall[][] = [];
+		const model = make();
+		const journal = openTurnJournal(store.db);
+		const wakes = openWakeStore(store.db);
+		const runtime = new Runtime({
+			engines: model.engines,
+			store,
+			turnJournal: journal,
+			buildStep: () => {
+				const next = queue.shift();
+				if (next === undefined) throw new Error("no scripted turn left");
+				model.script(...next);
+				return model.step();
+			},
+		});
+		const quiet: TurnSink = {
+			delivery: "headless",
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onDone() {},
+		};
+		const dispatcher = makeWakeDispatcher({ store, wakes, journal, runtime, sinkFor: () => quiet });
+		runtime.mount({ makeTools: () => ({}), runOwnership: dispatcher.hooks });
+		dispatcher.start();
+		const engine = startAgentChildren({
+			store,
+			runtime,
+			record: (input) => dispatcher.record(input),
+			bell: () => quiet,
+			maxRunning: () => 3,
+			now: () => new Date("2026-11-16T00:00:00.000Z"),
+		});
+		const texts = (id: string) =>
+			store
+				.history(id)
+				.flatMap((m) => m.parts.map((p) => (p.type === "text" ? String(p.text) : "")))
+				.join("\n");
+		const held = gated("FIRST RESULT");
+		queue.push(held.calls);
+		const { child } = await engine.spawn({
+			parent: old,
+			type: GENERAL_AGENT_TYPE,
+			task: "look it up",
+			tools: ["read_file"],
+		});
+		const second = store.rollApp(config);
+		queue.push(reply("HEARD FIRST"));
+		held.release();
+		await waitUntil(() => texts(second.id).includes("HEARD FIRST"), "second roll answered");
+		expect(texts(second.id)).toContain("FIRST RESULT");
+		const third = store.rollApp(config);
+		queue.push(reply("SECOND RESULT"), reply("HEARD SECOND"));
+		childOf(engine.send(child.conversationId, "go again"));
+		await waitUntil(() => texts(third.id).includes("HEARD SECOND"), "third roll answered");
+		expect(texts(third.id)).toContain("SECOND RESULT");
+		expect(texts(second.id)).not.toContain("SECOND RESULT");
+		expect(store.history(old.id)).toEqual([]);
+		await runtime.shutdown();
+		store.close();
 	});
 
 	test("send while the child runs rides that turn; the row settles once at its end", async () => {

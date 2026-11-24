@@ -2,6 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { openStore } from "./conversation.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { makeWatches } from "./watches.ts";
+import type { Config } from "./config-schema.ts";
+
+const appConfig = {
+	model: "unused/m",
+	thinking: "medium",
+	providers: {},
+	tts: false,
+	favorites: [],
+	modelFallbacks: [],
+	operators: [],
+	allowedUsers: [],
+	telegram: { enabled: false, dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	http: { port: 8787 },
+	logLevel: "info",
+} as unknown as Config;
 
 describe("watches store", () => {
 	test("adds, lists and cancels only within the conversation; caps active rows", () => {
@@ -59,6 +74,41 @@ describe("watches store", () => {
 			expect(watches.fire(row.id, wakes, development)).toBe(true);
 			expect(watches.fire(row.id, wakes, development)).toBe(false);
 			expect(store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_events").get()?.n).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("a watch added in an old roll commits its wake into the newest roll", () => {
+		const store = openStore(":memory:");
+		try {
+			const first = store.rollApp(appConfig);
+			const watches = makeWatches(store.db, () => new Date("2026-11-21T00:00:00.000Z"));
+			const wakes = openWakeStore(store.db);
+			const row = watches.add({
+				conversationId: first.id,
+				target: { kind: "time", at: "2026-11-21T01:00:00.000Z" },
+				reason: "test",
+				baseline: { at: "2026-11-21T01:00:00.000Z" },
+			});
+			const newest = store.rollApp(appConfig);
+			expect(watches.fire(row.id, wakes, {
+				conversationId: first.id,
+				text: "[watch fired] test",
+				facts: {},
+				origin: "watch",
+			})).toBe(true);
+			const pending = wakes.pending()[0]!;
+			const claimed = wakes.commit(pending.wakeId, (trigger) => {
+				store.append(trigger.conversationId, [{
+					id: trigger.id,
+					role: "user",
+					parts: [{ type: "text", text: trigger.text }],
+				}]);
+			});
+			expect(claimed.conversationId).toBe(newest.id);
+			expect(store.history(first.id)).toEqual([]);
+			expect(store.history(newest.id).some((message) => message.id === claimed.messageId)).toBe(true);
 		} finally {
 			store.close();
 		}

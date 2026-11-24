@@ -53,6 +53,7 @@ import type {
 	AppReplyRatingResponse,
 	AppWindowView,
 } from "./app-wire.ts";
+import { versionedJson } from "./live-version.ts";
 
 const createBody = z.object({
 	id: appIdSchema.optional(),
@@ -269,6 +270,13 @@ export function titleDigest(history: readonly Message[]): string {
 	return [`Opening message: ${clip(first)}`, ...recent.map((t) => `Later: ${clip(t)}`)].join("\n\n");
 }
 
+export function conversationListBody(deps: Pick<AppChannelDeps, "store">): AppConversationList {
+	return {
+		conversations: deps.store.listAppConversations(),
+		rolling: { chain: deps.store.appRollChain(50) },
+	};
+}
+
 export async function handleConversationsRoute(
 	req: Request,
 	url: URL,
@@ -279,15 +287,12 @@ export async function handleConversationsRoute(
 
 	if (path === "/api/app/conversations") {
 		if (req.method === "GET") {
-			const body: AppConversationList = {
-				conversations: store.listAppConversations(),
-				rolling: { chain: store.appRollChain(50) },
-			};
+			const body = conversationListBody(deps);
 			log.debug("app conversation list served", {
 				count: body.conversations.length,
 				rolling: body.rolling.chain.length,
 			});
-			return Response.json(body, { headers: NO_STORE });
+			return versionedJson(body);
 		}
 		if (req.method === "POST") {
 			const refusedJson = jsonBodyRefusal(req);

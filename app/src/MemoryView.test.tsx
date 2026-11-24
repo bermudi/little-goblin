@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { MemoryView } from "./MemoryView.tsx";
+import { withLive } from "./testkit.ts";
 
 // Mounted like ChatView's reload-window tests: the network is faked at
 // globalThis.fetch, the DOM is happy-dom, and the test drives clicks.
@@ -114,7 +115,7 @@ describe("MemoryView", () => {
 	const mount = () => {
 		root = createRoot(container);
 		act(() => {
-			root?.render(<MemoryView token={null} />);
+			root?.render(withLive(<MemoryView token={null} />));
 		});
 	};
 	// The doc list is debounced 250ms — let real timers run inside act.
@@ -207,11 +208,16 @@ describe("MemoryView", () => {
 
 	test("blocked exchanges show a problem card naming conversations; Try again requeues", async () => {
 		const posts: string[] = [];
+		let attentionReads = 0;
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = pathOf(input);
 			if (init?.method === "POST") {
 				posts.push(url.pathname);
 				return Promise.resolve(json({ ok: true, requeued: 2 }));
+			}
+			if (url.pathname === "/api/app/attention") {
+				attentionReads += 1;
+				return Promise.resolve(json({ items: [], unavailable: [] }));
 			}
 			if (url.pathname.endsWith("/memory/status"))
 				return Promise.resolve(
@@ -234,8 +240,10 @@ describe("MemoryView", () => {
 		const retryBtn = [...card.querySelectorAll("button")].find(
 			(b) => b.textContent === "Try again",
 		);
+		expect(attentionReads).toBe(0);
 		await click(retryBtn);
 		expect(posts).toHaveLength(1);
+		expect(attentionReads).toBe(1);
 	});
 
 	test("retry progress shows done, still queued and failed again per conversation", async () => {

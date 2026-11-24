@@ -9,6 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { AppApprovalsResponse } from "../../src/http/app-wire.ts";
 import type { OperatorProgramItem } from "../../src/http/operator-wire.ts";
 import { ProgramsView, programStatus, triggerWords } from "./ProgramsView.tsx";
+import { withLive } from "./testkit.ts";
 
 const NOW = Date.parse("2026-11-07T12:00:00Z");
 
@@ -134,7 +135,7 @@ test("the list is a table; opening a row replaces it with the detail and a back 
 		},
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
+	await act(async () => root?.render(withLive(<ProgramsView token={null} now={NOW} />)));
 
 	const rows = [...container.querySelectorAll(".dtable .dt-row")];
 	expect(rows.map((r) => r.querySelector(".dt-main")?.textContent)).toEqual([
@@ -169,7 +170,7 @@ test("schedule and run times share the server's zone (#187)", async () => {
 	// the runs rendered in the browser's zone and disagreed by hours.
 	fakeServer([program({})], { programs: [], mail: [], serverTimeZone: "UTC" }, "UTC");
 	root = createRoot(container);
-	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
+	await act(async () => root?.render(withLive(<ProgramsView token={null} now={NOW} />)));
 
 	const row = container.querySelector(".dtable .dt-row");
 	expect(row?.textContent).toContain("Daily 07:00 UTC");
@@ -189,7 +190,7 @@ test("a skipped occurrence shows its stamp in the detail view", async () => {
 		"UTC",
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
+	await act(async () => root?.render(withLive(<ProgramsView token={null} now={NOW} />)));
 	await act(
 		async () => (container.querySelector(".dtable .dt-row") as HTMLElement).click(),
 	);

@@ -18,6 +18,7 @@ import {
 import { Command, CommandInput, CommandItem, CommandList } from "@ui-sdk/react/command";
 import { useCopy } from "./useCopy.ts";
 import { appendNote, createNote, listNotes } from "./api.ts";
+import { useLiveStoreOrNull } from "./useLive.tsx";
 import type { AppNoteSummary } from "../../src/http/app-wire.ts";
 // Machinery-speech spellings have one owner; the transcript renders
 // their prefix, it doesn't re-spell it.
@@ -465,7 +466,6 @@ function NoteAppendCard({
 	token,
 	noteProjectId,
 	onOpenNote,
-	onNotesChanged,
 	unfinished,
 	streaming,
 	clipFences,
@@ -476,7 +476,6 @@ function NoteAppendCard({
 	// A project-bound conversation files new notes in its project.
 	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
-	onNotesChanged?: (() => void) | undefined;
 	// The fence never closed — the body may be a prefix. It only
 	// withholds the append affordance while the message is still
 	// streaming; once settled (or reloaded from history) this prefix
@@ -497,6 +496,7 @@ function NoteAppendCard({
 	const [done, setDone] = useState<{ id: string; title: string; created: boolean } | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const searchSeq = useRef(0);
+	const live = useLiveStoreOrNull();
 
 	useEffect(() => {
 		if (!open) return;
@@ -524,9 +524,9 @@ function NoteAppendCard({
 		setError(null);
 		void appendNote(token, id, body).then(
 			(n) => {
-				onNotesChanged?.();
 				setStatus("done");
 				setDone({ id: n.id, title: n.title, created: false });
+				void live?.refresh("notes");
 			},
 			(err: unknown) => {
 				setStatus("error");
@@ -543,9 +543,9 @@ function NoteAppendCard({
 			...(noteProjectId != null ? { projectId: noteProjectId } : {}),
 		}).then(
 			(n) => {
-				onNotesChanged?.();
 				setStatus("done");
 				setDone({ id: n.id, title: n.title, created: true });
+				void live?.refresh("notes");
 			},
 			(err: unknown) => {
 				setStatus("error");
@@ -565,7 +565,6 @@ function NoteAppendCard({
 					token={token}
 					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
-					onNotesChanged={onNotesChanged}
 					streaming={streaming}
 					clipFences={clipFences}
 				/>
@@ -649,7 +648,6 @@ export interface MarkdownNoteContext {
 	token?: string | null | undefined;
 	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
-	onNotesChanged?: (() => void) | undefined;
 }
 
 export function Markdown({
@@ -657,7 +655,6 @@ export function Markdown({
 	token,
 	noteProjectId,
 	onOpenNote,
-	onNotesChanged,
 	streaming,
 	clipFences,
 	onFileLink,
@@ -719,7 +716,6 @@ export function Markdown({
 							token={token ?? null}
 							noteProjectId={noteProjectId}
 							onOpenNote={onOpenNote}
-							onNotesChanged={onNotesChanged}
 							unfinished={!closed}
 							streaming={streaming}
 							clipFences={clipFences}
@@ -800,7 +796,6 @@ export function Markdown({
 						token={token}
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}
-						onNotesChanged={onNotesChanged}
 						streaming={streaming}
 						clipFences={clipFences}
 						onFileLink={onFileLink}

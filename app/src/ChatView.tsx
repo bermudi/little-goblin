@@ -52,6 +52,8 @@ import type {
   AppRatedReply,
 } from "../../src/http/app-wire.ts";
 import { ResumeGate } from "./chat/resumeGate.ts";
+import { makeSseParser } from "./sse.ts";
+import { useLiveStoreOrNull } from "./useLive.tsx";
 import { useReplyRatings } from "./chat/useReplyRatings.ts";
 
 // ---------- the chat ----------
@@ -163,7 +165,6 @@ export function ChatView({
   setStagedSkills,
   noteProjectId,
   onSeeded,
-  onTurnDone,
   onSendAccepted,
   onOpenNote,
   onBranched,
@@ -194,11 +195,6 @@ export function ChatView({
   // The conversation's project — a note-card "New note" binds to it.
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
-  onTurnDone: () => void;
-  // A send's stream response began — the server persisted the user
-  // message before answering, so the conversation's activity stamp
-  // already moved. The host refreshes the rail here, not only at
-  // turn end, so the time tracks the send itself.
   onSendAccepted?: (() => void) | undefined;
   // Note chips + fenced note cards navigate to the note page in-app.
   onOpenNote?: ((id: string) => void) | undefined;
@@ -267,7 +263,6 @@ export function ChatView({
       setStagedSkills={setStagedSkills}
       noteProjectId={noteProjectId}
       onSeeded={onSeeded}
-      onTurnDone={onTurnDone}
       onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
@@ -300,7 +295,6 @@ function Chat({
   setStagedSkills,
   noteProjectId,
   onSeeded,
-  onTurnDone,
   onSendAccepted,
   onOpenNote,
   onBranched,
@@ -332,9 +326,6 @@ function Chat({
   setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
-  onTurnDone: () => void;
-  // See ChatView's prop doc — fired by the transport once per accepted
-  // send, while the turn is still running.
   onSendAccepted?: (() => void) | undefined;
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
@@ -505,7 +496,6 @@ function Chat({
       editBackup.current = null;
       // An aborted reader is not a finished reply — the bell belongs to the real finish.
       if (!isAbort && !isError) notifyDone(title ?? "", messageText(message));
-      onTurnDone();
       // Durable history is reconciled by the independent turn-end event.
     },
     onError: () => {
@@ -598,22 +588,16 @@ function Chat({
           );
           if (!response.ok || response.body === null) throw new Error(`events failed (${response.status})`);
           retry = 250;
+          const parse = makeSseParser((data) => {
+            const event = JSON.parse(data) as AppConversationEvent;
+            onConversationEvent(event, firstState);
+            if (event.type === "state" && firstState) firstState = false;
+          });
           const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
           while (!controller.signal.aborted) {
             const { value, done } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const frames = buffer.split("\n\n");
-            buffer = frames.pop() ?? "";
-            for (const frame of frames) {
-              const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
-              if (data === undefined) continue;
-              const event = JSON.parse(data) as AppConversationEvent;
-              onConversationEvent(event, firstState);
-              if (event.type === "state" && firstState) firstState = false;
-            }
+            parse(value);
           }
         } catch (err) {
           if (controller.signal.aborted) return;
@@ -655,6 +639,7 @@ function Chat({
         console.error("Couldn't resume stream", err),
       );
   };
+  const live = useLiveStoreOrNull();
   const onConversationEvent = useEffectEvent(
     (event: AppConversationEvent, firstState: boolean) => {
       const activeReader = gate.readerAttached;
@@ -679,6 +664,7 @@ function Chat({
         setSubmitPending(false);
         refreshTranscript();
         refreshPending();
+        if (live !== null && live.status() !== "live") void live.refresh("conversations");
       } else if (event.type === "rewound") {
         setMessages((current) => rewindTranscript(current, event));
         refreshTranscript();
@@ -1147,7 +1133,6 @@ function Chat({
                       }
                       messages={hasUiPart(m.parts) ? displayed : undefined}
                       onOpenNote={onOpenNote}
-                      onNotesChanged={onTurnDone}
                       onAction={onUiAction}
                     />
                     <ActionBar

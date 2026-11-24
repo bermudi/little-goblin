@@ -1,6 +1,10 @@
 // App-side test helpers (the server suite's namesake is src/testkit.ts).
 // The in-app confirm (confirm.tsx) renders real DOM — tests answer it by
 // clicking its buttons, the way the operator would.
+import { createElement, type ReactElement, type ReactNode } from "react";
+import { LiveStore } from "./live.ts";
+import { LiveProvider } from "./useLive.tsx";
+
 export function confirmSheet(root: ParentNode): HTMLElement | null {
 	return root.querySelector<HTMLElement>('[role="alertdialog"]');
 }
@@ -17,11 +21,40 @@ export function clickConfirm(root: ParentNode, ok: boolean): void {
 	button.click();
 }
 
+const liveEncoder = new TextEncoder();
+
+export const goblinLive: {
+	feed: ReadableStreamDefaultController<Uint8Array> | null;
+} = { feed: null };
+
+export function emitLiveVersions(versions: Record<string, string>): void {
+	goblinLive.feed?.enqueue(
+		liveEncoder.encode(`data: ${JSON.stringify({ type: "versions", versions })}\n\n`),
+	);
+}
+
 export function goblinFeedResponse(url: string): Response | null {
 	if (url === "/api/app/activity") return Response.json({ busy: [], otherBusy: 0, posts: [] });
 	if (url === "/api/app/delegations") return Response.json({ delegations: [] });
 	if (url === "/api/app/programs") return Response.json({ programs: [] });
+	if (url === "/api/app/live") {
+		return new Response(
+			new ReadableStream({
+				start(controller) {
+					goblinLive.feed = controller;
+					controller.enqueue(
+						liveEncoder.encode('data: {"type":"versions","versions":{}}\n\n'),
+					);
+				},
+			}),
+			{ headers: { "content-type": "text/event-stream" } },
+		);
+	}
 	return null;
+}
+
+export function withLive(node: ReactNode, store?: LiveStore): ReactElement {
+	return createElement(LiveProvider, { store: store ?? new LiveStore(null), children: node });
 }
 
 export type DesktopPage =

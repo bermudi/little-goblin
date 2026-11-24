@@ -375,9 +375,10 @@ older roll is open; retry and edit act on the roll on screen.
 A send that lands in another conversation hands its reply follow to the view
 mounted for that conversation.
 When the app becomes visible again (a phone PWA resumed from the
-background), it re-reads the chat list and the open transcript and reopens
-the conversation's event stream, so a roll or reply that landed while it was
-hidden shows without a force close.
+background), the live store reconnects its feed and re-reads every list
+topic whose announced version moved, and the open chat re-reads its
+transcript and reopens the conversation's event stream, so a roll or reply
+that landed while it was hidden shows without a force close.
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
@@ -755,11 +756,78 @@ Goblin's avatar in a chat's header, open the Goblin panel as a bottom
 sheet. Every other page has a back control to the chats screen. The
 Telegram door keeps its drawer: its two pages don't warrant more.
 
-**Data.** The panel polls attention, delegations, programs and
-`GET /api/app/activity` every 10 s while the page is visible, and reloads
-when the page returns to the foreground. The activity route lists busy app
+**Data.** The panel's lists are live topics: attention, delegations,
+programs and activity refetch when `/api/app/live` announces their version
+moved (see "Live state" below). The activity route lists busy app
 conversations and counts busy conversations on other channels, so a
 Telegram turn still counts as work.
+
+### Live state (ruling 2026-11-23, #918)
+
+App lists went stale. A chat started on another device never appeared, a
+subagent appeared only when its parent's reply ended, and Programs,
+Delegations and Skills loaded once and stood still. The server now
+announces which list moved, on one stream. Each list route still serves
+its own body.
+
+- **The [live feed](../GLOSSARY.md).** `GET /api/app/live` sends
+  `{type:"versions", versions}`: one version for each topic in
+  `app-live-topics.ts`. The first event comes on attach. Every later event
+  is the whole map again, so a missed event or a reconnect needs no
+  catch-up path.
+- **A version is the body.** It is a hash of what the topic's GET would
+  serve now, made by the same function. The GET echoes it as
+  `x-goblin-version`, so the client re-reads only what moved. The `notes`
+  version covers active and archived notes, because the app shows both;
+  only the unfiltered notes GET carries it.
+- **Why versions and not an event from each store.** No store calls an
+  emitter, so no store can forget to. Other processes and other
+  connections to the same file are covered the same way.
+- **When the server looks.** Every 500 ms it reads `PRAGMA data_version`
+  (commits from other connections), `total_changes()` (its own writes) and
+  `runtime.busyConversations()` (lanes live in memory). If none moved, it
+  reads nothing more. Every 10 s it reads all topics, for facts outside
+  the database. Skills and skill proposals read many files, so they are read
+  only then and when the first subscriber arrives. A new proposal can thus
+  reach Attention up to 10 s late; the rest of Attention has no such delay.
+  With no subscriber both timers are off.
+- **It never counts as a watcher.** Push asks
+  `runtime.conversationEventSubscriberCount`; the feed subscribes to no
+  conversation, so an open app still gets its notifications.
+- **A topic that cannot be read** gets an `error:` version, with one warning
+  when it starts and one line when it recovers. The other topics still
+  announce. The client re-reads it and shows the GET's own error. A skill
+  folder with a problem follows the same rule: the sweep reads it every 10 s,
+  so `listPickerSkills` logs when a problem starts and when it ends.
+- **Cost, measured.** 1000 chats, 500 delegations with 5 KB briefs, 200
+  notes and 50 skills: 25 ms for one read after a change, at most twice a
+  second. `listAppConversations` keeps each chat's preview until its last
+  event id changes; without that the same list took 82 ms.
+- **Rejected.** An emitter in each store: every new writer can forget it. A
+  10 s client poll: offered, not chosen. List bodies on the stream: a second
+  read path beside the GETs.
+
+**Client rules.** One store in the app shell (`app/src/live.ts`) owns the
+feed and one copy of each list. It starts after the auth gate passes.
+
+- **When it re-reads.** A list on screen re-reads when its announced version
+  changed since its last read began and is not the version it holds. While
+  the feed is down, opening a page re-reads that page's lists. A failed read
+  keeps the old data, shows the error above it, and tries again every 10 s
+  while the page is visible.
+- **Own actions do not wait for the feed.** After an action the client
+  re-reads the lists the action changed, so it works with the feed down.
+  Only an own action clears a row error; a background re-read does not.
+- **The feed's life.** Hidden page: no feed. A feed with no event in 10 s or
+  no byte in 40 s is dropped and opened again. Three visible seconds without
+  a live feed, offline included, show "Reconnecting. Marks may be old."
+  under the search field. A 401 on the feed stops it, and the conversations
+  read decides if the token is dead.
+- **Not on the feed.** An open note re-checks on window focus: its own saves
+  move the notes version, and a re-check at each save could race a newer one.
+  An open chat has its own event stream. Memory, Status, Files, Log and
+  Settings load as before. The Attention page still polls memory status
+  while it watches a retry.
 
 **Avatar.** `app/public/goblin-avatar.webp` is the operator's pixel-art
 goblin. The PWA icons use the same picture.

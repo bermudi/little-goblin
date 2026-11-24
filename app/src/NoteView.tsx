@@ -28,6 +28,7 @@ import {
 	restoreNoteVersion,
 } from "./api.ts";
 import { useConfirm } from "./confirm.tsx";
+import { useLiveVersion } from "./useLive.tsx";
 import type { NoteEditorHandle } from "./NoteEditor.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { discardNoteDraft, loadNoteDraft, rawNoteDraft, type NoteDraft } from "./noteDraft.ts";
@@ -123,6 +124,7 @@ export function NotesIndex({
 	const projectName = (id: string | null): string | null =>
 		id === null ? null : (projects.find((p) => p.id === id)?.name ?? "project");
 
+	const notesVersion = useLiveVersion("notes");
 	useEffect(() => {
 		const run = () => {
 			const n = ++seq.current;
@@ -149,19 +151,9 @@ export function NotesIndex({
 				},
 			);
 		};
-		// Debounced on input; immediate on window focus — refresh
-		// without push.
 		const t = setTimeout(run, 200);
-		const onFocus = () => {
-			clearTimeout(t);
-			run();
-		};
-		window.addEventListener("focus", onFocus);
-		return () => {
-			clearTimeout(t);
-			window.removeEventListener("focus", onFocus);
-		};
-	}, [query, filter, token]);
+		return () => clearTimeout(t);
+	}, [query, filter, token, notesVersion]);
 
 	const newNote = () => {
 		if (creatingRef.current) return;

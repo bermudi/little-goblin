@@ -4,8 +4,8 @@
 import { log } from "../log.ts";
 import type { Delegation } from "../delegations.ts";
 import type { Program } from "../programs.ts";
-import type { OperatorRequest } from "./operator-deps.ts";
-import { fail, json, methodNotAllowed, NO_STORE } from "./operator-http.ts";
+import type { OperatorDeps, OperatorRequest } from "./operator-deps.ts";
+import { fail, methodNotAllowed, NO_STORE } from "./operator-http.ts";
 import type {
 	OperatorDelegationItem,
 	OperatorDelegationStopResponse,
@@ -13,32 +13,44 @@ import type {
 	OperatorProgramItem,
 	OperatorProgramsResponse,
 } from "./operator-wire.ts";
+import { versionedJson } from "./live-version.ts";
+
+export function programsBody(
+	deps: Pick<OperatorDeps, "programs">,
+): OperatorProgramsResponse | null {
+	if (!deps.programs) return null;
+	return {
+		programs: deps.programs.list().map(programItem),
+		serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+	};
+}
+
+export function delegationsBody(
+	deps: Pick<OperatorDeps, "delegations">,
+): OperatorDelegationsResponse | null {
+	if (!deps.delegations) return null;
+	return { delegations: deps.delegations.list().map(delegationItem) };
+}
 
 export async function programsRoute(r: OperatorRequest): Promise<Response | null> {
 	const { deps, actor, who, req, tail } = r;
 
 	if (tail === "programs") {
 		if (req.method !== "GET") return methodNotAllowed();
-		if (!deps.programs) {
+		const body = programsBody(deps);
+		if (body === null) {
 			return fail("programs are not wired", 503);
 		}
-		const body: OperatorProgramsResponse = {
-			programs: deps.programs.list().map(programItem),
-			serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-		};
-		return json(body);
+		return versionedJson(body);
 	}
 
 	if (tail === "delegations") {
 		if (req.method !== "GET") return methodNotAllowed();
-		if (!deps.delegations) {
+		const body = delegationsBody(deps);
+		if (body === null) {
 			return fail("delegation is not configured", 503);
 		}
-		const rows = deps.delegations.list();
-		const body: OperatorDelegationsResponse = {
-			delegations: rows.map(delegationItem),
-		};
-		return json(body);
+		return versionedJson(body);
 	}
 
 	const stopMatch = /^delegations\/(\d{1,9})\/stop$/.exec(tail);

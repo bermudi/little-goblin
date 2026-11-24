@@ -2,9 +2,10 @@
 // work first with what it waits for and a direct action, finished work as
 // a paged table, a long brief only in the opened detail.
 import { type CSSProperties, useState } from "react";
-import { listDelegations, stopDelegation } from "./api.ts";
+import { stopDelegation } from "./api.ts";
 import { useConfirm } from "./confirm.tsx";
-import { describe, ts, useLoad } from "./opsShared.tsx";
+import { describe, ts } from "./opsShared.tsx";
+import { useLive, useLiveStore } from "./useLive.tsx";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
 
 const PAGE = 15;
@@ -195,7 +196,8 @@ export function DelegationsView({
 	token: string | null;
 	onOpenConversation?: ((id: string) => void) | undefined;
 }) {
-	const { data, err, reload } = useLoad(() => listDelegations(token));
+	const store = useLiveStore();
+	const { data, error } = useLive("delegations");
 	const [openId, setOpenId] = useState<number | null>(null);
 	const [shown, setShown] = useState(PAGE);
 	// Stop warnings outlive the row's move to Earlier: "stopped" with notes
@@ -204,31 +206,32 @@ export function DelegationsView({
 	const onStopped = (name: string, notes: string[]) => {
 		setWarn(notes.length > 0 ? { name, notes } : null);
 		setOpenId(null);
-		reload();
+		void store.refresh("delegations", "attention");
 	};
-	if (err !== null)
-		return (
-			<div className="ops">
-				<p className="error">{err}</p>
-			</div>
-		);
 	if (data === null)
 		return (
 			<div className="ops">
-				<p className="empty">Loading…</p>
+				{error !== null ? (
+					<p className="error">{describe(error)}</p>
+				) : (
+					<p className="empty">Loading…</p>
+				)}
 			</div>
 		);
 	const onConv = onOpenConversation ?? null;
 	const opened = openId === null ? undefined : data.delegations.find((d) => d.id === openId);
 	if (opened !== undefined) {
 		return (
-			<Detail
-				d={opened}
-				token={token}
-				onBack={() => setOpenId(null)}
-				onConversation={onConv}
-				onStopped={onStopped}
-			/>
+			<>
+				{error !== null && <p className="error">{describe(error)}</p>}
+				<Detail
+					d={opened}
+					token={token}
+					onBack={() => setOpenId(null)}
+					onConversation={onConv}
+					onStopped={onStopped}
+				/>
+			</>
 		);
 	}
 
@@ -242,6 +245,7 @@ export function DelegationsView({
 
 	return (
 		<div className="ops">
+			{error !== null && <p className="error">{describe(error)}</p>}
 			<h2 className="ops-h2">Delegations ({data.delegations.length})</h2>
 			{warn !== null && (
 				<div className="error deleg-stop-warn" role="alert">

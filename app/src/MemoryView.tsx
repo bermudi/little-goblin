@@ -9,6 +9,7 @@ import {
 import { useConfirm } from "./confirm.tsx";
 import { describe } from "./opsShared.tsx";
 import { relTime } from "./memoryShared.tsx";
+import { useLiveStoreOrNull } from "./useLive.tsx";
 import type {
 	MemoryDocDetailResponse,
 	MemoryDocListItem,
@@ -257,6 +258,7 @@ export function MemoryView({
 	const latestFilter = useRef<SavesFilter>({ query: "", token });
 	const seenCompleted = useRef<number | null>(null);
 	const confirm = useConfirm();
+	const live = useLiveStoreOrNull();
 
 	// Live view of the memory queue — polled while the tab is open, and
 	// closely while a retry drains so its progress reads as it happens.
@@ -281,7 +283,10 @@ export function MemoryView({
 		setBlockedBusy(action);
 		setBlockedErr(null);
 		void decideBlockedMemory(token, action)
-			.then(() => getMemoryStatus(token))
+			.then(() => {
+				void live?.refresh("attention");
+				return getMemoryStatus(token);
+			})
 			.then(
 				(s) => setStatus(s),
 				(err: unknown) => setBlockedErr(describe(err)),

@@ -27,6 +27,7 @@ import {
 	confirmSheet,
 	confirmText,
 	type DesktopPage,
+	emitLiveVersions,
 	goblinFeedResponse,
 	openDesktopPage,
 } from "./testkit.ts";
@@ -2368,6 +2369,7 @@ describe("app projects surface", () => {
 	// Conversation creation control: POST /api/app/conversations 500s.
 	let failCreate: boolean;
 	let movePatchFail: boolean;
+	let liveN = 0;
 	// Focus-refresh controls: the note GET fails, or answers with a
 	// remote version newer than the fixture row.
 	let noteGetFail: boolean;
@@ -4912,6 +4914,7 @@ describe("app projects surface", () => {
 	const resume = async () => {
 		await act(async () => {
 			win.document.dispatchEvent(new win.Event("visibilitychange"));
+			emitLiveVersions({ conversations: `c${++liveN}` });
 		});
 		await settle();
 		await settle();
@@ -5350,7 +5353,7 @@ describe("app projects surface", () => {
 		expect((notePatches[0]!.body as { body?: string }).body).toContain("beta bodyx");
 	});
 
-	test("the Attention page's own load refreshes the panel's Needs you", async () => {
+	test("the Attention page and the panel read one copy; an announcement moves both", async () => {
 		attentionItems = ["1", "2", "3", "4"].map(
 			(n): AppAttentionItem => ({
 				id: `delegation-input:${n}`,
@@ -5368,6 +5371,12 @@ describe("app projects surface", () => {
 		attentionItems = [];
 		await click([...needs()!.querySelectorAll("button")].find((b) => b.textContent === "See all 4"));
 		expect(win.location.pathname).toBe("/app/attention");
+		expect(container.textContent).toContain("Delegation needs input — worker 1");
+		liveN += 1;
+		await act(async () => {
+			emitLiveVersions({ attention: `a${liveN}` });
+		});
+		await settle();
 		expect(container.textContent).toContain("All clear");
 		await openNewChat();
 		expect(win.location.pathname).toBe("/app/");
@@ -5518,9 +5527,6 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		});
 		await settle();
 		expect(created).toBe(true);
-		// startChat's refresh — plus possibly one from the seeded turn's
-		// onTurnDone, which lands in the same settle window. Either way
-		// every GET after the held one carries a newer sequence.
 		expect(gets.length).toBeGreaterThanOrEqual(3);
 		await act(async () =>
 			gets[gets.length - 1]!.resolve(
@@ -5720,8 +5726,6 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		await settle();
 	};
 
-	// The pin action on the fixture row rides a PATCH whose success
-	// callback runs the next refresh() — the test-owned refresh trigger.
 	const clickPin = async () => {
 		await click(container.querySelector('[role="toolbar"] button[aria-label="Pin"]'));
 	};
@@ -5734,9 +5738,11 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		);
 		return panel().querySelector('[role="tabpanel"]')!;
 	};
+	let liveN = 0;
 	const reloadPanel = async () => {
+		liveN += 1;
 		await act(async () => {
-			win.document.dispatchEvent(new win.Event("visibilitychange"));
+			emitLiveVersions({ notes: `n${liveN}`, attention: `a${liveN}` });
 		});
 		await settle();
 	};

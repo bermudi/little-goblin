@@ -4,6 +4,7 @@ import { ApiError, createNote, createProject, listNotes, patchProject } from "./
 import { ConversationNav } from "./ConversationList.tsx";
 import { useConfirm } from "./confirm.tsx";
 import { relTime } from "./memoryShared.tsx";
+import { useLiveVersion } from "./useLive.tsx";
 
 type Summary = AppConversationList["conversations"][number];
 
@@ -327,6 +328,7 @@ function ProjectNotes({
 			mounted.current = false;
 		};
 	}, []);
+	const notesVersion = useLiveVersion("notes");
 	useEffect(() => {
 		let live = true;
 		const run = () => {
@@ -343,14 +345,10 @@ function ProjectNotes({
 			);
 		};
 		run();
-		// Refetch on focus — refresh without push, same as the notes
-		// index.
-		window.addEventListener("focus", run);
 		return () => {
 			live = false;
-			window.removeEventListener("focus", run);
 		};
-	}, [token, project.id]);
+	}, [token, project.id, notesVersion]);
 	const newNote = () => {
 		if (creatingRef.current) return;
 		creatingRef.current = true;

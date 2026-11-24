@@ -17,6 +17,7 @@ import type {
 	AppNoteVersion,
 	AppNoteVersionList,
 } from "./app-wire.ts";
+import { versionedJson } from "./live-version.ts";
 
 const noteCreateBody = z.object({
 	title: z.string().trim().min(1).max(200),
@@ -118,6 +119,35 @@ function ifMatchRev(req: Request): number | null {
 	return Number.isSafeInteger(rev) ? rev : null;
 }
 
+export interface NoteListQuery {
+	project: string;
+	q: string | null;
+	archivedOnly: boolean;
+}
+
+export function noteListBody(
+	deps: Pick<AppChannelDeps, "notes">,
+	query: NoteListQuery,
+): AppNoteList {
+	const rows = deps.notes.list({
+		project: query.project,
+		...(query.q !== null && query.q !== "" ? { q: query.q } : {}),
+		...(query.archivedOnly ? { archived: true } : {}),
+		limit: NOTE_LIST_LIMIT + 1,
+	});
+	return {
+		notes: rows.slice(0, NOTE_LIST_LIMIT).map(appNoteSummary),
+		truncated: rows.length > NOTE_LIST_LIMIT,
+	};
+}
+
+export function noteListVersioned(deps: Pick<AppChannelDeps, "notes">): unknown {
+	return {
+		active: noteListBody(deps, { project: "all", q: null, archivedOnly: false }),
+		archived: noteListBody(deps, { project: "all", q: null, archivedOnly: true }),
+	};
+}
+
 export async function handleNotesRoute(
 	req: Request,
 	url: URL,
@@ -136,25 +166,17 @@ export async function handleNotesRoute(
 						: projectParam;
 			const q = url.searchParams.get("q");
 			const archivedOnly = url.searchParams.get("archived") === "1";
-			const rows = deps.notes.list({
-				project,
-				...(q !== null && q !== "" ? { q } : {}),
-				...(archivedOnly ? { archived: true } : {}),
-				limit: NOTE_LIST_LIMIT + 1,
-			});
-			const truncated = rows.length > NOTE_LIST_LIMIT;
-			if (truncated) {
+			const body = noteListBody(deps, { project, q, archivedOnly });
+			if (body.truncated) {
 				log.warn("app note list truncated", {
 					project,
 					q: q ?? null,
 					archived: archivedOnly,
 				});
 			}
-			const body: AppNoteList = {
-				notes: rows.slice(0, NOTE_LIST_LIMIT).map(appNoteSummary),
-				truncated,
-			};
-			return Response.json(body, { headers: NO_STORE });
+			return project === "all" && q === null && archivedOnly === false
+				? versionedJson(body, noteListVersioned(deps))
+				: Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "POST") {
 			const refusedJson = jsonBodyRefusal(req);

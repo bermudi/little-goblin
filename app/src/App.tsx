@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Drawer, DrawerBackdrop, DrawerContent, DrawerTitle } from "@ui-sdk/react/drawer";
 import {
 	Menu,
@@ -28,12 +28,12 @@ import {
 	createConversation,
 	deleteConversation,
 	listConversations,
-	listNotes,
-	listProjects,
 	loadToken,
 	patchConversation,
 	telegramDoor,
 } from "./api.ts";
+import { LiveStore } from "./live.ts";
+import { LiveProvider, useLive, useLiveStatus, useLiveStore } from "./useLive.tsx";
 import { ChatView } from "./ChatView.tsx";
 import { GoblinAvatar } from "./GoblinAvatar.tsx";
 import { GoblinPanel, GoblinProfileHeader, loadPanelOpen, savePanelOpen } from "./GoblinPanel.tsx";
@@ -105,9 +105,6 @@ function observeColumnWidth(column: HTMLElement | null) {
 }
 
 function AppShell() {
-	// First hook, before the gate's early return — hook order must not
-	// depend on which render lets the operator through.
-	const phone = usePhoneWidth();
 	const [token, setToken] = useState<string | null>(loadToken);
 	// Trust mode (appToken unset — the tailnet is the only lock) means a
 	// bare request just works and the gate must never show. With no
@@ -116,22 +113,110 @@ function AppShell() {
 	const [gate, setGate] = useState<"probing" | "shown" | "passed">(
 		token === null ? "probing" : "passed",
 	);
-	const goblin = useGoblinActivity(token, gate === "passed");
-	const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
 	const [probeHint, setProbeHint] = useState<string | null>(null);
-	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(
-		null,
+	const store = useMemo(() => new LiveStore(token), [token]);
+	useEffect(() => {
+		if (gate !== "passed") return;
+		return store.start();
+	}, [store, gate]);
+	useEffect(() => {
+		if (gate !== "probing") return;
+		let live = true;
+		listConversations(null).then(
+			() => live && setGate("passed"),
+			(err) => {
+				if (!live) return;
+				if (!(err instanceof ApiError) || err.status !== 401) {
+					setProbeHint(
+						err instanceof ApiError
+							? err.status === 0
+								? err.message
+								: `The app channel answered ${err.status} — check goblin's log.`
+							: "Couldn't reach goblin — check the tailnet.",
+					);
+				}
+				setGate("shown");
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [gate]);
+
+	if (gate === "probing") {
+		return (
+			<div className="gate">
+				<h1>goblin</h1>
+				<p className="gate-hint">Connecting…</p>
+			</div>
+		);
+	}
+
+	if (gate === "shown") {
+		return (
+			<TokenGate
+				hint={probeHint}
+				onToken={(t) => {
+					setToken(t);
+					setGate("passed");
+				}}
+			/>
+		);
+	}
+
+	return (
+		<LiveProvider store={store}>
+			<AppBody
+				token={token}
+				onDeadToken={() => {
+					clearToken();
+					setToken(null);
+					setProbeHint(null);
+					setGate("shown");
+				}}
+			/>
+		</LiveProvider>
 	);
-	const [rollingChain, setRollingChain] = useState<AppConversationList["rolling"]["chain"]>([]);
+}
+
+const EMPTY_CHAIN: AppConversationList["rolling"]["chain"] = [];
+
+function LiveLost() {
+	const status = useLiveStatus();
+	if (status !== "lost") return null;
+	return (
+		<p className="live-lost" role="status">
+			Reconnecting. Marks may be old.
+		</p>
+	);
+}
+
+function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: () => void }) {
+	const phone = usePhoneWidth();
+	const live = useLiveStore();
+	const goblin = useGoblinActivity();
+	const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
+	const conversationsLive = useLive("conversations");
+	const projectsLive = useLive("projects");
+	const notesLive = useLive("notes");
+	const conversations = conversationsLive.data?.conversations ?? null;
+	const rollingChain = conversationsLive.data?.rolling.chain ?? EMPTY_CHAIN;
+	const projects = projectsLive.data?.projects ?? null;
+	const notes = notesLive.data?.notes ?? null;
+	const notesError = notesLive.error !== null;
+	const convError = conversationsLive.error;
+	const listError =
+		convError instanceof ApiError && convError.status === 401
+			? "unauthorized"
+			: convError !== null || projectsLive.error !== null
+				? "list failed"
+				: null;
 	const [rollingViewing, setRollingViewing] = useState<string | null>(null);
 	const [rollingRouted, setRollingRouted] = useState<string | null>(null);
 	const [rollingFollow, setRollingFollow] = useState<{
 		conversationId: string;
 		messageId: string;
 	} | null>(null);
-	// Every project, archived included — the rail shows only the active
-	// ones.
-	const [projects, setProjects] = useState<AppProject[] | null>(null);
 	const [sourcesOpen, setSourcesOpen] = useState(false);
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
@@ -145,14 +230,13 @@ function AppShell() {
 		setChatWidthState(width);
 		saveChatWidth(width);
 	};
-	const [listError, setListError] = useState<string | null>(null);
-	// Per-action failures — cleared by the next successful action or
-	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
+	const acted = (...topics: Parameters<typeof live.refresh>) => {
+		setRowError(null);
+		return live.refresh(...topics);
+	};
 	const [headerRenaming, setHeaderRenaming] = useState(false);
 	const [railHidden, setRailHidden] = useState(false);
-	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
-	const [notesError, setNotesError] = useState(false);
 	// A pending rail create may navigate only while its original route
 	// still owns the screen, even if the operator later returns there.
 	const navigationSeq = useRef(0);
@@ -212,7 +296,6 @@ function AppShell() {
 	// for the undo window.
 	const [heldDeletes, setHeldDeletes] = useState<ReadonlySet<string>>(new Set());
 	const rowRemovedLatest = useRef<(id: string) => void>(() => {});
-	const listSeq = useRef(0);
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
 	const deepApplied = useRef(false);
@@ -363,69 +446,10 @@ function AppShell() {
 	}, [navigation]);
 
 	useEffect(() => {
-		if (gate !== "probing") return;
-		let live = true;
-		listConversations(null).then(
-			() => live && setGate("passed"),
-			(err) => {
-				if (!live) return;
-				if (!(err instanceof ApiError) || err.status !== 401) {
-					setProbeHint(
-						err instanceof ApiError
-							? err.status === 0
-								? err.message
-								: `The app channel answered ${err.status} — check goblin's log.`
-							: "Couldn't reach goblin — check the tailnet.",
-					);
-				}
-				setGate("shown");
-			},
-		);
-		return () => {
-			live = false;
-		};
-	}, [gate]);
-
-	const refresh = useCallback(async () => {
-		const seq = ++listSeq.current;
-		try {
-			const [listR, plistR, nlistR] = await Promise.allSettled([
-				listConversations(token),
-				listProjects(token),
-				listNotes(token),
-			]);
-			if (seq !== listSeq.current) return;
-			if (listR.status === "rejected") throw listR.reason;
-			if (plistR.status === "rejected") throw plistR.reason;
-			setConversations(listR.value.conversations);
-			setRollingChain(listR.value.rolling.chain);
-			setRollingRouted((id) =>
-				id !== null && listR.value.rolling.chain[0]?.id === id ? null : id,
-			);
-			setProjects(plistR.value.projects);
-			setNotesError(nlistR.status === "rejected");
-			if (nlistR.status === "fulfilled") {
-				setNotes(nlistR.value.notes);
-			}
-			setListError(null);
-			setRowError(null);
-		} catch (err) {
-			// Same fence as the success path — a stale failure arriving
-			// after a newer refresh settled must not paint over its state.
-			if (seq !== listSeq.current) return;
-			setListError(err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed");
+		if (rollingRouted !== null && rollingChain[0]?.id === rollingRouted) {
+			setRollingRouted(null);
 		}
-	}, [token]);
-
-	useEffect(() => {
-		if (gate !== "passed") return;
-		void refresh();
-		const resumed = () => {
-			if (document.visibilityState === "visible") void refresh();
-		};
-		document.addEventListener("visibilitychange", resumed);
-		return () => document.removeEventListener("visibilitychange", resumed);
-	}, [gate, refresh]);
+	}, [rollingRouted, rollingChain]);
 
 	// A /app/c/<id> load selects that conversation once the list
 	// arrives.
@@ -550,40 +574,10 @@ function AppShell() {
 			<div className="gate">
 				<h1>goblin</h1>
 				<p className="error">The stored token stopped working.</p>
-				<button
-					type="button"
-					onClick={() => {
-						clearToken();
-						setToken(null);
-						setListError(null);
-						setProbeHint(null);
-						setGate("shown");
-					}}
-				>
+				<button type="button" onClick={onDeadToken}>
 					Paste a new token
 				</button>
 			</div>
-		);
-	}
-
-	if (gate === "probing") {
-		return (
-			<div className="gate">
-				<h1>goblin</h1>
-				<p className="gate-hint">Connecting…</p>
-			</div>
-		);
-	}
-
-	if (gate === "shown") {
-		return (
-			<TokenGate
-				hint={probeHint}
-				onToken={(t) => {
-					setToken(t);
-					setGate("passed");
-				}}
-			/>
 		);
 	}
 
@@ -622,8 +616,7 @@ function AppShell() {
 	const unarchive = (c: AppConversationList["conversations"][number]) => {
 		void patchConversation(token, c.id, { archived: false }).then(
 			() => {
-				setRowError(null);
-				void refresh();
+				void acted("conversations");
 			},
 			(err: unknown) =>
 				setRowError(
@@ -671,11 +664,15 @@ function AppShell() {
 					() => {
 						// Drop the row before releasing the hold, so it can't
 						// reappear while (or if) the refresh is pending or fails.
-						setConversations((prev) => prev?.filter((x) => x.id !== c.id) ?? prev);
+						live.update("conversations", (d) =>
+							d === null
+								? d
+								: { ...d, conversations: d.conversations.filter((x) => x.id !== c.id) },
+						);
 						release();
 						// It may have been reopened (search, history) during the window.
 						rowRemovedLatest.current(c.id);
-						void refresh();
+						void acted("conversations");
 					},
 					(err: unknown) => {
 						release();
@@ -743,7 +740,7 @@ function AppShell() {
 				}
 				try {
 					await deleteConversation(token, created.id);
-					await refresh();
+					await acted("conversations");
 				} catch (err) {
 					setRowError(
 						`Couldn't remove the cancelled conversation: ${err instanceof Error ? err.message : String(err)}`,
@@ -755,7 +752,7 @@ function AppShell() {
 			// The guard above already asked — select's own check would
 			// confirm the still-dirty page a second time.
 			void select(created.id, { skipDirtyGuard: true });
-			await refresh();
+			await acted("conversations");
 			return true;
 		} catch {
 			if (seq === startSeq.current) setStartFailed(true);
@@ -802,16 +799,14 @@ function AppShell() {
 	const currentConv = all.find((c) => c.id === current);
 	const rowActionCallbacks = (c: AppConversationList["conversations"][number]) => ({
 		onToggleArchived: (id: string, isArchived: boolean) => {
-			setRowError(null);
 			if (isArchived) {
 				rowRemoved(id);
 				archivedWithUndo(c);
 			}
-			void refresh();
+			void acted("conversations");
 		},
 		onTogglePinned: () => {
-			setRowError(null);
-			void refresh();
+			void acted("conversations");
 		},
 		onDelete: deleteConversationHeld,
 		onError: setRowError,
@@ -839,7 +834,7 @@ function AppShell() {
 		try {
 			await patchConversation(token, conversationId, { projectId: targetProjectId });
 			setProjectsOpen(true);
-			await refresh();
+			await acted("conversations");
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			if (origin === "list") setRowError(message);
@@ -875,8 +870,7 @@ function AppShell() {
 				}}
 				onOpen={openConversation}
 				onRenamed={() => {
-					setRowError(null);
-					void refresh();
+					void acted("conversations");
 				}}
 				{...callbacks}
 			/>
@@ -1073,6 +1067,7 @@ function AppShell() {
 							</svg>
 						</button>
 					</div>
+					<LiveLost />
 					<div className="rail-body">
 						{query.trim() !== "" ? (
 							searchBody
@@ -1164,8 +1159,7 @@ function AppShell() {
 									conv={currentConv}
 									token={token}
 									onRenamed={() => {
-										setRowError(null);
-										void refresh();
+										void acted("conversations");
 									}}
 									onError={setRowError}
 									onClose={() => setHeaderRenaming(false)}
@@ -1397,6 +1391,7 @@ function AppShell() {
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
+						<LiveLost />
 						{(goblin.attentionError || needsCount > 0) && (
 							<button
 								type="button"
@@ -1435,12 +1430,7 @@ function AppShell() {
 					</p>
 				)}
 				{page === "attention" && (
-					<AttentionView
-						token={token}
-						onPage={openPage}
-						onConversation={openConversation}
-						onItems={goblin.reload}
-					/>
+					<AttentionView token={token} onPage={openPage} onConversation={openConversation} />
 				)}
 				{page === "activity" && (
 					<ActivityView
@@ -1512,7 +1502,12 @@ function AppShell() {
 					/>
 				)}
 				{page === "notes" && (
-					<NotesIndex token={token} projects={projectList} onOpen={openNote} onChanged={refresh} />
+					<NotesIndex
+						token={token}
+						projects={projectList}
+						onOpen={openNote}
+						onChanged={() => void acted("notes")}
+					/>
 				)}
 				{page === "note" && (
 					<div className="chat">
@@ -1526,7 +1521,7 @@ function AppShell() {
 									noteId={noteId}
 									projects={projectList}
 									discardRef={noteDiscard}
-									onChanged={refresh}
+									onChanged={() => void acted("notes")}
 									onChat={(note: AppNote) =>
 										startChat(note.projectId, [
 											{
@@ -1566,7 +1561,7 @@ function AppShell() {
 									project={currentProject}
 									conversations={all}
 									renderRow={(conversation) => renderRow(conversation)}
-									onChanged={() => void refresh()}
+									onChanged={() => void acted("projects", "conversations", "notes")}
 									onOpenNote={openNote}
 									onConversation={openConversation}
 								/>
@@ -1686,11 +1681,10 @@ function AppShell() {
 								setStagedSkills={setStagedSkills}
 								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
-								onTurnDone={() => void refresh()}
-								onSendAccepted={() => void refresh()}
+								onSendAccepted={() => void acted("conversations")}
 								onOpenNote={openNote}
 								onBranched={(id) => {
-									void refresh();
+									void acted("conversations");
 									openConversation(id);
 								}}
 							/>
@@ -1744,7 +1738,7 @@ function AppShell() {
 											conversationId: result.conversationId,
 											messageId: message.id,
 										});
-										await refresh();
+										await acted("conversations");
 										return true;
 									} catch {
 										setStartFailed(true);
@@ -1771,14 +1765,12 @@ function AppShell() {
 							noteProjectId={null}
 							rolling
 							onSeeded={() => {}}
-							onTurnDone={() => void refresh()}
-							onSendAccepted={() => void refresh()}
+							onSendAccepted={() => void acted("conversations")}
 							onRollingAccepted={(id, _rolled, messageId) => {
 								if (id === rollingId) return;
 								setRollingViewing(null);
 								setRollingRouted(id);
 								setRollingFollow({ conversationId: id, messageId });
-								void refresh();
 							}}
 							followAfter={
 								rollingFollow?.conversationId === rollingId
@@ -1911,9 +1903,10 @@ function AppShell() {
 						const moveOrigin = createProjectMoveOrigin;
 						setCreateProjectMoveFor(null);
 						if (moveFor !== null) {
+							void acted("projects");
 							void moveChatToProject(moveFor, p.id, moveOrigin);
 						} else {
-							void refresh();
+							void acted("projects");
 							void openProject(p.id);
 						}
 					}}

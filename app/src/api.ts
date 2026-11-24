@@ -82,6 +82,7 @@ import type {
 	ThinkingLevelsResponse,
 	ThreadSkillsResponse,
 } from "../../src/http/operator-wire.ts";
+import { APP_LIVE_VERSION_HEADER } from "../../src/http/app-live-topics.ts";
 import { z } from "zod";
 
 // sessionStorage, not localStorage — /t/ and /app/ are one origin, so
@@ -170,11 +171,11 @@ async function rawRequest(
 	});
 }
 
-async function requestMeta<T>(
+export async function requestMeta<T>(
 	token: string | null,
 	path: string,
 	init?: RequestInit,
-): Promise<{ data: T; etag: string | null }> {
+): Promise<{ data: T; etag: string | null; version: string | null }> {
 	const res = await rawRequest(token, path, init);
 	if (!res.ok) {
 		let detail = `http ${res.status}`;
@@ -188,7 +189,11 @@ async function requestMeta<T>(
 		}
 		throw new ApiError(res.status, detail, body);
 	}
-	return { data: (await res.json()) as T, etag: res.headers.get("etag") };
+	return {
+		data: (await res.json()) as T,
+		etag: res.headers.get("etag"),
+		version: res.headers.get(APP_LIVE_VERSION_HEADER),
+	};
 }
 
 async function request<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
@@ -227,18 +232,6 @@ export function createConversation(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(opts ?? {}),
 	});
-}
-
-export function listApprovals(token: string | null): Promise<AppApprovalsResponse> {
-	return request(token, "/api/app/approvals");
-}
-
-export function getAttention(token: string | null): Promise<AppAttentionResponse> {
-	return request(token, "/api/app/attention");
-}
-
-export function getActivity(token: string | null): Promise<AppActivityResponse> {
-	return request(token, "/api/app/activity");
 }
 
 export function listPosts(token: string | null, before: number | null): Promise<AppPostsResponse> {
@@ -864,10 +857,6 @@ export function forgetThreadMemories(
 	});
 }
 
-export function listPrograms(token: string | null): Promise<OperatorProgramsResponse> {
-	return request(token, "/api/app/programs");
-}
-
 export function updateProgram(
 	token: string | null,
 	id: number,
@@ -910,10 +899,6 @@ export function programHook(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ op }),
 	});
-}
-
-export function listDelegations(token: string | null): Promise<OperatorDelegationsResponse> {
-	return request(token, "/api/app/delegations");
 }
 
 export function stopDelegation(

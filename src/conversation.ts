@@ -348,6 +348,11 @@ export function openStore(dbPath: string): ConversationStore {
 		summarizeAppConversation,
 	);
 
+	const lastAppEventCache = new Map<
+		string,
+		{ eventId: number; createdAt: string; preview: string }
+	>();
+
 	return {
 		db,
 		memoryQueue,
@@ -546,26 +551,44 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		listAppConversations() {
-			// One operator, one pool — the list is small; a per-row latest
-			// event lookup is cheaper than the join bookkeeping.
 			const out: (AppConversationSummary & { activity: number })[] = [];
+			const seen = new Set<string>();
 			for (const r of qListApp.all()) {
-				const last = qLastAppEvent.get(r.id);
-				const message = last === null ? null : parseEvent(r.id, last.seq, last.role, last.data);
+				seen.add(r.id);
+				const lastId = r.last_event_id;
+				let entry = lastAppEventCache.get(r.id);
+				if (lastId === null) {
+					lastAppEventCache.delete(r.id);
+					entry = undefined;
+				} else if (entry === undefined || entry.eventId !== lastId) {
+					const last = qLastAppEvent.get(r.id);
+					const message =
+						last === null ? null : parseEvent(r.id, last.seq, last.role, last.data);
+					entry = {
+						eventId: lastId,
+						createdAt: last?.created_at ?? r.created_at,
+						preview:
+							message === null ? "" : flatLine(messageText(message)).slice(0, 200),
+					};
+					lastAppEventCache.set(r.id, entry);
+				}
 				out.push({
 					id: r.id,
 					// Titles flatten too; reduced to nothing, they fall through
 					// to the preview.
 					title: r.title === null ? null : flatLine(r.title) || null,
 					createdAt: r.created_at,
-					updatedAt: last?.created_at ?? r.created_at,
-					preview: message === null ? "" : flatLine(messageText(message)).slice(0, 200),
+					updatedAt: entry?.createdAt ?? r.created_at,
+					preview: entry?.preview ?? "",
 					archivedAt: r.archived_at,
 					pinnedAt: r.pinned_at,
 					projectId: r.project_id,
 					parentId: r.parent_conversation_id,
-					activity: last?.id ?? 0,
+					activity: lastId ?? 0,
 				});
+			}
+			for (const cached of lastAppEventCache.keys()) {
+				if (!seen.has(cached)) lastAppEventCache.delete(cached);
 			}
 			// Timestamp first: an eventless conversation (just created, no
 			// message yet) has activity 0 and would sink to the bottom of the

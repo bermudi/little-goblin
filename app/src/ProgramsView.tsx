@@ -6,9 +6,10 @@ import { cronWords } from "../../src/cron-words.ts";
 import type { AppProgramMutationResponse } from "../../src/http/app-wire.ts";
 import type { OperatorProgramItem } from "../../src/http/operator-wire.ts";
 import { ApprovalsPanel, SecretReveal, useApprovals } from "./Approvals.tsx";
-import { deleteProgram, listPrograms, programHook, toggleProgram, updateProgram } from "./api.ts";
+import { deleteProgram, programHook, toggleProgram, updateProgram } from "./api.ts";
 import { useConfirm } from "./confirm.tsx";
-import { KV, ts, tzAbbrev, useLoad } from "./opsShared.tsx";
+import { describe, KV, ts, tzAbbrev } from "./opsShared.tsx";
+import { useLive } from "./useLive.tsx";
 
 // The scheduler scans every 30 s (src/scheduler.ts TICK_MS); a program is
 // only "late" once a few scans have passed its due time.
@@ -68,33 +69,35 @@ export function ProgramsView({
 	token: string | null;
 	now?: number;
 }) {
-	const { data, err, reload } = useLoad(() => listPrograms(token));
-	const approvals = useApprovals(token);
+	const { data, error, refresh } = useLive("programs");
+	const approvals = useApprovals();
 	const [openId, setOpenId] = useState<number | null>(null);
-	if (err !== null)
-		return (
-			<div className="ops">
-				<p className="error">{err}</p>
-			</div>
-		);
 	if (data === null)
 		return (
 			<div className="ops">
-				<p className="empty">Loading…</p>
+				{error !== null ? (
+					<p className="error">{describe(error)}</p>
+				) : (
+					<p className="empty">Loading…</p>
+				)}
 			</div>
 		);
+	const reload = () => void refresh();
 	const timeZone = data.serverTimeZone;
 	const open = data.programs.find((p) => p.id === openId) ?? null;
 	if (open !== null) {
 		return (
-			<ProgramDetail
-				token={token}
-				program={open}
-				now={now}
-				timeZone={timeZone}
-				onBack={() => setOpenId(null)}
-				onChanged={reload}
-			/>
+			<>
+				{error !== null && <p className="error">{describe(error)}</p>}
+				<ProgramDetail
+					token={token}
+					program={open}
+					now={now}
+					timeZone={timeZone}
+					onBack={() => setOpenId(null)}
+					onChanged={reload}
+				/>
+			</>
 		);
 	}
 	const waiting = (approvals.data?.programs.length ?? 0) + (approvals.data?.mail.length ?? 0);
@@ -102,13 +105,14 @@ export function ProgramsView({
 	const late = data.programs.filter((p) => programStatus(p, now).kind === "late").length;
 	return (
 		<div className="ops programs-page">
+			{error !== null && <p className="error">{describe(error)}</p>}
 			<div className="sumstrip">
 				<Tile n={waiting} label="awaiting approval" warn={waiting > 0} />
 				<Tile n={`${enabled}/${data.programs.length}`} label="enabled" />
 				<Tile n={late} label="late" warn={late > 0} />
 			</div>
 			<h2 className="ops-h2">Pending approvals ({waiting})</h2>
-			<ApprovalsPanel token={token} approvals={approvals} onChanged={reload} />
+			<ApprovalsPanel token={token} approvals={approvals} />
 			<h2 className="ops-h2">Programs ({data.programs.length})</h2>
 			{data.programs.length === 0 ? (
 				<p className="empty">No programs defined.</p>

@@ -7,6 +7,7 @@ import { handleApprovalsRoute } from "./app-approvals.ts";
 import { handleChatRoute } from "./app-chat.ts";
 import { handleConfigRoute } from "./app-config.ts";
 import { handleConversationsRoute } from "./app-conversations.ts";
+import { handleLiveRoute } from "./app-live.ts";
 import { handleNotesRoute } from "./app-notes.ts";
 import { handleProgramRoutes } from "./app-programs.ts";
 import { handleProjectsRoute } from "./app-projects.ts";
@@ -91,6 +92,7 @@ export async function handleAppApi(
 	}
 
 	const route =
+		(await handleLiveRoute(req, url, deps)) ??
 		(await handleApprovalsRoute(req, url, deps)) ??
 		(await handleProgramRoutes(req, url, deps)) ??
 		(await handleAttentionRoute(req, url, deps)) ??

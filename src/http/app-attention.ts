@@ -1,11 +1,12 @@
 // Read-only attention projection over the durable owners. Items point at
 // the surface that can resolve them; this module records no second state.
 
-import { listProposedSkills } from "../stateview.ts";
+import { listProposedSkills, type ProposedSkillItem } from "../stateview.ts";
 import { conversationName } from "./operator-memory.ts";
 import { changesSummary, programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttentionItem, AppAttentionPage, AppAttentionResponse } from "./app-wire.ts";
+import { versionedJson } from "./live-version.ts";
 
 // What to do about a failed memory save, from the error text the queue
 // stored (a Hindsight status code or a transport failure). Unknown text
@@ -31,16 +32,19 @@ function pageItem(
 	return { ...rest, target: { kind: "page", page } };
 }
 
-export async function handleAttentionRoute(
-	req: Request,
-	url: URL,
-	deps: AppChannelDeps,
-): Promise<Response | null> {
-	if (url.pathname !== "/api/app/attention") return null;
-	if (req.method !== "GET") {
-		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-	}
+export function proposedSkills(
+	deps: Pick<AppChannelDeps, "operator">,
+): ProposedSkillItem[] | null {
+	const sources = deps.operator?.skillSources;
+	return sources === undefined
+		? null
+		: listProposedSkills(sources.skillsDir, sources.proposedDir);
+}
 
+export function attentionBody(
+	deps: Pick<AppChannelDeps, "approvals" | "operator">,
+	proposed = proposedSkills(deps),
+): AppAttentionResponse {
 	const items: AppAttentionItem[] = [];
 	const unavailable: string[] = [];
 
@@ -153,11 +157,10 @@ export async function handleAttentionRoute(
 		}
 	}
 
-	const skills = deps.operator?.skillSources;
-	if (skills === undefined) {
+	if (proposed === null) {
 		unavailable.push("skills");
 	} else {
-		for (const skill of listProposedSkills(skills.skillsDir, skills.proposedDir)) {
+		for (const skill of proposed) {
 			const { diff } = skill;
 			const counts = (["changed", "added", "removed"] as const)
 				.map((status) => [status, diff.files.filter((f) => f.status === status).length] as const)
@@ -205,6 +208,17 @@ export async function handleAttentionRoute(
 		const bt = b.createdAt === null ? "" : b.createdAt;
 		return at.localeCompare(bt) || a.id.localeCompare(b.id);
 	});
-	const body: AppAttentionResponse = { items, unavailable };
-	return Response.json(body, { headers: NO_STORE });
+	return { items, unavailable };
+}
+
+export async function handleAttentionRoute(
+	req: Request,
+	url: URL,
+	deps: AppChannelDeps,
+): Promise<Response | null> {
+	if (url.pathname !== "/api/app/attention") return null;
+	if (req.method !== "GET") {
+		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+	return versionedJson(attentionBody(deps));
 }

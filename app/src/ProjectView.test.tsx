@@ -4,12 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
+import { LiveStore } from "./live.ts";
 import type {
 	AppConversationList,
 	AppNote,
 	AppProject,
 	AppNoteList,
 } from "../../src/http/app-wire.ts";
+import { emitLiveVersions, goblinFeedResponse, goblinLive, withLive } from "./testkit.ts";
 
 type Summary = AppConversationList["conversations"][number];
 
@@ -172,14 +174,16 @@ describe("main branch regressions", () => {
 			return act(async () => {
 				root!.render(
 					<StrictMode>
-						<ProjectView
-							token={null}
-							project={projRow("Goblin")}
-							conversations={[]}
-							renderRow={(c) => <li key={c.id}>{c.title ?? "chat"}</li>}
-							onChanged={() => {}}
-							onOpenNote={onOpenNote}
-						/>
+						{withLive(
+							<ProjectView
+								token={null}
+								project={projRow("Goblin")}
+								conversations={[]}
+								renderRow={(c) => <li key={c.id}>{c.title ?? "chat"}</li>}
+								onChanged={() => {}}
+								onOpenNote={onOpenNote}
+							/>,
+						)}
 					</StrictMode>,
 				);
 			});
@@ -311,6 +315,8 @@ describe("quiet harbor regressions", () => {
 					input instanceof Request ? input.url : String(input),
 					win.location.href,
 				);
+				const live = goblinFeedResponse(url.pathname);
+				if (live !== null) return live;
 				expect(url.pathname).toBe("/api/app/notes");
 				expect(url.searchParams.get("project")).toBe(project.id);
 				return Response.json(response);
@@ -332,17 +338,21 @@ describe("quiet harbor regressions", () => {
 	});
 
 	test("project notes disclose a capped list and clear the warning after a complete refresh", async () => {
+		const store = new LiveStore(null);
 		root = createRoot(container);
 		await act(async () =>
 			root?.render(
-				<ProjectView
-					token={null}
-					project={project}
-					conversations={[]}
-					renderRow={() => null}
-					onChanged={() => {}}
-					onOpenNote={() => {}}
-				/>,
+				withLive(
+					<ProjectView
+						token={null}
+						project={project}
+						conversations={[]}
+						renderRow={() => null}
+						onChanged={() => {}}
+						onOpenNote={() => {}}
+					/>,
+					store,
+				),
 			),
 		);
 		expect(container.textContent).toContain("Outline");
@@ -352,9 +362,26 @@ describe("quiet harbor regressions", () => {
 		expect(container.textContent).toContain("Use the Notes search");
 
 		response = { ...response, truncated: false };
-		await act(async () => win.dispatchEvent(new win.Event("focus")));
-		expect(container.querySelector('[role="status"]')).toBeNull();
-		expect(container.textContent).toContain("Outline");
+		goblinLive.feed = null;
+		const stop = store.start();
+		const until = async (pred: () => boolean, label: string) => {
+			for (let i = 0; i < 200 && !pred(); i++)
+				await act(async () => {
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				});
+			if (!pred()) throw new Error(`timed out waiting for ${label}`);
+		};
+		try {
+			await until(() => goblinLive.feed !== null, "the live feed");
+			await act(async () => emitLiveVersions({ notes: "n1" }));
+			await until(
+				() => container.querySelector('[role="status"]') === null,
+				"the capped warning to clear",
+			);
+			expect(container.textContent).toContain("Outline");
+		} finally {
+			stop();
+		}
 	});
 });
 
@@ -424,14 +451,16 @@ describe("project page layout (#171)", () => {
 	const view = (over: Partial<AppProject> = {}, convs: Summary[] = []) => {
 		const doc = new Window().document;
 		doc.body.innerHTML = renderToStaticMarkup(
-			<ProjectView
-				token={null}
-				project={{ ...project, ...over }}
-				conversations={convs}
-				renderRow={(c) => <li key={c.id}>{c.id}</li>}
-				onChanged={() => {}}
-				onOpenNote={() => {}}
-			/>,
+			withLive(
+				<ProjectView
+					token={null}
+					project={{ ...project, ...over }}
+					conversations={convs}
+					renderRow={(c) => <li key={c.id}>{c.id}</li>}
+					onChanged={() => {}}
+					onOpenNote={() => {}}
+				/>,
+			),
 		);
 		return doc;
 	};

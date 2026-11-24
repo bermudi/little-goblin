@@ -121,7 +121,12 @@ export function parseSkill(head: string): { fm: Frontmatter } | { err: string } 
 	return { fm };
 }
 
-export function loadCatalog(root: string): SkillCatalog {
+export type CatalogWarn = (msg: string, fields: Record<string, unknown>) => void;
+
+export function loadCatalog(
+	root: string,
+	warn: CatalogWarn = (msg, fields) => log.warn(msg, fields),
+): SkillCatalog {
 	const leaf = basename(root);
 	let dirents;
 	try {
@@ -137,7 +142,7 @@ export function loadCatalog(root: string): SkillCatalog {
 	const skipped: SkippedSkill[] = [];
 	const skip = (name: string, path: string, reason: string) => {
 		skipped.push({ dir: name, reason });
-		log.warn("skill skipped", { path, reason });
+		warn("skill skipped", { path, reason });
 	};
 
 	for (const dirent of dirents) {
@@ -202,7 +207,7 @@ export function loadCatalog(root: string): SkillCatalog {
 	entries.sort((a, b) => a.name.localeCompare(b.name));
 	let capped: number | undefined;
 	if (entries.length > MAX_ENTRIES) {
-		log.warn("skill catalog capped", {
+		warn("skill catalog capped", {
 			root,
 			total: entries.length,
 			kept: MAX_ENTRIES,

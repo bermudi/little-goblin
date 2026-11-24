@@ -8,7 +8,7 @@ injected into that turn and the invocation is stored on the user message.
 
 ## How to get to it (user POV)
 
-- **Browse:** sidebar → Skills. Proposed skills appear before installed ones.
+- **Browse:** Goblin's profile → Skills. Proposed skills appear before installed ones.
 - **Invoke:** Chat composer → **Invoke a skill** → select a catalog entry →
   send a message. On phone widths, **Invoke a skill** is an item in the
   composer's **Add** menu, beside **Attach a file** and **Attach a note**.

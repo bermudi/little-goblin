@@ -6,7 +6,7 @@ Goblin calls the `post` tool; the post shows in the Goblin panel's Activity tab 
 
 ## How to get to it (user POV)
 
-Desktop: the Goblin panel is the right column beside any chat page, Activity tab first. Phone: tap Goblin's avatar in a chat header to open the panel as a sheet.
+Desktop: the Goblin panel is the right column beside any chat page, Activity tab first. Phone: tap Goblin's avatar in the chats bar or a chat's header to open the panel as a sheet.
 
 ## Driving it with agent-browser
 

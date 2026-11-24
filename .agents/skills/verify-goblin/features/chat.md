@@ -6,11 +6,12 @@ Send a message, stream a reply, list the conversation in the rail.
 
 ## How to get to it (user POV)
 
-The app opens on it. Type in the composer and press Send. "New conversation" in the sidebar starts another.
+The app opens in the [Rolling chat](rolling.md). Press New chat (`+` above the list) for an ordinary chat, type in the composer and press Send.
 
 ## Driving it with agent-browser
 
 ```sh
+ab click 'button[aria-label="New chat"]'
 ab fill '[aria-label="Message draft"]' 'hello'
 ab click 'button[aria-label="Send"]'
 ab wait --text 'verify-reply: hello'

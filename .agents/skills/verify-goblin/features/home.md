@@ -1,0 +1,65 @@
+# Home screen
+
+## Sub-features
+
+The start page, a mark on each chat (needs you, new reply, working), the Active section, subagent folds, and Goblin's face.
+
+## How to get to it (user POV)
+
+Open the app: it shows the Rolling chat. On a desktop the list is the left column; on a phone press Back once.
+
+## Driving it with agent-browser
+
+```sh
+DB="$HOME_DIR/state/goblin.sqlite"
+rows() { ab eval 'JSON.stringify([...document.querySelectorAll(".rail-body .conv, .rail-body .kidtoggle")].filter(r => r.offsetParent !== null).map(r => (r.dataset.mark || "-") + " | " + r.innerText.replace(/\n/g, " / ").slice(0, 80)), null, 1)'; }
+ab set viewport 1280 800; ab open "$URL"
+ab get url                                              # ends in /app/rolling
+for t in alpha beta; do
+  ab click 'button[aria-label="New chat"]'
+  ab fill '[aria-label="Message draft"]' "$t"; ab click 'button[aria-label="Send"]'
+  ab wait --text "verify-reply: $t"
+done
+sqlite3 -readonly "$DB" 'select title, read_seq from conversations'   # 2: read on screen
+```
+
+Working, then a new reply. `[slow]` streams for 16 s, so leave the chat while it runs:
+
+```sh
+ab fill '[aria-label="Message draft"]' '[slow] gamma'; ab click 'button[aria-label="Send"]'
+ab wait 600; ab click '.rail-body a[href="/app/rolling"]'
+rows                    # the chat is in Active, "working | Working / ..."
+ab wait 17000; rows     # "new | New reply / ..."
+```
+
+Open the chat: its dot goes away on every device, and `read_seq` moves. The row stays where it is until you leave it.
+
+Needs you. Mail is off here, so write the draft (a fake one, to an `example.com` address) into the throwaway database. With a chat's id as `target` the chat gets the `!`; with `dm:1` it is a row of its own that opens `/app/programs`:
+
+```sh
+ID=$(sqlite3 -readonly "$DB" "select id from conversations where title like '%alpha'")
+sqlite3 "$DB" "insert into mail_outbox (to_json, subject, body, target, status, created_at, expires_at) values
+  ('[\"shop@example.com\"]', 'Order the light', 'x', '$ID', 'pending', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 day')),
+  ('[\"bank@example.com\"]', 'Ask about the fee', 'x', 'dm:1', 'pending', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 day'))"
+ab wait 1500; rows
+ab eval 'document.querySelector(".goblin-panel-toggle").getAttribute("aria-label")'   # Goblin, 2 need you
+sqlite3 "$DB" "update mail_outbox set status = 'discarded'"                           # both rows lose the mark
+```
+
+A subagent: send `[agent find a hotel]` in `alpha`, then open the child and send `[slow] more` there. From any other chat, `alpha` is "working" with a closed "1 subagent" fold.
+
+An older roll: make a second roll ([rolling.md](rolling.md)), open an ordinary chat, then set the first roll's `read_seq` to 0. The Rolling chat row gets the dot and opens that roll.
+
+Project chat: give a chat a `project_id` and `read_seq = 0`. Its row in Active ends with "in <project>", also when its last line is long.
+
+Phone: `ab set viewport 390 844`. A fresh `$URL` shows the Rolling chat, Back shows the list, and a reload there stays on the list.
+
+Lost line: see [live.md](live.md). The marks turn grey.
+
+Proof: the `rows` output and a screenshot for each state, in both themes (`ab set media light`), and the `read_seq` values.
+
+## Gotchas
+
+On a phone the page also holds a hidden copy of the sidebar. Use `.chatlist-screen` there and `.rail-body` on a desktop.
+A `target` that is not a conversation address makes the Attention list fail: the face then shows `?`.
+Opening the URL that is already open is a reload, so it does not prove the start page. Go to another page first.

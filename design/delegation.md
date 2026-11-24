@@ -1,5 +1,8 @@
 # Delegation — goblin design
 
+> **Frozen (operator, 2026-11-24):** fixes only. It stays for runs where the
+> operator names the harness ([decision](decisions/one-assistant.md)).
+
 > **Transport direction (operator, 2026-11-18, issue #728):** `delegate`
 > runs on herdr-core (`hc`), not Herdr. Goblin must “make sure binary X is
 > where you need it or go get it”; “they just need the right hooks installed

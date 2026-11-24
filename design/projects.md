@@ -12,8 +12,8 @@ its source). Classified **machinery** (DESIGN.md → Non-goals): returned on
 demand, designed here before any code.
 
 A project is a scope over the existing turn loop; long work in its directory
-already has a path — delegation through `delegate` (a T3 Code thread),
-cwd = the project's `dir`.
+already has a path — delegation through `delegate` (a terminal on Goblin's
+private hc core, [delegation](delegation.md)), cwd = the project's `dir`.
 
 ### Projects
 

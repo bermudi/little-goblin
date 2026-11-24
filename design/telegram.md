@@ -1,5 +1,8 @@
 # Telegram — goblin design
 
+> **Frozen (operator, 2026-11-24):** fixes only; the DM stays
+> ([decision](decisions/one-assistant.md)).
+
 ## Channel availability (ruling 2026-10-22)
 
 `telegram.enabled` is an explicit boot-pinned channel switch; absent stays

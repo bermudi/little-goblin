@@ -8,6 +8,7 @@ import type {
 	AppAttentionResponse,
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse, SkillsResponse } from "../../src/http/operator-wire.ts";
+import { withLive } from "./testkit.ts";
 
 let win: Window;
 let container: HTMLElement;
@@ -71,7 +72,7 @@ function stubFetch(routes: Record<string, unknown>, seen: Seen[] = []) {
 async function mount(onPage: (p: string) => void = () => {}) {
 	root = createRoot(container);
 	await act(async () =>
-		root?.render(<AttentionView token={null} onPage={onPage} onConversation={() => {}} />),
+		root?.render(withLive(<AttentionView token={null} onPage={onPage} onConversation={() => {}} />)),
 	);
 }
 

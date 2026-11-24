@@ -7,6 +7,7 @@ import { replaceAll } from "@milkdown/kit/utils";
 import { NoteView, NotesIndex } from "./NoteView.tsx";
 import { rawNoteDraft, writeNoteDraft } from "./noteDraft.ts";
 import type { AppNote, AppNoteSummary } from "../../src/http/app-wire.ts";
+import { withLive } from "./testkit.ts";
 
 describe("main branch regressions", () => {
 	const note: AppNote = {
@@ -140,14 +141,16 @@ describe("main branch regressions", () => {
 		root = createRoot(container);
 		await act(async () => {
 			root!.render(
-				<NoteView
-					token={null}
-					noteId={note.id}
-					projects={[]}
-					onChat={onChat}
-					onDeleted={() => {}}
-					discardRef={discardRef}
-				/>,
+				withLive(
+					<NoteView
+						token={null}
+						noteId={note.id}
+						projects={[]}
+						onChat={onChat}
+						onDeleted={() => {}}
+						discardRef={discardRef}
+					/>,
+				),
 			);
 		});
 		for (let i = 0; i < 30 && container.querySelector(".ProseMirror") === null; i++) {
@@ -460,7 +463,7 @@ describe("quiet harbor regressions", () => {
 		const mount = async (el: ReactNode) => {
 			root = createRoot(container);
 			await act(async () => {
-				root?.render(el);
+				root?.render(withLive(el));
 			});
 			await waitFor(() => container.querySelector(".note-title") !== null, "the loaded note page");
 			if (note.archivedAt === null)
@@ -745,7 +748,7 @@ describe("quiet harbor regressions", () => {
 		const mount = async (el: ReactNode) => {
 			root = createRoot(container);
 			await act(async () => {
-				root?.render(el);
+				root?.render(withLive(el));
 			});
 			// The list's own fetch is debounced — a rendered row is the
 			// loaded marker, not the filters that paint immediately.

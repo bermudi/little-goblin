@@ -463,7 +463,6 @@ function MessagePartsView({
   noteProjectId,
   onAction,
   onOpenNote,
-  onNotesChanged,
   clipFences,
   busy,
   streaming,
@@ -480,7 +479,6 @@ function MessagePartsView({
   onAction?: ((text: string) => void) | undefined;
   // Note chips and the fenced note card navigate in-app when wired.
   onOpenNote?: ((id: string) => void) | undefined;
-  onNotesChanged?: (() => void) | undefined;
   // Operator messages: long pasted fences clip to a preview. Model
   // output renders whole — its fences are the answer, not clutter.
   clipFences?: boolean | undefined;
@@ -583,7 +581,6 @@ function MessagePartsView({
               token={token ?? null}
               noteProjectId={noteProjectId}
               onOpenNote={onOpenNote}
-              onNotesChanged={onNotesChanged}
             />,
           );
         }
@@ -614,7 +611,6 @@ function MessagePartsView({
           token={token}
           noteProjectId={noteProjectId}
           onOpenNote={onOpenNote}
-          onNotesChanged={onNotesChanged}
           streaming={streaming}
           clipFences={clipFences}
         />,

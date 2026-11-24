@@ -16,9 +16,10 @@ import type {
 	SkillsResponse,
 	SkillUsageRow,
 } from "../../src/http/operator-wire.ts";
-import { decideSkill, getSkillFile, listSkills } from "./api.ts";
+import { decideSkill, getSkillFile } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
-import { bytes, describe, KV, ts, useLoad } from "./opsShared.tsx";
+import { bytes, describe, KV, ts } from "./opsShared.tsx";
+import { useLive } from "./useLive.tsx";
 
 function plural(n: number, one: string): string {
 	return `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -329,25 +330,26 @@ function SkillDetail({
 }
 
 export function SkillsView({ token }: { token: string | null }) {
-	const { data, err, reload } = useLoad(() => listSkills(token));
+	const { data, error, refresh } = useLive("skills");
 	const [openName, setOpenName] = useState<string | null>(null);
-	if (err !== null)
-		return (
-			<div className="ops">
-				<p className="error">{err}</p>
-			</div>
-		);
 	if (data === null)
 		return (
 			<div className="ops">
-				<p className="empty">Loading…</p>
+				{error !== null ? (
+					<p className="error">{describe(error)}</p>
+				) : (
+					<p className="empty">Loading…</p>
+				)}
 			</div>
 		);
 	const d: SkillsResponse = data;
 	const open = d.skills.find((s) => s.name === openName) ?? null;
 	if (open !== null) {
 		return (
-			<SkillDetail key={open.name} skill={open} token={token} onBack={() => setOpenName(null)} />
+			<>
+				{error !== null && <p className="error">{describe(error)}</p>}
+				<SkillDetail key={open.name} skill={open} token={token} onBack={() => setOpenName(null)} />
+			</>
 		);
 	}
 	const updates = d.proposed.filter((p) => p.diff.kind === "update").length;
@@ -355,6 +357,7 @@ export function SkillsView({ token }: { token: string | null }) {
 	const stale = (d.usage ?? []).filter((u) => u.state === "stale").length;
 	return (
 		<div className="ops skills-page">
+			{error !== null && <p className="error">{describe(error)}</p>}
 			<div className="sumstrip">
 				<Tile n={d.proposed.length} label="awaiting decision" warn={d.proposed.length > 0} />
 				<Tile n={updates} label="updates" />
@@ -367,7 +370,7 @@ export function SkillsView({ token }: { token: string | null }) {
 			) : (
 				<div className="skill-proposals">
 					{d.proposed.map((p) => (
-						<ProposalCard key={p.name} proposal={p} token={token} onDecided={reload} />
+						<ProposalCard key={p.name} proposal={p} token={token} onDecided={() => void refresh()} />
 					))}
 				</div>
 			)}

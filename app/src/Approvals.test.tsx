@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { withLive } from "./testkit.ts";
 import { tzAbbrev } from "../../src/cron-words.ts";
 import type { AppProgramProposal } from "../../src/http/app-wire.ts";
 import { ApprovalCard, ApprovalsPanel, useApprovals } from "./Approvals.tsx";
@@ -69,7 +70,7 @@ const PROPOSAL: AppProgramProposal = {
 
 // The Programs page owns the load; the test stands in for it.
 function Page() {
-	return <ApprovalsPanel token={null} approvals={useApprovals(null)} />;
+	return <ApprovalsPanel token={null} approvals={useApprovals()} />;
 }
 
 const cardButton = (label: string) =>
@@ -100,7 +101,7 @@ test("a granted hook URL stays on screen until the operator dismisses it", async
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<Page />));
+	await act(async () => root?.render(withLive(<Page />)));
 	const approve = cardButton("Approve");
 	expect(approve).toBeDefined();
 	await act(async () => approve?.click());
@@ -140,7 +141,7 @@ test("a decision without a hook URL refreshes immediately", async () => {
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<Page />));
+	await act(async () => root?.render(withLive(<Page />)));
 	const reject = cardButton("Reject");
 	expect(reject).toBeDefined();
 	await act(async () => reject?.click());
@@ -187,7 +188,7 @@ test("an unresolved send warns and allows cancel but never offers a resend", asy
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<Page />));
+	await act(async () => root?.render(withLive(<Page />)));
 	expect(container.textContent).toContain("Check Gmail Sent");
 	expect(container.textContent).toContain("send outcome unresolved");
 	expect(cardButton("Send")?.disabled).toBe(true);
@@ -222,7 +223,7 @@ test("an update card shows old → new per changed field and a line diff for ins
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<Page />));
+	await act(async () => root?.render(withLive(<Page />)));
 	const text = container.querySelector(".approval-changes")?.textContent ?? "";
 	// The old → new cron line carries the server's zone on both sides —
 	// the same surface the facts row renders.

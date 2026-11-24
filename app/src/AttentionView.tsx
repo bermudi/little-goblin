@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type {
 	AppAttentionItem,
 	AppAttentionMemoryCause,
@@ -7,11 +7,12 @@ import type {
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse } from "../../src/http/operator-wire.ts";
 import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
-import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "./api.ts";
+import { decideBlockedMemory, getMemoryStatus } from "./api.ts";
 import { RetryCard } from "./MemoryView.tsx";
-import { describe, useLoad } from "./opsShared.tsx";
+import { describe } from "./opsShared.tsx";
 import { PushControls } from "./PushControls.tsx";
 import { ProposalCard } from "./SkillsView.tsx";
+import { useLive } from "./useLive.tsx";
 
 const KIND_LABEL = {
 	"program-approval": "program",
@@ -202,18 +203,14 @@ export function AttentionView({
 	token,
 	onPage,
 	onConversation,
-	onItems,
 }: {
 	token: string | null;
 	onPage(page: AppAttentionPage): void;
 	onConversation(conversationId: string): void;
-	/** Reports the loaded items so the rail's dot reads this same
-	 *  snapshot. `null` means no truth yet (loading or failed). */
-	onItems?: ((items: AppAttentionItem[] | null) => void) | undefined;
 }) {
-	const attention = useLoad(() => getAttention(token));
-	const skills = useLoad(() => listSkills(token));
-	const approvals = useApprovals(token);
+	const attention = useLive("attention");
+	const skills = useLive("skills");
+	const approvals = useApprovals();
 	const [watching, setWatching] = useState(false);
 	const [memoryStatus, setMemoryStatus] = useState<MemoryStatusResponse | null>(null);
 	const [memoryStatusErr, setMemoryStatusErr] = useState<string | null>(null);
@@ -225,9 +222,7 @@ export function AttentionView({
 	const settled =
 		memoryStatus !== null && memoryStatus.retry !== null && memoryStatus.retry.queued === 0;
 	const polling = watching && !settled;
-	// useLoad's reload is a new function every render; the poll must not restart with it.
-	const reloadAttention = useRef(attention.reload);
-	reloadAttention.current = attention.reload;
+	const reloadAttention = attention.refresh;
 	useEffect(() => {
 		if (!polling) return;
 		let live = true;
@@ -237,7 +232,7 @@ export function AttentionView({
 					if (!live) return;
 					setMemoryStatus(s);
 					setMemoryStatusErr(null);
-					reloadAttention.current();
+					void reloadAttention();
 				},
 				(err: unknown) => {
 					if (!live) return;
@@ -251,24 +246,16 @@ export function AttentionView({
 			live = false;
 			clearInterval(t);
 		};
-	}, [polling, token]);
+	}, [polling, token, reloadAttention]);
 
-	// The rail's dot rides refresh(), but this view's own load is fresher
-	// whenever it's open — report each snapshot so the two can't disagree.
-	useEffect(() => {
-		onItems?.(attention.data === null || attention.err !== null ? null : attention.data.items);
-	}, [attention.data, attention.err, onItems]);
-
-	if (attention.err !== null)
-		return (
-			<div className="ops">
-				<p className="error">{attention.err}</p>
-			</div>
-		);
 	if (attention.data === null)
 		return (
 			<div className="ops">
-				<p className="empty">Loading…</p>
+				{attention.error !== null ? (
+					<p className="error">{describe(attention.error)}</p>
+				) : (
+					<p className="empty">Loading…</p>
+				)}
 			</div>
 		);
 	const { items, unavailable } = attention.data;
@@ -278,9 +265,7 @@ export function AttentionView({
 		else onConversation(target.conversationId);
 	};
 	const reloadAll = async () => {
-		await approvals.refresh();
-		skills.reload();
-		attention.reload();
+		await Promise.all([approvals.refresh(), skills.refresh(), attention.refresh()]);
 	};
 
 	const isBroken = (i: AppAttentionItem) => i.kind === "memory-blocked" && i.memory !== undefined;
@@ -322,9 +307,9 @@ export function AttentionView({
 		}
 		const proposal = skills.data?.proposed.find((p) => p.name === key);
 		if (proposal === undefined)
-			// data === null with err set means listSkills failed — fall
-			// through to OtherCard's Open instead of Loading… forever.
-			return skills.data === null && skills.err === null ? <p className="empty">Loading…</p> : null;
+			return skills.data === null && skills.error === null ? (
+				<p className="empty">Loading…</p>
+			) : null;
 		return (
 			<ProposalCard proposal={proposal} token={token} onDecided={reloadAll}>
 				<IfYouWait>Goblin keeps working with the skills it has.</IfYouWait>
@@ -335,6 +320,7 @@ export function AttentionView({
 	return (
 		<div className="ops attn-page">
 			<h1 className="attn-title">Attention</h1>
+			{attention.error !== null && <p className="error">{describe(attention.error)}</p>}
 			{memoryStatusErr !== null && <p className="error">{memoryStatusErr}</p>}
 			<p className="attn-summary" aria-live="polite">
 				{summaryLine(broken.length, decisions.length, others.length)}
@@ -362,7 +348,7 @@ export function AttentionView({
 											...d,
 											`Dropped ${plural(affected, "exchange")}. They are not in memory.`,
 										]);
-									attention.reload();
+									void attention.refresh();
 								}}
 							/>
 						),

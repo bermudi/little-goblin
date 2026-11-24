@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { DelegationsView } from "./DelegationsView.tsx";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
+import { withLive } from "./testkit.ts";
 
 describe("DelegationsView", () => {
 	let win: Window;
@@ -42,7 +43,7 @@ describe("DelegationsView", () => {
 			)) as unknown as typeof fetch;
 		root = createRoot(container);
 		await act(async () => {
-			root?.render(<DelegationsView token={null} onOpenConversation={open} />);
+			root?.render(withLive(<DelegationsView token={null} onOpenConversation={open} />));
 		});
 	};
 
@@ -83,7 +84,7 @@ describe("DelegationsView", () => {
 		}) as unknown as typeof fetch;
 		root = createRoot(container);
 		await act(async () => {
-			root?.render(<DelegationsView token={null} />);
+			root?.render(withLive(<DelegationsView token={null} />));
 		});
 		const click = async (el: Element | null | undefined) =>
 			act(async () => el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
@@ -108,7 +109,7 @@ describe("DelegationsView", () => {
 		}) as unknown as typeof fetch;
 		root = createRoot(container);
 		await act(async () => {
-			root?.render(<DelegationsView token={null} />);
+			root?.render(withLive(<DelegationsView token={null} />));
 		});
 		const stop = [...container.querySelectorAll("button")].find((b) => b.textContent === "Stop");
 		await act(async () => stop?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));

@@ -829,6 +829,14 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	min-width: 0;
 	flex: 1;
 }
+.live-lost {
+	margin: 0 0 0.2rem;
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+}
+.chatlist-screen .live-lost {
+	margin: 0 1rem 0.5rem;
+}
 .rail-body {
 	flex: 1;
 	min-height: 0;

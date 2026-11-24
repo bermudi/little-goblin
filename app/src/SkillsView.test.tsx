@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { decideSkillProposal } from "../../src/skill-decisions.ts";
 import { listSkills, readSkillFile } from "../../src/stateview.ts";
 import { SkillsView } from "./SkillsView.tsx";
+import { withLive } from "./testkit.ts";
 
 let home: string;
 let win: Window;
@@ -126,7 +127,7 @@ test("proposals come first with their diff open; installed skills say what they 
 	writeSkill(proposed, "tide", "Read tide tables.", "tide body");
 	diskServer(skills, proposed);
 	root = createRoot(container);
-	await act(async () => root?.render(<SkillsView token={null} />));
+	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 
 	const headings = [...container.querySelectorAll(".ops-h2")].map((h) => h.textContent);
 	expect(headings).toEqual(["Proposed (2)", "Installed (2)"]);
@@ -158,7 +159,7 @@ test("opening a skill replaces the list with its detail; back returns", async ()
 	writeSkill(skills, "weather", "Look up the forecast.", "live body", ["refs.md", "more"]);
 	diskServer(skills, proposed);
 	root = createRoot(container);
-	await act(async () => root?.render(<SkillsView token={null} />));
+	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 	await act(async () => (container.querySelector(".dt-row") as HTMLElement).click());
 	expect(container.querySelector(".dtable")).toBeNull();
 	expect(container.querySelector(".prose")?.textContent).toBe("Look up the forecast.");
@@ -178,7 +179,7 @@ test("Install update puts the proposed files on disk and the proposal leaves the
 	const posts: { name: string; action: string }[] = [];
 	diskServer(skills, proposed, posts);
 	root = createRoot(container);
-	await act(async () => root?.render(<SkillsView token={null} />));
+	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 	await act(async () => button(container, "Install update")?.click());
 	expect(posts).toEqual([{ name: "weather", action: "install" }]);
 	expect(readFileSync(join(skills, "weather/SKILL.md"), "utf8")).toContain("updated body");
@@ -195,7 +196,7 @@ test("discarding an update deletes the staged copy, never the installed one", as
 	const posts: { name: string; action: string }[] = [];
 	diskServer(skills, proposed, posts);
 	root = createRoot(container);
-	await act(async () => root?.render(<SkillsView token={null} />));
+	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 	await act(async () => button(container, "Discard update")?.click());
 	expect(posts).toEqual([{ name: "weather", action: "discard" }]);
 	expect(existsSync(join(proposed, "weather"))).toBe(false);
@@ -210,7 +211,7 @@ test("a skill without frontmatter still lists, saying it has no description", as
 	writeFileSync(join(skills, "bare/SKILL.md"), "just text");
 	diskServer(skills, join(home, "proposed"));
 	root = createRoot(container);
-	await act(async () => root?.render(<SkillsView token={null} />));
+	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 	expect(container.querySelector(".dt-row")?.textContent).toContain("No description");
 });
 
@@ -232,7 +233,7 @@ test("a slow file response never overwrites a newer selection", async () => {
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<SkillsView token={null} />));
+	await act(async () => root?.render(withLive(<SkillsView token={null} />)));
 	await act(async () => (container.querySelector(".dt-row") as HTMLElement).click());
 	// SKILL.md was requested on open; the operator then picks b.md.
 	await act(async () => button(container, "b.md")?.click());

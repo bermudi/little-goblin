@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { cronWords, tzAbbrev } from "../../src/cron-words.ts";
 import type {
 	AppApprovalDecisionResponse,
@@ -7,8 +7,10 @@ import type {
 	AppProgramChange,
 	AppProgramProposal,
 } from "../../src/http/app-wire.ts";
-import { decideMailApproval, decideProgramApproval, listApprovals } from "./api.ts";
+import { decideMailApproval, decideProgramApproval } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
+import { describe } from "./opsShared.tsx";
+import { useLive } from "./useLive.tsx";
 
 export interface ApprovalState {
 	data: AppApprovalsResponse | null;
@@ -17,24 +19,14 @@ export interface ApprovalState {
 	refresh(): Promise<void>;
 }
 
-export function useApprovals(token: string | null): ApprovalState {
-	const [data, setData] = useState<AppApprovalsResponse | null>(null);
-	const [err, setErr] = useState<string | null>(null);
-	const [loading, setLoading] = useState(true);
-	const refresh = useCallback(async () => {
-		try {
-			setData(await listApprovals(token));
-			setErr(null);
-		} catch (e) {
-			setErr(e instanceof Error ? e.message : String(e));
-		} finally {
-			setLoading(false);
-		}
-	}, [token]);
-	useEffect(() => {
-		void refresh();
-	}, [refresh]);
-	return { data, err, loading, refresh };
+export function useApprovals(): ApprovalState {
+	const { data, error, refresh } = useLive("approvals");
+	return {
+		data,
+		err: error === null ? null : describe(error),
+		loading: data === null && error === null,
+		refresh,
+	};
 }
 
 export function ApprovalCard({
@@ -46,7 +38,7 @@ export function ApprovalCard({
 	kind: "program" | "mail";
 	id: number;
 }) {
-	const approvals = useApprovals(token);
+	const approvals = useApprovals();
 	if (approvals.loading) return <div className="approval-card empty">Loading approval…</div>;
 	if (approvals.err !== null) return <div className="approval-card error">{approvals.err}</div>;
 	const item =

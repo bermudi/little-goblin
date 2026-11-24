@@ -5,9 +5,10 @@ import { paths } from "../home-layout.ts";
 import { checkInjection } from "../injection.ts";
 import { log } from "../log.ts";
 import { liveStateOf, skillDiskPresence, skillNameSchema } from "../skill-provenance.ts";
-import { listSkills, listSkillsWithUsage, readSkillFile } from "../stateview.ts";
-import type { OperatorRequest } from "./operator-deps.ts";
+import { listSkills, listSkillsWithUsage, readSkillFile, type SkillsResponse } from "../stateview.ts";
+import type { OperatorDeps, OperatorRequest } from "./operator-deps.ts";
 import { fail, json, methodNotAllowed, readBody, SEGMENT_SCHEMA } from "./operator-http.ts";
+import { versionedJson } from "./live-version.ts";
 import type {
 	SkillDecideResponse,
 	SkillForgetResponse,
@@ -26,25 +27,27 @@ const REL_PATH_SCHEMA = z
 
 const conversationBody = z.object({ conversation: z.string().min(1).max(256) });
 
+export function skillsBody(deps: Pick<OperatorDeps, "skillSources">): SkillsResponse {
+	const sources = deps.skillSources;
+	if (sources === undefined) return listSkills(paths.skills(), paths.skillsProposed());
+	// The app skills read carries usage/state and the archived list
+	// (design/skills.md → Self-authoring, /learn, curator). A corrupt
+	// sidecar fails loud here like every state read.
+	return listSkillsWithUsage(
+		sources.skillsDir,
+		sources.proposedDir,
+		sources.archiveDir,
+		sources.usagePath,
+		sources.managedNames(),
+	);
+}
+
 export async function skillsRoute(r: OperatorRequest): Promise<Response | null> {
 	const { deps, actor, who, req, tail, url } = r;
 
 	if (tail === "skills") {
 		if (req.method !== "GET") return methodNotAllowed();
-		const sources = deps.skillSources;
-		if (sources === undefined) return json(listSkills(paths.skills(), paths.skillsProposed()));
-		// The app skills read carries usage/state and the archived list
-		// (design/skills.md → Self-authoring, /learn, curator). A corrupt
-		// sidecar fails loud here like every state read.
-		return json(
-			listSkillsWithUsage(
-				sources.skillsDir,
-				sources.proposedDir,
-				sources.archiveDir,
-				sources.usagePath,
-				sources.managedNames(),
-			),
-		);
+		return versionedJson(skillsBody(deps));
 	}
 
 	if (tail === "skills/from") {

@@ -44,7 +44,8 @@ import { makeWatchObserver } from "./watch-observer.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
-import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
+import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
+import { openAppLive } from "./http/app-live.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
@@ -661,6 +662,40 @@ async function boot() {
 	if (delegationLifecycle !== null) {
 		operatorSeams.stopDelegation = (id) => delegationLifecycle.stopByOperator(id);
 	}
+	const appDepsPreLive: Omit<AppChannelDeps, "live"> = {
+		store,
+		runtime,
+		projects,
+		notes,
+		posts,
+		auth,
+		configRef,
+		gate: () => system1Gate ?? undefined,
+		onConfigWritten,
+		// Same seams the mini-app door reads — app-channel mounts
+		// them under /api/app/* with the bearer/trust gate.
+		operator: operatorSeams,
+		// Both doors reach the same durable CAS owners; this route
+		// supplies the authenticated app actor, never transport authority.
+		approvals: { program: programApproval, mail: mailApproval },
+		programOps,
+		push: appPush,
+		// Same intake seam as the tg lane — speech uploads transcribe before submit.
+		transcribe: transcribeFile,
+		// Null = unconfigured or ffmpeg-down — the endpoint answers 503
+		// rather than failing mid-synthesis (tts.ts owns the gate).
+		speak,
+		windowCapture,
+		titleFor,
+		// Selection rewrite — the configured root model/thinking;
+		// generation only, the accepted proposal returns via PATCH.
+		rewriteNote: (noteId, input, signal) =>
+			generateNoteRewrite(
+				{ configRef, auth, observation: cacheObservations },
+				{ noteId, selection: input.selection, instruction: input.instruction, signal },
+			),
+	};
+	const appDeps: AppChannelDeps = { ...appDepsPreLive, live: openAppLive(appDepsPreLive) };
 	// The telegram config-disable latch is registered inside
 	// openTelegramAttach — at open, still before HTTP can accept a save,
 	// even if it arrives before the deferred task starts.
@@ -687,40 +722,7 @@ async function boot() {
 		// The app handler stays opaque here: app-channel.ts imports the
 		// runtime/AI-SDK graph, which must not enter http/mod.ts's DOM-lib
 		// typecheck program.
-		appApi: (req, url) =>
-			handleAppApi(req, url, appTokenName, {
-				store,
-				runtime,
-				projects,
-				notes,
-				posts,
-				auth,
-				configRef,
-				gate: () => system1Gate ?? undefined,
-				onConfigWritten,
-				// Same seams the mini-app door reads — app-channel mounts
-				// them under /api/app/* with the bearer/trust gate.
-				operator: operatorSeams,
-				// Both doors reach the same durable CAS owners; this route
-				// supplies the authenticated app actor, never transport authority.
-				approvals: { program: programApproval, mail: mailApproval },
-				programOps,
-				push: appPush,
-				// Same intake seam as the tg lane — speech uploads transcribe before submit.
-				transcribe: transcribeFile,
-				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
-				// rather than failing mid-synthesis (tts.ts owns the gate).
-				speak,
-				windowCapture,
-				titleFor,
-				// Selection rewrite — the configured root model/thinking;
-				// generation only, the accepted proposal returns via PATCH.
-				rewriteNote: (noteId, input, signal) =>
-					generateNoteRewrite(
-						{ configRef, auth, observation: cacheObservations },
-						{ noteId, selection: input.selection, instruction: input.instruction, signal },
-					),
-			}),
+		appApi: (req, url) => handleAppApi(req, url, appTokenName, appDeps),
 		onConfigWritten,
 	});
 

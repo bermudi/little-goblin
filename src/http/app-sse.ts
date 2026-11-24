@@ -3,8 +3,66 @@ import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.
 import { log } from "../log.ts";
 import { every, type Timer } from "../timing.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
+import { NO_STORE } from "./app-shared.ts";
 
 const SSE_HEARTBEAT_MS = 5_000;
+
+export function eventStream<E>(
+	req: Request,
+	opts: {
+		keepaliveMs: number;
+		label: string;
+		open(push: (event: E) => void): () => void;
+		onClose(): void;
+	},
+): Response {
+	const encoder = new TextEncoder();
+	let controller!: ReadableStreamDefaultController<Uint8Array>;
+	let closed = false;
+	let cancelled = false;
+	let unsubscribe = () => {};
+	let keepalive: Timer | undefined;
+	const send = (frame: string) => {
+		if (closed) return;
+		try {
+			controller.enqueue(encoder.encode(`${frame}\n\n`));
+		} catch {
+			close();
+		}
+	};
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		keepalive?.cancel();
+		unsubscribe();
+		req.signal.removeEventListener("abort", onAbort);
+		if (!cancelled) controller.close();
+		opts.onClose();
+	};
+	const onAbort = () => close();
+	const body = new ReadableStream<Uint8Array>({
+		start(c) {
+			controller = c;
+			unsubscribe = opts.open((event) => send(`data: ${JSON.stringify(event)}`));
+			if (closed) {
+				unsubscribe();
+				return;
+			}
+			keepalive = every(opts.keepaliveMs, `${opts.label} keepalive`, () => send(": keepalive"), {
+				unref: true,
+			});
+			req.signal.addEventListener("abort", onAbort, { once: true });
+			if (req.signal.aborted) close();
+		},
+		cancel() {
+			cancelled = true;
+			close();
+		},
+	});
+	return new Response(body, {
+		headers: { ...NO_STORE, "content-type": "text/event-stream; charset=utf-8" },
+	});
+}
 
 export function appSseWriter(
 	convId: string,

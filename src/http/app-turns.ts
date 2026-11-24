@@ -1,8 +1,8 @@
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { z } from "zod";
 import { log } from "../log.ts";
-import { every, type Timer, within } from "../timing.ts";
-import { appSseWriter } from "./app-sse.ts";
+import { within } from "../timing.ts";
+import { appSseWriter, eventStream } from "./app-sse.ts";
 import {
 	type AppChannelDeps,
 	conversationFromSegment,
@@ -46,51 +46,18 @@ export async function handleTurnsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const encoder = new TextEncoder();
-		let controller!: ReadableStreamDefaultController<Uint8Array>;
-		let closed = false;
-		let cancelled = false;
-		let unsubscribe = () => {};
-		let keepalive: Timer | undefined;
-		const push = (event: AppConversationEvent | null) => {
-			if (closed) return;
-			try {
-				controller.enqueue(
-					encoder.encode(event === null ? ": keepalive\n\n" : `data: ${JSON.stringify(event)}\n\n`),
-				);
-			} catch {
-				close();
-			}
-		};
-		const close = () => {
-			if (closed) return;
-			closed = true;
-			keepalive?.cancel();
-			unsubscribe();
-			req.signal.removeEventListener("abort", onAbort);
-			if (!cancelled) controller.close();
-			log.info("app conversation events detach", { conversation: convId.id });
-		};
-		const onAbort = () => close();
-		const body = new ReadableStream<Uint8Array>({
-			start(c) {
-				controller = c;
-				unsubscribe = runtime.subscribeConversation(convId.id, (event) => push(event));
+		return eventStream<AppConversationEvent>(req, {
+			keepaliveMs: EVENT_KEEPALIVE_MS,
+			label: "app conversation events",
+			open(push) {
+				const unsubscribe = runtime.subscribeConversation(convId.id, (event) => push(event));
 				push({ type: "state", live: runtime.conversationLive(convId.id) });
-				keepalive = every(EVENT_KEEPALIVE_MS, "app conversation events keepalive", () => push(null), {
-					unref: true,
-				});
-				req.signal.addEventListener("abort", onAbort, { once: true });
 				log.info("app conversation events attach", { conversation: convId.id });
-				if (req.signal.aborted) close();
+				return unsubscribe;
 			},
-			cancel() {
-				cancelled = true;
-				close();
+			onClose() {
+				log.info("app conversation events detach", { conversation: convId.id });
 			},
-		});
-		return new Response(body, {
-			headers: { ...NO_STORE, "content-type": "text/event-stream; charset=utf-8" },
 		});
 	}
 

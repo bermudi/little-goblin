@@ -3,13 +3,14 @@ import { APP_ID_PREFIX } from "../conversation-address.ts";
 import type { Post } from "../posts.ts";
 import type { AppActivityResponse, AppPost, AppPostsResponse } from "./app-wire.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
+import { versionedJson } from "./live-version.ts";
 
 const POSTS_SHOWN = 20;
 export const POSTS_PAGE = 50;
 
 const beforeSchema = z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
-function appPost(post: Post, deps: AppChannelDeps): AppPost {
+function appPost(post: Post, deps: Pick<AppChannelDeps, "store">): AppPost {
 	const id = post.conversationId;
 	const linked = id.startsWith(APP_ID_PREFIX) && deps.store.get(id) !== null;
 	return {
@@ -39,16 +40,9 @@ function handlePostsRoute(req: Request, url: URL, deps: AppChannelDeps): Respons
 	);
 }
 
-export async function handleActivityRoute(
-	req: Request,
-	url: URL,
-	deps: AppChannelDeps,
-): Promise<Response | null> {
-	if (url.pathname === "/api/app/posts") return handlePostsRoute(req, url, deps);
-	if (url.pathname !== "/api/app/activity") return null;
-	if (req.method !== "GET") {
-		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-	}
+export function activityBody(
+	deps: Pick<AppChannelDeps, "runtime" | "store" | "posts">,
+): AppActivityResponse {
 	const ids = deps.runtime.busyConversations();
 	const appIds = ids.filter((id) => id.startsWith(APP_ID_PREFIX));
 	const otherBusy = ids.length - appIds.length;
@@ -66,7 +60,18 @@ export async function handleActivityRoute(
 		busy.push({ id, title: row.title, parentId: row.parentId, rolling: false });
 	}
 	const posts = deps.posts.recent(POSTS_SHOWN).map((post) => appPost(post, deps));
-	return Response.json({ busy, otherBusy, posts } satisfies AppActivityResponse, {
-		headers: NO_STORE,
-	});
+	return { busy, otherBusy, posts };
+}
+
+export async function handleActivityRoute(
+	req: Request,
+	url: URL,
+	deps: AppChannelDeps,
+): Promise<Response | null> {
+	if (url.pathname === "/api/app/posts") return handlePostsRoute(req, url, deps);
+	if (url.pathname !== "/api/app/activity") return null;
+	if (req.method !== "GET") {
+		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+	return versionedJson(activityBody(deps));
 }

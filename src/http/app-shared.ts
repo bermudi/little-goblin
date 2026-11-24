@@ -19,6 +19,7 @@ import type { ProgramApproval } from "../program-approval.ts";
 import type { ProgramOps } from "../program-ops.ts";
 import type { AppPush } from "../app-push.ts";
 import type { AppConfigPatchResponse, AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
+import type { AppLive } from "./live-version.ts";
 import type { OperatorDeps } from "./operator-deps.ts";
 
 export const NO_STORE = { "cache-control": "no-store" };
@@ -89,6 +90,7 @@ export interface AppChannelDeps {
 		signal: AbortSignal,
 	) => Promise<string>;
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
+	live: AppLive;
 	approvals?: {
 		program: Pick<ProgramApproval, "base" | "candidate" | "decide" | "pending">;
 		mail: Pick<MailApproval, "decide" | "pending">;

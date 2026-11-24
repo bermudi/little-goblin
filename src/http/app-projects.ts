@@ -3,6 +3,7 @@ import { log } from "../log.ts";
 import { type Project, ProjectInputError } from "../projects.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import type { AppProject, AppProjectList } from "./app-wire.ts";
+import { versionedJson } from "./live-version.ts";
 
 const projectCreateBody = z.object({
 	name: z.string().trim().min(1).max(80),
@@ -42,6 +43,10 @@ function appProject(p: Project): AppProject {
 	};
 }
 
+export function projectListBody(deps: Pick<AppChannelDeps, "projects">): AppProjectList {
+	return { projects: deps.projects.list().map(appProject) };
+}
+
 export async function handleProjectsRoute(
 	req: Request,
 	url: URL,
@@ -51,9 +56,9 @@ export async function handleProjectsRoute(
 
 	if (path === "/api/app/projects") {
 		if (req.method === "GET") {
-			const body: AppProjectList = { projects: deps.projects.list().map(appProject) };
+			const body = projectListBody(deps);
 			log.debug("app project list served", { count: body.projects.length });
-			return Response.json(body, { headers: NO_STORE });
+			return versionedJson(body);
 		}
 		if (req.method === "POST") {
 			const refusedJson = jsonBodyRefusal(req);

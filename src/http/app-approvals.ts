@@ -5,6 +5,7 @@ import { APP_ACTOR } from "../targets.ts";
 import { programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE, parsedJson } from "./app-shared.ts";
 import type { AppApprovalDecisionResponse, AppApprovalsResponse } from "./app-wire.ts";
+import { versionedJson } from "./live-version.ts";
 
 const programDecisionBody = z.object({
 	action: z.enum(["approve", "reject"]),
@@ -21,6 +22,48 @@ function approvalUnavailable(): Response {
 	);
 }
 
+export function approvalsBody(
+	deps: Pick<AppChannelDeps, "approvals">,
+): AppApprovalsResponse | null {
+	if (deps.approvals === undefined) return null;
+	const owner = deps.approvals.program;
+	return {
+		programs: owner.pending().map((proposal) => {
+			const candidate = owner.candidate(proposal);
+			const base = owner.base(proposal);
+			return {
+				id: proposal.id,
+				kind: proposal.kind,
+				targetId: proposal.targetId,
+				target: proposal.target,
+				state: proposal.state,
+				createdAt: proposal.createdAt,
+				decidedAt: proposal.decidedAt,
+				decidedBy: proposal.decidedBy,
+				activatedId: proposal.activatedId,
+				candidate,
+				changes: candidate !== null && base !== null ? programChanges(base, candidate) : null,
+			};
+		}),
+		mail: deps.approvals.mail.pending().map((row) => ({
+			id: row.id,
+			to: row.to,
+			cc: row.cc,
+			subject: row.subject,
+			body: row.body,
+			replyToId: row.replyToId,
+			target: row.target,
+			status: row.status,
+			createdAt: row.createdAt,
+			expiresAt: row.expiresAt,
+			decidedAt: row.decidedAt,
+			decidedBy: row.decidedBy,
+			sentId: row.sentId,
+		})),
+		serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+	};
+}
+
 export async function handleApprovalsRoute(
 	req: Request,
 	url: URL,
@@ -32,44 +75,9 @@ export async function handleApprovalsRoute(
 		if (req.method !== "GET") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		if (deps.approvals === undefined) return approvalUnavailable();
-		const owner = deps.approvals.program;
-		const body: AppApprovalsResponse = {
-			programs: owner.pending().map((proposal) => {
-				const candidate = owner.candidate(proposal);
-				const base = owner.base(proposal);
-				return {
-					id: proposal.id,
-					kind: proposal.kind,
-					targetId: proposal.targetId,
-					target: proposal.target,
-					state: proposal.state,
-					createdAt: proposal.createdAt,
-					decidedAt: proposal.decidedAt,
-					decidedBy: proposal.decidedBy,
-					activatedId: proposal.activatedId,
-					candidate,
-					changes: candidate !== null && base !== null ? programChanges(base, candidate) : null,
-				};
-			}),
-			mail: deps.approvals.mail.pending().map((row) => ({
-				id: row.id,
-				to: row.to,
-				cc: row.cc,
-				subject: row.subject,
-				body: row.body,
-				replyToId: row.replyToId,
-				target: row.target,
-				status: row.status,
-				createdAt: row.createdAt,
-				expiresAt: row.expiresAt,
-				decidedAt: row.decidedAt,
-				decidedBy: row.decidedBy,
-				sentId: row.sentId,
-			})),
-			serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-		};
-		return Response.json(body, { headers: NO_STORE });
+		const body = approvalsBody(deps);
+		if (body === null) return approvalUnavailable();
+		return versionedJson(body);
 	}
 
 	const programApprovalMatch = path.match(/^\/api\/app\/approvals\/program\/(\d+)$/);

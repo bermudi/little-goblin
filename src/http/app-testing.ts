@@ -20,6 +20,7 @@ import { sleep } from "../timing.ts";
 import type { ScriptedModel } from "../testkit/turn-script.ts";
 import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
+import { openAppLive } from "./app-live.ts";
 import { startHttp } from "./mod.ts";
 
 export const APP_TOKEN_NAME = "app-token";
@@ -41,6 +42,8 @@ export function setup(
 		approvals?: AppChannelDeps["approvals"];
 		programOps?: AppChannelDeps["programOps"];
 		push?: AppChannelDeps["push"];
+		liveTickMs?: number;
+		liveSweepMs?: number;
 		model?: LanguageModel;
 		scriptedModel?: ScriptedModel;
 		makeTools?: TurnToolMaker;
@@ -116,7 +119,7 @@ export function setup(
 	};
 	const configWrites = { count: 0 };
 	const appTokenName = resolveAppAuth(opts.token);
-	const appDeps: AppChannelDeps = {
+	const appDepsBase: Omit<AppChannelDeps, "live"> = {
 		store,
 		runtime,
 		projects,
@@ -138,6 +141,11 @@ export function setup(
 		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
 		...(opts.push !== undefined ? { push: opts.push } : {}),
 	};
+	const appDeps = appDepsBase as AppChannelDeps;
+	appDeps.live = openAppLive(appDepsBase, {
+		tickMs: opts.liveTickMs ?? 20,
+		sweepMs: opts.liveSweepMs ?? 200,
+	});
 	const http = startHttp({
 		configRef,
 		botToken: "test-bot-token",

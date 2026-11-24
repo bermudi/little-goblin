@@ -2,7 +2,7 @@ import { log } from "../log.ts";
 import { every, type Timer } from "../timing.ts";
 import { activityBody } from "./app-activity.ts";
 import { approvalsBody } from "./app-approvals.ts";
-import { attentionBody } from "./app-attention.ts";
+import { attentionBody, proposedSkills } from "./app-attention.ts";
 import { conversationListBody } from "./app-conversations.ts";
 import {
 	APP_LIVE_TOPICS,
@@ -38,11 +38,23 @@ export function openAppLive(
 		"SELECT total_changes() AS n",
 	);
 
+	let proposed = () => proposedSkills(deps);
+	const readProposed = () => {
+		try {
+			const list = proposedSkills(deps);
+			proposed = () => list;
+		} catch (err) {
+			proposed = () => {
+				throw err;
+			};
+		}
+	};
+
 	const readers: Record<AppLiveTopic, () => unknown> = {
 		conversations: () => conversationListBody(deps),
 		projects: () => projectListBody(deps),
 		notes: () => noteListVersioned(deps),
-		attention: () => attentionBody(deps),
+		attention: () => attentionBody(deps, proposed()),
 		approvals: () => approvalsBody(deps),
 		activity: () => activityBody(deps),
 		programs: () => (deps.operator === undefined ? null : programsBody(deps.operator)),
@@ -101,6 +113,7 @@ export function openAppLive(
 
 	const sweep = () => {
 		lastStamp = stamp();
+		readProposed();
 		publish(read(APP_LIVE_TOPICS));
 	};
 

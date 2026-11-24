@@ -787,8 +787,10 @@ its own body.
   (commits from other connections), `total_changes()` (its own writes) and
   `runtime.busyConversations()` (lanes live in memory). If none moved, it
   reads nothing more. Every 10 s it reads all topics, for facts outside
-  the database. Skills read many files, so they are read only then and when
-  the first subscriber arrives. With no subscriber both timers are off.
+  the database. Skills and skill proposals read many files, so they are read
+  only then and when the first subscriber arrives. A new proposal can thus
+  reach Attention up to 10 s late; the rest of Attention has no such delay.
+  With no subscriber both timers are off.
 - **It never counts as a watcher.** Push asks
   `runtime.conversationEventSubscriberCount`; the feed subscribes to no
   conversation, so an open app still gets its notifications.

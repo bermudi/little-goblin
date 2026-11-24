@@ -1,7 +1,7 @@
 // Read-only attention projection over the durable owners. Items point at
 // the surface that can resolve them; this module records no second state.
 
-import { listProposedSkills } from "../stateview.ts";
+import { listProposedSkills, type ProposedSkillItem } from "../stateview.ts";
 import { conversationName } from "./operator-memory.ts";
 import { changesSummary, programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
@@ -32,8 +32,18 @@ function pageItem(
 	return { ...rest, target: { kind: "page", page } };
 }
 
+export function proposedSkills(
+	deps: Pick<AppChannelDeps, "operator">,
+): ProposedSkillItem[] | null {
+	const sources = deps.operator?.skillSources;
+	return sources === undefined
+		? null
+		: listProposedSkills(sources.skillsDir, sources.proposedDir);
+}
+
 export function attentionBody(
 	deps: Pick<AppChannelDeps, "approvals" | "operator">,
+	proposed = proposedSkills(deps),
 ): AppAttentionResponse {
 	const items: AppAttentionItem[] = [];
 	const unavailable: string[] = [];
@@ -147,11 +157,10 @@ export function attentionBody(
 		}
 	}
 
-	const skills = deps.operator?.skillSources;
-	if (skills === undefined) {
+	if (proposed === null) {
 		unavailable.push("skills");
 	} else {
-		for (const skill of listProposedSkills(skills.skillsDir, skills.proposedDir)) {
+		for (const skill of proposed) {
 			const { diff } = skill;
 			const counts = (["changed", "added", "removed"] as const)
 				.map((status) => [status, diff.files.filter((f) => f.status === status).length] as const)

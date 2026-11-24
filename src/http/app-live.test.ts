@@ -20,6 +20,7 @@ import {
 	type AppLiveVersions,
 } from "./app-live-topics.ts";
 import { APP_TOKEN_NAME, APP_TOKEN_VALUE, setup } from "./app-testing.ts";
+import type { AppLive } from "./live-version.ts";
 
 interface EventReader {
 	read(): Promise<{ value?: Uint8Array; done: boolean }>;
@@ -85,6 +86,25 @@ const moved = (
 		label,
 	);
 
+const countSubscribers = (deps: { live: AppLive }) => {
+	const live = deps.live;
+	let open = 0;
+	deps.live = {
+		subscribe(listener) {
+			const subscription = live.subscribe(listener);
+			open += 1;
+			return {
+				versions: subscription.versions,
+				unsubscribe() {
+					subscription.unsubscribe();
+					open -= 1;
+				},
+			};
+		},
+	};
+	return () => open;
+};
+
 const skillOperator = (home: string) => ({
 	skillSources: {
 		forConversation: () => [],
@@ -97,14 +117,16 @@ const skillOperator = (home: string) => ({
 	},
 });
 
-const writeSkill = (home: string, name = "live-skill") => {
-	const dir = join(home, "live-skills", "live-skill");
+const writeSkill = (home: string, name = "live-skill", base = "live-skills") => {
+	const dir = join(home, base, "live-skill");
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, "SKILL.md"),
 		`---\nname: ${name}\ndescription: proves the sweep\n---\nbody\n`,
 	);
 };
+
+const proposeSkill = (home: string) => writeSkill(home, "live-skill", "live-skills-proposed");
 
 describe("app live feed", () => {
 	test("announces a complete version map matching every wired GET's version header", async () => {
@@ -368,6 +390,74 @@ describe("app live feed", () => {
 		}
 	});
 
+	test("a skill proposal written to disk announces attention on the sweep", async () => {
+		const { http, call, appDeps, home } = setup({ token: APP_TOKEN_NAME });
+		appDeps.operator = skillOperator(home);
+		try {
+			const { reader, events, pump } = await liveStream(call);
+			const first = events[0]!.versions;
+			proposeSkill(home);
+			await moved(events, 1, "attention", first.attention, "proposal announced on sweep");
+			const got = await call("/api/app/attention");
+			expect(got.headers.get(APP_LIVE_VERSION_HEADER)).toBe(events.at(-1)!.versions.attention);
+			await reader.cancel();
+			await pump;
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a database change does not read the skill proposals; the GET does", async () => {
+		const { http, call, appDeps, home } = setup({ token: APP_TOKEN_NAME, liveSweepMs: 60_000 });
+		appDeps.operator = skillOperator(home);
+		try {
+			const { reader, events, pump } = await liveStream(call);
+			const first = events[0]!.versions;
+			proposeSkill(home);
+			await postJson(call, "/api/app/conversations", { id: "live-proposal" });
+			await moved(events, 1, "conversations", first.conversations, "chat announced");
+			expect(events.at(-1)!.versions.attention).toBe(first.attention);
+			const got = await call("/api/app/attention");
+			expect(got.headers.get(APP_LIVE_VERSION_HEADER)).not.toBe(first.attention);
+			await reader.cancel();
+			await pump;
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an unreadable skill proposal keeps its error through database changes and recovers", async () => {
+		const { http, call, appDeps, home } = setup({ token: APP_TOKEN_NAME });
+		appDeps.operator = skillOperator(home);
+		proposeSkill(home);
+		const big = join(home, "live-skills-proposed", "live-skill", "big.bin");
+		writeFileSync(big, Buffer.alloc(2 * 1024 * 1024 + 1));
+		let warnings = 0;
+		setLogFile(join(home, "live-proposal.log"));
+		setLogWriter((_path, line) => {
+			if (line.includes('"app live topic reader failing"') && line.includes('"attention"'))
+				warnings += 1;
+		});
+		try {
+			const { reader, events, pump } = await liveStream(call);
+			const first = events[0]!.versions;
+			expect(first.attention).toStartWith("error:");
+			await postJson(call, "/api/app/conversations", { id: "live-unreadable" });
+			await moved(events, 1, "conversations", first.conversations, "chat announced");
+			expect(events.at(-1)!.versions.attention).toBe(first.attention);
+			expect(warnings).toBe(1);
+			writeFileSync(big, "small");
+			await moved(events, 1, "attention", first.attention, "attention recovered");
+			expect(events.at(-1)!.versions.attention).not.toStartWith("error:");
+			await reader.cancel();
+			await pump;
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+			http.stop();
+		}
+	});
+
 	test("a busy lane moves activity while it runs and back when it ends", async () => {
 		const script = sdkScript();
 		const { http, call, runtime } = setup({ token: APP_TOKEN_NAME, scriptedModel: script, liveSweepMs: 60_000 });
@@ -491,6 +581,7 @@ describe("app live feed", () => {
 			token: APP_TOKEN_NAME,
 			liveSweepMs: 40,
 		});
+		const subscribers = countSubscribers(appDeps);
 		let recentCalls = 0;
 		appDeps.posts = {
 			recent: (limit, before) => {
@@ -504,6 +595,7 @@ describe("app live feed", () => {
 			expect(events.length).toBe(1);
 			await reader.cancel();
 			await pump;
+			await waitUntil(() => subscribers() === 0, "detached");
 			const frozen = recentCalls;
 			store.resolve(appAddress("live-quiet"), "/work", configRef.current);
 			await sleep(150);
@@ -565,6 +657,7 @@ describe("app live feed", () => {
 		expect((await call("/api/app/live", { method: "POST" })).status).toBe(405);
 		expect((await call("/api/app/live", {}, null)).status).toBe(401);
 		expect((await call("/api/app/live", {}, "wrong-token")).status).toBe(401);
+		const subscribers = countSubscribers(appDeps);
 		let recentCalls = 0;
 		appDeps.posts = {
 			recent: (limit, before) => {
@@ -577,6 +670,7 @@ describe("app live feed", () => {
 			expect(events[0]!.type).toBe("versions");
 			await reader.cancel();
 			await pump;
+			await waitUntil(() => subscribers() === 0, "cancel detached");
 			let frozen = recentCalls;
 			store.resolve(appAddress("live-detach-1"), "/work", configRef.current);
 			await sleep(150);
@@ -592,7 +686,7 @@ describe("app live feed", () => {
 			await waitUntil(() => events2.length > 0, "second initial map");
 			ctl.abort();
 			await pump2;
-			await sleep(150);
+			await waitUntil(() => subscribers() === 0, "abort detached");
 			frozen = recentCalls;
 			store.resolve(appAddress("live-detach-2"), "/work", configRef.current);
 			await sleep(150);

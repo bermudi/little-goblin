@@ -380,7 +380,9 @@ describe("app live feed", () => {
 			]),
 		);
 		await announce("/api/app/conversations", "conversations");
-		await waitFor(() => rowText().includes("child worker"), "the child row");
+		await waitFor(() => container.querySelector(".home-kids button") !== null, "the folded child count");
+		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
+		await waitFor(() => rowText().includes("child worker"), "the expanded child row");
 		expect(container.querySelector('button[aria-label="Stop"]')).not.toBeNull();
 	});
 
@@ -584,6 +586,7 @@ describe("app live feed", () => {
 
 			closeFeed();
 			await waitFor(() => container.querySelector(".live-lost") !== null, "the lost line");
+			expect(container.querySelector(".shell")?.getAttribute("data-live")).toBe("lost");
 			bump(
 				"/api/app/conversations",
 				convList([
@@ -614,6 +617,7 @@ describe("app live feed", () => {
 			await waitFor(() => feeds.length === 2, "the reconnect");
 			await emit({ conversations: "v1" });
 			await waitFor(() => container.querySelector(".live-lost") === null, "the line clears");
+			expect(container.querySelector(".shell")?.hasAttribute("data-live")).toBe(false);
 
 			await act(async () => root?.unmount());
 			root = null;

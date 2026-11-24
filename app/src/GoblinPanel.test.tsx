@@ -120,7 +120,7 @@ test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", asy
 		),
 	);
 	const row = [...container.querySelectorAll("button.goblin-panel-row")].find((el) =>
-		el.textContent?.startsWith("Replying in the Goblin chat"),
+		el.textContent?.startsWith("Replying in the Rolling chat"),
 	);
 	expect(row).toBeDefined();
 	await act(async () =>

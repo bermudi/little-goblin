@@ -1,0 +1,481 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Window } from "happy-dom";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import type { AppAttentionItem, AppConversationList } from "../../src/http/app-wire.ts";
+import { App } from "./App.tsx";
+import { emitLiveVersions, goblinFeedResponse, goblinLive } from "./testkit.ts";
+
+type Conv = AppConversationList["conversations"][number];
+
+const conv = (id: string, fields: Partial<Conv> = {}): Conv => ({
+	id: `app/${id}`,
+	title: id,
+	preview: "A reply",
+	createdAt: "2026-11-01T00:00:00Z",
+	updatedAt: "2026-11-01T00:00:00Z",
+	archivedAt: null,
+	pinnedAt: null,
+	projectId: null,
+	parentId: null,
+	newReply: null,
+	busy: false,
+	...fields,
+});
+
+const approval: AppAttentionItem = {
+	id: "loose",
+	kind: "program-approval",
+	title: "Review program",
+	detail: "Needs approval",
+	createdAt: "2026-11-01T00:00:00Z",
+	conversationId: null,
+	target: { kind: "page", page: "programs" },
+};
+
+describe("home screen", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null;
+	let installed: string[];
+	let phone: boolean;
+	let hidden: boolean;
+	let conversations: Conv[];
+	let chain: Conv[];
+	let attention: AppAttentionItem[];
+	let otherBusy: number;
+	let listVersion: number;
+	let listGets: number;
+	let messageGets: string[];
+	let posts: string[];
+	let reads: { id: string; body: unknown; settle: (ok: boolean) => Promise<void> }[];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const respond = (url: string, init?: RequestInit): Response | Promise<Response> => {
+		const method = init?.method ?? "GET";
+		const path = url.split("?")[0]!;
+		if (method === "POST") posts.push(path);
+		const read = /^\/api\/app\/conversations\/([^/]+)\/read$/.exec(path);
+		if (read !== null && method === "POST") {
+			return new Promise((resolve) => {
+				reads.push({
+					id: read[1]!,
+					body: JSON.parse(String(init?.body)) as unknown,
+					settle: (ok) =>
+						act(async () => {
+							resolve(
+								ok
+									? Response.json({ ok: true })
+									: Response.json({ error: "failed" }, { status: 500 }),
+							);
+						}),
+				});
+			});
+		}
+		if (path === "/api/app/activity") return Response.json({ busy: [], otherBusy, posts: [] });
+		if (path === "/api/app/attention")
+			return Response.json({ items: attention, unavailable: [] });
+		const feed = goblinFeedResponse(path);
+		if (feed !== null) return feed;
+		if (path === "/api/app/conversations") {
+			listGets++;
+			return Response.json(
+				{ conversations, rolling: { chain } } satisfies AppConversationList,
+				{ headers: { "x-goblin-version": `v${listVersion}` } },
+			);
+		}
+		if (path === "/api/app/projects") return Response.json({ projects: [] });
+		if (path === "/api/app/notes") return Response.json({ notes: [], truncated: false });
+		if (path === "/api/app/approvals")
+			return Response.json({ programs: [], mail: [], serverTimeZone: "UTC" });
+		if (path === "/api/app/skills")
+			return Response.json({ skills: [], proposed: [], usage: [] });
+		if (path === "/api/app/settings")
+			return Response.json({
+				config: {},
+				providerKinds: [],
+				searchKinds: [],
+				fetchKinds: [],
+				transcriptionKinds: [],
+				transcriptionDefaults: {},
+				authDefaults: {},
+				authNames: [],
+				modelCatalog: [],
+			});
+		if (path === "/api/app/identity" || path === "/api/app/attachments")
+			return Response.json({ files: [] });
+		if (path.endsWith("/messages")) {
+			messageGets.push(path.split("/").at(-2)!);
+			return Response.json({
+				messages: [],
+				start: 0,
+				olderCursor: null,
+				ratings: [],
+				rateableMessageIds: [],
+				compactions: [],
+			});
+		}
+		if (path.endsWith("/pending")) return Response.json({ items: [] });
+		if (path.endsWith("/events"))
+			return new Response(new ReadableStream(), {
+				headers: { "content-type": "text/event-stream" },
+			});
+		if (path.endsWith("/stream")) return new Response(null, { status: 204 });
+		return Response.json({ error: `unfaked ${method} ${url}` }, { status: 500 });
+	};
+
+	beforeEach(() => {
+		win = new Window({ url: "http://localhost/app/" });
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		root = null;
+		installed = [];
+		phone = false;
+		hidden = false;
+		conversations = [];
+		chain = [];
+		attention = [];
+		otherBusy = 0;
+		listVersion = 1;
+		listGets = 0;
+		messageGets = [];
+		posts = [];
+		reads = [];
+		goblinLive.feed = null;
+		for (const [name, value] of [
+			["window", win],
+			["document", win.document],
+			["navigator", win.navigator],
+			["localStorage", win.localStorage],
+			["sessionStorage", win.sessionStorage],
+			["Event", win.Event],
+			["MouseEvent", win.MouseEvent],
+			["PointerEvent", win.PointerEvent],
+			["CustomEvent", win.CustomEvent],
+			["getComputedStyle", win.getComputedStyle],
+			["HTMLElement", win.HTMLElement],
+			["HTMLFieldSetElement", win.HTMLFieldSetElement],
+			["HTMLInputElement", win.HTMLInputElement],
+			["HTMLSelectElement", win.HTMLSelectElement],
+			["HTMLTextAreaElement", win.HTMLTextAreaElement],
+			["Element", win.Element],
+			["ShadowRoot", win.ShadowRoot],
+			["MutationObserver", win.MutationObserver],
+			["ResizeObserver", win.ResizeObserver],
+			["NodeFilter", win.NodeFilter],
+			["requestAnimationFrame", win.requestAnimationFrame.bind(win)],
+			["cancelAnimationFrame", win.cancelAnimationFrame.bind(win)],
+		] as const) installGlobal(name, value);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		Reflect.set(win, "matchMedia", (query: string) => ({
+			matches: phone && query.includes("max-width: 720"),
+			media: query,
+			addEventListener() {},
+			removeEventListener() {},
+		}));
+		Object.defineProperty(win.document, "visibilityState", {
+			configurable: true,
+			get: () => (hidden ? "hidden" : "visible"),
+		});
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+			respond(
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+				init,
+			)) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		await act(async () => root?.unmount());
+		root = null;
+		globalThis.fetch = realFetch;
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		await win.happyDOM.close();
+	});
+
+	const settle = () => act(async () => {});
+	const waitFor = async (pred: () => boolean, label: string) => {
+		for (let i = 0; i < 400; i++) {
+			if (pred()) return;
+			await settle();
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		throw new Error(`timed out waiting for ${label}`);
+	};
+	const quiet = async () => {
+		for (let i = 0; i < 10; i++) {
+			await settle();
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+	};
+	const open = async (path: string) => {
+		win.history.replaceState(null, "", path);
+		root = createRoot(container);
+		await act(async () => root?.render(<App />));
+		await waitFor(
+			() => container.querySelector(".rail-body, .chatlist-screen") !== null && goblinLive.feed !== null,
+			"the app",
+		);
+		await quiet();
+	};
+	const goTo = async (path: string) => {
+		await act(async () => {
+			win.history.pushState(null, "", path);
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await quiet();
+	};
+	const publish = async (changes: {
+		conversations?: Conv[];
+		chain?: Conv[];
+	} = {}) => {
+		conversations = changes.conversations ?? conversations;
+		chain = changes.chain ?? chain;
+		listVersion++;
+		const before = listGets;
+		await act(async () => emitLiveVersions({ conversations: `v${listVersion}` }));
+		await waitFor(() => listGets > before, "the list read");
+		await quiet();
+	};
+	const setHidden = async (value: boolean) => {
+		hidden = value;
+		await act(async () => {
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		await quiet();
+	};
+	const click = async (selector: string) => {
+		const element = container.querySelector(selector);
+		if (element === null) throw new Error(`nothing to click at ${selector}`);
+		await act(async () => {
+			element.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await quiet();
+	};
+	const markOf = (id: string) =>
+		container.querySelector(`.conv-main[href="/app/c/${id}"]`)?.closest(".conv")?.getAttribute("data-mark") ?? null;
+	const list = () => [...container.querySelectorAll(phone ? ".chatlist-screen li" : ".rail-body li")]
+		.map((item) => {
+			if (item.matches(".rail-chats-label, .rail-project-head")) return `# ${item.textContent}`;
+			return item.querySelector(":scope > .conv .conv-title")?.textContent ?? null;
+		})
+		.filter((label) => label !== null);
+
+	test("T14: an open chat with a new reply is marked read once, and the list is read again", async () => {
+		conversations = [conv("one", { newReply: 42 })];
+		await open("/app/c/one");
+		expect(reads.map(({ id, body }) => ({ id, body }))).toEqual([
+			{ id: "one", body: { seq: 42 } },
+		]);
+		await publish();
+		expect(reads).toHaveLength(1);
+		const before = listGets;
+		conversations = [conv("one")];
+		await reads[0]!.settle(true);
+		await waitFor(() => listGets > before, "the list read after the mark");
+		await publish();
+		expect(reads).toHaveLength(1);
+	});
+
+	test("T15: a chat that still replies is marked read only when the reply ends", async () => {
+		conversations = [conv("one", { newReply: 7, busy: true })];
+		await open("/app/c/one");
+		await publish();
+		expect(reads).toEqual([]);
+		await publish({ conversations: [conv("one", { newReply: 9 })] });
+		expect(reads.map((read) => read.body)).toEqual([{ seq: 9 }]);
+	});
+
+	test("T16: a hidden tab reads nothing and shows the new reply; visible again marks it", async () => {
+		conversations = [conv("one")];
+		await open("/app/c/one");
+		await setHidden(true);
+		await setHidden(false);
+		hidden = true;
+		await publish({ conversations: [conv("one", { newReply: 3 })] });
+		expect(reads).toEqual([]);
+		await setHidden(true);
+		expect(markOf("one")).toBe("new");
+		await setHidden(false);
+		expect(reads.map((read) => read.body)).toEqual([{ seq: 3 }]);
+		expect(markOf("one")).toBeNull();
+	});
+
+	test("T17: a failed mark is tried again on a list change, not in a loop", async () => {
+		conversations = [conv("one", { newReply: 3 })];
+		await open("/app/c/one");
+		await reads[0]!.settle(false);
+		await quiet();
+		expect(reads).toHaveLength(1);
+		await publish();
+		expect(reads.map((read) => read.body)).toEqual([{ seq: 3 }, { seq: 3 }]);
+	});
+
+	test("T17: a failed mark is tried again when the tab is visible again", async () => {
+		conversations = [conv("one", { newReply: 3 })];
+		await open("/app/c/one");
+		await reads[0]!.settle(false);
+		await setHidden(true);
+		expect(reads).toHaveLength(1);
+		await setHidden(false);
+		expect(reads.length).toBeGreaterThan(1);
+	});
+
+	test("T17: a failed mark is tried again when the live feed is back", async () => {
+		conversations = [conv("one", { newReply: 3 })];
+		await open("/app/c/one");
+		await reads[0]!.settle(false);
+		await quiet();
+		expect(reads).toHaveLength(1);
+		const gets = listGets;
+		const lost = goblinLive.feed;
+		await act(async () => lost?.close());
+		await waitFor(() => goblinLive.feed !== lost, "the reconnect");
+		await quiet();
+		expect(listGets).toBe(gets);
+		expect(reads.length).toBeGreaterThan(1);
+	});
+
+	test("T18: a chat on screen shows no new reply; the context window page does not mark read", async () => {
+		conversations = [conv("one")];
+		await open("/app/c/one");
+		await publish({ conversations: [conv("one", { newReply: 4 })] });
+		expect(markOf("one")).toBeNull();
+		expect(reads).toHaveLength(1);
+		await goTo("/app/c/one/window");
+		await publish({ conversations: [conv("one", { newReply: 6 })] });
+		expect(markOf("one")).toBe("new");
+		expect(reads).toHaveLength(1);
+	});
+
+	test("T18 and T19: the Rolling row opens the roll with the mark and marks that roll read", async () => {
+		chain = [conv("newest"), conv("older", { newReply: 9 })];
+		conversations = [conv("one")];
+		await open("/app/c/one");
+		expect(container.querySelector(".rolling-row")?.getAttribute("data-mark")).toBe("new");
+		await click(".rolling-row a");
+		expect(win.location.pathname).toBe("/app/rolling");
+		expect(messageGets.at(-1)).toBe("older");
+		expect(reads.map(({ id, body }) => ({ id, body }))).toEqual([
+			{ id: "older", body: { seq: 9 } },
+		]);
+		expect(container.querySelector(".rolling-row")?.hasAttribute("data-mark")).toBe(false);
+	});
+
+	test("T19: the Rolling row works on the Rolling page, and opens the newest roll without a mark", async () => {
+		chain = [conv("newest"), conv("older")];
+		await open("/app/rolling");
+		expect(messageGets.at(-1)).toBe("newest");
+		await publish({ chain: [conv("newest"), conv("older", { newReply: 9 })] });
+		await click(".rolling-row a");
+		expect(messageGets.at(-1)).toBe("older");
+		await publish({ chain: [conv("newest"), conv("older")] });
+		await click(".rolling-row a");
+		expect(messageGets.at(-1)).toBe("newest");
+	});
+
+	for (const width of ["desktop", "phone"] as const) {
+		test(`T20: ${width} order is Rolling chat, Active, Projects, Chats, and the Rolling row has no avatar`, async () => {
+			phone = width === "phone";
+			chain = [conv("newest", { preview: "**bold** words" })];
+			conversations = [
+				conv("plain"),
+				conv("kid", { parentId: "app/plain" }),
+				conv("fresh", { newReply: 2 }),
+				conv("pinned", { pinnedAt: "2026-11-02T00:00:00Z" }),
+			];
+			attention = [approval];
+			await open("/app/");
+			expect(list()).toEqual([
+				"Rolling chat",
+				"# Active",
+				"Review program",
+				"fresh",
+				"# Projects",
+				"# Chats",
+				"pinned",
+				"plain",
+			]);
+			const rolling = container.querySelector(".rolling-row")!;
+			expect(rolling.querySelector(".conv-gutter svg")).not.toBeNull();
+			expect(rolling.querySelector("img")).toBeNull();
+			expect(rolling.querySelector(".conv-preview")?.textContent).toBe("bold words");
+			expect(container.querySelector(".needs-banner")).toBeNull();
+		});
+	}
+
+	test("T21: subagents fold under a chat with work; the fold opens to their links", async () => {
+		conversations = [
+			conv("one"),
+			conv("child1", { parentId: "app/one", busy: true }),
+			conv("child2", { parentId: "app/one" }),
+		];
+		await open("/app/");
+		const fold = () => container.querySelector(".home-kids .kidtoggle");
+		expect(fold()?.textContent).toContain("2 subagents");
+		expect(fold()?.getAttribute("aria-expanded")).toBe("false");
+		expect(markOf("one")).toBe("working");
+		await click(".home-kids .kidtoggle");
+		expect(fold()?.getAttribute("aria-expanded")).toBe("true");
+		expect(markOf("child1")).toBe("working");
+		expect(markOf("child2")).toBeNull();
+		await click('.home-kid-list a[href="/app/c/child1"]');
+		expect(win.location.pathname).toBe("/app/c/child1");
+		expect(fold()?.getAttribute("aria-expanded")).toBe("true");
+	});
+
+	test("T23: the face is in the desktop chat header and closes and opens the panel", async () => {
+		conversations = [conv("one")];
+		await open("/app/c/one");
+		expect(container.querySelector("aside.goblin-column")).not.toBeNull();
+		await click("main > header .goblin-panel-toggle");
+		expect(container.querySelector("aside.goblin-column")).toBeNull();
+		await click("main > header .goblin-panel-toggle");
+		expect(container.querySelector("aside.goblin-column")).not.toBeNull();
+	});
+
+	for (const [surface, path, face] of [
+		["chats bar", "/app/", ".chatlist-bar .goblin-panel-toggle"],
+		["chat header", "/app/c/one", "main > header .goblin-panel-toggle"],
+		["Rolling header", "/app/rolling", "main > header .goblin-panel-toggle"],
+	] as const) {
+		test(`T23: on a phone the face in the ${surface} opens the sheet`, async () => {
+			phone = true;
+			chain = [conv("newest")];
+			conversations = [conv("one")];
+			await open("/app/c/one");
+			if (path !== "/app/c/one") await goTo(path);
+			expect(container.querySelector('[role="dialog"]')).toBeNull();
+			await click(face);
+			expect(container.querySelector('[role="dialog"] .goblin-panel-sheet')).not.toBeNull();
+		});
+	}
+
+	test("T24: the face counts Telegram work and what needs the operator", async () => {
+		conversations = [conv("one")];
+		otherBusy = 2;
+		attention = [approval];
+		await open("/app/c/one");
+		const face = container.querySelector("main > header .goblin-panel-toggle");
+		expect(face?.getAttribute("aria-label")).toBe("Goblin, 2 jobs, 1 needs you");
+		expect(face?.querySelector(".goblin-avatar")?.hasAttribute("data-working")).toBe(true);
+		expect(face?.textContent).toBe("1");
+	});
+
+	test("T25: an approval without a chat is a row that opens its page and posts nothing", async () => {
+		phone = true;
+		attention = [approval];
+		conversations = [conv("one")];
+		await open("/app/c/one");
+		await goTo("/app/");
+		await click('.conv[data-mark="needs"] a[href="/app/programs"]');
+		expect(win.location.pathname).toBe("/app/programs");
+		expect(posts).toEqual([]);
+	});
+});

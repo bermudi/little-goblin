@@ -2,7 +2,7 @@
 
 import { createParts } from "@ui-sdk/react/primitive";
 import { bindHold } from "@ui-sdk/core";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	Drawer,
 	DrawerBackdrop,
@@ -12,11 +12,11 @@ import {
 import { Toolbar, ToolbarButton } from "@ui-sdk/react/toolbar";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
-import { GoblinAvatar } from "./GoblinAvatar.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import { flatLine, flatTitle } from "./flatText.ts";
 import {
 	ArchiveGlyph,
+	LoopGlyph,
 	MoveToProjectGlyph,
 	PencilGlyph,
 	PinActionGlyph,
@@ -26,69 +26,32 @@ import {
 	UnpinGlyph,
 } from "./glyphs.tsx";
 import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
+import { ChatMark } from "./ChatMark.tsx";
+import type { Mark } from "./homeList.ts";
 
 const navigationParts = createParts(conversationNavigationPrimitive, { root: "ul", link: "a" });
 export const ConversationNav = navigationParts.Root;
 export const ConversationNavLink = navigationParts.Link;
 
-type ConversationSummary = AppConversationList["conversations"][number];
-
-export function ConversationHierarchy({
-	conversations,
-	renderItem,
-}: {
-	conversations: ConversationSummary[];
-	renderItem: (conversation: ConversationSummary, orphaned: boolean) => ReactNode;
-}) {
-	const ids = new Set(conversations.map((conversation) => conversation.id));
-	const children = new Map<string, ConversationSummary[]>();
-	for (const conversation of conversations) {
-		if (conversation.parentId === null || !ids.has(conversation.parentId)) continue;
-		const siblings = children.get(conversation.parentId) ?? [];
-		siblings.push(conversation);
-		children.set(conversation.parentId, siblings);
-	}
-	const renderTree = (conversation: ConversationSummary, ancestry: ReadonlySet<string>): ReactNode => {
-		const nextAncestry = new Set(ancestry).add(conversation.id);
-		const nested = (children.get(conversation.id) ?? []).filter(
-			(child) => !nextAncestry.has(child.id),
-		);
-		return (
-			<li key={conversation.id}>
-				{renderItem(
-					conversation,
-					conversation.parentId !== null && !ids.has(conversation.parentId),
-				)}
-				{nested.length > 0 && (
-					<ul className="conversation-children">
-						{nested.map((child) => renderTree(child, nextAncestry))}
-					</ul>
-				)}
-			</li>
-		);
-	};
-	return conversations
-		.filter((conversation) => conversation.parentId === null || !ids.has(conversation.parentId))
-		.map((conversation) => renderTree(conversation, new Set()));
-}
-
 export function RollingRow({
 	current,
-	preview,
+	line,
 	updatedAt,
-	working,
+	mark,
 	onOpen,
 }: {
 	current: boolean;
-	preview: string | null;
+	line: string;
 	updatedAt: string | null;
-	working: boolean;
+	mark: Mark | null;
 	onOpen: () => void;
 }) {
-	const line = flatLine(preview ?? "");
 	return (
-		<li className="rolling-row-item">
-			<div className={`conv rolling-row${current ? " current" : ""}${line ? "" : " bare"}`}>
+		<li className="rolling-row-item" data-flip="rolling">
+			<div
+				className={`conv rolling-row${current ? " current" : ""}`}
+				data-mark={mark ?? undefined}
+			>
 				<a
 					className="conv-main"
 					href="/app/rolling"
@@ -100,12 +63,18 @@ export function RollingRow({
 						onOpen();
 					}}
 				>
-					<GoblinAvatar size="md" working={working} />
-					<span className="conv-head">
-						<span className="conv-title">Goblin</span>
-						{updatedAt !== null && <span className="conv-time">{relTime(updatedAt)}</span>}
+					<span className="conv-gutter">
+						{mark ? <ChatMark mark={mark} /> : <LoopGlyph />}
 					</span>
-					<span className="conv-preview">{line || "Always here"}</span>
+					<span className="conv-copy">
+						<span className="conv-head">
+							<span className="conv-title">Rolling chat</span>
+							{updatedAt !== null && (
+								<span className="conv-time">{relTime(updatedAt)}</span>
+							)}
+						</span>
+						<span className="conv-preview">{flatLine(line) || "Always here"}</span>
+					</span>
 				</a>
 			</div>
 		</li>
@@ -146,8 +115,11 @@ export function ConversationRow({
 	onMove,
 	onMoveToNewProject,
 	token,
-	orphaned = false,
+	mark = null,
+	line,
 	projectName,
+	subagent = false,
+	compact = false,
 }: {
 	conv: AppConversationList["conversations"][number];
 	current: string | null;
@@ -161,11 +133,17 @@ export function ConversationRow({
 	onMove: (conversationId: string, projectId: string) => void;
 	onMoveToNewProject: (conversationId: string) => void;
 	token: string | null;
-	orphaned?: boolean;
-	projectName?: string | undefined;
+	mark?: Mark | null;
+	line?: string;
+	projectName?: string;
+	subagent?: boolean;
+	compact?: boolean;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
+	const displayLine = line === undefined
+		? title === null ? "" : preview
+		: flatLine(line);
 	const archived = conv.archivedAt !== null;
 	const pinned = conv.pinnedAt !== null;
 	const [editing, setEditing] = useState(false);
@@ -233,12 +211,17 @@ export function ConversationRow({
 				{ label: "Rename", icon: <PencilGlyph />, run: startRename },
 				{ label: "Archive", icon: <ArchiveGlyph />, run: () => void actions.toggleArchived() },
 			];
-	const hasPreviewLine = title !== null && preview !== "";
-	const rowClass = ["conv", conv.id === current ? "current" : null, hasPreviewLine ? null : "bare"]
+	const hasLine = !compact && (displayLine !== "" || projectName !== undefined);
+	const rowClass = [
+		"conv",
+		compact ? "compact" : null,
+		conv.id === current ? "current" : null,
+		hasLine ? null : "bare",
+	]
 		.filter((c): c is string => c !== null)
 		.join(" ");
 	return (
-		<div className={rowClass}>
+		<div className={rowClass} data-mark={mark ?? undefined}>
 			<ConversationNavLink
 				ref={linkRef}
 				id={conv.id}
@@ -250,16 +233,30 @@ export function ConversationRow({
 					onOpen(conv.id);
 				}}
 			>
-				<span className="conv-head">
-					{pinned && <PinGlyph />}
-					<span className="conv-title">
-						{title ?? (preview === "" ? "new conversation" : preview)}
-					</span>
-					{projectName !== undefined && <span className="conv-project">{projectName}</span>}
-					{orphaned && <span className="conv-subagent-label">subagent</span>}
-					<span className="conv-time">{relTime(conv.updatedAt)}</span>
+				<span className="conv-gutter">
+					{mark !== null || compact
+						? <ChatMark mark={mark ?? "done"} />
+						: pinned ? <PinGlyph /> : null}
 				</span>
-				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
+				<span className="conv-copy">
+					<span className="conv-head">
+						<span className="conv-title">
+							{title ?? (preview === "" ? "new conversation" : preview)}
+						</span>
+						{subagent && <span className="conv-subagent-label">subagent</span>}
+						{!compact && <span className="conv-time">{relTime(conv.updatedAt)}</span>}
+					</span>
+					{hasLine && (
+						<span className="conv-preview">
+							{displayLine}
+							{projectName !== undefined && (
+								<span className="conv-project">
+									{displayLine === "" ? `In ${projectName}` : ` in ${projectName}`}
+								</span>
+							)}
+						</span>
+					)}
+				</span>
 			</ConversationNavLink>
 			<Toolbar className="conv-actions" aria-label={`Actions for ${name}`}>
 				{items.map((item) => (

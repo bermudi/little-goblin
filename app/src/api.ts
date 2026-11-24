@@ -204,6 +204,13 @@ export function listConversations(token: string | null): Promise<AppConversation
 	return request(token, "/api/app/conversations");
 }
 
+export function markConversationRead(token: string | null, id: string, seq: number): Promise<{ ok: true }> {
+	return request(token, `/api/app/conversations/${seg(id)}/read`, {
+		method: "POST",
+		body: JSON.stringify({ seq }),
+	});
+}
+
 // Branch: a new app conversation copied through one durable message. The
 // source is untouched, so the client navigates to the returned id.
 export function branchConversation(

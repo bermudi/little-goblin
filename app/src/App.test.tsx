@@ -434,7 +434,7 @@ describe("rail row actions and the pinned pool", () => {
 
 	const domOrder = (): (string | null)[] =>
 		[...container.querySelectorAll(".conv-title")]
-			.filter((t) => t.textContent !== "Goblin")
+			.filter((t) => t.textContent !== "Rolling chat")
 			.map((t) => t.textContent);
 
 	const rowActions = async (title: string): Promise<string[]> => {
@@ -1333,7 +1333,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
-	test("a child is nested in the rail and its header links back to its parent", async () => {
+	test("the subagent fold opens and its header links back to its parent", async () => {
 		seedConversation();
 		conversations.push({
 			...conversations[0]!,
@@ -1343,12 +1343,13 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await mount();
 		const parent = container.querySelector(".conv-main[href='/app/c/fixture']");
-		const child = container.querySelector(".conversation-children .conv-main[href='/app/c/child']");
 		expect(parent).not.toBeNull();
+		expect(container.querySelector(".home-kids")).toBeNull();
+		await click(parent);
+		await settle();
+		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
+		const child = container.querySelector(".home-kids .conv-main[href='/app/c/child']");
 		expect(child).not.toBeNull();
-		expect(child?.closest(".conversation-children")?.parentElement).toBe(
-			parent?.closest("li"),
-		);
 		await browserGoesTo("/app/c/child");
 		const parentLink = container.querySelector("main > header .header-parent");
 		expect(parentLink?.textContent).toContain("fixture chat");
@@ -3003,7 +3004,7 @@ describe("app projects surface", () => {
 		await settle();
 	};
 
-	test("T1 and T2: sidebar shows Goblin and opens rolling chat", async () => {
+	test("T1 and T2: sidebar shows Rolling chat with its loop mark and opens it", async () => {
 		await mount();
 		expect(container.querySelector(".gutter")).toBeNull();
 		const rail = container.querySelector('nav[aria-label="Sidebar"]')!;
@@ -3012,8 +3013,9 @@ describe("app projects surface", () => {
 		expect(rail.querySelector('button[aria-label="You"]')).not.toBeNull();
 		expect(rail.textContent).toContain("Projects");
 		const rolling = rail.querySelector('a[href="/app/rolling"]')!;
-		expect(rolling.querySelector(".conv-title")?.textContent).toBe("Goblin");
-		expect(rolling.querySelector("img")).not.toBeNull();
+		expect(rolling.querySelector(".conv-title")?.textContent).toBe("Rolling chat");
+		expect(rolling.querySelector("img")).toBeNull();
+		expect(rolling.querySelector(".conv-gutter svg")).not.toBeNull();
 		await click(rolling);
 		expect(win.location.pathname).toBe("/app/rolling");
 	});
@@ -3041,13 +3043,13 @@ describe("app projects surface", () => {
 	test("T5 and T6: panel hides on request and stays hidden after remount", async () => {
 		await mount();
 		expect(container.querySelector("aside.goblin-column")).not.toBeNull();
-		await click(container.querySelector('button[aria-label="Goblin panel"]'));
+		await click(container.querySelector(".goblin-panel-toggle"));
 		expect(container.querySelector("aside.goblin-column")).toBeNull();
 		await act(async () => root?.unmount());
 		root = null;
 		await mount();
 		expect(container.querySelector("aside.goblin-column")).toBeNull();
-		await click(container.querySelector('button[aria-label="Goblin panel"]'));
+		await click(container.querySelector(".goblin-panel-toggle"));
 		expect(container.querySelector("aside.goblin-column")).not.toBeNull();
 		await click(container.querySelector('button[aria-label="You"]'));
 		await click([...container.querySelectorAll('[role="menuitem"]')]
@@ -3196,7 +3198,7 @@ describe("app projects surface", () => {
 		const pinnedProject = [...rail.querySelectorAll(".conv")].find(
 			(row) => row.querySelector(".conv-title")?.textContent === "pinned project",
 		)!;
-		expect(pinnedProject.querySelector(".conv-project")?.textContent).toBe("Goblin Work");
+		expect(pinnedProject.querySelector(".conv-project")?.textContent).toBe(" in Goblin Work");
 		expect(pinnedProject.querySelector(".conv-pin")).not.toBeNull();
 		expect(rail.textContent).not.toContain("unpinned project");
 		expect(rail.textContent).not.toContain("archived project pin");
@@ -3229,7 +3231,7 @@ describe("app projects surface", () => {
 		const pinnedProject = [...container.querySelectorAll(".rail .conv")].find(
 			(row) => row.querySelector(".conv-title")?.textContent === "project chat",
 		)!;
-		expect(pinnedProject.querySelector(".conv-project")?.textContent).toBe("Goblin Work");
+		expect(pinnedProject.querySelector(".conv-project")?.textContent).toBe(" in Goblin Work");
 		expect(pinnedProject.querySelector(".conv-pin")).not.toBeNull();
 	});
 
@@ -3252,6 +3254,7 @@ describe("app projects surface", () => {
 		expect(hasMoveItem()).toBe(true);
 
 		await click(container.querySelector(".title-trigger"));
+		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
 		await click(container.querySelector('.conv-main[href="/app/c/child"]'));
 		expect(hasMoveItem()).toBe(false);
 

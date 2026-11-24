@@ -159,7 +159,7 @@ export function activityRows(data: ActivityData, posts: readonly AppPost[], open
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
 		label: c.rolling
-			? "Replying in the Goblin chat"
+			? "Replying in the Rolling chat"
 			: c.parentId !== null
 				? `Subagent: ${c.title ?? "untitled"}`
 				: `Replying in ${c.title ?? "a chat"}`,

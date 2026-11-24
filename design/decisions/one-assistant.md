@@ -35,6 +35,8 @@ one endless chat each, and work that returns to whoever asked for it.
   hard to close.
 - *Messages only.* Each small question would cost a bot run.
 - *Rooms*: a chat with instructions that Goblin cannot hand work to.
+- *Projects and bots side by side.* Less to build, but every lasting job would
+  ask which of the two it belongs to.
 - *Group chats and more channels.* Each bot that speaks is a full model run,
   and [one app plus optional Telegram](../../DESIGN.md#non-goals) stands.
 
@@ -42,12 +44,13 @@ one endless chat each, and work that returns to whoever asked for it.
 |---|---|
 | Rolling chat | Keep. The app opens here; New chat gets smaller (#919) |
 | Loose chats | Keep. Existing chats stay |
-| Subagents, programs, Hindsight, notes | Keep |
+| Subagents, Hindsight, notes | Keep |
 | `history_search` | Keep and extend |
 | Coding | T3 Code. Goblin starts and watches threads |
 | Telegram | Frozen. Fixes only; the DM stays |
 | Delegation | Frozen. Fixes only, for runs where the operator names the harness |
-| Projects and programs into bots | **Open.** Not ruled |
+| Projects | Become bots, after a first new bot works. Their chats stay readable |
+| Programs | A bot owns its own. The rest stay with Goblin |
 | Cut | Nothing ruled |
 
 **Consequences.**

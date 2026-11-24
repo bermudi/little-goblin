@@ -1,5 +1,9 @@
 # Projects & Notes — goblin design
 
+> **Amended (operator, 2026-11-24, not built):** projects become
+> [bots](../GLOSSARY.md#bot) after a first new bot works. Notes stay
+> ([decision](decisions/one-assistant.md)).
+
 ## Projects & Notes (ruling 2026-10-10)
 
 Operator ask: projects — a named home for related app chats, with their own

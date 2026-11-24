@@ -85,4 +85,50 @@ describe("app rolling store", () => {
 		expect(store.appRollChain(50).map((row) => row.id)).toEqual([last.id, first.id]);
 		store.close();
 	});
+
+	test("list stays identical to a fresh connection across every mutation kind", () => {
+		const dbPath = tmpDb("goblin-app-list-memo-");
+		const store = openStore(dbPath);
+		const freshList = () => {
+			const fresh = openStore(dbPath);
+			const out = fresh.listAppConversations();
+			fresh.close();
+			return out;
+		};
+		const same = () => expect(store.listAppConversations()).toEqual(freshList());
+		try {
+			const conv = store.resolve(appAddress("memo-1"), paths.workspace(), config);
+			same();
+			store.append(conv.id, [{ id: "u1", role: "user", parts: [{ type: "text", text: "one" }] }]);
+			same();
+			store.append(conv.id, [
+				{ id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }] },
+			]);
+			same();
+			store.listAppConversations();
+			same();
+			store.editUserMessage(conv.id, "u1", {
+				id: "u1",
+				role: "user",
+				parts: [{ type: "text", text: "edited" }],
+			});
+			same();
+			const branch = store.forkToApp(conv.id, "memo-branch", paths.workspace(), "branch title");
+			same();
+			const second = store.resolve(appAddress("memo-2"), paths.workspace(), config);
+			store.append(second.id, [
+				{ id: "u2", role: "user", parts: [{ type: "text", text: "two" }] },
+			]);
+			store.db.run("UPDATE events SET data = 'not json' WHERE conversation_id = ?", [second.id]);
+			same();
+			same();
+			store.deleteConversation(branch.id);
+			same();
+			store.deleteConversation(second.id);
+			store.deleteConversation(conv.id);
+			same();
+		} finally {
+			store.close();
+		}
+	});
 });

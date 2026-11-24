@@ -329,10 +329,14 @@ export function prepareConversationQueries(db: Database) {
 			pinned_at: string | null;
 			project_id: string | null;
 			parent_conversation_id: string | null;
+			last_event_id: number | null;
 		},
 		[]
 	>(
-		`SELECT id, title, created_at, archived_at, pinned_at, project_id, parent_conversation_id FROM conversations
+		`SELECT id, title, created_at, archived_at, pinned_at, project_id, parent_conversation_id,
+			(SELECT e.id FROM events e WHERE e.conversation_id = conversations.id
+				ORDER BY e.seq DESC LIMIT 1) AS last_event_id
+			FROM conversations
 			WHERE id LIKE 'app/%' AND NOT EXISTS (
 				SELECT 1 FROM app_rolls WHERE app_rolls.conversation_id = conversations.id
 			) ORDER BY created_at, rowid`,

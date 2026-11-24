@@ -207,6 +207,7 @@ export function listConversations(token: string | null): Promise<AppConversation
 export function markConversationRead(token: string | null, id: string, seq: number): Promise<{ ok: true }> {
 	return request(token, `/api/app/conversations/${seg(id)}/read`, {
 		method: "POST",
+		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ seq }),
 	});
 }

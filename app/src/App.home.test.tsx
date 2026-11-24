@@ -60,6 +60,11 @@ describe("home screen", () => {
 		const method = init?.method ?? "GET";
 		const path = url.split("?")[0]!;
 		if (method === "POST") posts.push(path);
+		if (
+			typeof init?.body === "string" &&
+			new Headers(init.headers).get("content-type") !== "application/json"
+		)
+			return Response.json({ error: "expected application/json" }, { status: 415 });
 		const read = /^\/api\/app\/conversations\/([^/]+)\/read$/.exec(path);
 		if (read !== null && method === "POST") {
 			return new Promise((resolve) => {

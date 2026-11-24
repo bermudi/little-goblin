@@ -8,6 +8,7 @@
 - **Attempt recorder:** the per-attempt object both turn engines report to. It keeps the step, text and tool records and builds the turn result (design/runtime-turn.md → Engine rules).
 - **Bank:** the store of memories in Hindsight. Goblin uses the bank named `goblin`.
 - **Boot notice:** the DM a boot owes the operator for a crash it found at journal open — one interrupted turn, or stranded input. It waits in the `boot_notices` table until a send lands, surviving boots that died before the Telegram attach (#579).
+- **Bot:** a lasting piece of work with its own endless chat, instructions, folder, schedule and markdown memory file. Goblin hands it work and gets the result back. It exists so work that goes on for months keeps its own context and does not fill the Rolling chat. Example: a workout-log bot that takes entries and sends Goblin a weekly chart. Not built yet (design/decisions/one-assistant.md).
 - **Child conversation:** a conversation with a parent. A subagent runs in one; its final reply goes back to the parent as a notice.
 - **Code-made parts:** the sections of a fold summary that code writes, never a model: verbatim operator messages and the identifier index. Later folds carry them forward untouched.
 - **Computer:** the built-in agent type whose child does screen work on a named desktop.

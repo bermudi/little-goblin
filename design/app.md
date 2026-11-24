@@ -711,6 +711,10 @@ channel addresses.
 
 ## App navigation (ruling 2026-11-21, #862, operator pick)
 
+> **Amended (operator, 2026-11-24, not built):** the app opens in the Rolling
+> chat and New chat becomes a smaller button; old chats stay
+> ([decision](decisions/one-assistant.md), #919).
+
 Goblin is someone you message. The chat is the main surface, and one panel
 shows Goblin itself. This replaces the glyph gutter and thumb bar of
 2026-10-24: thirteen equal glyphs made the app read as an operations

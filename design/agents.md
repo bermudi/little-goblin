@@ -16,6 +16,10 @@ not return; it controlled the operator's desk, not delegated runs.
 | `agent` | Give a piece of work to a child agent | Goblin, on its own judgment | Goblin's own runtime, as a child conversation |
 | `delegate` | Run a named external harness (codex, opencode, claude, pi, devin) | The operator only | A named terminal on Goblin's private hc core |
 
+> **Amended (operator, 2026-11-24, not built):** Goblin will also message
+> [bots](../GLOSSARY.md#bot), which outlive a run and keep their own memory
+> ([decision](decisions/one-assistant.md)).
+
 There is no third tool. The routing rule the model gets is one sentence:
 **the operator named a harness → `delegate`; otherwise → `agent`, or do
 the work yourself.**

@@ -123,8 +123,6 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 	return true;
 }
 
-// Canonical program targets route by channel: Telegram addresses keep
-// the rolling-DM rules; app targets go through wakeApp.
 export function wakeTarget(deps: WakeDeps, target: ConversationTarget, text: string): boolean {
 	const telegram = telegramAddressOf(target);
 	if (telegram !== null) return wake(deps, telegram, text);

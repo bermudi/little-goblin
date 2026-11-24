@@ -22,10 +22,24 @@ import { claudeScript } from "./testkit/turn-script-claude.ts";
 import type { ScriptedModel } from "./testkit/turn-script.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
 import { openWakeStore, type ReconcilePlan, type WakeStore } from "./wake-store.ts";
+import type { Config } from "./config-schema.ts";
 
 setLogFile(null);
 
 const adapters = [sdkScript, claudeScript] as const;
+const appConfig = {
+	model: "unused/m",
+	thinking: "medium",
+	providers: {},
+	tts: false,
+	favorites: [],
+	modelFallbacks: [],
+	operators: [],
+	allowedUsers: [],
+	telegram: { enabled: false, dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	http: { port: 8787 },
+	logLevel: "info",
+} as unknown as Config;
 const engineName = (make: (typeof adapters)[number]) =>
 	make === sdkScript ? "ai-sdk" : "claude-code";
 
@@ -132,6 +146,99 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 	function test(name: string, run: () => void | Promise<void>) {
 		bunTest(`${engineName(make)}: ${name}`, run);
 	}
+	test("a pending wake recorded for an old roll is delivered to the newest roll", async () => {
+		const r = rig();
+		const a = r.store.rollApp(appConfig);
+		const rec = r.wakes.record({
+			sourceKey: "roll-pending-pump",
+			conversationId: a.id,
+			kind: "done",
+			text: "newest only",
+			facts: {},
+			origin: "test",
+		});
+		const b = r.store.rollApp(appConfig);
+		r.dispatcher.pump();
+		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "retargeted wake settled");
+		expect(r.store.history(a.id)).toEqual([]);
+		expect(r.store.history(b.id).some((m) => m.id === wake(r, rec.wakeId).messageId)).toBe(true);
+		expect(r.store.db.query("SELECT run_id FROM turn_runs WHERE conversation_id = ?").all(a.id)).toEqual([]);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("a wake claimed before a new roll stays and runs in its original roll", async () => {
+		const r = rig();
+		const a = r.store.rollApp(appConfig);
+		const rec = r.wakes.record({
+			sourceKey: "roll-claimed-pump",
+			conversationId: a.id,
+			kind: "done",
+			text: "already claimed",
+			facts: {},
+			origin: "test",
+		});
+		r.wakes.commit(rec.wakeId, (t) => {
+			r.store.append(t.conversationId, [{
+				id: t.id,
+				role: "user",
+				parts: [{ type: "text", text: t.text }],
+			}]);
+		});
+		const b = r.store.rollApp(appConfig);
+		r.dispatcher.pump();
+		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "original wake settled");
+		expect(r.store.history(a.id).some((m) => m.id === wake(r, rec.wakeId).messageId)).toBe(true);
+		expect(r.store.history(b.id)).toEqual([]);
+		expect(r.store.db.query("SELECT run_id FROM turn_runs WHERE conversation_id = ?").all(a.id)).toHaveLength(1);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("a pending old-roll wake steers into the newest roll's live turn", async () => {
+		const gate = deferred<void>();
+		const model = make();
+		model.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "held" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+		);
+		const r = rig({
+			model,
+			tools: {
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
+					execute: async () => {
+						await gate.promise;
+						return { ok: true };
+					},
+				}),
+			},
+		});
+		const a = r.store.rollApp(appConfig);
+		const b = r.store.rollApp(appConfig);
+		const sink = new RecordingSink();
+		r.runtime.submit(b, userMessage([{ type: "text", text: "hold this turn" }]), sink);
+		await sink.firstToolCall;
+		const rec = r.wakes.record({
+			sourceKey: "roll-steer",
+			conversationId: a.id,
+			kind: "done",
+			text: "steer newest",
+			facts: {},
+			origin: "test",
+		});
+		r.dispatcher.pump();
+		gate.resolve();
+		await sink.done;
+		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "steered wake settled");
+		expect(wake(r, rec.wakeId).conversationId).toBe(b.id);
+		expect(r.store.history(a.id)).toEqual([]);
+		expect(r.store.history(b.id).some((m) => m.id === wake(r, rec.wakeId).messageId)).toBe(true);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
 	test("/stop before journal creation never resubmits the canceled wake", async () => {
 		const model = make();
 		model.script({ kind: "reply", parts: [{ type: "text", text: "must not run" }] });

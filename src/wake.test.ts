@@ -57,6 +57,7 @@ function harness(gapMinutes: number) {
 	const store = openStore(join(dir, "goblin.sqlite"));
 	const submitted: string[] = [];
 	const sends: string[] = [];
+	const bellConversations: string[] = [];
 	const api = {
 		sendMessage: (_chat: number, text: string) => {
 			sends.push(text);
@@ -84,12 +85,13 @@ function harness(gapMinutes: number) {
 			synthesize: async () => [],
 		}),
 		roll,
-		bell: () => {
+		bell: (conv) => {
+			bellConversations.push(conv.id);
 			sinks.push(nullSink);
 			return nullSink;
 		},
 	};
-	return { deps, store, submitted, sends, sinks };
+	return { deps, store, submitted, sends, sinks, bellConversations };
 }
 
 test("wake after runtime close neither records history nor reports delivery", async () => {
@@ -189,6 +191,20 @@ test("wakeApp submits into the app conversation with the bell sink", () => {
 	expect(landed).toBe(true);
 	expect(submitted).toEqual([app.id]);
 	expect(sinks).toHaveLength(1); // the bell, not a delivery sink
+	store.close();
+});
+
+test("app wakes retarget rolls to the newest roll but leave ordinary chats alone", () => {
+	const { deps, store, submitted, sinks, bellConversations } = harness(45);
+	const first = store.rollApp(config);
+	const newest = store.rollApp(config);
+	expect(wakeTarget(deps, first.id, "old roll target")).toBe(true);
+	expect(wakeApp(deps, newest.id, "newest roll target")).toBe(true);
+	const ordinary = store.resolve(appAddress("ordinary-with-rolls"), "/w", config);
+	expect(wakeApp(deps, ordinary.id, "ordinary chat")).toBe(true);
+	expect(submitted).toEqual([newest.id, newest.id, ordinary.id]);
+	expect(sinks).toHaveLength(3);
+	expect(bellConversations).toEqual([newest.id, newest.id, ordinary.id]);
 	store.close();
 });
 

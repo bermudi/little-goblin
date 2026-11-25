@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
-import { PendingInputs, recoverPendingInputs } from "./pending-input.ts";
+import { Runtime } from "./runtime.ts";
+import { PendingInputs } from "./pending-input.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import { useHome } from "./testkit.ts";
 
 test("pending inputs list in admission order and take removes one row", () => {
@@ -22,32 +24,43 @@ test("pending inputs list in admission order and take removes one row", () => {
 		expect(first.createdAt).toBe("2023-11-14T22:13:20.000Z");
 		expect(second.createdAt).toBe("2023-11-14T22:13:20.001Z");
 		expect(pending.list("app/pending-test").map((row) => row.id)).toEqual([first.id, second.id]);
-		expect(pending.all().map((row) => row.id)).toEqual([first.id, second.id]);
-		expect(pending.take(first.id)).toEqual(first);
-		expect(pending.take(first.id)).toBeNull();
+		expect(pending.take("app/pending-test", first.id)).toEqual(first);
+		expect(pending.take("app/pending-test", first.id)).toBeNull();
 		expect(pending.list("app/pending-test")).toEqual([second]);
 	} finally {
 		store.close();
 	}
 });
 
-test("boot recovery appends stranded inputs to history and clears the inbox", () => {
-	const store = openStore(join(useHome("goblin-pending-recovery-"), "state.sqlite"));
-	try {
-		store.resolve({ kind: "app", appId: "recovery-test", chatId: 0, threadId: 0 }, "/unused");
+test("a row left by a crash lists as notSent and never enters history", () => {
+	const dbPath = join(useHome("goblin-pending-crash-"), "state.sqlite");
+	{
+		const store = openStore(dbPath);
+		store.resolve({ kind: "app", appId: "crash-test", chatId: 0, threadId: 0 }, "/unused");
 		const pending = new PendingInputs(store.db);
-		const row = pending.add(
-			"app/recovery-test",
-			{ id: "stranded", role: "user", parts: [{ type: "text", text: "resume me" }] },
+		pending.add(
+			"app/crash-test",
+			{ id: "stranded", role: "user", parts: [{ type: "text", text: "still mine" }] },
 			"followUp",
 		);
-		recoverPendingInputs(store);
-		expect(pending.list("app/recovery-test")).toEqual([]);
-		expect(store.history("app/recovery-test")).toEqual([
-			expect.objectContaining({ id: "stranded", role: "user" }),
+		store.close();
+	}
+	const store = openStore(dbPath);
+	try {
+		const script = sdkScript();
+		const runtime = new Runtime({
+			engines: script.engines,
+			store,
+			buildStep: () => script.step(),
+		});
+		runtime.mount({ makeTools: () => ({}) });
+		expect(runtime.listPending("app/crash-test")).toEqual([
+			expect.objectContaining({
+				message: expect.objectContaining({ id: "stranded" }),
+				status: "notSent",
+			}),
 		]);
-		expect(pending.all()).toEqual([]);
-		expect(row.id).toBeTruthy();
+		expect(store.history("app/crash-test")).toEqual([]);
 	} finally {
 		store.close();
 	}
@@ -74,7 +87,7 @@ test("a failed history append rolls the pending-row delete back with it", () => 
 
 		expect(() =>
 			store.db.transaction(() => {
-				expect(pending.take(row.id)).not.toBeNull();
+				expect(pending.take("app/rollback-test", row.id)).not.toBeNull();
 				store.append("app/rollback-test", [row.message]);
 			})(),
 		).toThrow("fixture history failure");

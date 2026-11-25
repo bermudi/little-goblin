@@ -3635,6 +3635,129 @@ describe("steering", () => {
 		await sleep(20);
 		r.store.close();
 	});
+
+	test("a steer already claimed into the running turn stays in history on stop; notSent is empty", async () => {
+		const toolGate = deferred<void>();
+		const secondCall = deferred<void>();
+		const s = sdkScript();
+		s.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			{ kind: "hold", parts: [{ type: "text", text: "steered" }], gate: secondCall.promise },
+			{ kind: "reply", parts: [{ type: "text", text: "after" }] },
+		);
+		const r = steeringSetup(s, toolGate.promise);
+		try {
+			const first = submit(r, "start this");
+			await first.firstToolCall;
+			r.runtime.submitPending(
+				r.conv,
+				userMessage([{ type: "text", text: "already claimed" }]),
+				"steer",
+				new RecordingSink(),
+			);
+			toolGate.resolve();
+			await waitUntil(
+				() => r.runtime.listPending(r.conv.id).length === 0 && s.requests().length >= 2,
+				"steer claimed into the running turn",
+			);
+			expect(
+				r.store.history(r.conv.id).some((message) =>
+					message.parts.some((p) => p.type === "text" && p.text === "already claimed"),
+				),
+			).toBe(true);
+			const cancellation = stop(r);
+			expect(cancellation.notSent).toEqual([]);
+			expect(
+				r.store.history(r.conv.id).some((message) =>
+					message.parts.some((p) => p.type === "text" && p.text === "already claimed"),
+				),
+			).toBe(true);
+			secondCall.resolve();
+			expect(await first.done).toEqual({ kind: "fenced" });
+		} finally {
+			toolGate.resolve();
+			secondCall.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("shutdown leaves a waiting row as Not sent for the next runtime", async () => {
+		const gate = deferred<void>();
+		const script = sdkScript();
+		script.script({ kind: "hold", parts: [{ type: "text", text: "held" }], gate: gate.promise });
+		const r = rig({ script });
+		try {
+			const first = submit(r, "one");
+			await waitUntil(() => script.calls() >= 1, "model call starts");
+			const rowId = r.runtime.submitPending(
+				r.conv,
+				userMessage([{ type: "text", text: "waiting on shutdown" }]),
+				"followUp",
+				new RecordingSink(),
+			);
+			const shuttingDown = r.runtime.shutdown();
+			gate.resolve();
+			await shuttingDown;
+			expect(await first.done).toEqual({ kind: "fenced", shutdown: true });
+			expect(r.runtime.listPending(r.conv.id).map((row) => row.status)).toEqual(["notSent"]);
+			const nextScript = sdkScript();
+			const next = new Runtime({
+				engines: nextScript.engines,
+				store: r.store,
+				buildStep: () => nextScript.step(),
+			});
+			next.mount({ makeTools: () => ({}) });
+			expect(next.listPending(r.conv.id).map((row) => [row.id, row.status])).toEqual([
+				[rowId, "notSent"],
+			]);
+			expect(
+				r.store.history(r.conv.id).some((message) =>
+					message.parts.some((p) => p.type === "text" && p.text === "waiting on shutdown"),
+				),
+			).toBe(false);
+		} finally {
+			gate.resolve();
+			r.store.close();
+		}
+	});
+
+	test("a failing row delete on a Not sent dequeue throws and the row stays listed", async () => {
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s, gate.promise);
+		try {
+			const first = submit(r, "start this");
+			await first.firstToolCall;
+			const rowId = r.runtime.submitPending(
+				r.conv,
+				userMessage([{ type: "text", text: "never sent" }]),
+				"followUp",
+				new RecordingSink(),
+			);
+			const cancellation = stop(r);
+			expect(cancellation.notSent.map((entry) => entry.id)).toEqual([rowId]);
+			expect(r.runtime.listPending(r.conv.id).map((row) => row.status)).toEqual(["notSent"]);
+			r.store.db.run(`
+				CREATE TRIGGER fail_not_sent_delete
+				BEFORE DELETE ON app_pending_input
+				WHEN OLD.id = '${rowId}'
+				BEGIN SELECT RAISE(ABORT, 'injected not sent delete failure'); END
+			`);
+			expect(() => r.runtime.dequeuePending(r.conv.id, rowId)).toThrow(
+				"injected not sent delete failure",
+			);
+			expect(r.runtime.listPending(r.conv.id).map((row) => [row.id, row.status])).toEqual([
+				[rowId, "notSent"],
+			]);
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "fenced" });
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
 });
 
 describe("app channel", () => {

@@ -488,13 +488,23 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   lane claim; a delete after claim returns 409. The claim splice and
   pending-row deletion plus history append run synchronously in one SQLite
   transaction. A steer may fold into the running turn; follow-up does not
-  fold and runs as the next turn. `/stop` and boot recovery move unclaimed
-  input to history without running it, preserving the existing stranded
-  input recovery behavior. Telegram is unchanged: its message enters
+  fold and runs as the next turn. Telegram is unchanged: its message enters
   history at intake. Mechanism sources: Pi
   `packages/durable/src/harness/submissions.ts:148-161,253-300` and
   `inbox.ts:73-96`, with app transcript subscription from
   `apps/p2/plugins/chat/web.tsx`.
+- **Stop gives waiting input back (ruling 2026-11-25, #941).** Stop used to
+  move unclaimed input to history without running it: it looked sent, and
+  nothing answered it. Now Stop, shutdown and a crash all leave the row
+  where it is. A row with no turn in the lane is **Not sent**. The status
+  is derived, never stored, so no restart can make it wrong, and no later
+  turn claims it. The client that pressed Stop puts every returned message
+  in its input box, in send order and ahead of newer text, and deletes the
+  rows only after the box holds them: a lost response can leave a
+  duplicate, never a loss. When no box can take it, the row waits under
+  the chat on every device until the operator taps it back or removes it.
+  A steer the running turn already claimed stays in history; the model may
+  have read it. A Not sent row stays with the roll it was typed in.
 - **The composer (#678 PR1/PR2).** Send during a turn POSTs as a steer;
   Queue POSTs as a follow-up (Alt+Enter is the alternate action). Neither
   action stops or replaces the live transcript reader. The Stop action

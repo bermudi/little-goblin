@@ -775,6 +775,7 @@ describe("handleGuestUpdate", () => {
 						settled: Promise.resolve(),
 						reviewsCancelled: 0,
 						active: Promise.resolve(),
+						notSent: [],
 					};
 				});
 			try {

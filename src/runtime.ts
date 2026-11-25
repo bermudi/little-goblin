@@ -10,7 +10,7 @@ import { resolveSkillRef } from "./agent/skill-inject.ts";
 import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
-import { PendingInputs, type PendingInputMode } from "./pending-input.ts";
+import { PendingInputs, type PendingInput, type PendingInputMode } from "./pending-input.ts";
 import { type Bump, runFence } from "./fence.ts";
 import { log } from "./log.ts";
 import {
@@ -142,6 +142,7 @@ export interface Cancellation {
 	settled: Promise<void>;
 	reviewsCancelled: number;
 	active: Promise<void>;
+	notSent: { id: string; message: Message }[];
 }
 
 export class FencedError extends Error {
@@ -262,30 +263,50 @@ export class Runtime {
 		return row.id;
 	}
 
-	listPending(convId: string): ReturnType<PendingInputs["list"]> {
-		return this.pendingInputs.list(convId);
+	listPending(convId: string): (PendingInput & { status: "waiting" | "notSent" })[] {
+		const waiting = this.lanes.pendingIds(convId);
+		return this.pendingInputs.list(convId).map((row) => ({
+			...row,
+			status: waiting.has(row.id) ? ("waiting" as const) : ("notSent" as const),
+		}));
 	}
 
 	dequeuePending(convId: string, pendingId: string): Message | null {
 		const removed = this.lanes.removePending(convId, pendingId);
 		if (removed === null) {
-			log.info("app pending input dequeue refused", {
+			const notSent = this.deps.store.db.transaction(() =>
+				this.pendingInputs.take(convId, pendingId),
+			)();
+			if (notSent === null) {
+				log.info("app pending input dequeue refused", {
+					conversation: convId,
+					pendingId,
+					reason: "already-taken",
+				});
+				return null;
+			}
+			this.lanes.emitConversation(convId, { type: "pending" });
+			log.info("app pending input dequeued", {
 				conversation: convId,
 				pendingId,
-				reason: "already-taken",
+				status: "notSent",
 			});
-			return null;
+			return notSent.message;
 		}
 		let input: ReturnType<PendingInputs["take"]>;
 		try {
-			input = this.deps.store.db.transaction(() => this.pendingInputs.take(pendingId))();
+			input = this.deps.store.db.transaction(() => this.pendingInputs.take(convId, pendingId))();
 			if (input === null) throw new Error(`pending input row ${pendingId} missing during dequeue`);
 		} catch (err) {
 			this.lanes.restorePending(convId, removed.turn, removed.index);
 			throw err;
 		}
 		this.lanes.emitConversation(convId, { type: "pending" });
-		log.info("app pending input dequeued", { conversation: convId, pendingId });
+		log.info("app pending input dequeued", {
+			conversation: convId,
+			pendingId,
+			status: "waiting",
+		});
 		return input.message;
 	}
 
@@ -389,6 +410,7 @@ export class Runtime {
 				settled: Promise.resolve(),
 				reviewsCancelled: 0,
 				active: Promise.resolve(),
+				notSent: [],
 			};
 		}
 		return this.cancelFenced(convId, epoch);
@@ -415,8 +437,17 @@ export class Runtime {
 			);
 		}
 		const dropped = this.lanes.dropAll(convId);
-		this.movePendingToHistory(dropped.turns, "stop-move");
-		if (dropped.turns.some((turn) => turn.pending !== undefined)) {
+		const notSent = dropped.turns
+			.filter((turn) => turn.pending !== undefined)
+			.map((turn) => ({ id: turn.pending!.id, message: turn.message }));
+		for (const item of notSent) {
+			log.info("app pending input not sent", {
+				conversation: convId,
+				pendingId: item.id,
+				shutdown: this.closed,
+			});
+		}
+		if (notSent.length > 0) {
 			this.lanes.emitConversation(convId, { type: "pending" });
 		}
 		const notifies: Promise<void>[] = [];
@@ -437,6 +468,7 @@ export class Runtime {
 			settled: Promise.all(notifies).then(() => undefined),
 			reviewsCancelled,
 			active: this.lanes.activeTurn(convId) ?? Promise.resolve(),
+			notSent,
 		};
 	}
 
@@ -446,8 +478,8 @@ export class Runtime {
 		const claimed = this.deps.store.db.transaction(() =>
 			pending.map((turn) => {
 				const meta = turn.pending!;
-				const row = this.pendingInputs.take(meta.id);
-				if (row === null || row.conversation !== convId) {
+				const row = this.pendingInputs.take(convId, meta.id);
+				if (row === null) {
 					throw new Error(`pending input ${meta.id} missing from ${convId} during claim`);
 				}
 				const seq = this.deps.store.append(convId, [row.message])[0]!;
@@ -464,29 +496,6 @@ export class Runtime {
 			});
 		}
 		this.lanes.emitConversation(convId, { type: "pending" });
-	}
-
-	private movePendingToHistory(turns: QueuedTurn[], reason: "stop-move"): void {
-		const pending = turns.filter((turn) => turn.pending !== undefined);
-		if (pending.length === 0) return;
-		const moved = this.deps.store.db.transaction(() =>
-			pending.map((turn) => {
-				const meta = turn.pending!;
-				const row = this.pendingInputs.take(meta.id);
-				if (row === null) throw new Error(`pending input row ${meta.id} missing during ${reason}`);
-				const seq = this.deps.store.append(row.conversation, [row.message])[0]!;
-				return { turn, row, seq };
-			}),
-		)();
-		for (const { turn, row, seq } of moved) {
-			turn.seq = seq;
-			delete turn.pending;
-			log.info(`app pending input ${reason}`, {
-				conversation: row.conversation,
-				pendingId: row.id,
-				seq,
-			});
-		}
 	}
 
 	compact(conv: Conversation, focus?: string): Promise<CompactionOutcome> {

@@ -13,7 +13,7 @@ import type { Api } from "grammy";
 import { fakeApi } from "../testkit/fake-api.ts";
 import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "../log.ts";
-import { proposalFingerprint } from "../skill-decisions.ts";
+import { discardedRoot, proposalFingerprint } from "../skill-decisions.ts";
 import {
 	parseSkillCallback,
 	skillDiscardData,
@@ -29,6 +29,7 @@ interface Harness {
 	}): Promise<void>;
 	skillsDir: string;
 	proposedDir: string;
+	workspaceDir: string;
 	installData(conversationId: string, skill: string): string;
 	discardData(conversationId: string, skill: string): string;
 	edits: Array<{ chatId: number; messageId: number; text: string; keyboard: unknown }>;
@@ -112,6 +113,7 @@ function harness(
 			}),
 		skillsDir,
 		proposedDir,
+		workspaceDir,
 		installData: (conversationId: string, skill: string) =>
 			skillInstallData(conversationId, skill, proposalFingerprint(proposedDir, skill) ?? undefined),
 		discardData: (conversationId: string, skill: string) =>
@@ -344,18 +346,27 @@ describe("skill approval taps", () => {
 		}
 	});
 
-	test("discard deletes the staged proposal", async () => {
+	test("discard sets the staged proposal aside", async () => {
 		const done = silenceLogs();
 		const h = harness(["smoke-test"]);
 		try {
 			await h.handle({ data: h.discardData("dm:42", "smoke-test") });
 			expect(existsSync(join(h.proposedDir, "smoke-test"))).toBe(false);
 			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
-			expect(h.edits[0]!.text).toBe("🚫 skill smoke-test discarded — proposal deleted.");
+			expect(
+				existsSync(
+					join(
+						discardedRoot(h.workspaceDir),
+						"smoke-test.2023-11-14T22-13-20-000Z",
+						"SKILL.md",
+					),
+				),
+			).toBe(true);
+			expect(h.edits[0]!.text).toBe("🚫 skill smoke-test discarded.");
 			expect(h.appends).toEqual([
 				{
 					conversationId: "dm:42",
-					text: "skill proposal resolved: smoke-test — discarded (deleted)",
+					text: "skill proposal resolved: smoke-test — discarded",
 				},
 			]);
 		} finally {

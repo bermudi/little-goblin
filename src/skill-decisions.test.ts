@@ -4,15 +4,28 @@
 // provenance → history flow.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { Message } from "./message.ts";
 import {
 	decideSkillProposal,
+	discardedRoot,
 	proposalFingerprint,
 	resolveSkillProposal,
 	skillResolutionText,
 } from "./skill-decisions.ts";
+import { loadCatalog } from "./agent/skills.ts";
+import { listSkills } from "./stateview.ts";
 import { tmpDir } from "./testkit.ts";
 
 function fixture(): {
@@ -56,11 +69,139 @@ describe("decideSkillProposal", () => {
 		expect(d).toEqual({ action: "install", ok: true, replaced: true });
 	});
 
-	test("discard deletes the staged dir", () => {
+	test("discard keeps the draft under its exact timestamped name", () => {
 		const dirs = fixture();
-		const d = decideSkillProposal(dirs, "smoke-test", "discard");
+		const original = readFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"));
+		const now = () => new Date("2026-11-25T14:03:04.567Z");
+		const d = decideSkillProposal({ ...dirs, now }, "smoke-test", "discard");
 		expect(d).toEqual({ action: "discard", ok: true });
 		expect(existsSync(join(dirs.proposedDir, "smoke-test"))).toBe(false);
+		expect(existsSync(join(discardedRoot(dirs.workspaceDir), "smoke-test.2026-11-25T14-03-04-567Z"))).toBe(true);
+		expect(
+			readFileSync(
+				join(discardedRoot(dirs.workspaceDir), "smoke-test.2026-11-25T14-03-04-567Z", "SKILL.md"),
+			),
+		).toEqual(original);
+	});
+
+	test("discard preserves nested files and relative symlinks without following them", () => {
+		const dirs = fixture();
+		const proposal = join(dirs.proposedDir, "smoke-test");
+		mkdirSync(join(proposal, "nested"), { recursive: true });
+		writeFileSync(join(proposal, "nested", "data.txt"), "nested bytes");
+		writeFileSync(join(proposal, "target.txt"), "target bytes");
+		symlinkSync("target.txt", join(proposal, "relative-link"));
+		const d = decideSkillProposal(
+			{ ...dirs, now: () => new Date("2026-11-25T14:03:04.567Z") },
+			"smoke-test",
+			"discard",
+		);
+		expect(d).toEqual({ action: "discard", ok: true });
+		const kept = join(discardedRoot(dirs.workspaceDir), "smoke-test.2026-11-25T14-03-04-567Z");
+		expect(readFileSync(join(kept, "nested", "data.txt"), "utf8")).toBe("nested bytes");
+		expect(lstatSync(join(kept, "relative-link")).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(join(kept, "relative-link"))).toBe("target.txt");
+		expect(readFileSync(join(kept, "target.txt"), "utf8")).toBe("target bytes");
+	});
+
+	test("discards at different times keep both drafts with their own bytes", () => {
+		const dirs = fixture();
+		const now = () => new Date("2026-11-25T14:03:04.567Z");
+		expect(decideSkillProposal({ ...dirs, now }, "smoke-test", "discard")).toEqual({
+			action: "discard",
+			ok: true,
+		});
+		mkdirSync(join(dirs.proposedDir, "smoke-test"));
+		writeFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"), "# later");
+		const later = () => new Date("2026-11-25T14:03:05.567Z");
+		expect(decideSkillProposal({ ...dirs, now: later }, "smoke-test", "discard")).toEqual({
+			action: "discard",
+			ok: true,
+		});
+		expect(
+			readFileSync(
+				join(discardedRoot(dirs.workspaceDir), "smoke-test.2026-11-25T14-03-04-567Z", "SKILL.md"),
+				"utf8",
+			),
+		).toBe("# smoke");
+		expect(
+			readFileSync(
+				join(discardedRoot(dirs.workspaceDir), "smoke-test.2026-11-25T14-03-05-567Z", "SKILL.md"),
+				"utf8",
+			),
+		).toBe("# later");
+	});
+
+	test("a same-time discard conflict keeps both the first copy and second proposal unchanged", () => {
+		const dirs = fixture();
+		const first = readFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"));
+		const now = () => new Date("2026-11-25T14:03:04.567Z");
+		expect(decideSkillProposal({ ...dirs, now }, "smoke-test", "discard")).toEqual({
+			action: "discard",
+			ok: true,
+		});
+		mkdirSync(join(dirs.proposedDir, "smoke-test"));
+		writeFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"), "# second");
+		const second = readFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"));
+		expect(decideSkillProposal({ ...dirs, now }, "smoke-test", "discard")).toEqual({
+			action: "discard",
+			ok: false,
+			reason: "discard target exists",
+		});
+		expect(
+			readFileSync(
+				join(discardedRoot(dirs.workspaceDir), "smoke-test.2026-11-25T14-03-04-567Z", "SKILL.md"),
+			),
+		).toEqual(first);
+		expect(readFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"))).toEqual(second);
+	});
+
+	test("unsafe discarded roots refuse without changing the proposal or writing through a symlink", () => {
+		for (const kind of ["symlink", "file"] as const) {
+			const dirs = fixture();
+			const original = readFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"));
+			if (kind === "symlink") {
+				const outside = join(dirs.workspaceDir, "outside");
+				mkdirSync(outside);
+				symlinkSync(outside, discardedRoot(dirs.workspaceDir), "dir");
+			} else {
+				writeFileSync(discardedRoot(dirs.workspaceDir), "sentinel");
+			}
+			const outcome = decideSkillProposal(
+				{ ...dirs, now: () => new Date("2026-11-25T14:03:04.567Z") },
+				"smoke-test",
+				"discard",
+			);
+			expect(outcome).toEqual({
+				action: "discard",
+				ok: false,
+				reason: kind === "symlink" ? "skills-discarded is a symlink" : "skills-discarded is not a directory",
+			});
+			expect(readFileSync(join(dirs.proposedDir, "smoke-test", "SKILL.md"))).toEqual(original);
+			if (kind === "symlink") {
+				expect(readdirSync(join(dirs.workspaceDir, "outside"))).toEqual([]);
+			} else {
+				expect(readFileSync(discardedRoot(dirs.workspaceDir), "utf8")).toBe("sentinel");
+			}
+		}
+	});
+
+	test("discarded drafts are absent from the installed and proposed listings and catalogs", () => {
+		const dirs = fixture();
+		expect(
+			decideSkillProposal(
+				{ ...dirs, now: () => new Date("2026-11-25T14:03:04.567Z") },
+				"smoke-test",
+				"discard",
+			),
+		).toEqual({ action: "discard", ok: true });
+		expect(listSkills(dirs.skillsDir, dirs.proposedDir)).toMatchObject({
+			skills: [],
+			proposed: [],
+			catalog: [],
+		});
+		expect(loadCatalog(dirs.skillsDir).entries).toEqual([]);
+		expect(loadCatalog(dirs.proposedDir).entries).toEqual([]);
 	});
 
 	test("a gone proposal answers gone — no throw, no mutation", () => {
@@ -111,12 +252,12 @@ describe("resolveSkillProposal", () => {
 		]);
 	});
 
-	test("a discard records the deletion wording in history", () => {
+	test("a discard records the resolution in history", () => {
 		const dirs = fixture();
 		const store = recordedStore();
 		resolveSkillProposal({ ...dirs, forSkill: () => [row()], store }, "smoke-test", "discard");
 		expect(store.appended[0]!.text).toBe(
-			"skill proposal resolved: smoke-test — discarded (deleted)",
+			"skill proposal resolved: smoke-test — discarded",
 		);
 	});
 
@@ -157,7 +298,7 @@ describe("skillResolutionText", () => {
 			"skill proposal resolved: x — installed (replaced live copy)",
 		);
 		expect(skillResolutionText({ action: "discard", ok: true }, "x")).toBe(
-			"skill proposal resolved: x — discarded (deleted)",
+			"skill proposal resolved: x — discarded",
 		);
 	});
 });

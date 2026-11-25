@@ -112,7 +112,8 @@ stop to save one. Both paths land in the same place:
 Drafts never install themselves: they park in `workspace/skills-proposed/`
 and the bot says so in the topic (*"proposed skill: X — approve to
 install"*). Approve and it moves the draft into the catalog; say discard
-and it deletes it. The bot sees pending proposals in its skills list, so
+and it sets the draft aside in `workspace/skills-discarded/`, where
+nothing loads it. The bot sees pending proposals in its skills list, so
 you can approve from any chat, not just the one where the draft landed.
 
 ## Limits worth knowing

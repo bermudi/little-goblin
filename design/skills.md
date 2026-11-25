@@ -260,8 +260,8 @@ job (tune it, don't duplicate it).
   the row degrades to the conversational notice. Approve and discard
   stay conversational as the fallback: the history event tells the next
   turn that approve means moving the dir into `skills/` (replacing any
-  live copy) and discard means deleting it — goblin is already the
-  operator's hands for installs. The `## skills` section lists pending
+  live copy) and discard means moving it to `skills-discarded/` (see the
+  next bullet) — goblin is already the operator's hands for installs. The `## skills` section lists pending
   proposals too, so an approve request works in any conversation. Manual
   installs are unchanged: the operator asking in chat IS the approval —
   the ruling covers only the unattended path. The section header carried
@@ -270,6 +270,14 @@ job (tune it, don't duplicate it).
   new skills as proposals in `skills-proposed/` (this flow among them),
   extensions to installed skills as direct, attributed edits (→
   Self-authoring, /learn, curator).
+- **A discard keeps the draft (ruling 2026-11-25, issue #944).** A
+  discarded draft moves by rename to
+  `workspace/skills-discarded/<name>.<timestamp>/`. No catalog, proposal
+  list or reviewer reads that directory. The text is what a later change
+  to the reviewer's judgment can be tested against. The directory is
+  local and has no cleanup. An unsafe target refuses the discard and
+  leaves the proposal in place. Rejected: asking for a reason at
+  Discard.
 - **A proposal shows what it changes (ruling 2026-11-07, issue #162).**
   The operator cannot judge an update from the new bytes alone. The
   Skills read (`listSkills`) attaches a `diff` to every parked proposal,

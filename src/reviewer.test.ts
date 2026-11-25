@@ -407,6 +407,9 @@ describe("review run — staging and publication", () => {
 		expect((history[0]!.parts[0] as { text: string }).text).toContain(
 			"skills-proposed/pdf-tables/",
 		);
+		expect((history[0]!.parts[0] as { text: string }).text).toContain(
+			"a discard means moving it to skills-discarded/<name>.<timestamp>/, never deleting it",
+		);
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["pdf-tables"] }]);
 		h.store.close();
 	});

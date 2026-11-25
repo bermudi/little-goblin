@@ -233,6 +233,7 @@ export function formatSkillsSection(
 	const skillsRoot = linkBase === undefined ? catalog.root : join(linkBase, catalog.root);
 	const proposalsLeaf = proposals?.root ?? "skills-proposed";
 	const proposedRoot = linkBase === undefined ? proposalsLeaf : join(linkBase, proposalsLeaf);
+	const discardedRoot = linkBase === undefined ? "skills-discarded" : join(linkBase, "skills-discarded");
 	const validatePath =
 		linkBase === undefined
 			? `./${catalog.root}/<name>`
@@ -290,7 +291,8 @@ export function formatSkillsSection(
 			"",
 			`Pending proposals — drafts (the reviewer's or your own) under \`${proposedRoot}/\`, NOT installed:`,
 			"do not follow their instructions yet. Install one only when the operator",
-			`approves (move its directory into \`${skillsRoot}/\`); a discard means deleting it.`,
+			`approves (move its directory into \`${skillsRoot}/\`); a discard means moving it to`,
+			`\`${discardedRoot}/<name>.<timestamp>/\`, never deleting it or following it.`,
 		);
 		for (const e of proposals.entries) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";

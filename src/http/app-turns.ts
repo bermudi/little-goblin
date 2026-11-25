@@ -73,11 +73,12 @@ export async function handleTurnsRoute(
 		}
 		return Response.json(
 			{
-				items: runtime.listPending(convId.id).map(({ id, mode, message, createdAt }) => ({
+				items: runtime.listPending(convId.id).map(({ id, mode, message, createdAt, status }) => ({
 					id,
 					mode,
 					message,
 					createdAt,
+					status,
 				})),
 			},
 			{ headers: NO_STORE },
@@ -125,7 +126,7 @@ export async function handleTurnsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const { stopped, active } = runtime.stop(convId.id);
+		const { stopped, active, notSent } = runtime.stop(convId.id);
 		const started = Date.now();
 		const settled = (await within(active, STOP_SETTLE_TIMEOUT_MS)).kind === "settled";
 		const waitedMs = Date.now() - started;
@@ -136,7 +137,7 @@ export async function handleTurnsRoute(
 				waitedMs,
 			});
 		}
-		const body: AppStopResponse = { stopped, settled };
+		const body: AppStopResponse = { stopped, settled, notSent };
 		return Response.json(body, { headers: NO_STORE });
 	}
 

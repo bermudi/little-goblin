@@ -266,6 +266,14 @@ export class LaneRegistry {
 		);
 	}
 
+	pendingIds(convId: string): Set<string> {
+		const lane = this.lanes.get(convId);
+		if (lane === undefined) return new Set();
+		return new Set(
+			lane.pending.flatMap((turn) => (turn.pending === undefined ? [] : [turn.pending.id])),
+		);
+	}
+
 	pendingSeqs(convId: string): Set<number> {
 		return new Set(
 			this.lane(convId).pending.flatMap((t) => (t.seq === null ? [] : [t.seq])),

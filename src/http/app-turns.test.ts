@@ -1,5 +1,6 @@
 import { describe, expect, jest, test } from "bun:test";
 import { waitUntil } from "../testkit.ts";
+import { textModel } from "../testkit/fake-model.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
 interface EventReader {
@@ -154,7 +155,7 @@ describe("app conversation events", () => {
 			expect(await nextEvent(reader)).toEqual({ type: "pending" });
 			const listed = await call("/api/app/conversations/pending-remove/pending");
 			expect(await listed.json()).toMatchObject({
-				items: [{ id: pendingId, mode: "followUp", message: { id: "pending" } }],
+				items: [{ id: pendingId, mode: "followUp", message: { id: "pending" }, status: "waiting" }],
 			});
 			const removed = await call(
 				`/api/app/conversations/pending-remove/pending/${pendingId}`,
@@ -225,11 +226,11 @@ describe("app conversation events", () => {
 		}
 	});
 
-	test("/stop moves unclaimed pending input into history without running it", async () => {
+	test("/stop answers waiting input as notSent instead of sending it", async () => {
+		const fake = textModel(["one", "two", "three", "four", "five", "six"], { delayMs: 60 });
 		const { http, call, runtime, store } = setup({
 			token: APP_TOKEN_NAME,
-			deltas: ["one", "two", "three", "four", "five", "six"],
-			delayMs: 40,
+			model: fake.model,
 		});
 		try {
 			await call("/api/app/conversations", {
@@ -246,22 +247,207 @@ describe("app conversation events", () => {
 				}),
 			});
 			await waitUntil(() => runtime.conversationLive("app/pending-stop"), "first wire opens");
-			const submitted = await call("/api/app/chat", {
+			const steerMessage = { id: "steer-me", role: "user", parts: [{ type: "text", text: "keep this" }] };
+			const followUpMessage = {
+				id: "queue-me",
+				role: "user",
+				parts: [{ type: "text", text: "queue this too" }],
+			};
+			const steer = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/pending-stop", message: steerMessage }),
+			});
+			const followUp = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
 					conversationId: "app/pending-stop",
+					whenBusy: "followUp",
+					message: followUpMessage,
+				}),
+			});
+			expect(steer.status).toBe(202);
+			expect(followUp.status).toBe(202);
+			const { pendingId: steerId } = (await steer.json()) as { pendingId: string };
+			const { pendingId: followUpId } = (await followUp.json()) as { pendingId: string };
+			expect(runtime.listPending("app/pending-stop").map((row) => row.status)).toEqual([
+				"waiting",
+				"waiting",
+			]);
+			const stopped = await call("/api/app/conversations/pending-stop/stop", { method: "POST" });
+			expect(stopped.status).toBe(200);
+			const stopBody = (await stopped.json()) as { notSent: { id: string; message: unknown }[] };
+			expect(stopBody.notSent).toEqual([
+				{ id: steerId, message: steerMessage },
+				{ id: followUpId, message: followUpMessage },
+			]);
+			const history = store.history("app/pending-stop").map((message) => message.id);
+			expect(history).toContain("first");
+			expect(history).not.toContain("steer-me");
+			expect(history).not.toContain("queue-me");
+			expect(
+				store.history("app/pending-stop").filter((message) => message.role === "assistant"),
+			).toHaveLength(0);
+			const listed = (await (await call("/api/app/conversations/pending-stop/pending")).json()) as {
+				items: { id: string; status: string }[];
+			};
+			expect(listed.items.map((item) => [item.id, item.status])).toEqual([
+				[steerId, "notSent"],
+				[followUpId, "notSent"],
+			]);
+
+			const fresh = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/pending-stop",
+					message: { id: "fresh", role: "user", parts: [{ type: "text", text: "a new start" }] },
+				}),
+			});
+			expect(fresh.status).toBe(202);
+			await waitUntil(
+				() => store.history("app/pending-stop").some((message) => message.role === "assistant"),
+				"fresh reply lands",
+			);
+			const lastPrompt = JSON.stringify(fake.streamCalls.at(-1)?.prompt ?? []);
+			expect(lastPrompt).toContain("a new start");
+			expect(lastPrompt).not.toContain("keep this");
+			expect(lastPrompt).not.toContain("queue this too");
+			const after = (await (await call("/api/app/conversations/pending-stop/pending")).json()) as {
+				items: { id: string; status: string }[];
+			};
+			expect(after.items.map((item) => [item.id, item.status])).toEqual([
+				[steerId, "notSent"],
+				[followUpId, "notSent"],
+			]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("DELETE takes a Not sent row once; a second DELETE is 409", async () => {
+		const { http, call, runtime, store } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["one", "two", "three", "four", "five", "six"],
+			delayMs: 40,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pending-take" }),
+			});
+			await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/pending-take",
+					message: { id: "first", role: "user", parts: [{ type: "text", text: "first" }] },
+				}),
+			});
+			await waitUntil(() => runtime.conversationLive("app/pending-take"), "first wire opens");
+			const submitted = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/pending-take",
 					message: { id: "pending", role: "user", parts: [{ type: "text", text: "keep this" }] },
 				}),
 			});
-			expect(submitted.status).toBe(202);
-			expect(runtime.listPending("app/pending-stop")).toHaveLength(1);
-			const stopped = await call("/api/app/conversations/pending-stop/stop", { method: "POST" });
+			const { pendingId } = (await submitted.json()) as { pendingId: string };
+			const stopped = await call("/api/app/conversations/pending-take/stop", { method: "POST" });
 			expect(stopped.status).toBe(200);
-			expect(runtime.listPending("app/pending-stop")).toEqual([]);
-			expect(store.history("app/pending-stop").map((message) => message.id)).toContain("pending");
-			expect(store.history("app/pending-stop").filter((message) => message.id === "pending")).toHaveLength(1);
-			expect(store.history("app/pending-stop").filter((message) => message.role === "assistant")).toHaveLength(0);
+			expect(runtime.listPending("app/pending-take").map((row) => row.status)).toEqual(["notSent"]);
+			const taken = await call(`/api/app/conversations/pending-take/pending/${pendingId}`, {
+				method: "DELETE",
+			});
+			expect(taken.status).toBe(200);
+			expect(await taken.json()).toMatchObject({ message: { id: "pending" } });
+			expect(runtime.listPending("app/pending-take")).toEqual([]);
+			expect(store.history("app/pending-take").map((message) => message.id)).not.toContain("pending");
+			const again = await call(`/api/app/conversations/pending-take/pending/${pendingId}`, {
+				method: "DELETE",
+			});
+			expect(again.status).toBe(409);
+			expect(await again.json()).toEqual({ error: "already taken" });
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("DELETE through another conversation's path is refused and the row survives", async () => {
+		const { http, call, runtime, store } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["one", "two", "three", "four", "five", "six"],
+			delayMs: 100,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pending-cross-a" }),
+			});
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pending-cross-b" }),
+			});
+			await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/pending-cross-a",
+					message: { id: "first", role: "user", parts: [{ type: "text", text: "first" }] },
+				}),
+			});
+			await waitUntil(() => runtime.conversationLive("app/pending-cross-a"), "first wire opens");
+			const submitted = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/pending-cross-a",
+					whenBusy: "followUp",
+					message: { id: "waiting", role: "user", parts: [{ type: "text", text: "waiting row" }] },
+				}),
+			});
+			const { pendingId } = (await submitted.json()) as { pendingId: string };
+			const waitingStatus = (await (
+				await call("/api/app/conversations/pending-cross-a/pending")
+			).json()) as { items: { id: string; status: string }[] };
+			expect(waitingStatus.items.map((item) => [item.id, item.status])).toEqual([
+				[pendingId, "waiting"],
+			]);
+			const wrongConversation = await call(
+				`/api/app/conversations/pending-cross-b/pending/${pendingId}`,
+				{ method: "DELETE" },
+			);
+			expect(wrongConversation.status).toBe(409);
+			const stillWaiting = (await (
+				await call("/api/app/conversations/pending-cross-a/pending")
+			).json()) as { items: { id: string; status: string }[] };
+			expect(stillWaiting.items.map((item) => [item.id, item.status])).toEqual([
+				[pendingId, "waiting"],
+			]);
+
+			const stopped = await call("/api/app/conversations/pending-cross-a/stop", {
+				method: "POST",
+			});
+			expect(stopped.status).toBe(200);
+			const notSentDelete = await call(
+				`/api/app/conversations/pending-cross-b/pending/${pendingId}`,
+				{ method: "DELETE" },
+			);
+			expect(notSentDelete.status).toBe(409);
+			const stillNotSent = (await (
+				await call("/api/app/conversations/pending-cross-a/pending")
+			).json()) as { items: { id: string; status: string }[] };
+			expect(stillNotSent.items.map((item) => [item.id, item.status])).toEqual([
+				[pendingId, "notSent"],
+			]);
+			expect(store.history("app/pending-cross-a").map((message) => message.id)).not.toContain(
+				"waiting",
+			);
 		} finally {
 			http.stop();
 		}

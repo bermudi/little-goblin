@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import { Window } from "happy-dom";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AppCompactionMark } from "../../src/http/app-wire.ts";
@@ -12,6 +12,7 @@ import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
+import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { ChatView, mergeTranscript, replyStarted, rewindTranscript } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
@@ -1756,7 +1757,7 @@ describe("ChatView mid-turn steer", () => {
         }
         if (url.endsWith("/stop")) {
           stopPosts++;
-          return jsonResponse({ stopped: true, settled: true });
+          return jsonResponse({ stopped: true, settled: true, notSent: [] });
         }
         if (url === "/api/app/chat") {
           const body = JSON.parse(String(init?.body)) as {
@@ -2070,6 +2071,658 @@ describe("ChatView mid-turn steer", () => {
   });
 });
 
+describe("ChatView stop returns waiting input (issue #941)", () => {
+  const dom = mountDom();
+
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  const userMsg = (id: string, text: string): UIMessage => ({
+    id,
+    role: "user",
+    parts: [{ type: "text", text }],
+  });
+  const configResponse = () =>
+    jsonResponse({
+      model: "prov/model",
+      thinking: "off",
+      favorites: [],
+      catalog: [],
+      thinkingLevels: ["off"],
+    });
+  const deferredResponse = () => {
+    let resolve!: (response: Response) => void;
+    const promise = new Promise<Response>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+  const typeInto = async (text: string) => {
+    const ta = dom.container.querySelector<HTMLTextAreaElement>(
+      "form.composer textarea",
+    )!;
+    await act(async () => {
+      (ta as HTMLElement).focus();
+      Object.getOwnPropertyDescriptor(
+        dom.win.HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(ta, text);
+      ta.dispatchEvent(
+        new dom.win.Event("input", { bubbles: true }) as unknown as Event,
+      );
+      ta.dispatchEvent(
+        new dom.win.KeyboardEvent("keyup", {
+          bubbles: true,
+          key: "t",
+        }) as unknown as Event,
+      );
+    });
+    return ta;
+  };
+  const waitFor = async (condition: () => boolean) => {
+    for (let i = 0; i < 100 && !condition(); i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(condition()).toBeTrue();
+  };
+
+  function StagedHost() {
+    const [staged, setStaged] = useState<StagedUpload[]>([]);
+    const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
+    const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
+    return (
+      <ChatView
+        token={null}
+        conversationId="app/chat-01"
+        title={null}
+        seed={null}
+        staged={staged}
+        setStaged={setStaged}
+        stagedNotes={stagedNotes}
+        setStagedNotes={setStagedNotes}
+        stagedSkills={stagedSkills}
+        setStagedSkills={setStagedSkills}
+        onSeeded={() => {}}
+      />
+    );
+  }
+
+  const mountChat = async () => {
+    dom.root = createRoot(dom.container);
+    await act(async () => {
+      dom.root?.render(<StagedHost />);
+    });
+  };
+
+  test("stop puts the waiting rows back in the box before deleting them", async () => {
+    const encoder = new TextEncoder();
+    const firstMessage: UIMessage = {
+      id: "m1",
+      role: "user",
+      parts: [
+        { type: "text", text: "first" },
+        {
+          type: "data-attachment",
+          data: {
+            path: "/box/files/one.png",
+            mediaType: "image/png",
+            filename: "one.png",
+            size: 3,
+          },
+        },
+      ],
+    } as unknown as UIMessage;
+    const secondMessage = userMsg("m2", "second");
+    let pendingRows: {
+      id: string;
+      mode: "steer" | "followUp";
+      message: UIMessage;
+      createdAt: string;
+      status: "waiting" | "notSent";
+    }[] = [
+      {
+        id: "p1",
+        mode: "steer",
+        message: firstMessage,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        status: "waiting",
+      },
+      {
+        id: "p2",
+        mode: "followUp",
+        message: secondMessage,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        status: "waiting",
+      },
+    ];
+    const stopAnswer = deferredResponse();
+    const deletes: { id: string; box: string }[] = [];
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          const id = decodeURIComponent(url.split("/").at(-1)!);
+          const box = dom.container.querySelector("textarea")?.value ?? "";
+          deletes.push({ id, box });
+          const message = pendingRows.find((row) => row.id === id)?.message;
+          pendingRows = pendingRows.filter((row) => row.id !== id);
+          return jsonResponse({ message });
+        }
+        if (url.endsWith("/stop")) {
+          pendingRows = pendingRows.map((row) => ({ ...row, status: "notSent" as const }));
+          return stopAnswer.promise;
+        }
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(
+      () => dom.container.textContent?.includes("Pending input") ?? false,
+    );
+    expect(dom.container.textContent).toContain("first");
+    expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+    await act(async () => {
+      (dom.container.querySelector(".stop-btn") as HTMLElement).click();
+    });
+    const ta = await typeInto("typed");
+    expect(deletes).toEqual([]);
+    await act(async () => {
+      stopAnswer.resolve(
+        jsonResponse({
+          stopped: true,
+          settled: true,
+          notSent: [
+            { id: "p1", message: firstMessage },
+            { id: "p2", message: secondMessage },
+          ],
+        }),
+      );
+    });
+    await waitFor(() => ta.value === "first\n\nsecond\n\ntyped");
+    expect(
+      dom.container.querySelector(".composer-attachments .attachment .attachment-name")
+        ?.textContent,
+    ).toContain("one.png");
+    await waitFor(() => deletes.length >= 2);
+    expect(deletes.map((entry) => entry.id).sort()).toEqual(["p1", "p2"]);
+    for (const entry of deletes) expect(entry.box).toBe("first\n\nsecond\n\ntyped");
+    await waitFor(
+      () => dom.container.querySelector(".pending-inputs") === null,
+    );
+  });
+
+  test("a failed stop keeps the box and deletes nothing; the row lists as Not sent", async () => {
+    const encoder = new TextEncoder();
+    const message = userMsg("m1", "lost text");
+    let pendingRows: {
+      id: string;
+      mode: "steer" | "followUp";
+      message: UIMessage;
+      createdAt: string;
+      status: "waiting" | "notSent";
+    }[] = [
+      {
+        id: "p1",
+        mode: "followUp",
+        message,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        status: "waiting",
+      },
+    ];
+    const deletes: string[] = [];
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          deletes.push(decodeURIComponent(url.split("/").at(-1)!));
+          return jsonResponse({ message });
+        }
+        if (url.endsWith("/stop")) {
+          pendingRows = pendingRows.map((row) => ({ ...row, status: "notSent" as const }));
+          return jsonResponse({ error: "stop exploded" }, 500);
+        }
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(
+      () => dom.container.querySelector(".stop-btn") !== null,
+    );
+    await act(async () => {
+      (dom.container.querySelector(".stop-btn") as HTMLElement).click();
+    });
+    await waitFor(
+      () => dom.container.textContent?.includes("Stop request failed") ?? false,
+    );
+    expect(dom.container.textContent).toContain("stop exploded");
+    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+    expect(ta.value).toBe("");
+    expect(deletes).toEqual([]);
+    const notSentSection = dom.container.querySelector('section[aria-label="Not sent"]');
+    expect(notSentSection).not.toBeNull();
+    expect(notSentSection?.textContent).toContain("lost text");
+  });
+
+  test("a failed delete after stop keeps the text in the box and the row Not sent", async () => {
+    const encoder = new TextEncoder();
+    const message = userMsg("m1", "kept text");
+    let pendingRows: {
+      id: string;
+      mode: "steer" | "followUp";
+      message: UIMessage;
+      createdAt: string;
+      status: "waiting" | "notSent";
+    }[] = [
+      {
+        id: "p1",
+        mode: "steer",
+        message,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        status: "waiting",
+      },
+    ];
+    const deletes: string[] = [];
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          deletes.push(decodeURIComponent(url.split("/").at(-1)!));
+          return jsonResponse({ error: "delete failed" }, 500);
+        }
+        if (url.endsWith("/stop")) {
+          pendingRows = pendingRows.map((row) => ({ ...row, status: "notSent" as const }));
+          return jsonResponse({
+            stopped: true,
+            settled: true,
+            notSent: [{ id: "p1", message }],
+          });
+        }
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(
+      () => dom.container.querySelector(".stop-btn") !== null,
+    );
+    await act(async () => {
+      (dom.container.querySelector(".stop-btn") as HTMLElement).click();
+    });
+    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+    await waitFor(() => ta.value === "kept text");
+    await waitFor(() => deletes.length === 1);
+    const notSentSection = dom.container.querySelector('section[aria-label="Not sent"]');
+    expect(notSentSection).not.toBeNull();
+    expect(notSentSection?.textContent).toContain("kept text");
+    expect(dom.container.querySelector('section[aria-label="Pending input"]')).toBeNull();
+  });
+
+  test("unmounting before stop answers sends no delete", async () => {
+    const encoder = new TextEncoder();
+    const message = userMsg("m1", "gone with the view");
+    const stopAnswer = deferredResponse();
+    const deletes: string[] = [];
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending"))
+          return jsonResponse({
+            items: [
+              {
+                id: "p1",
+                mode: "steer",
+                message,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                status: "waiting",
+              },
+            ],
+          });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          deletes.push(decodeURIComponent(url.split("/").at(-1)!));
+          return jsonResponse({ message });
+        }
+        if (url.endsWith("/stop")) return stopAnswer.promise;
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(
+      () => dom.container.querySelector(".stop-btn") !== null,
+    );
+    await act(async () => {
+      (dom.container.querySelector(".stop-btn") as HTMLElement).click();
+    });
+    await act(async () => {
+      dom.root?.unmount();
+    });
+    dom.root = null;
+    stopAnswer.resolve(
+      jsonResponse({
+        stopped: true,
+        settled: true,
+        notSent: [{ id: "p1", message }],
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(deletes).toEqual([]);
+  });
+
+  test("a row removed with × while stop answers does not come back", async () => {
+    const encoder = new TextEncoder();
+    const firstMessage = userMsg("m1", "first");
+    const secondMessage = userMsg("m2", "second");
+    let pendingRows: {
+      id: string;
+      mode: "steer" | "followUp";
+      message: UIMessage;
+      createdAt: string;
+      status: "waiting" | "notSent";
+    }[] = [
+      {
+        id: "p1",
+        mode: "steer",
+        message: firstMessage,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        status: "waiting",
+      },
+      {
+        id: "p2",
+        mode: "steer",
+        message: secondMessage,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        status: "waiting",
+      },
+    ];
+    const stopAnswer = deferredResponse();
+    const removeDelete = deferredResponse();
+    const deletes: { id: string; box: string }[] = [];
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          const id = decodeURIComponent(url.split("/").at(-1)!);
+          const box = dom.container.querySelector("textarea")?.value ?? "";
+          deletes.push({ id, box });
+          if (id === "p1") return removeDelete.promise;
+          const message = pendingRows.find((row) => row.id === id)?.message;
+          pendingRows = pendingRows.filter((row) => row.id !== id);
+          return jsonResponse({ message });
+        }
+        if (url.endsWith("/stop")) {
+          pendingRows = pendingRows.map((row) => ({ ...row, status: "notSent" as const }));
+          return stopAnswer.promise;
+        }
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(
+      () => dom.container.querySelector(".stop-btn") !== null,
+    );
+    await act(async () => {
+      (dom.container.querySelector('.pending-input-remove[aria-label="Remove pending input"]') as HTMLElement).click();
+    });
+    await act(async () => {
+      (dom.container.querySelector(".stop-btn") as HTMLElement).click();
+    });
+    await act(async () => {
+      stopAnswer.resolve(
+        jsonResponse({
+          stopped: true,
+          settled: true,
+          notSent: [
+            { id: "p1", message: firstMessage },
+            { id: "p2", message: secondMessage },
+          ],
+        }),
+      );
+    });
+    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+    await waitFor(() => ta.value === "second");
+    await waitFor(
+      () => deletes.some((entry) => entry.id === "p2"),
+    );
+    expect(deletes.map((entry) => entry.id)).toEqual(["p1", "p2"]);
+    expect(deletes.find((entry) => entry.id === "p2")?.box).toBe("second");
+    await act(async () => {
+      pendingRows = pendingRows.filter((row) => row.id !== "p1");
+      removeDelete.resolve(jsonResponse({ message: firstMessage }));
+    });
+    await waitFor(
+      () => dom.container.querySelector(".pending-inputs") === null,
+    );
+  });
+
+  test("a tapped row and a stop answer landing together both reach the box", async () => {
+    const encoder = new TextEncoder();
+    const rows = ["first", "second"].map((text, i) => ({
+      id: `p${i + 1}`,
+      mode: "steer" as const,
+      message: userMsg(`m${i + 1}`, text),
+      createdAt: `2026-01-01T00:00:0${i}.000Z`,
+      status: "waiting" as "waiting" | "notSent",
+    }));
+    let pendingRows = rows;
+    const stopAnswer = deferredResponse();
+    const tapDelete = deferredResponse();
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          const id = decodeURIComponent(url.split("/").at(-1)!);
+          pendingRows = pendingRows.filter((row) => row.id !== id);
+          if (id === "p1") return tapDelete.promise;
+          return jsonResponse({ message: rows[1]!.message });
+        }
+        if (url.endsWith("/stop")) return stopAnswer.promise;
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(() => dom.container.querySelector(".pending-input-edit") !== null);
+    await waitFor(() => dom.container.querySelector(".stop-btn") !== null);
+    await act(async () => {
+      (dom.container.querySelector(".pending-input-edit") as HTMLElement).click();
+    });
+    await act(async () => {
+      (dom.container.querySelector(".stop-btn") as HTMLElement).click();
+    });
+    await act(async () => {
+      stopAnswer.resolve(
+        jsonResponse({
+          stopped: true,
+          settled: true,
+          notSent: [{ id: "p2", message: rows[1]!.message }],
+        }),
+      );
+      tapDelete.resolve(jsonResponse({ message: rows[0]!.message }));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+    await waitFor(() => pendingRows.length === 0);
+    expect(ta.value.split("\n\n").sort()).toEqual(["first", "second"]);
+  });
+
+  test("Not sent rows load beside waiting rows and act the same on tap and ×", async () => {
+    const encoder = new TextEncoder();
+    const waitingRow = {
+      id: "w1",
+      mode: "followUp" as const,
+      message: userMsg("m1", "queued text"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      status: "waiting" as const,
+    };
+    const notSentOne = {
+      id: "n1",
+      mode: "steer" as const,
+      message: userMsg("m2", "lost one"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      status: "notSent" as const,
+    };
+    const notSentTwo = {
+      id: "n2",
+      mode: "followUp" as const,
+      message: userMsg("m3", "lost two"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      status: "notSent" as const,
+    };
+    let pendingRows = [waitingRow, notSentOne, notSentTwo];
+    const deletes: string[] = [];
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          const id = decodeURIComponent(url.split("/").at(-1)!);
+          const message = pendingRows.find((row) => row.id === id)?.message;
+          pendingRows = pendingRows.filter((row) => row.id !== id);
+          deletes.push(id);
+          return jsonResponse({ message });
+        }
+        return configResponse();
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await waitFor(
+      () => dom.container.querySelectorAll("section.pending-inputs").length === 2,
+    );
+    const sections = dom.container.querySelectorAll("section.pending-inputs");
+    const waiting = sections[0]!;
+    const notSent = sections[1]!;
+    expect(waiting.getAttribute("aria-label")).toBe("Pending input");
+    expect(waiting.querySelector("h3")?.textContent).toBe("Pending input");
+    expect(waiting.textContent).toContain("queued text");
+    expect(waiting.querySelector(".pending-input-mode")?.textContent).toBe("Queued");
+    expect(waiting.querySelector(".pending-input-edit")?.getAttribute("aria-label")).toBe(
+      "Edit queued input",
+    );
+    expect(notSent.getAttribute("aria-label")).toBe("Not sent");
+    expect(notSent.querySelector("h3")?.textContent).toBe("Not sent");
+    expect(notSent.querySelector(".pending-input-mode")).toBeNull();
+    expect(notSent.querySelector('.pending-input-edit[aria-label="Edit not sent message"]')).not.toBeNull();
+    expect(notSent.querySelector('.pending-input-remove[aria-label="Remove not sent message"]')).not.toBeNull();
+    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+    await act(async () => {
+      (notSent.querySelector('.pending-input-edit[aria-label="Edit not sent message"]') as HTMLElement).click();
+    });
+    await waitFor(() => ta.value === "lost one");
+    await act(async () => {
+      (dom.container.querySelector('.pending-input-remove[aria-label="Remove not sent message"]') as HTMLElement).click();
+    });
+    await waitFor(() => deletes.includes("n2"));
+    expect(ta.value).toBe("lost one");
+    expect(
+      dom.container.querySelector('section[aria-label="Pending input"]')?.textContent,
+    ).toContain("queued text");
+  });
+});
+
 
 describe("ChatView seed send (issue #412)", () => {
   const dom = mountDom();
@@ -2114,7 +2767,7 @@ describe("ChatView seed send (issue #412)", () => {
         }
         if (url.endsWith("/stop")) {
           stopCalls.push(`${init?.method ?? "GET"} ${url}`);
-          return jsonResponse({ stopped: true, settled: true });
+          return jsonResponse({ stopped: true, settled: true, notSent: [] });
         }
         return jsonResponse({
           model: "prov/model",

@@ -49,6 +49,7 @@ function runtimeEdge(store: ConversationStore, stopped: string[]): Pick<Runtime,
 				reviewsCancelled: 2,
 				settled: Promise.resolve(),
 				active: Promise.resolve(),
+				notSent: [],
 			};
 		}),
 	};

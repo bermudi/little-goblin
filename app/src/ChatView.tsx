@@ -533,7 +533,16 @@ function Chat({
   const [draftRestore, setDraftRestore] = useState<{
     parts: UIMessage["parts"];
     source?: "pending-edit";
+    ids?: string[];
   } | null>(null);
+  const takenPendingIds = useRef(new Set<string>());
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const refreshPending = () => {
     void fetch(
       `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/pending`,
@@ -740,6 +749,7 @@ function Chat({
           mode: whenBusy,
           message: optimistic as unknown as AppPendingInput["message"],
           createdAt: new Date(now).toISOString(),
+          status: "waiting",
         },
       ]);
     } else {
@@ -772,7 +782,16 @@ function Chat({
   });
   const onUiAction = useCallback((text: string) => void submitLatest.current({ text }), []);
 
+  const mergeDraftRestore = (parts: UIMessage["parts"], ids: string[]) => {
+    setDraftRestore((current) => ({
+      parts: [...(current?.parts ?? []), ...parts],
+      source: "pending-edit",
+      ids: [...(current?.ids ?? []), ...ids],
+    }));
+  };
+
   const dequeuePending = async (item: AppPendingInput, edit: boolean) => {
+    takenPendingIds.current.add(item.id);
     try {
       const response = await fetch(
         `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/pending/${encodeURIComponent(item.id)}`,
@@ -790,13 +809,27 @@ function Chat({
       const body = (await response.json()) as { message: AppPendingInput["message"] };
       setPendingItems((current) => current.filter((row) => row.id !== item.id));
       if (edit)
-        setDraftRestore({
-          parts: body.message.parts as UIMessage["parts"],
-          source: "pending-edit",
-        });
+        mergeDraftRestore(body.message.parts as UIMessage["parts"], []);
       refreshPending();
     } catch (err) {
+      takenPendingIds.current.delete(item.id);
       setSendFailure(err instanceof Error ? err.message : "pending input action failed");
+    }
+  };
+
+  const returnPendingRow = async (id: string): Promise<void> => {
+    try {
+      const response = await fetch(
+        `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/pending/${encodeURIComponent(id)}`,
+        {
+          method: "DELETE",
+          headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        },
+      );
+      if (response.status === 409) return;
+      if (!response.ok) console.warn(`pending input return failed (${response.status})`);
+    } catch (err) {
+      console.warn("pending input return failed", err);
     }
   };
 
@@ -933,6 +966,40 @@ function Chat({
       )
       .finally(() => setBranchPending(null));
   };
+
+  const waitingItems = pendingItems.filter((item) => item.status !== "notSent");
+  const notSentItems = pendingItems.filter((item) => item.status === "notSent");
+  const pendingRow = (item: AppPendingInput) => (
+    <div className="pending-input" key={item.id}>
+      <button
+        type="button"
+        className="pending-input-edit"
+        aria-label={
+          item.status === "notSent"
+            ? "Edit not sent message"
+            : `Edit ${item.mode === "followUp" ? "queued" : "steer"} input`
+        }
+        onClick={() => void dequeuePending(item, true)}
+      >
+        {item.status === "notSent" ? null : (
+          <span className="pending-input-mode">
+            {item.mode === "followUp" ? "Queued" : "Steer"}
+          </span>
+        )}
+        <span>{messageText(item.message as unknown as UIMessage)}</span>
+      </button>
+      <button
+        type="button"
+        className="pending-input-remove"
+        aria-label={
+          item.status === "notSent" ? "Remove not sent message" : "Remove pending input"
+        }
+        onClick={() => void dequeuePending(item, false)}
+      >
+        ×
+      </button>
+    </div>
+  );
 
   return (
     <DocViewerProvider token={token} conversationId={conversationId}>
@@ -1186,32 +1253,16 @@ function Chat({
             {busy && !replyStarted(displayed, settledTailId ?? undefined) && (
               <div className="msg assistant pending shimmer">…</div>
             )}
-            {pendingItems.length > 0 && (
+            {waitingItems.length > 0 && (
               <section className="pending-inputs" aria-label="Pending input">
                 <h3>Pending input</h3>
-                {pendingItems.map((item) => (
-                  <div className="pending-input" key={item.id}>
-                    <button
-                      type="button"
-                      className="pending-input-edit"
-                      aria-label={`Edit ${item.mode === "followUp" ? "queued" : "steer"} input`}
-                      onClick={() => void dequeuePending(item, true)}
-                    >
-                      <span className="pending-input-mode">
-                        {item.mode === "followUp" ? "Queued" : "Steer"}
-                      </span>
-                      <span>{messageText(item.message as unknown as UIMessage)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="pending-input-remove"
-                      aria-label="Remove pending input"
-                      onClick={() => void dequeuePending(item, false)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+                {waitingItems.map(pendingRow)}
+              </section>
+            )}
+            {notSentItems.length > 0 && (
+              <section className="pending-inputs" aria-label="Not sent">
+                <h3>Not sent</h3>
+                {notSentItems.map(pendingRow)}
               </section>
             )}
           {error !== undefined && (
@@ -1254,7 +1305,16 @@ function Chat({
           setStagedSkills={setStagedSkills}
           quote={quote}
           draftRestore={draftRestore}
-          onDraftRestored={() => setDraftRestore(null)}
+          onDraftRestored={() => {
+            const ids = draftRestore?.ids ?? [];
+            setDraftRestore(null);
+            if (ids.length === 0) return;
+            setTimeout(() => {
+              void Promise.allSettled(ids.map((id) => returnPendingRow(id))).then(() => {
+                if (alive.current) refreshPending();
+              });
+            }, 0);
+          }}
           stealFocus
           onCompacted={refreshTranscript}
           onSend={(parts, whenBusy) => {
@@ -1267,12 +1327,25 @@ function Chat({
             // unlanded record is in history by then, so one refresh
             // swaps the local partial for the durable record.
             void stopConversation(token, conversationId)
-              .then(() => refreshTranscript())
-              .catch((err: unknown) =>
+              .then((result) => {
+                if (!alive.current) return;
+                refreshTranscript();
+                const returned = result.notSent.filter(
+                  (entry) => !takenPendingIds.current.has(entry.id),
+                );
+                if (returned.length === 0) return;
+                mergeDraftRestore(
+                  returned.flatMap((entry) => entry.message.parts as UIMessage["parts"]),
+                  returned.map((entry) => entry.id),
+                );
+              })
+              .catch((err: unknown) => {
+                if (!alive.current) return;
                 setStopError(
                   err instanceof Error ? err.message : "request failed",
-                ),
-              );
+                );
+                refreshPending();
+              });
             void stop();
           }}
         />

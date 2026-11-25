@@ -188,6 +188,7 @@ export interface AppStopResponse {
 	 *  sink notifications) had settled before this response was sent —
 	 *  false only when the settle wait timed out. */
 	settled: boolean;
+	notSent: { id: string; message: Message }[];
 }
 
 export interface AppPendingInput {
@@ -195,6 +196,7 @@ export interface AppPendingInput {
 	mode: "steer" | "followUp";
 	message: Message;
 	createdAt: string;
+	status: "waiting" | "notSent";
 }
 
 export interface SentMediaMetadata {

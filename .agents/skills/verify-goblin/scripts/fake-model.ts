@@ -289,6 +289,17 @@ function workReply(step: number, thinkOnly: boolean): Response {
 	return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+function reviewMarker(text: string): { writes: string[]; score: string } | null {
+	const match = /\[review (new|edit|both) (down|[01](?:\.\d+)?)\]/.exec(text);
+	if (match === null) return null;
+	const writes = {
+		new: ["verify-review-new"],
+		edit: ["verify-example"],
+		both: ["verify-example", "verify-review-new"],
+	}[match[1] as "new" | "edit" | "both"];
+	return { writes, score: match[2]! };
+}
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
@@ -311,6 +322,22 @@ const server = Bun.serve({
 				})
 				.safeParse(await req.json().catch(() => null));
 			if (!body.success) return Response.json({ error: "bad request" }, { status: 400 });
+			const { state, questions } = body.data;
+			if ("correction" in questions || "reuse" in questions) {
+				const review = reviewMarker(state);
+				const scores: Record<string, number> = {
+					correction: 0,
+					procedure: review === null ? 0 : 0.9,
+					reuse: Number(review?.score ?? 0),
+				};
+				if ("reuse" in questions && review?.score === "down")
+					return Response.json({ error: "down" }, { status: 503 });
+				return Response.json({
+					answers: Object.fromEntries(
+						Object.keys(questions).map((id) => [id, { type: "noul", noul: scores[id] }]),
+					),
+				});
+			}
 			let next: string;
 			try {
 				const state = z.object({ next: z.string() }).parse(JSON.parse(body.data.state));
@@ -331,6 +358,23 @@ const server = Bun.serve({
 		if (!parsed.success)
 			return Response.json({ error: { message: "bad request" } }, { status: 400 });
 		const last = parsed.data.messages.filter((message) => message.role === "user").at(-1);
+		const system = textOf(parsed.data.messages.find((message) => message.role === "system")?.content);
+		const review = system.startsWith("You are goblin's skill reviewer")
+			? reviewMarker(textOf(last?.content))
+			: null;
+		if (review !== null) {
+			const step = parsed.data.messages.filter((message) => message.role === "tool").length;
+			const name = review.writes[step];
+			if (name !== undefined) {
+				const content = `---\nname: ${name}\ndescription: Written by a verification review.\n---\n\nSay hi.\n`;
+				return toolCallResponse(
+					"write_file",
+					{ path: `${name}/SKILL.md`, content },
+					parsed.data.stream === true,
+					`call-verify-review-${step}`,
+				);
+			}
+		}
 		let reply = `verify-reply: ${textOf(last?.content)}`;
 		// "[agent <task>]" (issue #604's verification): the FIRST call of
 		// a turn — no tool results yet — answers with one `agent` tool

@@ -5,6 +5,7 @@
 Browse installed skills and pending proposals in the Skills page. Explicitly
 invoke a catalog skill from the chat composer; the selected skill body is
 injected into that turn and the invocation is stored on the user message.
+The skill reviewer drafts skills after a turn.
 
 ## How to get to it (user POV)
 
@@ -82,6 +83,38 @@ rg '"msg":"skill proposal discarded"' "$HOME_DIR/state/goblin.log"
 Expected: the card is gone without a prompt. The draft is unchanged at
 `skills-discarded/weather-demo.<timestamp>/SKILL.md`, and the log line names
 that folder in `keptAs`.
+
+## Reviewing a turn into a skill
+
+Start the instance with the skill reviewer on. A marker in a message makes the
+scripted models review that turn: `[review <new|edit|both> <score|down>]`. The
+score answers "will the operator need this again?"; `down` fails that question.
+`edit` writes `verify-example`, so make that fixture first (above).
+
+```sh
+URL=$(GOBLIN_TRY_REVIEWER=1 bun run --silent try verify-review)
+HOME_DIR=/tmp/goblin-verify/verify-review
+ab() { agent-browser --session verify-review "$@"; }
+ab open "$URL"
+ab click 'button[aria-label="New chat"]'
+ab fill '[aria-label="Message draft"]' '[review new 0.41]'
+ab click 'button[aria-label="Send"]'
+ab wait --text 'verify-reply: [review new 0.41]'
+ab wait 3000
+rg '"msg":"reviewer (gate|reuse|review done)"' "$HOME_DIR/state/goblin.log"
+ls "$HOME_DIR/workspace/skills-proposed"
+```
+
+Expected: one `reviewer reuse` line with `reuse` 0.41, `threshold` 0.6 and
+`held` true; no proposal, and nothing about one in the chat. Repeat with:
+
+- `[review new 0.9]` or `[review new 0.6]`: proposed, with a note in the chat.
+- `[review edit 0.1]`: proposed, and no `reviewer reuse` line.
+- `[review both 0.1]`: only `verify-example` is proposed.
+- `[review new down]`: proposed; the line has `fallback` true and no score.
+
+Discard `verify-review-new` between runs: an edit of a pending draft is not a
+new skill, so the question is not asked.
 
 ## Gotchas
 

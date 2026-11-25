@@ -100,7 +100,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"app/src/chat/MetaLine.tsx": 2,
 	"app/src/chat/useAttachments.ts": 2,
 	"app/src/ChatGptAccount.tsx": 2,
-	"app/src/ConversationList.tsx": 1,
 	"app/src/LogView.tsx": 1,
 	"app/src/memoryShared.tsx": 1,
 	"app/src/MemoryView.tsx": 1,

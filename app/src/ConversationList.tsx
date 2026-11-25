@@ -82,10 +82,10 @@ export function RollingRow({
 }
 
 // The Open WebUI chat-list relative-time format.
-export function relTime(iso: string): string {
+export function relTime(iso: string, now = Date.now()): string {
 	const ts = Date.parse(iso);
 	if (Number.isNaN(ts)) return "";
-	const diffSec = Math.floor((Date.now() - ts) / 1000);
+	const diffSec = Math.floor((now - ts) / 1000);
 	if (diffSec < 60) return "now";
 	const diffMin = Math.floor(diffSec / 60);
 	if (diffMin < 60) return `${diffMin}m`;

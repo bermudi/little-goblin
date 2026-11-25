@@ -127,10 +127,10 @@ function oneLine(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
 
-function activityTime(iso: string): string {
+export function activityTime(iso: string, now = Date.now()): string {
 	const timestamp = Date.parse(iso);
 	if (Number.isNaN(timestamp)) return "";
-	if (Date.now() - timestamp < 24 * 60 * 60 * 1000) return shortAge(iso);
+	if (now - timestamp < 24 * 60 * 60 * 1000) return shortAge(iso, now);
 	return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 

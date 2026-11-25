@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { AppAttentionItem } from "../../src/http/app-wire.ts";
-import { GoblinPanel } from "./GoblinPanel.tsx";
+import { activityTime, GoblinPanel } from "./GoblinPanel.tsx";
 
 let win: Window;
 let container: HTMLElement;
@@ -276,4 +276,15 @@ test("panel activity headings omit empty groups", async () => {
 	expect([...container.querySelectorAll(".goblin-panel-group")].map((el) => el.textContent)).toEqual(["Earlier"]);
 	await act(async () => root?.render(<GoblinPanel data={baseData(0)} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={() => {}} onOpenNote={() => {}} onOpenProfile={() => {}} />));
 	expect(container.querySelectorAll(".goblin-panel-group")).toHaveLength(0);
+});
+
+test("activity time is an age for a day, then a date", () => {
+	const now = Date.parse("2026-11-21T18:00:00Z");
+	const ago = (ms: number) => activityTime(new Date(now - ms).toISOString(), now);
+	const day = 24 * 60 * 60 * 1000;
+	expect(ago(30_000)).toBe("now");
+	expect(ago(5 * 60_000)).toBe("5m");
+	expect(ago(day - 1000)).toBe("23h");
+	expect(ago(day)).toBe(new Date(now - day).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+	expect(activityTime("not a date", now)).toBe("");
 });

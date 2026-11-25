@@ -4212,9 +4212,6 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     expect(fold().open).toBe(false);
   });
 
-  // The fold's list has a height cap and scrolls inside it. happy-dom
-  // lays nothing out, so the list gets a fake height and scroll position
-  // and the test moves the reader by hand.
   const cappedList = (scrollHeight: number, clientHeight = 120) => {
     const layout = { scrollHeight, clientHeight, scrollTop: 0 };
     const ul = fold().querySelector<HTMLUListElement>("ul")!;

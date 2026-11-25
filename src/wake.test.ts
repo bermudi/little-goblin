@@ -1,4 +1,6 @@
 import { makeWakeDelivery, makeWakeDeps } from "./tg/wake.ts";
+import { startAgentChildren } from "./agent-children.ts";
+import { GENERAL_AGENT_TYPE } from "./agent-types.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -315,6 +317,74 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: background app turn pers
 		conversation: "app/background",
 		done: { kind: "completed" },
 	});
+	await runtime.shutdown();
+	store.close();
+});
+
+test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion wakes its parent without Telegram or app push`, async () => {
+	const home = useHome("goblin-wake-agent-child-");
+	const store = openStore(join(home, "goblin.sqlite"));
+	const parent = store.resolve(appAddress("parent"), join(home, "workspace"), {
+		model: "fake/parent",
+		thinking: "low",
+	});
+	const model = make();
+	model.script({ kind: "reply", parts: [{ type: "text", text: "CHILD RESULT" }] });
+	const runtime = new Runtime({
+		engines: model.engines,
+		store,
+		buildStep: () => model.step(),
+	});
+	runtime.mount({ makeTools: () => ({}) });
+	const sends: string[] = [];
+	const pushed: { conversation: string; done: TurnDone }[] = [];
+	const api = {
+		sendMessage: (_chat: number, text: string) => {
+			sends.push(text);
+			return Promise.resolve({ message_id: sends.length });
+		},
+		sendChatAction: () => Promise.resolve(true),
+	} as unknown as Api;
+	const wakeDeps = makeWakeDeps({
+		store,
+		runtime,
+		api,
+		configRef: { current: config, ttsDown: false },
+		synthesize: async () => [],
+		followUpGate: () => undefined,
+		pings: { record: () => {}, lookup: () => null },
+		push: {
+			notifyDone: (notifyConv, done) => {
+				pushed.push({ conversation: notifyConv.id, done });
+				return Promise.resolve();
+			},
+		},
+	});
+	let parentWakes = 0;
+	const engine = startAgentChildren({
+		store,
+		runtime,
+		record: () => {
+			parentWakes++;
+			return null;
+		},
+		bell: (conv) => wakeDeps.bell(conv),
+		maxRunning: () => 3,
+		now: () => new Date("2026-11-24T00:00:00.000Z"),
+	});
+
+	const { child } = await engine.spawn({
+		parent,
+		type: GENERAL_AGENT_TYPE,
+		task: "do the child work",
+		tools: [],
+	});
+	const settlement = await engine.awaitSettlement(child.conversationId);
+	expect(settlement.child.status).toBe("done");
+	expect(settlement.result).toBe("CHILD RESULT");
+	expect(parentWakes).toBe(1);
+	expect(sends).toEqual([]);
+	expect(pushed).toEqual([]);
 	await runtime.shutdown();
 	store.close();
 });

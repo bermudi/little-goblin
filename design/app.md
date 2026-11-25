@@ -42,7 +42,13 @@ mechanism, zero code. Folds never open or close by themselves (operator,
 2026-11-21, #837; replaces the 2026-10-24 auto-open ruling): the
 "Worked" fold and each tool row start closed, and only the operator
 toggles them. An automatic open and close moved the text under the
-reader on every call. The closed summary carries the failure count when a call fails.
+reader on every call. The closed summary carries the failure count when a
+call fails. An open fold's list takes at most 40vh of the window and scrolls inside itself (#936). While the run is live
+the list follows its newest row only while the reader is exactly at its
+end: any scroll up switches the follow off until the reader is back at
+the end (operator, 2026-11-25, #936). A 48 px zone near the end, like
+the transcript's, was rejected: a smaller scroll snapped back at the
+next call.
 
 Live state is in the work block (operator, 2026-11-25, #934; replaces the
 "Working for Ns" summary): one header per reply, "Working for Ns" over a
@@ -90,11 +96,13 @@ The VAPID pair is generated lazily and lives only in `auth.jsonl`;
 subscriptions and sent markers live in SQLite; API state exposes endpoint
 hashes, never endpoints or subscription keys. Payloads are generic
 (title/body + `/app/c/<id>`) and contain no reply text or authority.
-Background app turns notify on terminal success or failure; fenced turns
-stay silent. A foreground app reply notifies at turn end only when no
-conversation `/stream` reader and no `/events` subscriber is attached
-(#678); reply streams never double-ring while someone is watching. Work still waiting on the operator also rings, with
-Telegram as the fallback (`design/programs.md` → Reports and stages). `404`/`410`
+Background app turns notify on terminal success or failure, except agent
+children, which never ring the operator (design/agents.md → Visibility);
+fenced turns stay silent. A foreground app reply notifies at turn end only
+when no conversation `/stream` reader and no `/events` subscriber is attached
+(#678); reply streams never double-ring while someone is watching. Work
+still waiting on the operator also rings, with Telegram as the fallback
+(`design/programs.md` → Reports and stages). `404`/`410`
 prune an endpoint; transient send failures keep it retryable. Telegram
 stays the bell for its own conversations and still rings app turns as the
 companion channel; Web Push is the app-owned path, not a replacement.
@@ -342,8 +350,9 @@ Move to project (ruling 2026-11-21, #859) sits in the hold sheet and the
 title menu, for loose, unarchived, non-child chats only: the sheet switches
 in place to the active projects and New project…, with Back; the title menu
 opens them as a sub-menu. Hover buttons have no Move. A move from the list
-stays on the list and reveals the Projects section. A roll cannot move, and
-the server refuses it.
+stays on the list and reveals the Projects section. The current roll can
+move from the Rolling chat header (ruling 2026-11-25, #938); an older roll
+cannot, and the server refuses it.
 
 Each active project is one link row above the loose chats. It opens that
 project's page and is marked current on that page and in its chats. A project
@@ -375,13 +384,25 @@ one roll at a time with a link to the previous one. Stitched scrolling across
 rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
-**Wakes (2026-11-24, #923).** Work started in any roll wakes the newest roll:
-programs, delegation notices, subagent results and watches. A wake joins the
-newest roll and never starts one. The destination is read when the wake is
-delivered, not when the work starts. A durable wake moves in the transaction
-that appends its trigger; after that it stays where its trigger is, so a later
-roll cannot run it twice. Mail and program approval notices stay beside their
-card, because they start no turn. Ordinary app chats keep their own wakes.
+**Moving the current roll to a project (2026-11-25, #938).** The move is in
+place: the same conversation keeps its id, history, read state and settings,
+leaves `app_rolls`, and joins the project; one fresh roll is minted in the
+same transaction so the Rolling chat never lacks a current session. Because
+the moved conversation is no longer a roll, later wakes for work started
+there stay with it instead of retargeting to the newest roll. The operator
+lands in the moved project conversation. The move is refused while a turn
+runs, and only the current roll can move — an earlier roll is already part
+of the lane's history.
+
+**Wakes (2026-11-24, #923).** Work started in a roll wakes the newest roll
+while its source remains a roll: programs, delegation notices, subagent
+results and watches. A wake joins the newest roll and never starts one. The
+destination is read when the wake is delivered, not when the work starts. A
+durable wake moves in the transaction that appends its trigger; after that it
+stays where its trigger is, so a later roll cannot run it twice. A source
+moved to a project is no longer a roll, so its later wakes stay with it
+(#938). Mail and program approval notices stay beside their card, because
+they start no turn. Ordinary app chats keep their own wakes.
 
 **Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, with its own loop icon and no
@@ -633,13 +654,13 @@ buttons (non-chat page layout rule), drawn by the same `DiffView` and
 schedule reads in plain words with the cron beside it ("Daily 07:00 →
 Weekdays 06:30"); shapes `src/cron-words.ts` does not cover show the raw cron.
 
-**Telegram rings.** Every completed background turn pings the *current* DM
-— `<title>: <head of the reply>` plus a link, appended as an assistant
-event (answerable in chat) and counted for the gap rule. A swipe-reply
-routes to the app conversation (headless, so it rings back); the DM
-acknowledges `sent to <title>` (delivery only). The ping → conversation
-mapping is durable by the ping's message id, so replies after a restart
-still route.
+**Telegram rings.** Every completed background turn that is not an agent
+child pings the *current* DM — `<title>: <head of the reply>` plus a
+link, appended as an assistant event (answerable in chat) and counted
+for the gap rule. A swipe-reply routes to the app conversation
+(headless, so it rings back); the DM acknowledges `sent to <title>`
+(delivery only). The ping → conversation mapping is durable by the
+ping's message id, so replies after a restart still route.
 
 **Links.** `{publicUrl}/app/c/<appId>` opens one conversation; the APK will
 claim links under `/app/`. Unverified until then: Android's automatic link

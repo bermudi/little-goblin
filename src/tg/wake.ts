@@ -61,7 +61,9 @@ export function makeWakeDeps(base: WakeBase): WakeDeps {
 		},
 		bell: (conv: Conversation): TurnSink =>
 			composeTurnSinks(
-				...(bell === null ? [] : [makeBellSink(bell, conv, "delegation notice")]),
+				...(bell === null || conv.agentType !== null
+					? []
+					: [makeBellSink(bell, conv, "delegation notice")]),
 				appMediaSink(conv.id, {
 					append: (messages, opts) => base.store.append(conv.id, messages, opts),
 				}),

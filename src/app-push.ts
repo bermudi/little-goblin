@@ -205,7 +205,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 		done: TurnDone,
 		origin: "foreground" | "background" = "background",
 	): Promise<void> {
-		if (done.kind === "fenced") return;
+		if (done.kind === "fenced" || conv.agentType !== null) return;
 		const appId = appIdOf(conv.id);
 		if (appId === null || deps.store.get(conv.id) === null) return;
 		const key = notificationKey(conv, done);

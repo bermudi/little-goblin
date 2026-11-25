@@ -339,9 +339,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	useEffect(() => setSourcesOpen(false), [route]);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	const [createProjectMoveFor, setCreateProjectMoveFor] = useState<string | null>(null);
-	const [createProjectMoveOrigin, setCreateProjectMoveOrigin] = useState<"list" | "chat">("chat");
+	const [createProjectMoveOrigin, setCreateProjectMoveOrigin] = useState<"list" | "chat" | "rolling">("chat");
 	const [moveError, setMoveError] = useState<string | null>(null);
-	useEffect(() => setMoveError(null), [current]);
+	useEffect(() => setMoveError(null), [current, rollingId]);
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
@@ -839,7 +839,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const moveChatToProject = async (
 		conversationId: string,
 		targetProjectId: string,
-		origin: "list" | "chat",
+		origin: "list" | "chat" | "rolling",
 	) => {
 		if (origin === "list") setRowError(null);
 		else setMoveError(null);
@@ -847,6 +847,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			await patchConversation(token, conversationId, { projectId: targetProjectId });
 			setProjectsOpen(true);
 			await acted("conversations");
+			if (origin === "rolling") openConversation(conversationId);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			if (origin === "list") setRowError(message);
@@ -1220,7 +1221,45 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
-					{page === "rolling" && <span className="header-title">Rolling chat</span>}
+					{page === "rolling" &&
+						(rollingCurrent !== null && rollingId === rollingCurrent.id ? (
+							<Menu
+								onAction={(value) => {
+									if (value === "new-project") {
+										setMoveError(null);
+										setCreateProjectMoveFor(rollingCurrent.id);
+										setCreateProjectMoveOrigin("rolling");
+										setCreateProjectOpen(true);
+									} else if (value.startsWith("project:")) {
+										void moveChatToProject(
+											rollingCurrent.id,
+											value.slice("project:".length),
+											"rolling",
+										);
+									}
+								}}
+							>
+								<MenuTrigger className="header-title title-trigger">
+									Rolling chat
+									<ChevronDownGlyph />
+								</MenuTrigger>
+								<MenuContent className="title-menu">
+									<MenuSub>
+										<MenuSubTrigger>Move to project</MenuSubTrigger>
+										<MenuSubContent className="move-menu">
+											{activeProjects.map((project) => (
+												<MenuItem key={project.id} value={`project:${project.id}`}>
+													{project.name}
+												</MenuItem>
+											))}
+											<MenuItem value="new-project">New project…</MenuItem>
+										</MenuSubContent>
+									</MenuSub>
+								</MenuContent>
+							</Menu>
+						) : (
+							<span className="header-title">Rolling chat</span>
+						))}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -1724,8 +1763,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								)
 							}
 							header={
-								<div className="rolling-history-bar">
-									{rollingViewing !== null && (
+								<>
+									{moveError !== null && (
+										<p className="error" role="alert">
+											{moveError}
+										</p>
+									)}
+									<div className="rolling-history-bar">
+										{rollingViewing !== null && (
 										<>
 											<span>Earlier conversation</span>
 											<button
@@ -1757,7 +1802,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											</>
 										) : null;
 									})()}
-								</div>
+									</div>
+								</>
 							}
 						/>
 					))}

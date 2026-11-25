@@ -52,3 +52,11 @@ The fake model takes the rail title from its own reply, so the title starts with
 To test Stop or a failed turn, put `[slow]` in the message (one word every 400ms, so there's time to press Stop) or `[fail]` (a few words, then the connection breaks). The fake checks the last user-role message as goblin sends it, and an unlanded-turn record from a previous turn quotes that turn's text. So after a `[slow]` turn is stopped, a `[fail]` turn also streams slowly before it fails.
 
 To watch a long reply stream after tool calls, put `[long]` in the message: two `read_file` calls a second apart, then a reply several screens long, one line every 60ms. It starts with `verify-long: the head of the answer` and ends with `verify-long: the tail of the answer`.
+
+### Long Worked list
+
+An open "Worked" list is capped at 40vh and scrolls inside itself (#936). The fake model stops at two calls per turn, which is below the cap. To see the cap, open the fold and copy a row inside the page: clone a `li`, set `data-fill="copy"` on the copy, label it "a copy made in the page", and insert the copies before the first row so the real calls stay at the end. Check `ul.clientHeight` against `0.4 * innerHeight`.
+
+`agent-browser mouse wheel` moved nothing on this page, the chat included (2026-11-25). To scroll the list, click a row inside it and press PageDown.
+
+To check that the list follows new calls, arm the copies before the send: a `MutationObserver` opens the new fold and fills its list as soon as the first call's row appears. Fill until the list overflows by more than 48 px, or "at the end" and "scrolled up" read the same.

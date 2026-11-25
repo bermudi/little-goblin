@@ -4794,6 +4794,13 @@ test("moving an app chat keeps its request prefix and tool definitions byte-iden
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const workspace = join(home, "workspace");
+	const rollingConfig = parseConfig({
+		providers: { test: { kind: "codex" } },
+		model: "test/app",
+		thinking: "high",
+		operators: [7],
+		allowedUsers: [7],
+	});
 	const conv = store.resolve(appAddress("move-cache"), workspace);
 	const project = projects.create({ name: "Cache Project", instructions: "Ship the thing." });
 	const script = sdkScript();
@@ -4847,7 +4854,7 @@ test("moving an app chat keeps its request prefix and tool definitions byte-iden
 		await waitUntil(() => !runtime.busy(conv.id), "first turn drains");
 		const historyBeforeMove = store.history(conv.id);
 		const moved = moveIntoProject(
-			{ store, projects, notes, runtime, workspace },
+			{ store, projects, notes, runtime, workspace, rollingConfig },
 			conv.id,
 			project.id,
 		);
@@ -4945,6 +4952,13 @@ test("a move refused while a turn is held succeeds after that turn ends", async 
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const workspace = join(home, "workspace");
+	const rollingConfig = parseConfig({
+		providers: { test: { kind: "codex" } },
+		model: "test/app",
+		thinking: "high",
+		operators: [7],
+		allowedUsers: [7],
+	});
 	const conv = store.resolve(appAddress("move-race"), workspace);
 	const project = projects.create({ name: "Race Project" });
 	const script = sdkScript();
@@ -4961,14 +4975,14 @@ test("a move refused while a turn is held succeeds after that turn ends", async 
 		runtime.submit(conv, userMessage([{ type: "text", text: "hold this turn" }]), first);
 		await first.admitted;
 		await held.entered;
-		expect(moveIntoProject({ store, projects, notes, runtime, workspace }, conv.id, project.id).kind)
+		expect(moveIntoProject({ store, projects, notes, runtime, workspace, rollingConfig }, conv.id, project.id).kind)
 			.toBe("busy");
 		expect(store.get(conv.id)?.projectId).toBeNull();
 		expect(store.history(conv.id).some((m) => JSON.stringify(m).includes("[project: moved into"))).toBe(false);
 		held.release();
 		expect(await first.done).toEqual({ kind: "completed" });
 		await waitUntil(() => !runtime.busy(conv.id), "held turn drains");
-		expect(moveIntoProject({ store, projects, notes, runtime, workspace }, conv.id, project.id).kind)
+		expect(moveIntoProject({ store, projects, notes, runtime, workspace, rollingConfig }, conv.id, project.id).kind)
 			.toBe("moved");
 	} finally {
 		held.release();

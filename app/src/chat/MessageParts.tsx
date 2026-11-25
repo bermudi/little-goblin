@@ -13,6 +13,7 @@ import { ApprovalCard } from "../Approvals.tsx";
 import { ArtifactCard } from "../docview.tsx";
 import { Markdown } from "../markdown.tsx";
 import { bytes } from "../opsShared.tsx";
+import { useFoldFollow } from "./useFoldFollow.ts";
 import { Brain } from "lucide-react";
 import {
   ToolRun,
@@ -87,6 +88,9 @@ function Activity({
   const running = !ended && tools.some(partRunning);
   const failures = tools.filter(partFailed).length;
   const lines = tools.map(partSummaryLine);
+  const fold = useRef<HTMLDetailsElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+  useFoldFollow(fold, list, parts, !ended && (live || running));
   const thoughts = parts.filter((p): p is ReasoningUIPart => p.type === "reasoning");
   const newestThought = thoughts.findLast((p) => p.text.trim() !== "");
   const newest = parts.at(-1);
@@ -120,11 +124,11 @@ function Activity({
     );
   }
   return (
-    <details className={live ? "worked live" : thoughtOnly ? "reasoning-fold" : "worked"}>
+    <details className={live ? "worked live" : thoughtOnly ? "reasoning-fold" : "worked"} ref={fold}>
       <summary>{summary}</summary>
       {thoughtOnly ? (
         <div className="reasoning"><Markdown text={thoughts.map((p) => p.text).join("\n\n")} /></div>
-      ) : parts.length > 0 && <ul>
+      ) : <ul ref={list} hidden={parts.length === 0}>
         {parts.map((p, i) =>
           isToolUIPart(p) ? (
             <ToolRun

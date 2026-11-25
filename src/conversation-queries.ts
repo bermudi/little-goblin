@@ -367,6 +367,7 @@ export function prepareConversationQueries(db: Database) {
 	const qInsertAppRoll = db.query(
 		"INSERT INTO app_rolls (n, conversation_id, created_at) VALUES (?, ?, ?)",
 	);
+	const qDeleteAppRoll = db.query("DELETE FROM app_rolls WHERE conversation_id = ?");
 	const qProjectConvs = db.query<{ id: string }, [string]>(
 		"SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at, rowid",
 	);
@@ -483,6 +484,7 @@ export function prepareConversationQueries(db: Database) {
 		qAppRollHighwater,
 		qAppRollHighwaterUpsert,
 		qInsertAppRoll,
+		qDeleteAppRoll,
 		qProjectConvs,
 		qLastAppEvent,
 		qNewReply,

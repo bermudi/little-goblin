@@ -31,6 +31,9 @@ interface AppRollQueries {
 	qInsertAppRoll: {
 		run(n: number, conversationId: string, createdAt: string): unknown;
 	};
+	qDeleteAppRoll: {
+		run(conversationId: string): { changes: number };
+	};
 }
 
 export function makeConversationAppRolling<
@@ -77,5 +80,9 @@ export function makeConversationAppRolling<
 		return queries.qIsAppRoll.get(id) !== null;
 	}
 
-	return { currentAppRoll, rollApp, appRollChain, isAppRoll };
+	function unrollApp(id: string): boolean {
+		return queries.qDeleteAppRoll.run(id).changes === 1;
+	}
+
+	return { currentAppRoll, rollApp, appRollChain, isAppRoll, unrollApp };
 }

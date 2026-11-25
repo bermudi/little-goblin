@@ -20,7 +20,10 @@ import {
   partFailed,
   partRunning,
   partSummaryLine,
+  liveAction,
 } from "../tools/mod.tsx";
+import { liveThoughtLine } from "./liveThoughtLine.ts";
+import { LiveWork } from "./LiveWork.tsx";
 import { UiPart } from "../ui/UiPart.tsx";
 import type { AttachmentRef } from "../../../src/agent/attachments.ts";
 import {
@@ -39,30 +42,6 @@ function isActivityPart(p: UIMessage["parts"][number]): boolean {
     (p.type === "reasoning" && p.text.trim() !== "")
   );
 }
-// "Working for 1m 12s" — ticks by writing the text node directly, so a
-// long turn never re-renders the transcript once a second. The clock
-// starts when the live run mounts; history never shows it.
-function elapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-}
-function WorkingFor({ now = Date.now }: { now?: () => number }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const start = now();
-    const id = setInterval(() => {
-      if (ref.current !== null)
-        ref.current.textContent = elapsed(now() - start);
-    }, 1000);
-    return () => clearInterval(id);
-  }, [now]);
-  return (
-    <span className="working shimmer">
-      Working for <span ref={ref}>0s</span>
-    </span>
-  );
-}
-
 // A thought fold. Live, the label shimmers "Thinking" and the summary
 // previews the newest line; settled, it folds to "Thought". The body
 // renders as markdown.
@@ -105,34 +84,47 @@ function Activity({
   const tools = parts.filter((p): p is ToolUIPart | DynamicToolUIPart =>
     isToolUIPart(p),
   );
-  const running = !ended && (live || tools.some(partRunning));
+  const running = !ended && tools.some(partRunning);
   const failures = tools.filter(partFailed).length;
   const lines = tools.map(partSummaryLine);
-  // A thought-only run keeps the plain Thought fold — "Worked" over
-  // zero calls would read as a bug.
-  if (tools.length === 0) {
-    const thoughts = parts.filter(
-      (p): p is ReasoningUIPart => p.type === "reasoning",
-    );
-    return (
-      <Thought
-        parts={thoughts}
-        live={ended !== true && thoughts.some((t) => t.state === "streaming")}
+  const thoughts = parts.filter((p): p is ReasoningUIPart => p.type === "reasoning");
+  const newestThought = thoughts.findLast((p) => p.text.trim() !== "");
+  const newest = parts.at(-1);
+  const actionPart = tools.findLast(partRunning) ?? (newest !== undefined && isToolUIPart(newest) ? newest : undefined);
+  const action = liveAction(actionPart);
+  const thoughtOnly = !live && tools.length === 0;
+  let summary: ReactNode;
+  if (live) {
+    summary = (
+      <LiveWork
+        thought={newestThought === undefined ? undefined : liveThoughtLine(newestThought.text)}
+        icon={action.icon}
+        label={action.label}
       />
+    );
+  } else if (thoughtOnly) {
+    summary = (
+      <>
+        <Brain size={12} strokeWidth={1.75} className="reasoning-ic" />
+        <span className="reasoning-label">Thought</span>
+      </>
+    );
+  } else {
+    summary = (
+      <>
+        <span className={running ? "worked-sum shimmer" : "worked-sum"} title={lines.join("; ")}>
+          {activitySummary(tools)}
+        </span>
+        {failures > 0 && <span className="worked-fail">— {failures} failed</span>}
+      </>
     );
   }
   return (
-    <details className="worked">
-      <summary>
-        {running ? <WorkingFor /> : "Worked"} ·{" "}
-        <span className="worked-sum" title={lines.join("; ")}>
-          {activitySummary(tools)}
-        </span>
-        {failures > 0 && (
-          <span className="worked-fail">— {failures} failed</span>
-        )}
-      </summary>
-      <ul>
+    <details className={live ? "worked live" : thoughtOnly ? "reasoning-fold" : "worked"}>
+      <summary>{summary}</summary>
+      {thoughtOnly ? (
+        <div className="reasoning"><Markdown text={thoughts.map((p) => p.text).join("\n\n")} /></div>
+      ) : parts.length > 0 && <ul>
         {parts.map((p, i) =>
           isToolUIPart(p) ? (
             <ToolRun
@@ -150,7 +142,7 @@ function Activity({
             </li>
           ),
         )}
-      </ul>
+      </ul>}
     </details>
   );
 }
@@ -466,6 +458,7 @@ function MessagePartsView({
   clipFences,
   busy,
   streaming,
+  working,
   ended,
   messages,
   sentMedia,
@@ -485,6 +478,7 @@ function MessagePartsView({
   busy?: boolean | undefined;
   // This message is still arriving; older cards stay actionable during later turns.
   streaming?: boolean | undefined;
+  working?: boolean | undefined;
   // The owning turn is over (unlanded record): stuck tool states draw
   // ended — "no result recorded" — never a running shimmer.
   ended?: boolean | undefined;
@@ -534,7 +528,7 @@ function MessagePartsView({
       }
       continue;
     }
-    if (isActivityPart(p)) {
+    if (isActivityPart(p) || p.type === "step-start" || p.type === "reasoning") {
       const run: ActivityPart[] = [];
       let j = i;
       while (j < parts.length) {
@@ -550,6 +544,8 @@ function MessagePartsView({
           if (q.text.trim() !== "") run.push(q);
         } else if (q.type === "text") {
           if (q.text.trim() !== "") break;
+        } else if (q.type === "source-url" && run.length === 0) {
+          break;
         } else if (
           q.type === "data-attachment" ||
           q.type === "data-note" ||
@@ -563,11 +559,11 @@ function MessagePartsView({
         // nothing — they never split a run.
         j++;
       }
-      out.push(
+      if (run.length > 0 || (working === true && j === parts.length)) out.push(
         <Activity
           key={`w${i}`}
           parts={run}
-          live={streaming === true && j === parts.length}
+          live={working === true && j === parts.length}
           ended={ended}
         />,
       );

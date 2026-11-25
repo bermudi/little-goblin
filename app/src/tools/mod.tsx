@@ -5,6 +5,7 @@
 // renderer. Unknown tool names always land on the generic view — a
 // transcript can never be blanked by a tool it doesn't know.
 
+import type { ReactNode } from "react";
 import { getToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
 import { Clip, ErrBox, Skeleton, type Face, type ToolView } from "./bits.tsx";
 import { firstLine, joinSummary, shortJson } from "./parse.ts";
@@ -17,6 +18,79 @@ import { readView } from "./read.tsx";
 import { scriptView } from "./script.tsx";
 import { searchView } from "./search.tsx";
 import { writeView } from "./write.tsx";
+import {
+  bashInputSchema, readInputSchema, editInputSchema, writeInputSchema,
+  searchInputSchema, fetchInputSchema,
+} from "./schemas.ts";
+import { commandProgramName } from "./commandProgramName.ts";
+
+export function liveAction(
+  part?: ToolUIPart | DynamicToolUIPart,
+): { icon: ReactNode; label: string } {
+  if (part === undefined) return { icon: null, label: "Thinking" };
+  const name = getToolName(part);
+  const icon = (VIEWS[name] ?? genericView).icon;
+  if (part.state === "approval-requested")
+    return { icon, label: `Waiting for approval: ${name}` };
+  const failed = part.state === "output-error";
+  const denied = part.state === "output-denied";
+  const done = part.state === "output-available";
+  if (name !== "bash" && (failed || denied))
+    return { icon, label: `${failed ? "Failed" : "Refused"}: ${name}` };
+  let label: string;
+  switch (name) {
+    case "bash": {
+      const input = bashInputSchema.safeParse(part.input);
+      const typed = input.success ? input.data.command : "";
+      const command = part.state === "input-streaming" ? typed.replace(/\S*$/, "") : typed;
+      const program = commandProgramName(command) ?? "command";
+      let verb = done ? "Ran" : "Running";
+      if (failed) verb = "Failed";
+      if (denied) verb = "Refused";
+      label = `${verb} ${program}`;
+      break;
+    }
+    case "read_file":
+    case "edit_file":
+    case "write_file": {
+      const fileSpecs = {
+        read_file: { schema: readInputSchema, verbs: ["Reading", "Read"] },
+        edit_file: { schema: editInputSchema, verbs: ["Editing", "Edited"] },
+        write_file: { schema: writeInputSchema, verbs: ["Writing", "Wrote"] },
+      };
+      const spec = fileSpecs[name];
+      const input = spec.schema.safeParse(part.input);
+      const file = input.success
+        ? input.data.path.split("/").filter(Boolean).at(-1) ?? "a file"
+        : "a file";
+      label = `${spec.verbs[done ? 1 : 0]} ${file}`;
+      break;
+    }
+    case "search": {
+      const input = searchInputSchema.safeParse(part.input);
+      const query = input.success && input.data.query ? ` «${input.data.query}»` : "";
+      label = `${done ? "Searched" : "Searching"}${query}`;
+      break;
+    }
+    case "fetch": {
+      const input = fetchInputSchema.safeParse(part.input);
+      const host = input.success && URL.canParse(input.data.url)
+        ? new URL(input.data.url).hostname || "a page"
+        : "a page";
+      label = `${done ? "Fetched" : "Fetching"} ${host}`;
+      break;
+    }
+    case "script":
+      label = `${done ? "Ran" : "Running"} a script`;
+      break;
+    case "artifact":
+      label = `${done ? "Published" : "Publishing"} an artifact`;
+      break;
+    default:
+      label = `${done ? "Used" : "Using"} ${name}`;
+  }
+  return { icon, label };
+}
 
 const VIEWS: Record<string, ToolView> = {
   search: searchView,

@@ -268,6 +268,7 @@ function workReply(step: number, thinkOnly: boolean): Response {
 	const body = new ReadableStream<Uint8Array>({
 		async start(controller) {
 			controller.enqueue(enc.encode(chunk({ role: "assistant", content: step === 1 ? "Between calls." : "" }, null)));
+			if (step === 1) await Bun.sleep(4000);
 			controller.enqueue(enc.encode(chunk({ reasoning_content: " " }, null)));
 			await Bun.sleep(500);
 			for (const word of thought.match(/\S+\s*/g) ?? []) {

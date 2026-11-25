@@ -492,6 +492,7 @@ function MessagePartsView({
   sentMedia?: ReadonlyMap<string, readonly UIMessage[]> | undefined;
 }) {
   const out: ReactNode[] = [];
+  let liveDrawn = false;
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]!;
     if (isToolUIPart(p) && getToolName(p) === "ui") {
@@ -563,6 +564,7 @@ function MessagePartsView({
         // nothing — they never split a run.
         j++;
       }
+      if (working === true && j === parts.length) liveDrawn = true;
       if (run.length > 0 || (working === true && j === parts.length)) out.push(
         <Activity
           key={`w${i}`}
@@ -663,6 +665,8 @@ function MessagePartsView({
       i = j - 1;
     }
   }
+  if (working === true && !liveDrawn)
+    out.push(<Activity key={`w${parts.length}`} parts={[]} live ended={ended} />);
   return <>{out}</>;
 }
 

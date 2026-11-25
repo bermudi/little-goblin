@@ -34,7 +34,6 @@ export function liveAction(
     return { icon, label: `Waiting for approval: ${name}` };
   const failed = part.state === "output-error";
   const denied = part.state === "output-denied";
-  const done = part.state === "output-available";
   if (name !== "bash" && (failed || denied))
     return { icon, label: `${failed ? "Failed" : "Refused"}: ${name}` };
   let label: string;
@@ -44,7 +43,7 @@ export function liveAction(
       const typed = input.success ? input.data.command : "";
       const command = part.state === "input-streaming" ? typed.replace(/\S*$/, "") : typed;
       const program = commandProgramName(command) ?? "command";
-      let verb = done ? "Ran" : "Running";
+      let verb = "Running";
       if (failed) verb = "Failed";
       if (denied) verb = "Refused";
       label = `${verb} ${program}`;
@@ -54,22 +53,22 @@ export function liveAction(
     case "edit_file":
     case "write_file": {
       const fileSpecs = {
-        read_file: { schema: readInputSchema, verbs: ["Reading", "Read"] },
-        edit_file: { schema: editInputSchema, verbs: ["Editing", "Edited"] },
-        write_file: { schema: writeInputSchema, verbs: ["Writing", "Wrote"] },
+        read_file: { schema: readInputSchema, verb: "Reading" },
+        edit_file: { schema: editInputSchema, verb: "Editing" },
+        write_file: { schema: writeInputSchema, verb: "Writing" },
       };
       const spec = fileSpecs[name];
       const input = spec.schema.safeParse(part.input);
       const file = input.success
         ? input.data.path.split("/").filter(Boolean).at(-1) ?? "a file"
         : "a file";
-      label = `${spec.verbs[done ? 1 : 0]} ${file}`;
+      label = `${spec.verb} ${file}`;
       break;
     }
     case "search": {
       const input = searchInputSchema.safeParse(part.input);
       const query = input.success && input.data.query ? ` «${input.data.query}»` : "";
-      label = `${done ? "Searched" : "Searching"}${query}`;
+      label = `Searching${query}`;
       break;
     }
     case "fetch": {
@@ -77,17 +76,17 @@ export function liveAction(
       const host = input.success && URL.canParse(input.data.url)
         ? new URL(input.data.url).hostname || "a page"
         : "a page";
-      label = `${done ? "Fetched" : "Fetching"} ${host}`;
+      label = `Fetching ${host}`;
       break;
     }
     case "script":
-      label = `${done ? "Ran" : "Running"} a script`;
+      label = "Running a script";
       break;
     case "artifact":
-      label = `${done ? "Published" : "Publishing"} an artifact`;
+      label = "Publishing an artifact";
       break;
     default:
-      label = `${done ? "Used" : "Using"} ${name}`;
+      label = `Using ${name}`;
   }
   return { icon, label };
 }

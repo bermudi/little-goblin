@@ -22,14 +22,14 @@ describe("live actions", () => {
     expect(liveAction(part({ type: "tool-search", state: "approval-requested", input: {} })).label).toBe("Waiting for approval: search");
     expect(liveAction().label).toBe("Thinking");
     for (const [name, input, expected] of [
-      ["bash", { command: "sed x" }, "Ran sed"],
-      ["read_file", { path: "/a/b" }, "Read b"],
-      ["edit_file", { path: "b", old_string: "x", new_string: "y" }, "Edited b"],
-      ["write_file", { path: "b", content: "x" }, "Wrote b"],
-      ["search", { query: "x" }, "Searched «x»"],
-      ["fetch", { url: "https://example.com/a" }, "Fetched example.com"],
-      ["script", {}, "Ran a script"], ["artifact", {}, "Published an artifact"],
-      ["other", {}, "Used other"],
+      ["bash", { command: "sed x" }, "Running sed"],
+      ["read_file", { path: "/a/b" }, "Reading b"],
+      ["edit_file", { path: "b", old_string: "x", new_string: "y" }, "Editing b"],
+      ["write_file", { path: "b", content: "x" }, "Writing b"],
+      ["search", { query: "x" }, "Searching «x»"],
+      ["fetch", { url: "https://example.com/a" }, "Fetching example.com"],
+      ["script", {}, "Running a script"], ["artifact", {}, "Publishing an artifact"],
+      ["other", {}, "Using other"],
     ] as const) {
       expect(liveAction(part({ type: `tool-${name}`, state: "output-available", input, output: {} })).label).toBe(expected);
       expect(liveAction(part({ type: `tool-${name}`, state: "output-error", input })).label)

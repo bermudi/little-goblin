@@ -41,8 +41,10 @@ two per reply, even though the fake model reuses its tool call IDs.
 
 Send `[work]`. The waiting card shows a timer and Thinking. The live fold
 shows the newest thought and running call. Reload during work and check
-the timer continues. Check that `Between calls.` stays visible, then that
-the final reply has a Worked timer and closed activity folds. Repeat on
+the timer continues. `Between calls.` is followed by 4 seconds of silence.
+Check that Thinking shows under it during the silence. The line between
+calls uses the present tense. Check that the final reply has a Worked timer
+and closed activity folds. Repeat on
 phone width. Send `[think]` and check the settled reply has no timer.
 
 ## Gotchas
@@ -52,6 +54,7 @@ The fake model takes the rail title from its own reply, so the title starts with
 To test Stop or a failed turn, put `[slow]` in the message (one word every 400ms, so there's time to press Stop) or `[fail]` (a few words, then the connection breaks). The fake checks the last user-role message as goblin sends it, and an unlanded-turn record from a previous turn quotes that turn's text. So after a `[slow]` turn is stopped, a `[fail]` turn also streams slowly before it fails.
 
 To watch a long reply stream after tool calls, put `[long]` in the message: two `read_file` calls a second apart, then a reply several screens long, one line every 60ms. It starts with `verify-long: the head of the answer` and ends with `verify-long: the tail of the answer`.
+The live line stays under the text until the reply ends.
 
 ### Long Worked list
 

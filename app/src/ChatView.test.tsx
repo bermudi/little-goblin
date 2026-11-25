@@ -601,6 +601,10 @@ describe("reply work header", () => {
     await render();
     await settle(() => stream !== undefined && dom.container.textContent?.includes("working") === true);
     expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    const live = dom.container.querySelectorAll(".msg.assistant .worked.live");
+    expect(live).toHaveLength(1);
+    expect(live[0]?.previousElementSibling?.textContent).toContain("working");
+    expect(live[0]?.querySelector("summary")?.textContent).toBe("Thinking");
     await act(async () => { events.enqueue(enc.encode('data: {"type":"state","live":false}\n\n')); });
     expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
     await act(async () => { events.enqueue(enc.encode('data: {"type":"turn-end"}\n\n')); });
@@ -4440,6 +4444,75 @@ describe("MessageParts activity folding (happy-dom)", () => {
     expect(dom.container.querySelector(".worked.live")).toBeNull();
     await render([step, { type: "source-url", sourceId: "s", url: "https://example.com" }, { type: "text", text: "done" }]);
     expect(dom.container.querySelector(".sources-row a")?.getAttribute("href")).toBe("https://example.com");
+    expect(dom.container.querySelectorAll(".worked.live")).toHaveLength(1);
+    expect(dom.container.lastElementChild).toBe(dom.container.querySelector(".worked.live"));
+  });
+
+  test("live work follows streaming and finished text, then disappears", async () => {
+    dom.root = createRoot(dom.container);
+    for (const state of ["streaming", "done"] as const) {
+      const parts = [{ type: "text", text: "The answer.", state }] as UIMessage["parts"];
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+      const live = dom.container.querySelectorAll(".worked.live");
+      expect(live).toHaveLength(1);
+      expect(dom.container.lastElementChild).toBe(live[0]!);
+      expect(live[0]?.previousElementSibling?.textContent).toContain("The answer.");
+      expect(live[0]?.querySelector("summary")?.textContent).toBe("Thinking");
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working={false} />));
+      expect(dom.container.querySelector(".worked.live")).toBeNull();
+    }
+  });
+
+  test("live work follows each non-activity tail and disappears", async () => {
+    dom.root = createRoot(dom.container);
+    const tails = [
+      { type: "source-url", sourceId: "s", url: "https://example.com" },
+      { type: "tool-ui", toolCallId: "ui", state: "input-available", input: { root: "a", elements: { a: { type: "text", props: { md: "Interface" } } } } },
+      { type: "data-attachment", data: { path: "a", mediaType: "text/plain", filename: "a.txt", size: 1 } },
+      { type: "file", mediaType: "text/plain", url: "https://example.com/a", filename: "a.txt" },
+      { type: "data-note", data: { id: "n1" } },
+      { type: "step-start" },
+    ] as unknown as UIMessage["parts"];
+    for (const tail of tails) {
+      const parts: UIMessage["parts"] = [{ type: "text", text: "The answer." }, tail];
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+      const live = dom.container.querySelectorAll(".worked.live");
+      expect(live).toHaveLength(1);
+      expect(dom.container.lastElementChild).toBe(live[0]!);
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working={false} />));
+      expect(dom.container.querySelector(".worked.live")).toBeNull();
+    }
+  });
+
+  test("a completed call settles before text and live work follows it", async () => {
+    dom.root = createRoot(dom.container);
+    const parts: UIMessage["parts"] = [call("done", "pwd"), { type: "text", text: "The answer." }];
+    await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+    const settled = dom.container.querySelectorAll(".worked:not(.live)");
+    const live = dom.container.querySelectorAll(".worked.live");
+    expect(settled).toHaveLength(1);
+    expect(live).toHaveLength(1);
+    expect(settled[0]?.nextElementSibling?.textContent).toContain("The answer.");
+    expect(live[0]?.previousElementSibling).toBe(settled[0]?.nextElementSibling);
+    expect(dom.container.lastElementChild).toBe(live[0]!);
+    expect(live[0]?.querySelector("summary")?.textContent).toBe("Thinking");
+    await act(async () => dom.root?.render(<MessageParts parts={parts} working={false} />));
+    expect(dom.container.querySelector(".worked.live")).toBeNull();
+  });
+
+  test("live work keeps its node as a step and thought arrive after text", async () => {
+    dom.root = createRoot(dom.container);
+    const text = { type: "text", text: "The answer." } as UIMessage["parts"][number];
+    const step = { type: "step-start" } as UIMessage["parts"][number];
+    await act(async () => dom.root?.render(<MessageParts parts={[text]} working />));
+    const live = dom.container.querySelector(".worked.live");
+    expect(live).not.toBeNull();
+    await act(async () => dom.root?.render(<MessageParts parts={[text, step]} working />));
+    expect(dom.container.querySelector(".worked.live")).toBe(live);
+    await act(async () => dom.root?.render(<MessageParts parts={[text, step, thought("A new thought.")]} working />));
+    expect(dom.container.querySelector(".worked.live")).toBe(live);
+    expect(live?.querySelector(".live-thought")?.textContent).toBe("A new thought.");
+    await act(async () => dom.root?.render(<MessageParts parts={[text, step, thought("A new thought.")]} working={false} />));
     expect(dom.container.querySelector(".worked.live")).toBeNull();
   });
 
@@ -4662,7 +4735,7 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
   test("a run that owns the tail of a streaming reply reads as working between calls", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "output-available")], true);
-    expect(fold().querySelector("summary")!.textContent).toContain("Ran b1");
+    expect(fold().querySelector("summary")!.textContent).toContain("Running b1");
     await render(
       [part("b1", "output-available"), { type: "text", text: "done" }],
       true,

@@ -219,6 +219,29 @@ describe("app push owner", () => {
 		expect((await retained.status()).subscriptions).toHaveLength(1);
 	});
 
+	test("agent child turns never push", async () => {
+		const calls: string[] = [];
+		const { store, push } = fixture({
+			send: (subscription) => {
+				calls.push(subscription.endpoint);
+				return Promise.resolve(OK);
+			},
+		});
+		const parent = seedReply(store, "push-parent");
+		const child = store.resolveAgentChild(
+			parent,
+			"general",
+			{ model: "fake/parent", thinking: "low" },
+			"2026-11-24T00:00:00.000Z",
+		);
+		await push.register(SUBSCRIPTION, null);
+
+		await push.notifyDone(child, { kind: "completed" });
+		await push.notifyDone(child, { kind: "error", message: "model exploded" }, "foreground");
+
+		expect(calls).toEqual([]);
+	});
+
 	test("fenced turns and deleted conversations stay silent", async () => {
 		const calls: string[] = [];
 		const { store, push } = fixture({

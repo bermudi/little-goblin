@@ -1,4 +1,7 @@
 import { makeWakeDelivery, makeWakeDeps } from "./tg/wake.ts";
+import { startAgentChildren } from "./agent-children.ts";
+import { GENERAL_AGENT_TYPE } from "./agent-types.ts";
+import { openAppPush } from "./app-push.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -315,6 +318,102 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: background app turn pers
 		conversation: "app/background",
 		done: { kind: "completed" },
 	});
+	await runtime.shutdown();
+	store.close();
+});
+
+test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion wakes its parent without Telegram or app push`, async () => {
+	const home = useHome("goblin-wake-agent-child-");
+	const store = openStore(join(home, "goblin.sqlite"));
+	const parent = store.resolve(appAddress("parent"), join(home, "workspace"), {
+		model: "fake/parent",
+		thinking: "low",
+	});
+	const model = make();
+	model.script(
+		{ kind: "reply", parts: [{ type: "text", text: "CHILD RESULT" }] },
+		{ kind: "fail", parts: [], error: { message: "model exploded" } },
+	);
+	const runtime = new Runtime({
+		engines: model.engines,
+		store,
+		buildStep: () => model.step(),
+	});
+	runtime.mount({ makeTools: () => ({}) });
+	const sends: string[] = [];
+	const pushSends: string[] = [];
+	const api = {
+		sendMessage: (_chat: number, text: string) => {
+			sends.push(text);
+			return Promise.resolve({ message_id: sends.length });
+		},
+		sendChatAction: () => Promise.resolve(true),
+	} as unknown as Api;
+	const authValues = new Map<string, string>();
+	const push = openAppPush(store.db, {
+		auth: {
+			has: (name) => authValues.has(name),
+			resolve: (name) => Promise.resolve(authValues.get(name)!),
+		},
+		storeSecret: (name, value) => authValues.set(name, value),
+		store,
+		subject: () => "mailto:goblin@example.test",
+		generateKeys: () => ({ publicKey: "public", privateKey: "private" }),
+		send: (subscription) => {
+			pushSends.push(subscription.endpoint);
+			return Promise.resolve({ statusCode: 201, body: "", headers: {} });
+		},
+	});
+	await push.register(
+		{
+			endpoint: "https://push.example.test/registrations/endpoint-1",
+			keys: { p256dh: "browser-p256dh", auth: "browser-auth" },
+		},
+		null,
+	);
+	const wakeDeps = makeWakeDeps({
+		store,
+		runtime,
+		api,
+		configRef: { current: config, ttsDown: false },
+		synthesize: async () => [],
+		followUpGate: () => undefined,
+		pings: { record: () => {}, lookup: () => null },
+		push,
+	});
+	let parentWakes = 0;
+	const engine = startAgentChildren({
+		store,
+		runtime,
+		record: () => {
+			parentWakes++;
+			return null;
+		},
+		bell: (conv) => wakeDeps.bell(conv),
+		maxRunning: () => 3,
+		now: () => new Date("2026-11-24T00:00:00.000Z"),
+	});
+
+	const { child } = await engine.spawn({
+		parent,
+		type: GENERAL_AGENT_TYPE,
+		task: "do the child work",
+		tools: [],
+	});
+	const settlement = await engine.awaitSettlement(child.conversationId);
+	expect(settlement.child.status).toBe("done");
+	expect(settlement.result).toBe("CHILD RESULT");
+	const failing = await engine.spawn({
+		parent,
+		type: GENERAL_AGENT_TYPE,
+		task: "do work that fails",
+		tools: [],
+	});
+	const failure = await engine.awaitSettlement(failing.child.conversationId);
+	expect(failure.child.status).toBe("failed");
+	expect(parentWakes).toBe(2);
+	expect(sends).toEqual([]);
+	expect(pushSends).toEqual([]);
 	await runtime.shutdown();
 	store.close();
 });

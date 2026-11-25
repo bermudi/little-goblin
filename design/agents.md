@@ -66,7 +66,9 @@ model catalog**.
   before it reports.
 - **Visibility.** The app lists the child under its parent, and the
   operator can open it and read every step. Telegram does not show
-  children.
+  children. Neither Telegram nor app push rings for a child turn: the
+  child is the parent's concern, and only the settlement notice reaches
+  the parent (operator, 2026-11-24, #933).
 
 ### Agent types
 

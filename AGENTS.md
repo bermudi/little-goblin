@@ -121,7 +121,7 @@ systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 \
   timeout 120 bun test <file> -t <name>
 systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 \
   timeout 600 bun run typecheck
-bun scripts/comment-audit.ts --check --base origin/main
+bun scripts/comment-audit.ts --check --base "$(git merge-base origin/main HEAD)"
 ```
 
 ## Process

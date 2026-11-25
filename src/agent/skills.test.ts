@@ -473,8 +473,38 @@ describe("formatSkillsSection", () => {
 		expect(text).toContain("- mq — jq for Markdown (my-catalog/mq/SKILL.md)");
 		expect(text).toContain("drafts (the reviewer's or your own) under `drafts/`");
 		expect(text).toContain("- pdf — Extract PDF text (drafts/pdf/SKILL.md)");
+		expect(text).toContain(
+			"approves (move its directory into `my-catalog/`); a discard means moving it to\n" +
+				"`skills-discarded/<name>.<timestamp>/`, never deleting it or following it.",
+		);
+		expect(text).not.toContain("deleting it.");
 		// Entries and prose share the root's basename — they can't disagree.
 		expect(catalog.entries[0]!.path).toBe("my-catalog/mq/SKILL.md");
+	});
+
+	test("pending-proposal discard text names the discarded root relatively and absolutely", () => {
+		const proposals = {
+			entries: [{ name: "pdf", description: "Extract PDF text", path: "drafts/pdf/SKILL.md" }],
+			skipped: [],
+			root: "drafts",
+		};
+		const relative = formatSkillsSection(
+			{ entries: [], skipped: [], root: "skills" },
+			proposals,
+		).join("\n");
+		expect(relative).toContain(
+			"`skills-discarded/<name>.<timestamp>/`, never deleting it or following it.",
+		);
+		expect(relative).not.toContain("deleting it.");
+		const absolute = formatSkillsSection(
+			{ entries: [], skipped: [], root: "skills" },
+			proposals,
+			"/global/workspace",
+		).join("\n");
+		expect(absolute).toContain(
+			"`/global/workspace/skills-discarded/<name>.<timestamp>/`, never deleting it or following it.",
+		);
+		expect(absolute).not.toContain("deleting it.");
 	});
 
 	test("frontmatter that doesn't close inside the 16 KiB head is malformed", () => {

@@ -192,7 +192,7 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 				? outcome.replaced
 					? `✅ skill ${skill} installed — replaced the live copy.`
 					: `✅ skill ${skill} installed.`
-				: `🚫 skill ${skill} discarded — proposal deleted.`,
+				: `🚫 skill ${skill} discarded.`,
 		);
 		appendSkillResolution(deps.store, conversationId, skillResolutionText(outcome, skill));
 	};

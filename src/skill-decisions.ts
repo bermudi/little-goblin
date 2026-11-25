@@ -1,11 +1,13 @@
-// Disk is the state — no rows, nothing pending a restart; a decision on
-// a gone proposal reports "already gone". Install swaps a live copy
-// atomically with rollback; discard deletes the staged dir. The
-// resolution history event is the durable correction to the reviewer's
-// "parked, not installed" claim.
-
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync } from "node:fs";
+import {
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	renameSync,
+	rmSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { Message } from "./message.ts";
 import { log } from "./log.ts";
@@ -13,6 +15,10 @@ import { stagingRoot } from "./reviewer-staging.ts";
 import type { SkillSourceRow } from "./skill-provenance.ts";
 
 export type SkillAction = "install" | "discard";
+
+export function discardedRoot(workspaceDir: string): string {
+	return join(workspaceDir, "skills-discarded");
+}
 
 export type SkillDecision =
 	| { action: "install"; ok: true; replaced: boolean }
@@ -98,9 +104,9 @@ function installProposal(
 }
 
 function discardProposal(
-	deps: Pick<SkillDecisionDeps, "proposedDir">,
+	deps: Pick<SkillDecisionDeps, "proposedDir" | "workspaceDir" | "now">,
 	skill: string,
-): { ok: true } | { ok: false; reason: string } {
+): { ok: true; keptAs: string } | { ok: false; reason: string } {
 	const proposed = join(deps.proposedDir, skill);
 	let stats;
 	try {
@@ -110,10 +116,29 @@ function discardProposal(
 		return { ok: false, reason: "gone" };
 	}
 	if (stats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };
-	// The ruling defines discard as deletion; a proposal is a
-	// regenerable reviewer artifact, never operator-authored work.
-	rmSync(proposed, { recursive: true, force: true });
-	return { ok: true };
+	const root = discardedRoot(deps.workspaceDir);
+	let rootStats;
+	try {
+		rootStats = lstatSync(root);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		mkdirSync(root, { recursive: true });
+	}
+	if (rootStats?.isSymbolicLink()) return { ok: false, reason: "skills-discarded is a symlink" };
+	if (rootStats !== undefined && !rootStats.isDirectory()) {
+		return { ok: false, reason: "skills-discarded is not a directory" };
+	}
+	const stamp = (deps.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
+	const keptAs = `${skill}.${stamp}`;
+	const target = join(root, keptAs);
+	try {
+		lstatSync(target);
+		return { ok: false, reason: "discard target exists" };
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	renameSync(proposed, target);
+	return { ok: true, keptAs };
 }
 
 /** Short content fingerprint of a staged proposal — the value approval
@@ -181,7 +206,7 @@ export function decideSkillProposal(
 	}
 	const outcome = discardProposal(deps, skill);
 	if (outcome.ok) {
-		log.info("skill proposal discarded", { skill, ...logFields });
+		log.info("skill proposal discarded", { skill, keptAs: outcome.keptAs, ...logFields });
 	} else if (outcome.reason === "gone") {
 		log.info("skill proposal decision — proposal gone", { skill, action, ...logFields });
 	} else {
@@ -191,7 +216,7 @@ export function decideSkillProposal(
 			...logFields,
 		});
 	}
-	return { action, ...outcome };
+	return outcome.ok ? { action, ok: true } : { action, ...outcome };
 }
 
 // Matches the "skill proposal resolved: <name> — …" form reviewer events
@@ -202,7 +227,7 @@ export function skillResolutionText(
 ): string {
 	return decision.action === "install"
 		? `skill proposal resolved: ${skill} — installed${decision.replaced ? " (replaced live copy)" : ""}`
-		: `skill proposal resolved: ${skill} — discarded (deleted)`;
+		: `skill proposal resolved: ${skill} — discarded`;
 }
 
 // Append failures never un-decide — the log line already carries the

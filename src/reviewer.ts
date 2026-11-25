@@ -708,9 +708,6 @@ async function runStagedReview(
 		// Attribute the durable write before notification can yield to a
 		// later turn editing the same skill.
 		deps.recordSources?.(conv, reviewId, proposedNames);
-		// It proposes, then tells: history first (the durable record),
-		// the topic note second. An approval next turn moves these dirs
-		// into skills/; a discard deletes them.
 		const names = proposedNames.join(", ");
 		deps.store.append(conv, [
 			{
@@ -722,7 +719,7 @@ async function runStagedReview(
 						text:
 							`proposed skill: ${names} — parked in ${proposedNames.map((s) => `skills-proposed/${s}/`).join(", ")}, not installed; ` +
 							`an operator approval means moving it into skills/ (replacing any live copy), ` +
-							`a discard means deleting the proposal`,
+							`a discard means moving it to skills-discarded/<name>.<timestamp>/, never deleting it`,
 					},
 				],
 			},

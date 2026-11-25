@@ -16,8 +16,20 @@ function fixture() {
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const runtime = { busy: (_id: string) => false };
-	const deps = { store, projects, notes, runtime, workspace: join(home, "workspace") };
-	return { home, store, projects, notes, runtime, deps };
+	const rollingConfig = {
+		model: "zai/m",
+		thinking: "medium",
+		providers: { zai: { kind: "openai-compatible", baseUrl: "https://example.com", auth: "zai" } },
+	} as unknown as Config;
+	const deps = {
+		store,
+		projects,
+		notes,
+		runtime,
+		workspace: join(home, "workspace"),
+		rollingConfig,
+	};
+	return { home, store, projects, notes, runtime, rollingConfig, deps };
 }
 
 describe("moveIntoProject", () => {
@@ -79,14 +91,49 @@ describe("moveIntoProject", () => {
 			child.id,
 		]);
 		expect(moveIntoProject(f.deps, child.id, first.id).kind).toBe("child");
-		const roll = f.store.rollApp({
-			model: "zai/m",
-			thinking: "medium",
-			providers: { zai: { kind: "openai-compatible", baseUrl: "https://example.com", auth: "zai" } },
-		} as unknown as Config);
-		expect(moveIntoProject(f.deps, roll.id, first.id).kind).toBe("rolling");
+		const olderRoll = f.store.rollApp(f.rollingConfig);
+		f.store.rollApp(f.rollingConfig);
+		expect(moveIntoProject(f.deps, olderRoll.id, first.id).kind).toBe("rolling");
+		expect(f.store.get(olderRoll.id)?.projectId).toBeNull();
+		expect(f.store.isAppRoll(olderRoll.id)).toBe(true);
+		expect(f.store.history(olderRoll.id)).toHaveLength(0);
+		f.store.close();
+	});
+
+	test("moves the current roll in place and mints a fresh rolling conversation", () => {
+		const f = fixture();
+		const roll = f.store.rollApp(f.rollingConfig);
+		f.store.append(roll.id, [{ id: "prior", role: "user", parts: [{ type: "text", text: "before" }] }]);
+		const project = f.projects.create({ name: "Ship It", instructions: "Ship the thing." });
+
+		expect(moveIntoProject(f.deps, roll.id, project.id).kind).toBe("moved");
+
+		const moved = f.store.get(roll.id)!;
+		expect(moved.projectId).toBe(project.id);
+		expect(f.store.isAppRoll(roll.id)).toBe(false);
+		expect(f.store.history(roll.id).map((m) => m.id)).toEqual(["prior", expect.any(String)]);
+		const fresh = f.store.currentAppRoll();
+		expect(fresh).not.toBeNull();
+		expect(fresh!.id).not.toBe(roll.id);
+		expect(fresh!.projectId).toBeNull();
+		expect(f.store.appRollChain(10).map((row) => row.id)).toEqual([fresh!.id]);
+		expect(f.store.listAppConversations().some((row) => row.id === roll.id)).toBe(true);
+		expect(f.store.appRollDestination(roll.id)).toBe(roll.id);
+
+		expect(moveIntoProject(f.deps, roll.id, project.id).kind).toBe("unchanged");
+		expect(f.store.currentAppRoll()?.id).toBe(fresh!.id);
+		f.store.close();
+	});
+
+	test("a busy current roll refuses before minting its replacement", () => {
+		const f = fixture();
+		const roll = f.store.rollApp(f.rollingConfig);
+		const project = f.projects.create({ name: "Busy" });
+		f.runtime.busy = (id: string) => id === roll.id;
+		expect(moveIntoProject(f.deps, roll.id, project.id).kind).toBe("busy");
+		expect(f.store.currentAppRoll()?.id).toBe(roll.id);
 		expect(f.store.get(roll.id)?.projectId).toBeNull();
-		expect(f.store.history(roll.id)).toHaveLength(0);
+		expect(f.store.isAppRoll(roll.id)).toBe(true);
 		f.store.close();
 	});
 

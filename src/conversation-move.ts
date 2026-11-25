@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Config } from "./config-schema.ts";
 import { channelOf } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { Conversation } from "./conversation-read.ts";
@@ -24,12 +25,22 @@ export function moveIntoProject(
 	deps: {
 		store: Pick<
 			ConversationStore,
-			"db" | "get" | "bindProject" | "setMeta" | "append" | "memoryQueue" | "isAppRoll"
+			| "db"
+			| "get"
+			| "bindProject"
+			| "setMeta"
+			| "append"
+			| "memoryQueue"
+			| "isAppRoll"
+			| "currentAppRoll"
+			| "unrollApp"
+			| "rollApp"
 		>;
 		projects: Pick<ProjectStore, "get">;
 		runtime: Pick<Runtime, "busy">;
 		notes: Pick<NoteStore, "index">;
 		workspace: string;
+		rollingConfig: Config;
 	},
 	conversationId: string,
 	projectId: string,
@@ -38,7 +49,8 @@ export function moveIntoProject(
 	if (conv === null) return refused("notFound");
 	if (channelOf(conv.id) !== "app") return refused("notApp");
 	if (conv.parentId !== null) return refused("child");
-	if (deps.store.isAppRoll(conv.id)) return refused("rolling");
+	const rolling = deps.store.isAppRoll(conv.id);
+	if (rolling && deps.store.currentAppRoll()?.id !== conv.id) return refused("rolling");
 	const project = deps.projects.get(projectId);
 	if (project === null) return refused("noProject");
 	if (project.archivedAt !== null) return refused("projectArchived");
@@ -49,7 +61,11 @@ export function moveIntoProject(
 	if (conv.projectId !== null) return refused("alreadyBound", conv.projectId);
 	if (deps.runtime.busy(conv.id)) return refused("busy");
 
+	let freshRoll: Conversation | null = null;
 	const moved = deps.store.db.transaction(() => {
+		if (rolling && !deps.store.unrollApp(conv.id)) {
+			throw new Error(`conversation ${conv.id} lost its rolling membership during project move`);
+		}
 		deps.store.bindProject(conv.id, project.id);
 		if (project.memory === "off") {
 			deps.store.setMeta(conv.id, {
@@ -64,6 +80,7 @@ export function moveIntoProject(
 			[{ id: randomUUID(), role: "user", parts: [{ type: "text", text }] }],
 			{ ...(project.memory === "off" ? { exclude: true } : {}) },
 		);
+		if (rolling) freshRoll = deps.store.rollApp(deps.rollingConfig);
 		const current = deps.store.get(conv.id);
 		if (current === null) throw new Error(`conversation ${conv.id} disappeared during project move`);
 		return current;
@@ -73,6 +90,7 @@ export function moveIntoProject(
 		project: project.id,
 		dir: project.dir,
 		memoryExcluded: moved.memoryExcluded,
+		freshRoll: freshRoll?.id ?? null,
 	});
 	return { kind: "moved", conv: moved };
 

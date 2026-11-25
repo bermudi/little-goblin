@@ -1365,13 +1365,50 @@ describe("app conversations", () => {
 				child.id,
 			]);
 			expect((await patch("move-child", { projectId: project.id })).status).toBe(422);
-			const roll = store.rollApp(configRef.current);
-			const refusedRoll = await patch(roll.id.slice("app/".length), { projectId: project.id });
+			const olderRoll = store.rollApp(configRef.current);
+			store.rollApp(configRef.current);
+			const refusedRoll = await patch(olderRoll.id.slice("app/".length), { projectId: project.id });
 			expect(refusedRoll.status).toBe(422);
 			expect(await refusedRoll.json()).toEqual({
-				error: "rolling chat conversations cannot move into a project",
+				error: "only the current rolling chat conversation can move into a project",
 			});
-			expect(store.get(roll.id)?.projectId).toBeNull();
+			expect(store.get(olderRoll.id)?.projectId).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("PATCH moves the current rolling conversation and mints a fresh roll", async () => {
+		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const roll = store.rollApp(configRef.current);
+			store.append(roll.id, [
+				{ id: "roll-message", role: "user", parts: [{ type: "text", text: "lasting work" }] },
+			]);
+			const project = projects.create({ name: "Rolling Target" });
+			const response = await call(`/api/app/conversations/${roll.id.slice("app/".length)}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ projectId: project.id }),
+			});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({});
+
+			expect(store.get(roll.id)?.projectId).toBe(project.id);
+			expect(store.isAppRoll(roll.id)).toBe(false);
+			const fresh = store.currentAppRoll();
+			expect(fresh).not.toBeNull();
+			expect(fresh!.id).not.toBe(roll.id);
+			expect(store.history(roll.id).map((m) => m.id)).toEqual(["roll-message", expect.any(String)]);
+
+			const listResponse = await call("/api/app/conversations");
+			expect(listResponse.status).toBe(200);
+			const list = (await listResponse.json()) as {
+				conversations: { id: string; projectId: string | null }[];
+				rolling: { chain: { id: string }[] };
+			};
+			expect(list.rolling.chain.map((row) => row.id)).toEqual([fresh!.id]);
+			expect(list.conversations.find((row) => row.id === roll.id)?.projectId).toBe(project.id);
 		} finally {
 			http.stop();
 		}

@@ -458,4 +458,96 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		);
 		expect(usage?.cache_read_input_tokens ?? 0).toBeGreaterThan(0);
 	}, 360_000);
+
+	test("thought summaries read the prefix a default-display turn cached", async () => {
+		type Display = "summarized" | undefined;
+		const counts = (events: ClaudeEvent[]) => {
+			const seen = new Map<string, { read: number; write: number; fresh: number }>();
+			for (const e of events) {
+				if (e.type !== "assistant") continue;
+				const u = e.message.usage;
+				seen.set(e.message.id, {
+					read: u?.cache_read_input_tokens ?? 0,
+					write: u?.cache_creation_input_tokens ?? 0,
+					fresh: u?.input_tokens ?? 0,
+				});
+			}
+			return [...seen.values()];
+		};
+		const thoughtChars = (events: ClaudeEvent[]): number =>
+			events
+				.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
+				.flatMap((e) => e.message.content)
+				.filter((b) => b.type === "thinking")
+				.reduce((n, b) => n + (b.thinking ?? "").length, 0);
+		const lane = async (label: string, displays: Display[]) => {
+			const bridge = createToolBridge({
+				convId: "drift",
+				tools: {
+					drift_probe: defineTool({
+						description: "Returns the next number of the probe sequence",
+						input: z.object({ step: z.number() }),
+						execute: async ({ step }) => `value ${step * 7 + 3}`,
+					}),
+				},
+			});
+			const systemPrompt = `You are a drift probe. Obey the instruction exactly. Run ${crypto.randomUUID()}.\n${Array.from(
+				{ length: 900 },
+				(_, i) => `Reference line ${i}: the probe keeps this text stable across requests.`,
+			).join("\n")}`;
+			const sessionId = crypto.randomUUID();
+			let head: string | undefined;
+			const turns = [];
+			for (const [i, display] of displays.entries()) {
+				const events = await collect(
+					`Think step by step first: how many primes lie between ${100 + i * 50} and ${170 + i * 50}? Then call drift_probe once with step ${i}. Then reply with the count and the value.`,
+					{
+						systemPrompt,
+						maxTurns: 4,
+						thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
+						effort: "high",
+						mcpServers: { goblin: bridge.server() },
+						allowedTools: bridge.allowedTools(),
+						persistSession: true,
+						...(head === undefined ? { sessionId } : { resume: sessionId, resumeSessionAt: head }),
+					},
+				);
+				const result = events.find((e) => e.type === "result");
+				expect(result?.type === "result" && !result.isError).toBe(true);
+				head = events
+					.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
+					.at(-1)?.uuid;
+				expect(typeof head).toBe("string");
+				const calls = counts(events);
+				turns.push({ display: display ?? "default", calls, thoughtChars: thoughtChars(events) });
+				process.stderr.write(`${label} turn ${i + 1}: ${JSON.stringify(turns.at(-1))}\n`);
+			}
+			const fork = await collect("Summarize the preceding test exchange in one short sentence.", {
+				systemPrompt,
+				maxTurns: 1,
+				thinking: { type: "adaptive", display: "summarized" },
+				effort: "high",
+				mcpServers: { goblin: bridge.server() },
+				allowedTools: bridge.allowedTools(),
+				resume: sessionId,
+				resumeSessionAt: head,
+				forkSession: true,
+				persistSession: false,
+			});
+			turns.push({ display: "fork", calls: counts(fork), thoughtChars: thoughtChars(fork) });
+			process.stderr.write(`${label} fork: ${JSON.stringify(turns.at(-1))}\n`);
+			return turns;
+		};
+		const control = await lane("control", [undefined, undefined, undefined]);
+		const switched = await lane("switched", [undefined, "summarized", "summarized"]);
+		const summarized = await lane("summarized", ["summarized", "summarized", "summarized"]);
+		for (const turns of [control, switched, summarized]) {
+			const calls = turns.flatMap((turn) => turn.calls);
+			for (const [i, call] of calls.entries()) {
+				const previous = calls[i - 1];
+				if (previous !== undefined) expect(call.read).toBe(previous.read + previous.write);
+			}
+		}
+		expect(summarized.reduce((n, t) => n + t.thoughtChars, 0)).toBeGreaterThan(0);
+	}, 900_000);
 });

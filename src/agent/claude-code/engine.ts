@@ -844,7 +844,7 @@ export async function driveClaude<M extends WireMember>(
 					thinking:
 						step.thinking !== undefined && step.thinking.disabled === true
 							? { type: "disabled" }
-							: { type: "adaptive" },
+							: { type: "adaptive", display: "summarized" },
 					...(step.thinking?.effort !== undefined ? { effort: step.thinking.effort } : {}),
 					mcpServers: { goblin: bridge.server() },
 					allowedTools: bridge.allowedTools(),

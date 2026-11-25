@@ -414,7 +414,7 @@ async function forkSummary(
 				thinking:
 					input.step.thinking.disabled === true
 						? { type: "disabled" }
-						: { type: "adaptive" },
+						: { type: "adaptive", display: "summarized" },
 				...(input.step.thinking.effort !== undefined ? { effort: input.step.thinking.effort } : {}),
 				mcpServers: { goblin: bridge.server() },
 				allowedTools: bridge.allowedTools(),

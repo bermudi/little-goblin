@@ -4239,7 +4239,7 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
       fold().dispatchEvent(new window.Event("toggle"));
     });
 
-  test("an open fold the reader sits at the end of follows its newest calls", async () => {
+  test("an open fold follows its newest calls only while the reader is exactly at its end", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "input-available")], true);
     await toggle();
@@ -4273,6 +4273,34 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
       true,
     );
     expect(layout.scrollTop).toBe(420);
+    layout.scrollHeight = 660;
+    reader(520);
+    layout.scrollHeight = 780;
+    await render(
+      [
+        part("b1", "output-available"),
+        part("b2", "output-available"),
+        part("b3", "output-available"),
+        part("b4", "output-available"),
+        part("b5", "input-available"),
+      ],
+      true,
+    );
+    expect(layout.scrollTop).toBe(520);
+    reader(660);
+    layout.scrollHeight = 900;
+    await render(
+      [
+        part("b1", "output-available"),
+        part("b2", "output-available"),
+        part("b3", "output-available"),
+        part("b4", "output-available"),
+        part("b5", "output-available"),
+        part("b6", "input-available"),
+      ],
+      true,
+    );
+    expect(layout.scrollTop).toBe(780);
   });
 
   test("a fold opened on a run longer than its cap waits at its first row", async () => {

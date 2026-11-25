@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
-import { AT_END_PX, distanceToEnd } from "./useTranscriptFollow.ts";
+import { distanceToEnd } from "./useTranscriptFollow.ts";
+
+const AT_END_PX = 2;
 
 export function useFoldFollow(
 	fold: RefObject<HTMLDetailsElement | null>,

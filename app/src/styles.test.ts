@@ -64,9 +64,19 @@ describe("composer box separation", () => {
 describe("transcript scroll anchoring", () => {
 	const rule = /(?:^|\n)\.transcript \{([^}]*)\}/.exec(css)?.[1] ?? "";
 
-	test("the transcript turns browser scroll anchoring off", () => {
+		test("the transcript turns browser scroll anchoring off", () => {
+			expect(rule).not.toBe("");
+			expect(rule).toMatch(/overflow-anchor:\s*none/);
+		});
+});
+
+describe("worked list cap", () => {
+	const rule = /(?:^|\n)\.worked ul \{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+	test("an open worked list is capped and scrolls inside itself", () => {
 		expect(rule).not.toBe("");
-		expect(rule).toMatch(/overflow-anchor:\s*none/);
+		expect(rule).toMatch(/max-height:\s*40vh/);
+		expect(rule).toMatch(/overflow-y:\s*auto/);
 	});
 });
 

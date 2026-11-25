@@ -112,7 +112,8 @@ not scope.
 - Compare DOM nodes by identity or selected properties, not deep equality.
   If a run stops on its memory limit, inspect the named test before rerunning.
 
-Run only targeted tests locally, under the cap. Typecheck before committing.
+Run only targeted tests locally, under the cap. Typecheck and run the
+comment audit before pushing: CI's `check` job refuses a new prose comment.
 Builds, lint and full test suites stay in CI.
 
 ```sh
@@ -120,6 +121,7 @@ systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 \
   timeout 120 bun test <file> -t <name>
 systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 \
   timeout 600 bun run typecheck
+bun scripts/comment-audit.ts --check --base "$(git merge-base origin/main HEAD)"
 ```
 
 ## Process

@@ -44,7 +44,13 @@ mechanism, zero code. Folds never open or close by themselves (operator,
 toggles them. An automatic open and close moved the text under the
 reader on every call. The closed summary carries the live state instead:
 "Working for Ns" while the run owns the tail of a streaming reply, the
-failure count when a call fails.
+failure count when a call fails. An open fold's list takes at most 40vh
+of the window and scrolls inside itself (#936). While the run is live
+the list follows its newest row only while the reader is exactly at its
+end: any scroll up switches the follow off until the reader is back at
+the end (operator, 2026-11-25, #936). A 48 px zone near the end, like
+the transcript's, was rejected: a smaller scroll snapped back at the
+next call.
 
 **Sent files (ruling 2026-11-21, #866).** Files sent by `send_file`,
 `generate_image`, and `speak` are openable immediately below the collapsed

@@ -9,6 +9,8 @@ injected into that turn and the invocation is stored on the user message.
 ## How to get to it (user POV)
 
 - **Browse:** Goblin's profile → Skills. Proposed skills appear before installed ones.
+- **Discard:** Skills page → a proposed skill → **Discard**. Also from
+  **Needs you**, which opens the same page.
 - **Invoke:** Chat composer → **Invoke a skill** → select a catalog entry →
   send a message. On phone widths, **Invoke a skill** is an item in the
   composer's **Add** menu, beside **Attach a file** and **Attach a note**.
@@ -60,6 +62,26 @@ rg '"msg":"skill body injected"' "$HOME_DIR/state/goblin.log"
 Expected: a user event part with `type` `data-skill` and `data.name`
 `verify-example`; a `skill body injected` log line with the same skill name.
 The assistant transcript includes the `[skill: verify-example]` marker.
+
+## Discarding a proposal
+
+Stage a draft on the instance, then discard it from the Skills page:
+
+```sh
+D="$HOME_DIR/workspace/skills-proposed/weather-demo"
+mkdir -p "$D"
+printf -- '---\nname: weather-demo\ndescription: demo\n---\n\nSay hi.\n' > "$D/SKILL.md"
+agent-browser --session verify-skills open "${URL}skills"
+agent-browser --session verify-skills wait --text 'weather-demo'
+agent-browser --session verify-skills find role button click --name 'Discard'
+agent-browser --session verify-skills wait 1000
+find "$HOME_DIR/workspace/skills-proposed" "$HOME_DIR/workspace/skills-discarded" -name SKILL.md
+rg '"msg":"skill proposal discarded"' "$HOME_DIR/state/goblin.log"
+```
+
+Expected: the card is gone without a prompt. The draft is unchanged at
+`skills-discarded/weather-demo.<timestamp>/SKILL.md`, and the log line names
+that folder in `keptAs`.
 
 ## Gotchas
 

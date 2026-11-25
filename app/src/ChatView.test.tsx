@@ -4212,6 +4212,96 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     expect(fold().open).toBe(false);
   });
 
+  // The fold's list has a height cap and scrolls inside it. happy-dom
+  // lays nothing out, so the list gets a fake height and scroll position
+  // and the test moves the reader by hand.
+  const cappedList = (scrollHeight: number, clientHeight = 120) => {
+    const layout = { scrollHeight, clientHeight, scrollTop: 0 };
+    const ul = fold().querySelector<HTMLUListElement>("ul")!;
+    Object.defineProperty(ul, "scrollHeight", { get: () => layout.scrollHeight });
+    Object.defineProperty(ul, "clientHeight", { get: () => layout.clientHeight });
+    Object.defineProperty(ul, "scrollTop", {
+      get: () => layout.scrollTop,
+      set: (top: number) => {
+        layout.scrollTop = Math.max(
+          0,
+          Math.min(top, layout.scrollHeight - layout.clientHeight),
+        );
+      },
+    });
+    const reader = (scrollTop: number) =>
+      act(() => {
+        layout.scrollTop = scrollTop;
+        ul.dispatchEvent(new window.Event("scroll"));
+      });
+    return { layout, reader };
+  };
+  const open = () =>
+    act(() => {
+      fold().open = true;
+      fold().dispatchEvent(new window.Event("toggle"));
+    });
+
+  test("an open fold the reader sits at the end of follows its newest calls", async () => {
+    dom.root = createRoot(dom.container);
+    await render([part("b1", "input-available")], true);
+    await toggle();
+    const { layout, reader } = cappedList(120);
+    layout.scrollHeight = 300;
+    await render(
+      [part("b1", "output-available"), part("b2", "input-available")],
+      true,
+    );
+    expect(layout.scrollTop).toBe(180);
+    reader(60);
+    layout.scrollHeight = 420;
+    await render(
+      [
+        part("b1", "output-available"),
+        part("b2", "output-available"),
+        part("b3", "input-available"),
+      ],
+      true,
+    );
+    expect(layout.scrollTop).toBe(60);
+    reader(300);
+    layout.scrollHeight = 540;
+    await render(
+      [
+        part("b1", "output-available"),
+        part("b2", "output-available"),
+        part("b3", "output-available"),
+        part("b4", "input-available"),
+      ],
+      true,
+    );
+    expect(layout.scrollTop).toBe(420);
+  });
+
+  test("a fold opened on a run longer than its cap waits at its first row", async () => {
+    dom.root = createRoot(dom.container);
+    await render([part("b1", "input-available")], true);
+    const { layout } = cappedList(500);
+    await open();
+    layout.scrollHeight = 620;
+    await render(
+      [part("b1", "output-available"), part("b2", "input-available")],
+      true,
+    );
+    expect(layout.scrollTop).toBe(0);
+  });
+
+  test("a fold stops following once Goblin stops working", async () => {
+    dom.root = createRoot(dom.container);
+    await render([part("b1", "input-available")], true);
+    await toggle();
+    const { layout } = cappedList(120);
+    layout.scrollHeight = 300;
+    await render([part("b1", "output-available")], false);
+    expect(fold().querySelector("summary")!.textContent).toContain("Worked");
+    expect(layout.scrollTop).toBe(0);
+  });
+
   test("a run that owns the tail of a streaming reply reads as working between calls", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "output-available")], true);

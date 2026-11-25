@@ -13,6 +13,7 @@ import { ApprovalCard } from "../Approvals.tsx";
 import { ArtifactCard } from "../docview.tsx";
 import { Markdown } from "../markdown.tsx";
 import { bytes } from "../opsShared.tsx";
+import { useFoldFollow } from "./useFoldFollow.ts";
 import { Brain } from "lucide-react";
 import {
   ToolRun,
@@ -108,6 +109,9 @@ function Activity({
   const running = !ended && (live || tools.some(partRunning));
   const failures = tools.filter(partFailed).length;
   const lines = tools.map(partSummaryLine);
+  const fold = useRef<HTMLDetailsElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+  useFoldFollow(fold, list, parts, running);
   // A thought-only run keeps the plain Thought fold — "Worked" over
   // zero calls would read as a bug.
   if (tools.length === 0) {
@@ -122,7 +126,7 @@ function Activity({
     );
   }
   return (
-    <details className="worked">
+    <details className="worked" ref={fold}>
       <summary>
         {running ? <WorkingFor /> : "Worked"} ·{" "}
         <span className="worked-sum" title={lines.join("; ")}>
@@ -132,7 +136,7 @@ function Activity({
           <span className="worked-fail">— {failures} failed</span>
         )}
       </summary>
-      <ul>
+      <ul ref={list}>
         {parts.map((p, i) =>
           isToolUIPart(p) ? (
             <ToolRun

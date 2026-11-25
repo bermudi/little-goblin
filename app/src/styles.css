@@ -2275,11 +2275,15 @@ h6.md-h {
 	flex: none;
 	color: var(--app-danger);
 }
+/* An open fold takes at most 40vh of the window: a long run scrolls
+   inside the list instead of pushing the reply and the composer away. */
 .worked ul {
 	list-style: none;
 	margin: 0.25rem 0 0.1rem 0.2rem;
 	padding: 0.15rem 0 0.15rem 0.8rem;
 	border-left: 1px solid var(--app-divider);
+	max-height: 40vh;
+	overflow-y: auto;
 }
 .worked li {
 	padding: 0.05rem 0;

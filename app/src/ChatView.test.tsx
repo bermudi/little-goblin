@@ -1739,7 +1739,7 @@ describe("ChatView reload window (issue #79)", () => {
     await act(async () => {
       events.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
     });
-    expect(dom.container.querySelector(".msg.pending.shimmer")).not.toBeNull();
+    expect(dom.container.querySelector(".msg.pending")).not.toBeNull();
     for (let i = 0; i < 100 && streamRequests < 2; i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
@@ -1751,7 +1751,7 @@ describe("ChatView reload window (issue #79)", () => {
         { type: "text-delta", id: "t1", delta: "live answer" },
       ]) live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
     });
-    expect(dom.container.querySelector(".msg.pending.shimmer")).toBeNull();
+    expect(dom.container.querySelector(".msg.pending")).toBeNull();
     expect(dom.container.querySelectorAll(".msg.assistant.streaming")).toHaveLength(1);
     expect(dom.container.textContent).toContain("live answer");
     await act(async () => {});

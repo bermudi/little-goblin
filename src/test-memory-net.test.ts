@@ -43,10 +43,7 @@ function readVmRss(pid: number): number | null {
 		throw error;
 	}
 	const match = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
-	if (match === null) {
-		if (/^State:\s+[ZX]\s+\((?:zombie|dead)\)\s*$/m.test(status)) return null;
-		throw new Error(`memory net child status has no VmRSS: ${path}`);
-	}
+	if (match === null) return null;
 	return Number(match[1]) * 1024;
 }
 
@@ -168,6 +165,7 @@ describe("memory net child probes", () => {
 			run,
 		);
 		requireCondition(run.elapsedMs < 10_000, "server runaway took 10 seconds or more", run);
+		requireCondition(run.peakRssBytes > 0, "server runaway RSS was never read", run);
 		requireCondition(run.peakRssBytes < 400 * MiB, "server runaway exceeded 400 MiB", run);
 	});
 
@@ -188,6 +186,7 @@ describe("memory net child probes", () => {
 			run,
 		);
 		requireCondition(run.elapsedMs < 15_000, "app runaway took 15 seconds or more", run);
+		requireCondition(run.peakRssBytes > 0, "app runaway RSS was never read", run);
 		requireCondition(run.peakRssBytes < 400 * MiB, "app runaway exceeded 400 MiB", run);
 	});
 

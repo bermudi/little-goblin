@@ -1,6 +1,7 @@
 import { makeWakeDelivery, makeWakeDeps } from "./tg/wake.ts";
 import { startAgentChildren } from "./agent-children.ts";
 import { GENERAL_AGENT_TYPE } from "./agent-types.ts";
+import { openAppPush } from "./app-push.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -329,7 +330,10 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion w
 		thinking: "low",
 	});
 	const model = make();
-	model.script({ kind: "reply", parts: [{ type: "text", text: "CHILD RESULT" }] });
+	model.script(
+		{ kind: "reply", parts: [{ type: "text", text: "CHILD RESULT" }] },
+		{ kind: "fail", parts: [], error: { message: "model exploded" } },
+	);
 	const runtime = new Runtime({
 		engines: model.engines,
 		store,
@@ -337,7 +341,7 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion w
 	});
 	runtime.mount({ makeTools: () => ({}) });
 	const sends: string[] = [];
-	const pushed: { conversation: string; done: TurnDone }[] = [];
+	const pushSends: string[] = [];
 	const api = {
 		sendMessage: (_chat: number, text: string) => {
 			sends.push(text);
@@ -345,6 +349,28 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion w
 		},
 		sendChatAction: () => Promise.resolve(true),
 	} as unknown as Api;
+	const authValues = new Map<string, string>();
+	const push = openAppPush(store.db, {
+		auth: {
+			has: (name) => authValues.has(name),
+			resolve: (name) => Promise.resolve(authValues.get(name)!),
+		},
+		storeSecret: (name, value) => authValues.set(name, value),
+		store,
+		subject: () => "mailto:goblin@example.test",
+		generateKeys: () => ({ publicKey: "public", privateKey: "private" }),
+		send: (subscription) => {
+			pushSends.push(subscription.endpoint);
+			return Promise.resolve({ statusCode: 201, body: "", headers: {} });
+		},
+	});
+	await push.register(
+		{
+			endpoint: "https://push.example.test/registrations/endpoint-1",
+			keys: { p256dh: "browser-p256dh", auth: "browser-auth" },
+		},
+		null,
+	);
 	const wakeDeps = makeWakeDeps({
 		store,
 		runtime,
@@ -353,12 +379,7 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion w
 		synthesize: async () => [],
 		followUpGate: () => undefined,
 		pings: { record: () => {}, lookup: () => null },
-		push: {
-			notifyDone: (notifyConv, done) => {
-				pushed.push({ conversation: notifyConv.id, done });
-				return Promise.resolve();
-			},
-		},
+		push,
 	});
 	let parentWakes = 0;
 	const engine = startAgentChildren({
@@ -382,9 +403,17 @@ test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: agent child completion w
 	const settlement = await engine.awaitSettlement(child.conversationId);
 	expect(settlement.child.status).toBe("done");
 	expect(settlement.result).toBe("CHILD RESULT");
-	expect(parentWakes).toBe(1);
+	const failing = await engine.spawn({
+		parent,
+		type: GENERAL_AGENT_TYPE,
+		task: "do work that fails",
+		tools: [],
+	});
+	const failure = await engine.awaitSettlement(failing.child.conversationId);
+	expect(failure.child.status).toBe("failed");
+	expect(parentWakes).toBe(2);
 	expect(sends).toEqual([]);
-	expect(pushed).toEqual([]);
+	expect(pushSends).toEqual([]);
 	await runtime.shutdown();
 	store.close();
 });

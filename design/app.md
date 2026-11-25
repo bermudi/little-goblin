@@ -79,11 +79,13 @@ The VAPID pair is generated lazily and lives only in `auth.jsonl`;
 subscriptions and sent markers live in SQLite; API state exposes endpoint
 hashes, never endpoints or subscription keys. Payloads are generic
 (title/body + `/app/c/<id>`) and contain no reply text or authority.
-Background app turns notify on terminal success or failure; fenced turns
-stay silent. A foreground app reply notifies at turn end only when no
-conversation `/stream` reader and no `/events` subscriber is attached
-(#678); reply streams never double-ring while someone is watching. Work still waiting on the operator also rings, with
-Telegram as the fallback (`design/programs.md` → Reports and stages). `404`/`410`
+Background app turns notify on terminal success or failure, except agent
+children, which never ring the operator (design/agents.md → Visibility);
+fenced turns stay silent. A foreground app reply notifies at turn end only
+when no conversation `/stream` reader and no `/events` subscriber is attached
+(#678); reply streams never double-ring while someone is watching. Work
+still waiting on the operator also rings, with Telegram as the fallback
+(`design/programs.md` → Reports and stages). `404`/`410`
 prune an endpoint; transient send failures keep it retryable. Telegram
 stays the bell for its own conversations and still rings app turns as the
 companion channel; Web Push is the app-owned path, not a replacement.
@@ -622,13 +624,13 @@ buttons (non-chat page layout rule), drawn by the same `DiffView` and
 schedule reads in plain words with the cron beside it ("Daily 07:00 →
 Weekdays 06:30"); shapes `src/cron-words.ts` does not cover show the raw cron.
 
-**Telegram rings.** Every completed background turn pings the *current* DM
-— `<title>: <head of the reply>` plus a link, appended as an assistant
-event (answerable in chat) and counted for the gap rule. A swipe-reply
-routes to the app conversation (headless, so it rings back); the DM
-acknowledges `sent to <title>` (delivery only). The ping → conversation
-mapping is durable by the ping's message id, so replies after a restart
-still route.
+**Telegram rings.** Every completed background turn that is not an agent
+child pings the *current* DM — `<title>: <head of the reply>` plus a
+link, appended as an assistant event (answerable in chat) and counted
+for the gap rule. A swipe-reply routes to the app conversation
+(headless, so it rings back); the DM acknowledges `sent to <title>`
+(delivery only). The ping → conversation mapping is durable by the
+ping's message id, so replies after a restart still route.
 
 **Links.** `{publicUrl}/app/c/<appId>` opens one conversation; the APK will
 claim links under `/app/`. Unverified until then: Android's automatic link

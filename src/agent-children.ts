@@ -133,8 +133,8 @@ export interface AgentChildrenDeps {
 	/** Durable settlement notice on the parent — the wake dispatcher's
 	 * record seam (wake-dispatcher.ts). Late-bound by index.ts. */
 	record(input: DevelopmentInput): unknown;
-	/** The child turn's channel sink (the app bell) — media persistence
-	 * and push ride on it; settlement composes alongside. */
+	/** The child turn's channel sink — media persistence rides on it;
+	 * settlement composes alongside. */
 	bell(conv: Conversation): TurnSink;
 	/** Live-read from the agents config block (absent = 3). */
 	maxRunning(): number;
@@ -406,9 +406,9 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 
 	// ---------- submission ----------
 
-	// The settlement half of a child's sink. The bell (media, push) is
-	// the channel half; settlement rides beside it on every submit, so a
-	// steer joining a running child settles with the turn that consumes it.
+	// The settlement half of a child's sink. The channel half persists
+	// media; settlement rides beside it on every submit, so a steer
+	// joining a running child settles with the turn that consumes it.
 	function childSink(conv: Conversation): TurnSink {
 		const settlement: TurnSink = {
 			delivery: "headless",

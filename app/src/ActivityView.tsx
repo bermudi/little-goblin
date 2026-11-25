@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppPost } from "../../src/http/app-wire.ts";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import { listPosts } from "./api.ts";
-import { type ActivityData, activityRows, otherBusyRow, PanelRow } from "./GoblinPanel.tsx";
+import { ActivityRow, type ActivityData, activityRows, otherBusyRow } from "./GoblinPanel.tsx";
 import { describe } from "./opsShared.tsx";
 
 interface Paged {
@@ -108,16 +108,16 @@ export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
 					<h2 className="ops-h2">Running</h2>
 					<div className="goblin-panel-rows">
 						{rows.running.map((row) => (
-							<PanelRow key={row.key} row={row} />
+							<ActivityRow key={row.key} row={row} />
 						))}
-						{rows.otherBusy > 0 && <PanelRow row={otherBusyRow(rows.otherBusy)} />}
+						{rows.otherBusy > 0 && <ActivityRow row={otherBusyRow(rows.otherBusy)} />}
 					</div>
 				</>
 			)}
 			<h2 className="ops-h2">Earlier</h2>
 			<div className="goblin-panel-rows">
 				{finished.map((row) => (
-					<PanelRow key={row.key} row={row} />
+					<ActivityRow key={row.key} row={row} />
 				))}
 				{finished.length === 0 && <p className="empty">No finished work or posts yet.</p>}
 			</div>

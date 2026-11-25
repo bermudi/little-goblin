@@ -18,13 +18,13 @@ All 3 disks OK.] check the disks'
 ab click 'button[aria-label="Send"]'
 ab wait --text 'verify-reply: [post'
 ab wait 2000    # the server looks every 500 ms, then the panel re-reads
-ab snapshot -i | grep 'post ·'
-ab find role button click --name "Backup finished. All 3 disks OK. post · now"
+ab snapshot -i | grep 'Post'
+ab find role button click --name "Backup finished. All 3 disks OK. Post now"
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select id, conversation_id, text from posts'
 grep '"post added"' "$HOME_DIR/state/goblin.log"
 ```
 
-Proof: a button row with the post text and `post · now` under the Activity tab, the line break kept, the `posts` row, and the `post added` log line. Clicking the row opens the chat the post came from; a post made in the Rolling chat opens `/app/rolling`.
+Proof: a button row with the post text, `Post` below, and `now` at the right under the Activity tab, the line break kept, the `posts` row, and the `post added` log line. Clicking the row opens the chat the post came from; a post made in the Rolling chat opens `/app/rolling`.
 
 ### See all and the Activity page
 

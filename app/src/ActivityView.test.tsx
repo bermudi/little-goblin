@@ -49,19 +49,21 @@ test("the activity page pages through older posts and keeps finished work in tim
 		attention: [], attentionError: false, programs: [], loadError: false, working: 1, reload() {},
 		activity: { busy: [], otherBusy: 0, posts: [post(6)] },
 		delegations: [
-			{ id: 1, harness: "codex", task: "Still going", status: "running", createdAt: minute(0), appConversation: null },
-			{ id: 2, harness: "pi", task: "Old task", status: "done", createdAt: minute(0), finishedAt: new Date(Date.UTC(2026, 10, 21, 0, 1, 30)).toISOString(), appConversation: null },
+			{ id: 1, name: "still-going", harness: "codex", task: "Still going", status: "running", createdAt: minute(0), appConversation: null },
+			{ id: 2, name: "old-task", harness: "pi", task: "Old task", status: "done", createdAt: minute(0), finishedAt: new Date(Date.UTC(2026, 10, 21, 0, 1, 30)).toISOString(), appConversation: null },
 		],
 	} as unknown as Parameters<typeof ActivityView>[0]["data"];
 	root = createRoot(container);
 	await act(async () => root?.render(<ActivityView token={null} data={data} onOpenConversation={() => {}} onOpenPage={() => {}} />));
 	const labels = () => [...container.querySelectorAll(".goblin-panel-row strong")].map((el) => el.textContent);
 	const older = () => [...container.querySelectorAll("button")].find((el) => el.textContent === "Show older");
-	expect(labels()).toEqual(["codex: Still going", "Post 6", "Post 5", "Post 4"]);
+	expect(labels()).toEqual(["still-going", "Post 6", "Post 5", "Post 4"]);
 	await act(async () => older()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
-	expect(labels()).toEqual(["codex: Still going", "Post 6", "Post 5", "Post 4", "Post 3", "Post 2"]);
+	expect(labels()).toEqual(["still-going", "Post 6", "Post 5", "Post 4", "Post 3", "Post 2"]);
 	await act(async () => older()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
-	expect(labels()).toEqual(["codex: Still going", "Post 6", "Post 5", "Post 4", "Post 3", "Post 2", "pi: Old task", "Post 1"]);
+	expect(labels()).toEqual(["still-going", "Post 6", "Post 5", "Post 4", "Post 3", "Post 2", "old-task", "Post 1"]);
+	expect(container.textContent).not.toContain("Still going");
+	expect(container.textContent).not.toContain("Old task");
 	expect(older()).toBeUndefined();
 	expect(requests).toEqual(["/api/app/posts", "/api/app/posts?before=4", "/api/app/posts?before=2"]);
 });

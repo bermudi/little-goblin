@@ -106,9 +106,10 @@ ls "$HOME_DIR/workspace/skills-proposed"
 ```
 
 Expected: one `reviewer reuse` line with `reuse` 0.41, `threshold` 0.6 and
-`held` true; no proposal, and nothing about one in the chat. Repeat with:
+`held` true; no proposal, and nothing about one in the chat list. Repeat with:
 
-- `[review new 0.9]` or `[review new 0.6]`: proposed, with a note in the chat.
+- `[review new 0.9]` or `[review new 0.6]`: proposed; the chat's row in the
+  chat list shows `proposed skill: verify-review-new`.
 - `[review edit 0.1]`: proposed, and no `reviewer reuse` line.
 - `[review both 0.1]`: only `verify-example` is proposed.
 - `[review new down]`: proposed; the line has `fallback` true and no score.

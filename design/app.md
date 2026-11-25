@@ -333,8 +333,9 @@ Move to project (ruling 2026-11-21, #859) sits in the hold sheet and the
 title menu, for loose, unarchived, non-child chats only: the sheet switches
 in place to the active projects and New project…, with Back; the title menu
 opens them as a sub-menu. Hover buttons have no Move. A move from the list
-stays on the list and reveals the Projects section. A roll cannot move, and
-the server refuses it.
+stays on the list and reveals the Projects section. The current roll can
+move from the Rolling chat header (ruling 2026-11-25, #938); an older roll
+cannot, and the server refuses it.
 
 Each active project is one link row above the loose chats. It opens that
 project's page and is marked current on that page and in its chats. A project
@@ -366,13 +367,25 @@ one roll at a time with a link to the previous one. Stitched scrolling across
 rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
-**Wakes (2026-11-24, #923).** Work started in any roll wakes the newest roll:
-programs, delegation notices, subagent results and watches. A wake joins the
-newest roll and never starts one. The destination is read when the wake is
-delivered, not when the work starts. A durable wake moves in the transaction
-that appends its trigger; after that it stays where its trigger is, so a later
-roll cannot run it twice. Mail and program approval notices stay beside their
-card, because they start no turn. Ordinary app chats keep their own wakes.
+**Moving the current roll to a project (2026-11-25, #938).** The move is in
+place: the same conversation keeps its id, history, read state and settings,
+leaves `app_rolls`, and joins the project; one fresh roll is minted in the
+same transaction so the Rolling chat never lacks a current session. Because
+the moved conversation is no longer a roll, later wakes for work started
+there stay with it instead of retargeting to the newest roll. The operator
+lands in the moved project conversation. The move is refused while a turn
+runs, and only the current roll can move — an earlier roll is already part
+of the lane's history.
+
+**Wakes (2026-11-24, #923).** Work started in a roll wakes the newest roll
+while its source remains a roll: programs, delegation notices, subagent
+results and watches. A wake joins the newest roll and never starts one. The
+destination is read when the wake is delivered, not when the work starts. A
+durable wake moves in the transaction that appends its trigger; after that it
+stays where its trigger is, so a later roll cannot run it twice. A source
+moved to a project is no longer a roll, so its later wakes stay with it
+(#938). Mail and program approval notices stay beside their card, because
+they start no turn. Ordinary app chats keep their own wakes.
 
 **Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, with its own loop icon and no

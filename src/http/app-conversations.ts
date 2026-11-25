@@ -1145,6 +1145,7 @@ export async function handleConversationsRoute(
 						runtime: deps.runtime,
 						notes: deps.notes,
 						workspace: paths.workspace(),
+						rollingConfig: deps.configRef.current,
 					},
 					convId.id,
 					parsed.data.projectId,
@@ -1184,7 +1185,7 @@ export async function handleConversationsRoute(
 						);
 					case "rolling":
 						return Response.json(
-							{ error: "rolling chat conversations cannot move into a project" },
+							{ error: "only the current rolling chat conversation can move into a project" },
 							{ status: 422, headers: NO_STORE },
 						);
 				}

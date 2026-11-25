@@ -47,6 +47,7 @@
 - **Parked block:** a capability's config kept under `config.parked` while the capability is off. Re-enabling restores it.
 - **Pending input:** an app message sent while a turn runs. It waits in the conversation's inbox (`app_pending_input`), outside history, until the runtime claims it. A **steer** joins the running turn at its next model call; a **follow-up** starts the next turn. Until the claim, the operator can edit or remove it (design/app.md).
 - **Post:** a short plain-text note Goblin writes to the operator with the `post` tool. It shows in the Activity tab of the Goblin panel and links back to the chat it came from; it does not notify anyone. Example: after a nightly backup check, Goblin posts "Backup finished. All 3 disks OK." (design/posts.md).
+- **Project:** a named home for related app chats, with its own instructions and working directory. It exists so lasting work keeps one place and one setup instead of scattering across loose chats. For example, a house-move project can hold the chats, notes and files for quotes and paperwork.
 - **Proposed skill:** a complete, validated skill draft parked in `workspace/skills-proposed/`. It installs only on the operator's yes.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
 - **Recall:** finding memories and adding them to the prompt before a reply.

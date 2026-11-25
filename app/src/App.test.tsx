@@ -2604,7 +2604,12 @@ describe("app projects surface", () => {
 				posts.push({ url, body });
 				if (movePatchFail) return Promise.resolve(jsonResponse({ error: "move refused" }, 409));
 				const id = `app/${decodeURIComponent(conversationPatch[1]!)}`;
-				const conversation = convs.find((item) => item.id === id);
+				let conversation = convs.find((item) => item.id === id);
+				if (conversation === undefined && rollingRows[0]?.id === id) {
+					conversation = rollingRows[0]!;
+					rollingRows = rollingRows.slice(1);
+					convs = [...convs, conversation];
+				}
 				if (conversation === undefined)
 					return Promise.resolve(jsonResponse({ error: "no such conversation" }, 404));
 				const request = body as { projectId?: string; pinned?: boolean };
@@ -4933,6 +4938,78 @@ describe("app projects surface", () => {
 		await settle();
 		await settle();
 	};
+
+	test("the current rolling chat moves to a project and opens its project conversation", async () => {
+		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
+		projs = [projRow("Goblin Work", { id: "p-goblin" })];
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		await click(container.querySelector(".title-trigger"));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Move to project",
+			),
+		);
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Goblin Work",
+			),
+		);
+		expect(posts).toContainEqual({
+			url: "/api/app/conversations/roll-1",
+			body: { projectId: "p-goblin" },
+		});
+		expect(win.location.pathname).toBe("/app/c/roll-1");
+		expect(container.querySelector(".crumb")?.textContent).toBe("Goblin Work");
+	});
+
+	test("creating a project from the rolling chat moves the current roll into it", async () => {
+		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		await click(container.querySelector(".title-trigger"));
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "Move to project",
+			),
+		);
+		await click(
+			[...container.querySelectorAll('[role="menuitem"]')].find(
+				(item) => item.textContent === "New project…",
+			),
+		);
+		const form = container.querySelector<HTMLFormElement>(".msheet form");
+		expect(form).not.toBeNull();
+		await typeInto(form!.querySelector("input")!, "Lasting Work", win.HTMLInputElement.prototype);
+		await act(async () => {
+			form!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+		expect(posts.findIndex((post) => post.url === "/api/app/projects")).toBeLessThan(
+			posts.findIndex((post) => post.url === "/api/app/conversations/roll-1"),
+		);
+		expect(posts).toContainEqual({
+			url: "/api/app/conversations/roll-1",
+			body: { projectId: "p-new" },
+		});
+		expect(win.location.pathname).toBe("/app/c/roll-1");
+		expect(container.querySelector(".crumb")?.textContent).toBe("Lasting Work");
+	});
+
+	test("an earlier rolling conversation has no project move menu", async () => {
+		rollingRows = [
+			convRow("roll two", { id: "app/roll-2" }),
+			convRow("roll one", { id: "app/roll-1" }),
+		];
+		projs = [projRow("Goblin Work", { id: "p-goblin" })];
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		await click([...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
+			button.textContent?.includes("Previous conversation"),
+		));
+		expect(container.querySelector(".title-trigger")).toBeNull();
+		expect(container.textContent).toContain("Earlier conversation");
+	});
 
 	test("returning to the app shows a roll that began while it was hidden", async () => {
 		rollingRows = [convRow("roll one", { id: "app/roll-1" })];

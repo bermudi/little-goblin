@@ -79,18 +79,21 @@ test("activity puts running delegation before finished work and labels subagents
 		...baseData(2),
 		activity: { busy: [{ id: "app/child", title: "Compare prices", parentId: "app/parent", rolling: false }], otherBusy: 0, posts: [] },
 		delegations: [
-			{ id: 1, harness: "codex", task: "Fix the sheet", status: "running", createdAt: "2026-11-21T00:00:00Z", appConversation: "app/work" },
-			{ id: 2, harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-20T01:00:00Z", appConversation: null },
+			{ id: 1, name: "fix-sheet", harness: "codex", task: "Fix the sheet", status: "running", createdAt: new Date().toISOString(), appConversation: "app/work" },
+			{ id: 2, name: "old-task", harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-21T01:00:00Z", appConversation: null },
 		],
 	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
 	root = createRoot(container);
 	await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={() => {}} onOpenNote={() => {}} onOpenProfile={() => {}} />));
 	const rows = [...container.querySelectorAll(".goblin-panel-row")].map((row) => row.textContent ?? "");
-	const running = rows.findIndex((row) => row.includes("codex: Fix the sheet"));
-	const finished = rows.findIndex((row) => row.includes("pi: Old task"));
+	const running = rows.findIndex((row) => row.includes("fix-sheet"));
+	const finished = rows.findIndex((row) => row.includes("old-task"));
 	expect(running).toBeGreaterThanOrEqual(0);
 	expect(finished).toBeGreaterThan(running);
-	expect(rows.some((row) => row.startsWith("Subagent: Compare prices"))).toBe(true);
+	expect(rows.some((row) => row.startsWith("Compare prices"))).toBe(true);
+	expect([...container.querySelectorAll(".goblin-panel-group, .activity-row strong")].map((el) => el.textContent)).toEqual([
+		"Running", "Compare prices", "fix-sheet", "Earlier", "old-task",
+	]);
 });
 
 test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", async () => {
@@ -120,7 +123,7 @@ test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", asy
 		),
 	);
 	const row = [...container.querySelectorAll("button.goblin-panel-row")].find((el) =>
-		el.textContent?.startsWith("Replying in the Rolling chat"),
+		el.querySelector("strong")?.textContent === "Rolling chat",
 	);
 	expect(row).toBeDefined();
 	await act(async () =>
@@ -143,7 +146,7 @@ test("posts show in Activity by time beside finished work and open their chat", 
 			],
 		},
 		delegations: [
-			{ id: 9, harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-21T01:00:00Z", appConversation: null },
+			{ id: 9, name: "old-task", harness: "pi", task: "Old task", status: "done", createdAt: "2026-11-20T00:00:00Z", finishedAt: "2026-11-21T01:00:00Z", appConversation: null },
 		],
 	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
 	const pages: string[] = [];
@@ -166,13 +169,13 @@ test("posts show in Activity by time beside finished work and open their chat", 
 	const rows = [...container.querySelectorAll(".goblin-panel-row")];
 	expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual([
 		"Backup finished.\nAll disks OK.",
-		"pi: Old task",
+		"old-task",
 		"Morning summary is ready.",
 		"From Telegram.",
 	]);
 	const posts = [...container.querySelectorAll(".goblin-panel-post")];
 	expect(posts.map((row) => row.tagName)).toEqual(["BUTTON", "BUTTON", "DIV"]);
-	expect(posts[0]?.querySelector("span")?.textContent).toStartWith("post · ");
+	expect(posts[0]?.querySelector(".activity-detail")?.textContent).toBe("Post");
 	for (const row of posts.slice(0, 2)) {
 		await act(async () => row.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
 	}
@@ -200,4 +203,77 @@ test("Activity offers See all only when rows are hidden, and it opens the activi
 	expect(container.querySelectorAll(".goblin-panel-post")).toHaveLength(8);
 	await act(async () => seeAll()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
 	expect(pages).toEqual(["activity"]);
+});
+
+test("delegation rows use their name and never show the brief", async () => {
+	const task = `first line\n${"long brief ".repeat(500)}`;
+	const data = {
+		...baseData(0),
+		delegations: [{ id: 41, name: "fix-sheet", harness: "codex", task, status: "running", createdAt: new Date().toISOString(), appConversation: null }],
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={() => {}} onOpenNote={() => {}} onOpenProfile={() => {}} />));
+	const row = container.querySelector(".activity-row");
+	expect(row?.querySelector("strong")?.textContent).toBe("fix-sheet");
+	expect(container.textContent).not.toContain("first line");
+	expect(container.textContent).not.toContain("long brief");
+});
+
+test("activity marks statuses and shows status words", async () => {
+	const now = Date.now();
+	const delegations = [
+		{ id: 1, name: "running-job", harness: "codex", task: "secret", status: "running", createdAt: new Date(now).toISOString(), appConversation: null },
+		{ id: 2, name: "needs-job", harness: "codex", task: "secret", status: "needs_input", createdAt: new Date(now - 1000).toISOString(), appConversation: null },
+		{ id: 3, name: "failed-job", harness: "pi", task: "secret", status: "failed", createdAt: new Date(now - 2000).toISOString(), finishedAt: new Date(now - 2000).toISOString(), appConversation: null },
+		{ id: 4, name: "done-job", harness: "pi", task: "secret", status: "done", createdAt: new Date(now - 3000).toISOString(), finishedAt: new Date(now - 3000).toISOString(), appConversation: null },
+		{ id: 5, name: "stopped-job", harness: "pi", task: "secret", status: "stopped", createdAt: new Date(now - 4000).toISOString(), finishedAt: new Date(now - 4000).toISOString(), appConversation: null },
+	];
+	const data = { ...baseData(0), delegations } as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={() => {}} onOpenNote={() => {}} onOpenProfile={() => {}} />));
+	const row = (name: string) => [...container.querySelectorAll(".activity-row")].find((el) => el.querySelector("strong")?.textContent === name);
+	expect(row("running-job")?.querySelector(".mark-working")).toBeTruthy();
+	expect(row("needs-job")?.querySelector(".mark-needs")).toBeTruthy();
+	expect(row("needs-job")?.querySelector(".activity-detail")?.textContent).toBe("codex · needs input");
+	expect(row("failed-job")?.querySelector(".mark-failed")).toBeTruthy();
+	expect(row("failed-job")?.classList.contains("activity-failed")).toBe(true);
+	expect(row("failed-job")?.querySelector(".activity-detail")?.textContent).toBe("pi · failed");
+	for (const name of ["done-job", "stopped-job"]) {
+		expect(row(name)?.querySelector(".mark-quiet")).toBeTruthy();
+		expect(row(name)?.classList.contains("activity-failed")).toBe(false);
+	}
+});
+
+test("activity shows short times and program rows open Programs", async () => {
+	const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+	const old = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+	const oldIso = old.toISOString();
+	const data = {
+		...baseData(0),
+		activity: { busy: [{ id: "chat", title: null, parentId: null, rolling: true }], otherBusy: 0, posts: [] },
+		programs: [{ id: 1, name: "nightly backup", enabled: true, cron: "0 1 * * *", hasHook: false, maxLatenessMinutes: null, mailFilter: null, target: "default", chatId: 1, threadId: null, createdAt: new Date().toISOString(), nextRun: null, lastRun: twoHoursAgo, lastSkippedAt: null, lastSkipReason: null }],
+		delegations: [{ id: 2, name: "older", harness: "pi", task: "secret", status: "done", createdAt: oldIso, finishedAt: oldIso, appConversation: null }],
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	const pages: string[] = [];
+	root = createRoot(container);
+	await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={(page) => pages.push(page)} onOpenNote={() => {}} onOpenProfile={() => {}} />));
+	const rows = [...container.querySelectorAll(".activity-row")];
+	const rolling = rows.find((el) => el.querySelector("strong")?.textContent === "Rolling chat");
+	const program = rows.find((el) => el.querySelector("strong")?.textContent === "nightly backup");
+	const older = rows.find((el) => el.querySelector("strong")?.textContent === "older");
+	expect(rolling?.querySelector(".activity-time")?.textContent).toBe("now");
+	expect(program?.querySelector(".activity-time")?.textContent).toBe("2h");
+	expect(older?.querySelector(".activity-time")?.textContent).toBe(old.toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+	expect(older?.querySelector(".activity-time")?.textContent).not.toContain(":");
+	await act(async () => program?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+	expect(pages).toEqual(["programs"]);
+});
+
+test("panel activity headings omit empty groups", async () => {
+	const data = { ...baseData(0), delegations: [{ id: 1, name: "done", harness: "pi", task: "brief", status: "done", createdAt: "2020-01-01T00:00:00Z", finishedAt: "2020-01-01T00:00:00Z", appConversation: null }] } as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={() => {}} onOpenNote={() => {}} onOpenProfile={() => {}} />));
+	expect([...container.querySelectorAll(".goblin-panel-group")].map((el) => el.textContent)).toEqual(["Earlier"]);
+	await act(async () => root?.render(<GoblinPanel data={baseData(0)} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={() => {}} onOpenNote={() => {}} onOpenProfile={() => {}} />));
+	expect(container.querySelectorAll(".goblin-panel-group")).toHaveLength(0);
 });

@@ -3,6 +3,7 @@ import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
 import type { AppAttentionTarget, AppNoteSummary, AppPost } from "../../src/http/app-wire.ts";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
+import { relTime as shortAge } from "./ConversationList.tsx";
 import { GoblinAvatar } from "./GoblinAvatar.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { ts } from "./opsShared.tsx";
@@ -103,11 +104,21 @@ export interface GoblinPanelProps {
 	onOpenProfile(): void;
 }
 
-export interface Row {
+interface PanelRowData {
+	key: string;
+	label: string;
+	detail: string;
+	action?: () => void;
+}
+
+export interface ActivityItem {
 	key: string;
 	at: number;
 	label: string;
 	detail: string;
+	time: string;
+	iso: string | null;
+	tone: "working" | "needs" | "failed" | "quiet";
 	post?: boolean;
 	action?: () => void;
 }
@@ -116,26 +127,49 @@ function oneLine(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
 
+function activityTime(iso: string): string {
+	const timestamp = Date.parse(iso);
+	if (Number.isNaN(timestamp)) return "";
+	if (Date.now() - timestamp < 24 * 60 * 60 * 1000) return shortAge(iso);
+	return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 function at(iso: string | null): number {
 	if (iso === null) return 0;
 	const t = Date.parse(iso);
 	return Number.isNaN(t) ? 0 : t;
 }
 
-export function PanelRow({ row }: { row: Row }) {
+export function PanelRow({ row }: { row: PanelRowData }) {
 	const body = (
 		<>
 			<strong>{row.label}</strong>
 			<span>{row.detail}</span>
 		</>
 	);
-	const className = row.post === true ? "goblin-panel-row goblin-panel-post" : "goblin-panel-row";
-	if (row.action === undefined) return <div className={className}>{body}</div>;
+	if (row.action === undefined) return <div className="goblin-panel-row">{body}</div>;
 	return (
-		<button type="button" className={className} onClick={row.action}>
+		<button type="button" className="goblin-panel-row" onClick={row.action}>
 			{body}
 		</button>
 	);
+}
+
+export function ActivityRow({ row }: { row: ActivityItem }) {
+	const time = row.iso === null
+		? <span className="activity-time">{row.time}</span>
+		: <time className="activity-time" dateTime={row.iso} title={ts(row.iso)}>{row.time}</time>;
+	const children = (
+		<>
+			<span className={`mark mark-${row.tone}`} aria-hidden="true">{row.tone === "needs" ? "!" : null}</span>
+			<strong>{row.label}</strong>
+			<span className="activity-detail">{row.detail}</span>
+			{time}
+		</>
+	);
+	const className = `goblin-panel-row activity-row${row.post === true ? " goblin-panel-post" : ""}${row.tone === "failed" ? " activity-failed" : ""}`;
+	if (row.action === undefined) return <div className={className}>{children}</div>;
+	return <button type="button" className={className} onClick={row.action}>{children}</button>;
 }
 
 export interface ActivityOpeners {
@@ -144,9 +178,9 @@ export interface ActivityOpeners {
 }
 
 export interface ActivityRows {
-	running: Row[];
+	running: ActivityItem[];
 	otherBusy: number;
-	finished: Row[];
+	finished: ActivityItem[];
 }
 
 export function activityRows(data: ActivityData, posts: readonly AppPost[], open: ActivityOpeners): ActivityRows {
@@ -155,52 +189,64 @@ export function activityRows(data: ActivityData, posts: readonly AppPost[], open
 		d.appConversation !== null
 			? open.onOpenConversation(d.appConversation)
 			: open.onOpenPage("delegations");
-	const busyRows: Row[] = (data.activity?.busy ?? []).map((c) => ({
+	const busyRows: ActivityItem[] = (data.activity?.busy ?? []).map((c) => ({
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
-		label: c.rolling
-			? "Replying in the Rolling chat"
-			: c.parentId !== null
-				? `Subagent: ${c.title ?? "untitled"}`
-				: `Replying in ${c.title ?? "a chat"}`,
-		detail: "running",
+		label: c.rolling ? "Rolling chat" : oneLine(c.title ?? "Untitled"),
+		detail: !c.rolling && c.parentId !== null ? "Subagent" : "Replying",
+		time: "now",
+		iso: null,
+		tone: "working",
 		action: c.rolling ? () => open.onOpenPage("rolling") : () => open.onOpenConversation(c.id),
 	}));
-	const activeRows: Row[] = delegations
+	const activeRows: ActivityItem[] = delegations
 		.filter((d) => ACTIVE.includes(d.status))
-		.map((d) => ({
+		.map((d): ActivityItem => ({
 			key: `delegation:${d.id}`,
 			at: at(d.createdAt),
-			label: `${d.harness}: ${oneLine(d.task)}`,
-			detail: d.status.replace("_", " "),
+			label: oneLine(d.name) || "Untitled",
+			detail: `${d.harness} · ${d.status === "needs_input" ? "needs input" : d.status}`,
+			time: activityTime(d.createdAt),
+			iso: d.createdAt,
+			tone: d.status === "needs_input" ? "needs" : "working",
 			action: openDelegation(d),
 		}))
 		.sort((a, b) => b.at - a.at);
-	const finishedRows: Row[] = [
+	const finishedRows: ActivityItem[] = [
 		...delegations
 			.filter((d) => FINISHED.includes(d.status))
-			.map((d) => ({
+			.map((d): ActivityItem => ({
 				key: `finished:${d.id}`,
 				at: at(d.finishedAt ?? d.createdAt),
-				label: `${d.harness}: ${oneLine(d.task)}`,
-				detail: `${d.status} · ${relTime(d.finishedAt ?? d.createdAt)}`,
+				label: oneLine(d.name) || "Untitled",
+				detail: `${d.harness} · ${d.status}`,
+				time: activityTime(d.finishedAt ?? d.createdAt),
+				iso: d.finishedAt ?? d.createdAt,
+				tone: d.status === "failed" ? "failed" : "quiet",
 				action: openDelegation(d),
 			})),
 		...(data.programs ?? [])
-			.filter((p) => p.lastRun !== null)
+			.filter((p): p is typeof p & { lastRun: string } => p.lastRun !== null)
 			.map((p) => ({
 				key: `program:${p.id}`,
 				at: at(p.lastRun),
-				label: `Ran ${p.name}`,
-				detail: relTime(p.lastRun),
+				label: oneLine(p.name),
+				detail: "Program ran",
+				time: activityTime(p.lastRun),
+				iso: p.lastRun,
+				tone: "quiet" as const,
+				action: () => open.onOpenPage("programs"),
 			})),
-		...posts.map((post): Row => {
+		...posts.map((post): ActivityItem => {
 			const source = post.conversation;
 			return {
 				key: `post:${post.id}`,
 				at: at(post.createdAt),
 				label: post.text,
-				detail: `post · ${relTime(post.createdAt)}`,
+				detail: "Post",
+				time: activityTime(post.createdAt),
+				iso: post.createdAt,
+				tone: "quiet",
 				post: true,
 				...(source === null
 					? {}
@@ -219,12 +265,15 @@ export function activityRows(data: ActivityData, posts: readonly AppPost[], open
 	};
 }
 
-export function otherBusyRow(otherBusy: number): Row {
+export function otherBusyRow(otherBusy: number): ActivityItem {
 	return {
 		key: "other",
 		at: 0,
 		label: `Working in ${otherBusy} other ${otherBusy === 1 ? "chat" : "chats"}`,
 		detail: "outside the app",
+		time: "now",
+		iso: null,
+		tone: "working",
 	};
 }
 
@@ -310,12 +359,14 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				</TabsList>
 				<TabsPanel value="activity">
 					<div className="goblin-panel-rows">
+						{(running.length > 0 || otherBusy > 0) && <h2 className="goblin-panel-group">Running</h2>}
 						{running.map((row) => (
-							<PanelRow key={row.key} row={row} />
+							<ActivityRow key={row.key} row={row} />
 						))}
-						{otherBusy > 0 && <PanelRow row={otherBusyRow(otherBusy)} />}
+						{otherBusy > 0 && <ActivityRow row={otherBusyRow(otherBusy)} />}
+						{finished.length > 0 && <h2 className="goblin-panel-group">Earlier</h2>}
 						{finished.map((row) => (
-							<PanelRow key={row.key} row={row} />
+							<ActivityRow key={row.key} row={row} />
 						))}
 						{running.length === 0 && otherBusy === 0 && finished.length === 0 && (
 							<p className="empty">Nothing running.</p>
@@ -347,7 +398,6 @@ export function GoblinPanel(props: GoblinPanelProps) {
 								key={p.id}
 								row={{
 									key: String(p.id),
-									at: 0,
 									label: p.name,
 									detail: p.enabled
 										? `${triggerWords(p)}${p.nextRun !== null ? ` · next ${ts(p.nextRun)}` : ""}`
@@ -373,7 +423,6 @@ export function GoblinPanel(props: GoblinPanelProps) {
 								key={n.id}
 								row={{
 									key: n.id,
-									at: 0,
 									label: oneLine(n.title) || "Untitled note",
 									detail: `note · ${relTime(n.updatedAt)}`,
 									action: () => props.onOpenNote(n.id),

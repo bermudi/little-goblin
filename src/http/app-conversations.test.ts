@@ -695,9 +695,10 @@ describe("app conversations", () => {
 			expect(stop.status).toBe(200);
 			// `settled` says the stop waited for the turn's record: the
 			// unlanded event is durable history before this response lands.
-			expect((await stop.json()) as { stopped: boolean; settled: boolean }).toEqual({
+			expect(await stop.json()).toEqual({
 				stopped: true,
 				settled: true,
+				notSent: [],
 			});
 			const record = store
 				.history("app/chat-01")
@@ -742,9 +743,10 @@ describe("app conversations", () => {
 			await sleep(50);
 			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(stop.status).toBe(200);
-			expect((await stop.json()) as { stopped: boolean; settled: boolean }).toEqual({
+			expect(await stop.json()).toEqual({
 				stopped: true,
 				settled: true,
+				notSent: [],
 			});
 			gate.resolve();
 			// The durable record is in history — and served — before reload.
@@ -830,9 +832,10 @@ describe("app conversations", () => {
 			});
 			const idle = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(idle.status).toBe(200);
-			expect((await idle.json()) as { stopped: boolean; settled: boolean }).toEqual({
+			expect(await idle.json()).toEqual({
 				stopped: false,
 				settled: true,
+				notSent: [],
 			});
 			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(
 				404,

@@ -260,6 +260,34 @@ function longReply(): Response {
 	return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+function workReply(step: number, thinkOnly: boolean): Response {
+	const enc = new TextEncoder();
+	const thought = step === 0
+		? "**Inspecting the log**\n\nI am inspecting the log and checking the details carefully before choosing the next action to take."
+		: "I am reviewing the intermediate result and checking the details of the next file before I continue with the remaining work in this reply. This second sentence should not appear in the preview.";
+	const body = new ReadableStream<Uint8Array>({
+		async start(controller) {
+			controller.enqueue(enc.encode(chunk({ role: "assistant", content: step === 1 ? "Between calls." : "" }, null)));
+			controller.enqueue(enc.encode(chunk({ reasoning_content: " " }, null)));
+			await Bun.sleep(500);
+			for (const word of thought.match(/\S+\s*/g) ?? []) {
+				controller.enqueue(enc.encode(chunk({ reasoning_content: word }, null)));
+				await Bun.sleep(150);
+			}
+			if (thinkOnly) controller.enqueue(enc.encode(chunk({ content: "verify-think: done" }, null)));
+			else {
+				const name = step === 0 ? "bash" : "read_file";
+				const args = step === 0 ? { command: "sleep 4 && sed -n 1p ../state/goblin.log" } : { path: "../state/goblin.log" };
+				controller.enqueue(enc.encode(chunk({ tool_calls: [{ index: 0, id: `call-verify-work-${step}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, null)));
+			}
+			controller.enqueue(enc.encode(chunk({}, thinkOnly ? "stop" : "tool_calls")));
+			controller.enqueue(enc.encode("data: [DONE]\n\n"));
+			controller.close();
+		},
+	});
+	return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
@@ -377,6 +405,12 @@ const server = Bun.serve({
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		if (parsed.data.stream === true && (lastUserText.includes("[work]") || lastUserText.includes("[think]"))) {
+			const step = parsed.data.messages.slice(lastUserIndex + 1).filter((m) => m.role === "tool").length;
+			if (lastUserText.includes("[think]")) return workReply(0, true);
+			if (step < 2) return workReply(step, false);
+			reply = "verify-work: done";
+		}
 		if (lastUserText.includes("[sent-media]") && parsed.data.stream === true) {
 			const step = parsed.data.messages.slice(lastUserIndex + 1).filter((m) => m.role === "tool").length;
 			const path = "verify-sent-media.txt";

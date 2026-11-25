@@ -11,6 +11,7 @@ import type { CacheObservation } from "./cache-observation.ts";
 import type { ConfigRef } from "./config.ts";
 import { captureConversationSettings, type ConversationStore } from "./conversation.ts";
 import { Reviewer } from "./reviewer.ts";
+import { DEFAULT_REUSE_THRESHOLD } from "./reviewer-gate.ts";
 import { cleanupStaging } from "./reviewer-staging.ts";
 import { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
@@ -67,6 +68,7 @@ export function wireReviewer(deps: ReviewerWiringDeps): ReviewerWiring {
 	const thresholds = {
 		correction: reviewerBlock.thresholds?.correction ?? reviewerBlock.threshold,
 		procedure: reviewerBlock.thresholds?.procedure ?? reviewerBlock.threshold,
+		reuse: reviewerBlock.thresholds?.reuse ?? DEFAULT_REUSE_THRESHOLD,
 	};
 	log.info("reviewer enabled", {
 		thresholds,

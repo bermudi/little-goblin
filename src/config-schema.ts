@@ -298,6 +298,7 @@ export const reviewerConfigSchema = z
 			.object({
 				correction: z.number().min(0).max(1).optional(),
 				procedure: z.number().min(0).max(1).optional(),
+				reuse: z.number().min(0).max(1).optional(),
 			})
 			.strict()
 			.optional(),

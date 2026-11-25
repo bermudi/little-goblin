@@ -3028,7 +3028,7 @@ describe("skill reviewer hook", () => {
 						return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
 					},
 				},
-				thresholds: { correction: 0.8, procedure: 0.8 },
+				thresholds: { correction: 0.8, procedure: 0.8, reuse: 0.6 },
 				queueCap: 3,
 				evidence: { calls: 8, argChars: 300, outChars: 300 },
 				reviewModel: async () => {
@@ -3065,7 +3065,7 @@ describe("skill reviewer hook", () => {
 						return { answers: {}, inputTokens: null, cost: null };
 					},
 				},
-				thresholds: { correction: 0.8, procedure: 0.8 },
+				thresholds: { correction: 0.8, procedure: 0.8, reuse: 0.6 },
 				queueCap: 3,
 				evidence: { calls: 8, argChars: 300, outChars: 300 },
 				reviewModel: async () => {
@@ -3097,7 +3097,7 @@ describe("skill reviewer hook", () => {
 					return { answers: {}, inputTokens: null, cost: null };
 				},
 			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
+			thresholds: { correction: 0.8, procedure: 0.8, reuse: 0.6 },
 			queueCap: 3,
 			evidence: { calls: 8, argChars: 300, outChars: 300 },
 			reviewModel: async () => {

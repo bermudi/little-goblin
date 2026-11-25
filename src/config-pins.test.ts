@@ -94,6 +94,7 @@ describe("bootPinnedDiffs", () => {
 		["auth", `reviewer:{auth:"other"}`],
 		["threshold", `reviewer:{auth:"openrouter",threshold:0.6}`],
 		["per-trigger thresholds", `reviewer:{auth:"openrouter",thresholds:{correction:0.9}}`],
+		["reuse threshold", `reviewer:{auth:"openrouter",thresholds:{reuse:0.5}}`],
 		["queue cap", `reviewer:{auth:"openrouter",queueCap:2}`],
 		["evidence", `reviewer:{auth:"openrouter",evidence:{calls:12}}`],
 		["model", `reviewer:{auth:"openrouter",model:"zai/review"}`],

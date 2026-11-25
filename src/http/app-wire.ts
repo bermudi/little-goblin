@@ -202,8 +202,9 @@ export interface SentMediaMetadata {
 }
 
 export type AppConversationEvent =
-	| { type: "state"; live: boolean }
-	| { type: "turn-start" }
+	| { type: "state"; live: false }
+	| { type: "state"; live: true; elapsedMs: number }
+	| { type: "turn-start"; elapsedMs: number }
 	| { type: "turn-end" }
 	| { type: "pending" }
 	| { type: "rewound"; messageId: string; replacedBy: string };

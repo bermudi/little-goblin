@@ -26,7 +26,7 @@ export interface QueuedCompact {
 }
 
 export type ConversationEvent =
-	| { type: "turn-start" }
+	| { type: "turn-start"; elapsedMs: number }
 	| { type: "turn-end" }
 	| { type: "pending" }
 	| { type: "rewound"; messageId: string; replacedBy: string };

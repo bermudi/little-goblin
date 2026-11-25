@@ -80,13 +80,18 @@ export interface LiveSubscriber {
 }
 
 export interface LiveChunks {
+	startedAt: number;
 	chunks: MessageChunk[];
 	subscribers: Set<LiveSubscriber>;
 	ended: boolean;
 }
 
-export function openLive(): LiveChunks {
-	return { chunks: [], subscribers: new Set(), ended: false };
+export function liveElapsed(live: LiveChunks, now = Date.now()): number {
+	return Math.max(0, now - live.startedAt);
+}
+
+export function openLive(now = Date.now()): LiveChunks {
+	return { startedAt: now, chunks: [], subscribers: new Set(), ended: false };
 }
 
 export function endLive(live: LiveChunks, done: WireEnd, convId: string): void {

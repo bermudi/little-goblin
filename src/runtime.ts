@@ -73,6 +73,7 @@ import {
 	endLive,
 	type LiveChunks,
 	type LiveSubscriber,
+	liveElapsed,
 	openLive,
 } from "./turn/stream.ts";
 import type { StreamOutcome } from "./turn/attempt-recorder.ts";
@@ -328,6 +329,11 @@ export class Runtime {
 	conversationLive(convId: string): boolean {
 		const live = this.lanes.liveOf(convId);
 		return live !== null && !live.ended;
+	}
+
+	liveElapsedMs(convId: string): number | null {
+		const live = this.lanes.liveOf(convId);
+		return live === null || live.ended ? null : liveElapsed(live);
 	}
 
 	attachLiveChunks(
@@ -902,7 +908,8 @@ export class Runtime {
 		this.lanes.registerController(convId, controller);
 		const hadLiveWire = this.conversationLive(convId);
 		this.lanes.registerLive(convId, live);
-		if (!hadLiveWire) this.lanes.emitConversation(convId, { type: "turn-start" });
+		if (!hadLiveWire)
+			this.lanes.emitConversation(convId, { type: "turn-start", elapsedMs: liveElapsed(live) });
 
 		const activeFloor = Math.min(...turns.map(queuedSeq));
 		const sourceInputSeq = (): number | null => {

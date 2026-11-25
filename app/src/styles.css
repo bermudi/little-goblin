@@ -503,6 +503,16 @@ p code,
 	border-bottom-color: transparent;
 	animation: goblin-spin 1.4s linear infinite;
 }
+.mark-failed {
+	width: 8px;
+	height: 8px;
+	background: var(--app-danger);
+}
+.mark-quiet {
+	width: 7px;
+	height: 7px;
+	background: var(--app-fg-subtle);
+}
 .mark-done {
 	width: 8px;
 	height: 8px;
@@ -8295,6 +8305,59 @@ button.link:hover {
 	font: inherit;
 	text-align: left;
 }
+.activity-row {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr) auto;
+	column-gap: 0.5rem;
+	row-gap: 0.1rem;
+	align-items: baseline;
+}
+.activity-row > .mark {
+	grid-column: 1;
+	grid-row: 1;
+	justify-self: center;
+}
+.activity-row > .mark-working {
+	position: relative;
+	top: 1px;
+}
+.activity-row > strong {
+	grid-column: 2;
+	grid-row: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.activity-row.goblin-panel-post > strong {
+	overflow: visible;
+	text-overflow: clip;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.activity-row > .activity-time {
+	grid-column: 3;
+	grid-row: 1;
+	color: var(--app-fg-muted);
+	font-size: 0.75rem;
+	white-space: nowrap;
+}
+.activity-row > .activity-detail {
+	grid-column: 2 / 4;
+	grid-row: 2;
+	min-width: 0;
+	color: var(--app-fg-muted);
+	font-size: 0.8rem;
+}
+.activity-row.activity-failed > .activity-detail {
+	color: var(--app-danger);
+}
+.goblin-panel-group {
+	margin: 0.45rem 0.25rem 0.15rem;
+	color: var(--app-fg-muted);
+	font-size: 0.75rem;
+	font-weight: 500;
+}
 button.goblin-need-row,
 button.goblin-panel-row {
 	cursor: pointer;
@@ -8312,7 +8375,7 @@ button.goblin-panel-row:hover {
 	overflow-wrap: anywhere;
 }
 .goblin-need-row span,
-.goblin-panel-row span {
+.goblin-panel-row:not(.activity-row) span {
 	color: var(--app-fg-muted);
 	font-size: 0.8rem;
 }

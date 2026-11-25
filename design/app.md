@@ -773,6 +773,11 @@ app's tag.
   rows; when it hides any, "See all" opens the Activity page
   (`/app/activity`), which lists every row and pages through older posts
   ([posts](posts.md#shape), #892).
+- Activity rows (ruling 2026-11-24, #931). A delegation shows its name, never
+  its brief: one long brief filled the panel and hid that the work had failed.
+  "Running" and "Earlier" group the rows. A mark shows running (a spinner),
+  needs input, or failed (red); words under the name say the same. A short time
+  sits at the right. A program row opens Programs.
 - The avatar opens [Goblin's profile](../GLOSSARY.md#goblins-profile): the
   Status, Memory, Skills and Log pages under one header that links them.
 - No Computer tab until the app can show desktops (#863).

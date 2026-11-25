@@ -55,8 +55,8 @@ the [Goblin panel](../GLOSSARY.md#goblin-panel).
   not a positive integer is a 400.
 - **Panel.** Posts join the finished rows of the Activity tab (finished
   delegations and program runs) and sort by time with them, under the
-  running rows. A post row shows its full text with line breaks, then
-  "post · <age>". It opens its source chat; a post from a
+  running rows. A post row shows its full text with line breaks, "Post"
+  below, and its age at the right. It opens its source chat; a post from a
   [roll](../GLOSSARY.md#roll) opens the Rolling chat. A post with no app
   source (Telegram, a deleted chat) is not a button.
 - **See all.** The Activity tab shows eight rows. When it hides any, its

@@ -742,14 +742,18 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.textContent).not.toContain("Previous conversation");
 	});
 
-	test("T6: the lane header is fixed and has no conversation actions", async () => {
+	test("T6: the lane header offers the project move and no conversation actions", async () => {
 		rollingChain = [roll("current")];
 		rollingHistories.set("app/current", []);
 		await openRolling();
 		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Rolling chat");
+		await click(container.querySelector("main > header .title-trigger"));
+		expect([...container.querySelectorAll('[role="menuitem"]')].some((item) =>
+			item.textContent === "Move to project",
+		)).toBe(true);
+		await click(container.querySelector("main > header .title-trigger"));
 		await click(container.querySelector("main > header .goblin-panel-toggle"));
 		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
-		expect(container.querySelector("main > header .title-trigger")).toBeNull();
 		expect(container.querySelector("main > header [aria-label='Archive']")).toBeNull();
 		expect(container.querySelector("main > header [aria-label='Move']")).toBeNull();
 		expect(container.querySelector("main > header [aria-label='Delete']")).toBeNull();

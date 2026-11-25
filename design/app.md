@@ -52,8 +52,9 @@ timestamp, so a wrong device clock cannot change the timer.
 
 Under it, at the tail of the reply, one closed fold shows the newest thought
 (its bold title, else its first sentence; one line on desktop, two on phone)
-and the call that runs now. The height is fixed, because t3code's growing
-thought would move the text (#837). When the turn ends, the header stays as
+and the call that runs now. The height is fixed, also before
+the first thought, because t3code's growing thought would move the text
+(#837). When the turn ends, the header stays as
 "Worked for Ns" if the reply used a tool.
 
 **Sent files (ruling 2026-11-21, #866).** Files sent by `send_file`,

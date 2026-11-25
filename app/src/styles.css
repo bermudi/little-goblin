@@ -5743,6 +5743,9 @@ select.ui-input option {
 	gap: 0.2rem;
 	min-width: 0;
 	width: 100%;
+	min-height: calc(2.8em + 0.2rem);
+	font-size: 12px;
+	line-height: 1.4;
 }
 .live-thought, .live-action {
 	display: flex;
@@ -5750,8 +5753,6 @@ select.ui-input option {
 	gap: 0.35rem;
 	min-width: 0;
 	color: var(--app-fg-muted);
-	font-size: 12px;
-	line-height: 1.4;
 }
 .live-action > span:last-child, .live-thought > span {
 	min-width: 0;
@@ -5767,6 +5768,9 @@ select.ui-input option {
 	padding-left: calc(12px + 0.35rem);
 }
 @media (max-width: 720px) {
+	.live-work-lines {
+		min-height: calc(4.2em + 0.2rem);
+	}
 	.live-thought > span {
 		display: -webkit-box;
 		-webkit-box-orient: vertical;

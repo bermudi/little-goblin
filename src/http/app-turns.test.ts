@@ -96,11 +96,14 @@ describe("app conversation events", () => {
 			});
 			expect(submitted.status).toBe(202);
 			expect(await submitted.json()).toEqual({ submitted: true });
-			expect(await nextEvent(eventsReader)).toEqual({ type: "turn-start" });
+			expect(await nextEvent(eventsReader)).toEqual({ type: "turn-start", elapsedMs: expect.any(Number) });
 			await waitUntil(() => runtime.conversationLive("app/events-live"), "live wire opens");
+			await Bun.sleep(30);
 			const response = await call("/api/app/conversations/events-live/events");
 			const reader = response.body!.getReader() as unknown as EventReader;
-			expect(await nextEvent(reader)).toEqual({ type: "state", live: true });
+			const state = await nextEvent(reader);
+			expect(state).toEqual({ type: "state", live: true, elapsedMs: expect.any(Number) });
+			expect((state as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(25);
 			await reader.cancel();
 
 			expect(await nextEvent(eventsReader)).toEqual({ type: "turn-end" });
@@ -150,7 +153,7 @@ describe("app conversation events", () => {
 			expect(submitted.status).toBe(202);
 			const { pendingId } = (await submitted.json()) as { pendingId: string };
 			expect(store.history("app/pending-remove").map((message) => message.id)).toEqual(["first"]);
-			expect(await nextEvent(reader)).toEqual({ type: "turn-start" });
+			expect(await nextEvent(reader)).toEqual({ type: "turn-start", elapsedMs: expect.any(Number) });
 			expect(await nextEvent(reader)).toEqual({ type: "pending" });
 			const listed = await call("/api/app/conversations/pending-remove/pending");
 			expect(await listed.json()).toMatchObject({

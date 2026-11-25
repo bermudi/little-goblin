@@ -1559,6 +1559,9 @@ main[data-cramped] .width-seg {
 .msg.assistant.pending {
 	color: var(--app-fg-subtle);
 }
+.msg.assistant.pending .pending-actions {
+	visibility: hidden;
+}
 .pending-inputs {
 	display: grid;
 	gap: 0.35rem;
@@ -5724,8 +5727,68 @@ select.ui-input option {
 .reasoning-fold[open] .reasoning-preview {
 	display: none;
 }
-.working {
+.work-header {
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	border-bottom: 1px solid var(--app-divider);
+	padding: 0.15rem 0 0.4rem;
+	margin-bottom: 0.4rem;
+}
+.msg.assistant.streaming > .work-header,
+.msg.assistant.streaming > .worked.live {
+	animation: none;
+}
+.worked.live > summary::before {
+	display: none;
+}
+.live-work-lines {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+	min-width: 0;
+	width: 100%;
+	min-height: calc(2.8em + 0.2rem);
+	font-size: 12px;
+	line-height: 1.4;
+}
+.live-thought, .live-action {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.35rem;
+	min-width: 0;
+	color: var(--app-fg-muted);
+}
+.live-action > span:last-child, .live-thought > span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.live-action svg, .live-thought svg {
 	flex: none;
+	margin-top: 0.17em;
+}
+.live-action.indented {
+	padding-left: calc(12px + 0.35rem);
+}
+@media (max-width: 720px) {
+	.live-work-lines {
+		min-height: calc(4.2em + 0.2rem);
+	}
+	.live-thought > span {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		white-space: normal;
+		height: 2.8em;
+	}
+}
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+	.shimmer {
+		background: none;
+		-webkit-text-fill-color: currentColor;
+		animation: none;
+	}
 }
 
 /* ---------- undo toast (design/app.md → Undo) ---------- */

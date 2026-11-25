@@ -210,7 +210,7 @@ export interface ClaudeQueryOptions {
 	// Unset = no step budget (design/model.md).
 	maxTurns?: number | undefined;
 	// SDK ThinkingConfig: adaptive is the model's own depth control.
-	thinking: { type: "disabled" } | { type: "adaptive" };
+	thinking: { type: "disabled" } | { type: "adaptive"; display?: "summarized" | "omitted" };
 	effort?: ClaudeEffort;
 	mcpServers: unknown;
 	allowedTools: string[];

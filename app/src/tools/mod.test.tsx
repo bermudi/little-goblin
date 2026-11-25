@@ -1,7 +1,54 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolUIPart } from "ai";
-import { ToolRun } from "./mod.tsx";
+import { ToolRun, liveAction } from "./mod.tsx";
+
+describe("live actions", () => {
+  test("labels calls and states", () => {
+    for (const [name, input, expected] of [
+      ["bash", { command: "sed x" }, "Running sed"],
+      ["read_file", { path: "/a/b" }, "Reading b"],
+      ["edit_file", { path: "b", old_string: "x", new_string: "y" }, "Editing b"],
+      ["write_file", { path: "b", content: "x" }, "Writing b"],
+      ["search", { query: "x" }, "Searching «x»"],
+      ["fetch", { url: "https://example.com/a" }, "Fetching example.com"],
+      ["script", {}, "Running a script"], ["artifact", {}, "Publishing an artifact"],
+      ["other", {}, "Using other"],
+    ] as const) {
+      expect(liveAction(part({ type: `tool-${name}`, state: "input-available", input })).label).toBe(expected);
+    }
+    expect(liveAction(part({ type: "tool-read_file", state: "output-error", input: {} })).label).toBe("Failed: read_file");
+    expect(liveAction(part({ type: "tool-bash", state: "output-denied", input: { command: "sed x" } })).label).toBe("Refused sed");
+    expect(liveAction(part({ type: "tool-search", state: "approval-requested", input: {} })).label).toBe("Waiting for approval: search");
+    expect(liveAction().label).toBe("Thinking");
+    for (const [name, input, expected] of [
+      ["bash", { command: "sed x" }, "Running sed"],
+      ["read_file", { path: "/a/b" }, "Reading b"],
+      ["edit_file", { path: "b", old_string: "x", new_string: "y" }, "Editing b"],
+      ["write_file", { path: "b", content: "x" }, "Writing b"],
+      ["search", { query: "x" }, "Searching «x»"],
+      ["fetch", { url: "https://example.com/a" }, "Fetching example.com"],
+      ["script", {}, "Running a script"], ["artifact", {}, "Publishing an artifact"],
+      ["other", {}, "Using other"],
+    ] as const) {
+      expect(liveAction(part({ type: `tool-${name}`, state: "output-available", input, output: {} })).label).toBe(expected);
+      expect(liveAction(part({ type: `tool-${name}`, state: "output-error", input })).label)
+        .toBe(name === "bash" ? "Failed sed" : `Failed: ${name}`);
+      expect(liveAction(part({ type: `tool-${name}`, state: "output-denied", input })).label)
+        .toBe(name === "bash" ? "Refused sed" : `Refused: ${name}`);
+    }
+    for (const [name, expected] of [
+      ["bash", "Running command"], ["read_file", "Reading a file"],
+      ["search", "Searching"], ["fetch", "Fetching a page"],
+    ] as const)
+      expect(liveAction(part({ type: `tool-${name}`, state: "input-streaming", input: {} })).label).toBe(expected);
+    for (const [command, expected] of [
+      ["cd /a && se", "Running command"], ["cd /a && sed ", "Running sed"],
+    ] as const)
+      expect(liveAction(part({ type: "tool-bash", state: "input-streaming", input: { command } })).label)
+        .toBe(expected);
+  });
+});
 
 // Static markup only — these guard the render contract per state and
 // per tool (typed rows, junk→generic, unknown→generic), not React

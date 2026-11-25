@@ -455,6 +455,12 @@ decisions and their why:
   the same attempt with the lazily rebuilt full view; any other error
   propagates. A different claude model ref keys a different record —
   reasoning signatures stay with their model (#417); no `setModel`.
+  Thinking asks for summaries (`display: "summarized"`; operator,
+  2026-11-25, #934), because new Claude models omit thought text by
+  default. The turn and its forked summary send the same value. It does
+  not change the cached prefix: a session that switches from the default
+  reads back exactly what the last call cached (haiku 5.5, SDK 0.3.330,
+  [live.test.ts](../src/agent/claude-code/live.test.ts)).
   `verbatimPrompts` stays on for turns. The child's `cwd` is a stable
   goblin-owned `workdir` under the claude-code state dir — session files
   key on `<config>/projects/<sanitized-cwd>/` and prod's release

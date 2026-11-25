@@ -809,6 +809,7 @@ describe("driveClaude — the prompt and request identity", () => {
 		expect(call.options.env.CLAUDE_CONFIG_DIR).toBe("/tmp");
 		expect(call.options.systemPrompt).toBe("test system");
 		expect(call.options.model).toBe("claude-sonnet-4-5");
+		expect(call.options.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(call.options.mcpServers).toHaveProperty("goblin");
 		expect(call.options.allowedTools).toEqual(["mcp__goblin"]);
 	});

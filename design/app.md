@@ -42,15 +42,37 @@ mechanism, zero code. Folds never open or close by themselves (operator,
 2026-11-21, #837; replaces the 2026-10-24 auto-open ruling): the
 "Worked" fold and each tool row start closed, and only the operator
 toggles them. An automatic open and close moved the text under the
-reader on every call. The closed summary carries the live state instead:
-"Working for Ns" while the run owns the tail of a streaming reply, the
-failure count when a call fails. An open fold's list takes at most 40vh
-of the window and scrolls inside itself (#936). While the run is live
+reader on every call. The closed summary carries the failure count when a
+call fails. An open fold's list takes at most 40vh of the window and scrolls inside itself (#936). While the run is live
 the list follows its newest row only while the reader is exactly at its
 end: any scroll up switches the follow off until the reader is back at
 the end (operator, 2026-11-25, #936). A 48 px zone near the end, like
 the transcript's, was rejected: a smaller scroll snapped back at the
 next call.
+
+Live state is in the work block (operator, 2026-11-25, #934; replaces the
+"Working for Ns" summary): one header per reply, "Working for Ns" over a
+rule, counted from the turn's start on the server, so a reload or text
+between calls does not restart it. The start travels as elapsed time, not a
+timestamp, so a wrong device clock cannot change the timer.
+
+Under it, at the tail of the reply, one closed fold shows the newest thought
+(its bold title, else its first sentence; one line on desktop, two on phone)
+and the call that runs now. The height is fixed, also before
+the first thought, because t3code's growing thought would move the text
+(#837). Between calls the line keeps the newest call, in the present tense
+("Reading goblin.log"): the past tense, and "Thinking", were rejected
+(operator, 2026-11-25, #934).
+
+The fold stays at the tail of a busy reply until the turn ends, also under
+text that Goblin still writes, where it says "Thinking" (operator,
+2026-11-25, #934). A model can be silent after text, and no line then read
+as a stopped turn. Rejected: no line under text, and a line only after about
+a second of silence. Accepted: it says "Thinking" while Goblin writes, and
+the end of the turn can move the text when the fold goes away.
+
+When the turn ends, the header stays as "Worked for Ns" if the reply used
+a tool.
 
 **Sent files (ruling 2026-11-21, #866).** Files sent by `send_file`,
 `generate_image`, and `speak` are openable immediately below the collapsed
@@ -321,7 +343,7 @@ The transcript turns the browser's scroll anchoring off
 older-page restore own the scroll position, and anchoring kept the view
 at the end while a retried reply grew, so its head never held.
 See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
-One assistant card per reply: the "…" waiting row shows only until the
+One assistant card per reply: the waiting card shows only until the
 reply has a part to draw (#415).
 
 ## Chat rail rows and project links (ruling 2026-11-21, #838; #894)

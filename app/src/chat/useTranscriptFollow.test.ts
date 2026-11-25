@@ -52,16 +52,16 @@ function transcript(rows: string, layout: Layout): Element {
 const asked = `<div class="msg user" data-outline-anchor="u1">question</div>`;
 const reply = `<div class="msg assistant" id="reply">answer</div>`;
 const oldReply = `<div class="msg assistant" id="old">old answer</div>`;
-const shimmer = `<div class="msg assistant pending shimmer">…</div>`;
+const pending = `<div class="msg assistant pending"></div>`;
 
 describe("replyHead", () => {
-	test("finds the reply after the asked message, past the pending shimmer", () => {
-		const el = transcript(`${asked}${shimmer}${reply}`, { scrollHeight: 0, clientHeight: 0, scrollTop: 0 });
+	test("finds the reply after the asked message, past the pending card", () => {
+		const el = transcript(`${asked}${pending}${reply}`, { scrollHeight: 0, clientHeight: 0, scrollTop: 0 });
 		expect(replyHead(el, "u1")?.id).toBe("reply");
 	});
 
 	test("an older reply above the asked message is never the head", () => {
-		const el = transcript(`${reply}${asked}${shimmer}`, { scrollHeight: 0, clientHeight: 0, scrollTop: 0 });
+		const el = transcript(`${reply}${asked}${pending}`, { scrollHeight: 0, clientHeight: 0, scrollTop: 0 });
 		expect(replyHead(el, "u1")).toBeNull();
 	});
 
@@ -109,7 +109,7 @@ describe("followTarget", () => {
 	});
 
 	test("before the reply starts, a sent message follows the end", () => {
-		const el = transcript(`${asked}${shimmer}`, { scrollHeight: 2000, clientHeight: 800, scrollTop: 900 });
+		const el = transcript(`${asked}${pending}`, { scrollHeight: 2000, clientHeight: 800, scrollTop: 900 });
 		const follow = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
 		expect(followTarget(el, follow)).toEqual({ top: 1200, next: follow });
 	});
@@ -173,7 +173,7 @@ describe("followTarget", () => {
 describe("endTurnFollow", () => {
 	test("remembers turn end until a short reply mounts, then follows later turns at the end", () => {
 		const following = { kind: "reply", after: "u1", stale: new Set<Element>() } as const;
-		const waiting = transcript(`${asked}${shimmer}`, {
+		const waiting = transcript(`${asked}${pending}`, {
 			scrollHeight: 2000,
 			clientHeight: 800,
 			scrollTop: 1200,
@@ -251,7 +251,7 @@ describe("endTurnFollow", () => {
 describe("repliesAfter", () => {
 	test("returns replies after the asked message through the next user, excluding pending rows", () => {
 		const nextUser = `<div class="msg user" data-outline-anchor="u2">next</div>`;
-		const el = transcript(`${asked}${oldReply}${shimmer}${reply}${nextUser}${oldReply}`, {
+		const el = transcript(`${asked}${oldReply}${pending}${reply}${nextUser}${oldReply}`, {
 			scrollHeight: 0,
 			clientHeight: 0,
 			scrollTop: 0,

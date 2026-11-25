@@ -12,7 +12,10 @@ import {
   type SetStateAction,
 } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type ChatTransport, type UIMessage } from "ai";
+import {
+  DefaultChatTransport, getToolName, isToolUIPart,
+  type ChatTransport, type UIMessage,
+} from "ai";
 import {
   branchConversation,
   getMessages,
@@ -55,6 +58,8 @@ import { ResumeGate } from "./chat/resumeGate.ts";
 import { makeSseParser } from "./sse.ts";
 import { useLiveStoreOrNull } from "./useLive.tsx";
 import { useReplyRatings } from "./chat/useReplyRatings.ts";
+import { WorkHeader } from "./chat/WorkHeader.tsx";
+import { LiveWork } from "./chat/LiveWork.tsx";
 
 // ---------- the chat ----------
 
@@ -84,11 +89,20 @@ function askNotifyPermission() {
   void Notification.requestPermission().catch(() => {});
 }
 
+function nowMinus(ms: number | undefined, now = Date.now()): number {
+  return now - (ms ?? 0);
+}
+
 export function replyStarted(
   messages: readonly UIMessage[],
   settledTailId?: string,
 ): boolean {
-  const last = messages.at(-1);
+  const hidden = placeSentMedia(messages).hidden;
+  const visible = messages.filter((message) => !hidden.has(message));
+  const lastUser = visible.findLastIndex((message) => message.role === "user");
+  const lastAssistant = visible.findLastIndex((message) => message.role === "assistant");
+  if (lastAssistant < lastUser || lastAssistant < 0) return false;
+  const last = visible[lastAssistant];
   return last?.role === "assistant" && last.id !== settledTailId &&
     last.parts.some((p) => p.type !== "step-start");
 }
@@ -629,9 +643,23 @@ function Chat({
   const contentRef = useRef<HTMLDivElement>(null);
   const follow = useTranscriptFollow(scrollRef, contentRef, followAfter);
   const [eventsLive, setEventsLive] = useState(false);
+  const [workStartedAt, setWorkStartedAt] = useState(() => nowMinus(0));
+  const workStartKnown = useRef(false);
+  const [finishedWork, setFinishedWork] = useState<{
+    id: string;
+    durationMs: number;
+  } | null>(null);
   const [submitPending, setSubmitPending] = useState(false);
   const [settledTailId, setSettledTailId] = useState<string | null>(null);
   const busy = eventsLive || submitPending || status === "submitted" || status === "streaming";
+  useLayoutEffect(() => {
+    if (!busy) {
+      workStartKnown.current = false;
+    } else if (!workStartKnown.current) {
+      workStartKnown.current = true;
+      setWorkStartedAt(nowMinus(0));
+    }
+  }, [busy]);
   const [sendFailure, setSendFailure] = useState<string | null>(null);
   const resumeFromEvents = () => {
     if (gate.requestResume())
@@ -643,13 +671,32 @@ function Chat({
   const onConversationEvent = useEffectEvent(
     (event: AppConversationEvent, firstState: boolean) => {
       const activeReader = gate.readerAttached;
+      const rememberFinishedWork = () => {
+        if (!replyStarted(displayed, settledTailId ?? undefined)) return;
+        const hidden = placeSentMedia(displayed).hidden;
+        const reply = displayed.findLast(
+          (message) => message.role === "assistant" && !hidden.has(message),
+        );
+        if (reply?.parts.some((part) => isToolUIPart(part) && getToolName(part) !== "ui")) {
+          setFinishedWork({ id: reply.id, durationMs: Math.max(0, nowMinus(workStartedAt)) });
+        }
+      };
       if (event.type === "state") {
+        if (event.live) {
+          workStartKnown.current = true;
+          setWorkStartedAt(nowMinus(event.elapsedMs));
+        } else if (gate.serverLive) {
+          rememberFinishedWork();
+        }
         if (!firstState) refreshTranscript();
         gate.serverLive = event.live;
         setEventsLive(event.live);
         if (event.live) setSubmitPending(false);
         if (event.live && !activeReader) resumeFromEvents();
       } else if (event.type === "turn-start") {
+        workStartKnown.current = true;
+        setFinishedWork(null);
+        setWorkStartedAt(nowMinus(event.elapsedMs));
         const tail = displayed.at(-1);
         if (tail?.role === "assistant") setSettledTailId(tail.id);
         gate.serverLive = true;
@@ -657,6 +704,7 @@ function Chat({
         setSubmitPending(false);
         if (!activeReader) resumeFromEvents();
       } else if (event.type === "turn-end") {
+        rememberFinishedWork();
         setSettledTailId(null);
         follow.endTurn();
         gate.serverLive = false;
@@ -729,6 +777,11 @@ function Chat({
       parts: message.parts ?? [{ type: "text", text: message.text ?? "" }],
     };
     const wasBusy = busy;
+    if (!wasBusy) {
+      workStartKnown.current = true;
+      setWorkStartedAt(nowMinus(0));
+      setFinishedWork(null);
+    }
     if (wasBusy) follow.jumpToEnd();
     else follow.followReply(optimistic.id);
     const optimisticPendingId = `optimistic-${optimistic.id}`;
@@ -835,6 +888,9 @@ function Chat({
   const lastAssistantId = messages.findLast(
     (m) => m.role === "assistant" && !placedMedia.hidden.has(m),
   )?.id;
+  const liveReplyId = busy && replyStarted(displayed, settledTailId ?? undefined)
+    ? lastAssistantId
+    : undefined;
   const idleWithReply =
     !eventsLive && !submitPending && displayed.at(-1)?.role === "assistant";
   useEffect(() => {
@@ -896,6 +952,9 @@ function Chat({
     }
     editBackup.current = messages;
     setEditing(null);
+    workStartKnown.current = true;
+    setWorkStartedAt(nowMinus(0));
+    setFinishedWork(null);
     setSettledTailId(null);
     setLiveCtx(null);
     setMessages(messages.slice(0, index));
@@ -977,7 +1036,10 @@ function Chat({
             ))}
             {displayed.map((m, i) => {
               let el: ReactNode = null;
-              if (placedMedia.hidden.has(m)) {
+              const placeholder = busy && m.role === "assistant" &&
+                m.id === lastAssistantId && m.id !== settledTailId &&
+                m.parts.every((p) => p.type === "step-start");
+              if (placedMedia.hidden.has(m) || placeholder) {
                 if (!marksByIndex.has(i)) return null;
               } else if (m.role === "user") {
                 const isEditing = editing !== null && editing.id === m.id;
@@ -1114,6 +1176,17 @@ function Chat({
                 }
               } else {
                 const meta = turnMeta(m);
+                const hasTools = m.parts.some(
+                  (p) => isToolUIPart(p) && getToolName(p) !== "ui",
+                );
+                let header: ReactNode = null;
+                if (m.id === liveReplyId) {
+                  header = <WorkHeader startedAt={workStartedAt} />;
+                } else if (hasTools && meta !== null) {
+                  header = <WorkHeader durationMs={meta.durationMs} />;
+                } else if (hasTools && finishedWork?.id === m.id) {
+                  header = <WorkHeader durationMs={finishedWork.durationMs} />;
+                }
                 el = (
                   <div
                     className={
@@ -1122,12 +1195,14 @@ function Chat({
                         : "msg assistant"
                     }
                   >
+                    {header}
                     <MessageParts
                       parts={m.parts}
                       sentMedia={placedMedia.byReply.get(m.id)}
                       token={token}
                       noteProjectId={noteProjectId}
                       busy={busy}
+                      working={m.id === liveReplyId}
                       streaming={
                         status === "streaming" && m.id === lastAssistantId
                       }
@@ -1141,6 +1216,9 @@ function Chat({
                       busy={busy}
                       onRetry={() => {
                         setSettledTailId(null);
+                        workStartKnown.current = true;
+                        setWorkStartedAt(nowMinus(0));
+                        setFinishedWork(null);
                         setLiveCtx(null);
                         setSendFailure(null);
                         const lastUserIndex = messages.map((item) => item.role).lastIndexOf("user");
@@ -1184,7 +1262,15 @@ function Chat({
               );
             })}
             {busy && !replyStarted(displayed, settledTailId ?? undefined) && (
-              <div className="msg assistant pending shimmer">…</div>
+              <div className="msg assistant pending">
+                <WorkHeader startedAt={workStartedAt} />
+                <details className="worked live">
+                  <summary><LiveWork /></summary>
+                </details>
+                <div className="msg-actions pending-actions" aria-hidden="true">
+                  <button tabIndex={-1}>copy</button>
+                </div>
+              </div>
             )}
             {pendingItems.length > 0 && (
               <section className="pending-inputs" aria-label="Pending input">

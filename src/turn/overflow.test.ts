@@ -14,7 +14,7 @@ import {
 	terminalFailureMessage,
 } from "./overflow.ts";
 import type { LoopTurnState } from "./state.ts";
-import type { LiveChunks } from "./stream.ts";
+import { openLive, type LiveChunks } from "./stream.ts";
 
 const conv = (epoch: number, id = "dm:1"): Conversation => ({
 	id,
@@ -109,7 +109,7 @@ function harness(
 		recallVersion?: number | null;
 	} = {},
 ): Harness {
-	const live: LiveChunks = { chunks: [], subscribers: new Set(), ended: false };
+	const live: LiveChunks = openLive();
 	let compactCalls = 0;
 	const deps: OverflowDeps<string> = {
 		convId: "dm:1",
@@ -228,7 +228,7 @@ describe("overflowHoldable — the one-recovery budget", () => {
 			digest: [],
 			loop,
 			startedAt: 1,
-			live: { chunks: [], subscribers: new Set(), ended: false },
+			live: openLive(),
 			filterRetryUsed: false,
 			overflowed: true,
 		};

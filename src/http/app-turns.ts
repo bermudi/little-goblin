@@ -51,7 +51,8 @@ export async function handleTurnsRoute(
 			label: "app conversation events",
 			open(push) {
 				const unsubscribe = runtime.subscribeConversation(convId.id, (event) => push(event));
-				push({ type: "state", live: runtime.conversationLive(convId.id) });
+				const elapsedMs = runtime.liveElapsedMs(convId.id);
+				push(elapsedMs === null ? { type: "state", live: false } : { type: "state", live: true, elapsedMs });
 				log.info("app conversation events attach", { conversation: convId.id });
 				return unsubscribe;
 			},

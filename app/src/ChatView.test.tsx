@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { UIMessage } from "ai";
 import { Window } from "happy-dom";
 import { act } from "react";
@@ -63,7 +63,7 @@ describe("MessageParts", () => {
       <MessageParts parts={[toolPart, { type: "text", text: "the answer" }]} />,
     );
     expect(html).toContain('class="worked"');
-    expect(html).toContain("Worked");
+    expect(html).toContain("worked-sum");
     expect(html).toContain("lookup");
     expect(html).toContain("the answer");
   });
@@ -399,6 +399,290 @@ describe("replyStarted (issue #415)", () => {
         { ...settled, id: "a2", parts: [{ type: "text", text: "new" }] },
       ], settled.id),
     ).toBe(true);
+  });
+
+  test("sent media hoisted from the tail does not hide a live reply", () => {
+    const user = { id: "u", role: "user", parts: [{ type: "text", text: "send" }] } as UIMessage;
+    const reply = { id: "a", role: "assistant", parts: [toolPart] } as UIMessage;
+    const media = {
+      id: "m", role: "assistant",
+      metadata: { sentMedia: { replyId: "a", toolCallId: "t1" } },
+      parts: [{ type: "text", text: "file" }],
+    } as UIMessage;
+    expect(replyStarted([user, reply, media], reply.id)).toBe(false);
+    expect(replyStarted([user, reply, media])).toBe(true);
+  });
+});
+
+describe("reply work header", () => {
+  const dom = mountDom();
+  let clock: ReturnType<typeof spyOn<DateConstructor, "now">>;
+  let now = 0;
+  beforeEach(() => {
+    now = 100_000;
+    clock = spyOn(Date, "now").mockImplementation(() => now);
+  });
+  afterEach(() => { clock.mockRestore(); });
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+  const render = async () => {
+    dom.root = createRoot(dom.container);
+    await act(async () => dom.root?.render(
+      <ChatView
+        token={null} conversationId="app/work-test" title={null} seed={null}
+        staged={[]} setStaged={() => {}} stagedNotes={[]} setStagedNotes={() => {}}
+        stagedSkills={[]} setStagedSkills={() => {}} onSeeded={() => {}}
+      />,
+    ));
+  };
+  const settle = async (predicate: () => boolean) => {
+    for (let i = 0; i < 100 && !predicate(); i++) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    }
+  };
+  test("settled tools retain duration but a plain reply has no header", async () => {
+    const messages: UIMessage[] = [
+      { id: "u1", role: "user", parts: [{ type: "text", text: "hello" }] },
+      { id: "a1", role: "assistant", metadata: { model: "test", durationMs: 28600 },
+        parts: [toolPart, { type: "text", text: "tool answer" }] },
+      { id: "u2", role: "user", parts: [{ type: "text", text: "again" }] },
+      { id: "a2", role: "assistant", metadata: { model: "test", durationMs: 28600 }, parts: [{ type: "text", text: "plain answer" }] },
+    ];
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/messages")) return json({ messages, ratings: [], rateableMessageIds: [] });
+      if (url.endsWith("/events")) return new Response(new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"type":"state","live":false}\n\n'));
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+      return json({ model: "test", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+    }, { preconnect: dom.realFetch.preconnect });
+    await render();
+    await settle(() => dom.container.textContent?.includes("plain answer") ?? false);
+    const cards = dom.container.querySelectorAll(".msg.assistant");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.querySelector(".work-header")?.textContent).toBe("Worked for 28s");
+    expect(cards[1]?.querySelector(".work-header")).toBeNull();
+  });
+  test("placeholder shows one waiting card; a dropped reader keeps live work", async () => {
+    const enc = new TextEncoder();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let streams = 0;
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/messages")) return json({
+        messages: [{ id: "u", role: "user", parts: [{ type: "text", text: "hello" }] }],
+        ratings: [], rateableMessageIds: [],
+      });
+      if (url.endsWith("/events")) return new Response(new ReadableStream({
+        start(c) { c.enqueue(enc.encode('data: {"type":"state","live":true,"elapsedMs":28000}\n\n')); },
+      }), { headers: { "content-type": "text/event-stream" } });
+      if (url.endsWith("/stream")) {
+        if (streams++ > 0) return new Response(null, { status: 204 });
+        return new Response(new ReadableStream({
+          start(c) {
+            stream = c;
+            c.enqueue(enc.encode('data: {"type":"start","messageId":"a"}\n\ndata: {"type":"start-step"}\n\n'));
+          },
+        }), { headers: {
+          "content-type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1",
+        } });
+      }
+      return json({ model: "test", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+    }, { preconnect: dom.realFetch.preconnect });
+    await render();
+    await settle(() => stream !== undefined && dom.container.querySelector(".pending") !== null);
+    expect(dom.container.querySelectorAll(".msg.assistant")).toHaveLength(1);
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    await act(async () => {
+      stream.enqueue(enc.encode(
+        'data: {"type":"reasoning-start","id":"r"}\n\n' +
+        'data: {"type":"reasoning-delta","id":"r","delta":"A thought."}\n\n',
+      ));
+    });
+    await settle(() => dom.container.querySelector(".worked.live") !== null);
+    expect(dom.container.querySelector(".live-thought")?.textContent).toBe("A thought.");
+    const header = dom.container.querySelector(".work-header");
+    await act(async () => {
+      stream.enqueue(enc.encode(
+        'data: {"type":"reasoning-end","id":"r"}\n\n' +
+        'data: {"type":"text-start","id":"t"}\n\n' +
+        'data: {"type":"text-delta","id":"t","delta":"Between calls."}\n\n' +
+        'data: {"type":"text-end","id":"t"}\n\n' +
+        'data: {"type":"start-step"}\n\n' +
+        'data: {"type":"reasoning-start","id":"r2"}\n\n' +
+        'data: {"type":"reasoning-delta","id":"r2","delta":"Second thought."}\n\n',
+      ));
+    });
+    await settle(() => dom.container.textContent?.includes("Second thought.") ?? false);
+    expect(dom.container.textContent).toContain("Between calls.");
+    expect(dom.container.querySelector(".work-header")).toBe(header);
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    await act(async () => { stream.close(); });
+    await settle(() => streams > 1);
+    expect(dom.container.querySelector(".worked.live")).not.toBeNull();
+    expect(dom.container.querySelectorAll(".work-header")).toHaveLength(1);
+  });
+
+  test("turn-end retains the timer and tool header until history arrives", async () => {
+    const enc = new TextEncoder();
+    let events!: ReadableStreamDefaultController<Uint8Array>;
+    let historyCalls = 0;
+    let finishHistory!: (response: Response) => void;
+    const messages: UIMessage[] = [
+      { id: "u", role: "user", parts: [{ type: "text", text: "hello" }] },
+      { id: "a", role: "assistant", parts: [toolPart] },
+    ];
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/messages")) {
+        if (historyCalls++ === 0) return json({ messages, ratings: [], rateableMessageIds: [] });
+        return new Promise<Response>((resolve) => { finishHistory = resolve; });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(new ReadableStream({
+          start(c) {
+            events = c;
+            c.enqueue(enc.encode('data: {"type":"state","live":true,"elapsedMs":28000}\n\n'));
+          },
+        }), { headers: { "content-type": "text/event-stream" } });
+      }
+      if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+      return json({ model: "test", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+    }, { preconnect: dom.realFetch.preconnect });
+    await render();
+    await settle(() => dom.container.querySelector(".worked.live") !== null);
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    await act(async () => { events.enqueue(enc.encode('data: {"type":"turn-end"}\n\n')); });
+    expect(dom.container.querySelectorAll(".work-header")).toHaveLength(1);
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Worked for 28s");
+    await act(async () => {
+      finishHistory(json({
+        messages: [messages[0], { ...messages[1], metadata: { model: "test", durationMs: 28600 } }],
+        ratings: [], rateableMessageIds: [],
+      }));
+    });
+    await settle(() => dom.container.querySelector(".work-header")?.textContent === "Worked for 28s");
+    expect(dom.container.querySelectorAll(".work-header")).toHaveLength(1);
+  });
+
+  test("an idle state event does not reset a timer while the reader streams", async () => {
+    const enc = new TextEncoder();
+    let events!: ReadableStreamDefaultController<Uint8Array>;
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/messages")) return json({
+        messages: [{ id: "u", role: "user", parts: [{ type: "text", text: "hello" }] }],
+        ratings: [], rateableMessageIds: [],
+      });
+      if (url.endsWith("/events")) return new Response(new ReadableStream({
+        start(c) {
+          events = c;
+          c.enqueue(enc.encode('data: {"type":"state","live":true,"elapsedMs":28000}\n\n'));
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+      if (url.endsWith("/stream")) return new Response(new ReadableStream({
+        start(c) {
+          stream = c;
+          c.enqueue(enc.encode(
+            'data: {"type":"start","messageId":"a"}\n\n' +
+            'data: {"type":"text-start","id":"t"}\n\n' +
+            'data: {"type":"text-delta","id":"t","delta":"working"}\n\n',
+          ));
+        },
+      }), { headers: {
+        "content-type": "text/event-stream",
+        "x-vercel-ai-ui-message-stream": "v1",
+      } });
+      return json({ model: "test", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+    }, { preconnect: dom.realFetch.preconnect });
+    await render();
+    await settle(() => stream !== undefined && dom.container.textContent?.includes("working") === true);
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    const live = dom.container.querySelectorAll(".msg.assistant .worked.live");
+    expect(live).toHaveLength(1);
+    expect(live[0]?.previousElementSibling?.textContent).toContain("working");
+    expect(live[0]?.querySelector("summary")?.textContent).toBe("Thinking");
+    await act(async () => { events.enqueue(enc.encode('data: {"type":"state","live":false}\n\n')); });
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    await act(async () => { events.enqueue(enc.encode('data: {"type":"turn-end"}\n\n')); });
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+  });
+
+  test("first idle state does not reset a seeded submit", async () => {
+    const enc = new TextEncoder();
+    let events!: ReadableStreamDefaultController<Uint8Array>;
+    let submitted = false;
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/messages")) {
+        return json({ messages: [], ratings: [], rateableMessageIds: [] });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(new ReadableStream({ start(c) { events = c; } }), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (url === "/api/app/chat") {
+        submitted = true;
+        return new Promise<Response>(() => {});
+      }
+      return json({ model: "test", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+    }, { preconnect: dom.realFetch.preconnect });
+    dom.root = createRoot(dom.container);
+    await act(async () => dom.root?.render(
+      <ChatView
+        token={null}
+        conversationId="app/work-test"
+        title={null}
+        seed={[{ type: "text", text: "hello" }]}
+        staged={[]}
+        setStaged={() => {}}
+        stagedNotes={[]}
+        setStagedNotes={() => {}}
+        stagedSkills={[]}
+        setStagedSkills={() => {}}
+        onSeeded={() => {}}
+      />,
+    ));
+    await settle(() => submitted && events !== undefined);
+    now += 28_000;
+    await act(async () => { events.enqueue(enc.encode('data: {"type":"state","live":false}\n\n')); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1050)); });
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+  });
+
+  test("a sent-media tail keeps the owning assistant live", async () => {
+    const messages: UIMessage[] = [
+      { id: "u", role: "user", parts: [{ type: "text", text: "send" }] },
+      { id: "a", role: "assistant", parts: [toolPart] },
+      {
+        id: "m",
+        role: "assistant",
+        metadata: { sentMedia: { replyId: "a", toolCallId: "t1" } },
+        parts: [{ type: "text", text: "sent file" }],
+      },
+    ];
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/messages")) return json({ messages, ratings: [], rateableMessageIds: [] });
+      if (url.endsWith("/events")) return new Response(new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(
+            'data: {"type":"state","live":true,"elapsedMs":28000}\n\n',
+          ));
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+      if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+      return json({ model: "test", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+    }, { preconnect: dom.realFetch.preconnect });
+    await render();
+    await settle(() => dom.container.querySelector(".worked.live") !== null);
+    expect(dom.container.querySelector(".pending")).toBeNull();
+    expect(dom.container.querySelector(".work-header")?.textContent).toBe("Working for 28s");
+    expect(dom.container.querySelector(".worked.live")).not.toBeNull();
   });
 });
 
@@ -1459,7 +1743,7 @@ describe("ChatView reload window (issue #79)", () => {
     await act(async () => {
       events.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
     });
-    expect(dom.container.querySelector(".msg.pending.shimmer")).not.toBeNull();
+    expect(dom.container.querySelector(".msg.pending")).not.toBeNull();
     for (let i = 0; i < 100 && streamRequests < 2; i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
@@ -1471,7 +1755,7 @@ describe("ChatView reload window (issue #79)", () => {
         { type: "text-delta", id: "t1", delta: "live answer" },
       ]) live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
     });
-    expect(dom.container.querySelector(".msg.pending.shimmer")).toBeNull();
+    expect(dom.container.querySelector(".msg.pending")).toBeNull();
     expect(dom.container.querySelectorAll(".msg.assistant.streaming")).toHaveLength(1);
     expect(dom.container.textContent).toContain("live answer");
     await act(async () => {});
@@ -1709,7 +1993,7 @@ describe("ChatView mid-turn steer", () => {
     });
     const eventsStream = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true,"elapsedMs":28000}\n\n'));
       },
     });
     let stopPosts = 0;
@@ -1818,6 +2102,9 @@ describe("ChatView mid-turn steer", () => {
       });
     }
     // The action switches from Stop to Send when a steer is composed.
+    expect(dom.container.querySelectorAll(".work-header")).toHaveLength(1);
+    expect(dom.container.querySelector(".work-header")?.textContent)
+      .toMatch(/^Working for (2[89]|3\d)s$/);
     expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
     expect(dom.container.querySelector(".send-btn")).toBeNull();
     const ta = dom.container.querySelector<HTMLTextAreaElement>(
@@ -4049,14 +4336,10 @@ describe("MessageParts activity folding (happy-dom)", () => {
       state: "streaming",
     } as UIMessage["parts"][number];
     await act(async () => {
-      dom.root?.render(<MessageParts parts={[live]} />);
+      dom.root?.render(<MessageParts parts={[live]} working />);
     });
-    expect(dom.container.querySelector(".reasoning-label")?.textContent).toBe(
-      "Thinking",
-    );
-    expect(dom.container.querySelector(".reasoning-preview")?.textContent).toBe(
-      "second idea",
-    );
+    expect(dom.container.querySelector(".live-action")?.textContent).toBe("Thinking");
+    expect(dom.container.querySelector(".live-thought")?.textContent).toBe("first idea second idea");
     await act(async () => {
       dom.root?.render(
         <MessageParts
@@ -4123,6 +4406,128 @@ describe("MessageParts activity folding (happy-dom)", () => {
     );
   });
 
+  test("live thought, tool selection, and source links survive changing parts", async () => {
+    dom.root = createRoot(dom.container);
+    const step = { type: "step-start" } as UIMessage["parts"][number];
+    const render = (parts: UIMessage["parts"], working = true) => act(async () => {
+      dom.root?.render(<MessageParts parts={parts} working={working} />);
+    });
+    await render([step]);
+    const fold = dom.container.querySelector<HTMLDetailsElement>(".worked.live")!;
+    expect(fold.querySelector("summary")?.textContent).toBe("Thinking");
+    expect(fold.querySelector("ul")!.hasAttribute("hidden")).toBe(true);
+    expect(fold.open).toBe(false);
+    await act(() => { fold.open = true; });
+    await render([step, thought("First thought."), thought("**Newest**\n\nDetails.")]);
+    expect(dom.container.querySelector(".worked.live")).toBe(fold);
+    expect(fold.open).toBe(true);
+    expect(fold.querySelector(".live-thought")?.textContent).toBe("Newest");
+    expect(fold.querySelector(".live-action")?.classList.contains("indented")).toBe(true);
+    const running = {
+      type: "tool-bash", toolCallId: "running", state: "input-available",
+      input: { command: "sed x" },
+    } as unknown as UIMessage["parts"][number];
+    await render([step, thought("**Newest**\n"), running, call("done", "pwd")]);
+    expect(fold.open).toBe(true);
+    expect(fold.querySelector(".live-action")?.textContent).toBe("Running sed");
+    await render([
+      step, thought("**Newest**\n"), call("done", "pwd"),
+      { type: "text", text: "Between calls." }, step, thought("Another thought."),
+    ]);
+    expect(fold.open).toBe(true);
+    expect(fold.className).toBe("worked");
+    expect(dom.container.textContent).toContain("Between calls.");
+    expect(dom.container.querySelectorAll(".worked.live")).toHaveLength(1);
+    await render([step, thought("**Newest**\n"), call("done", "pwd"), { type: "text", text: "Between calls." }], false);
+    expect(fold.open).toBe(true);
+    expect(dom.container.textContent).toContain("Between calls.");
+    expect(dom.container.querySelector(".worked.live")).toBeNull();
+    await render([step, { type: "source-url", sourceId: "s", url: "https://example.com" }, { type: "text", text: "done" }]);
+    expect(dom.container.querySelector(".sources-row a")?.getAttribute("href")).toBe("https://example.com");
+    expect(dom.container.querySelectorAll(".worked.live")).toHaveLength(1);
+    expect(dom.container.lastElementChild).toBe(dom.container.querySelector(".worked.live"));
+  });
+
+  test("live work follows streaming and finished text, then disappears", async () => {
+    dom.root = createRoot(dom.container);
+    for (const state of ["streaming", "done"] as const) {
+      const parts = [{ type: "text", text: "The answer.", state }] as UIMessage["parts"];
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+      const live = dom.container.querySelectorAll(".worked.live");
+      expect(live).toHaveLength(1);
+      expect(dom.container.lastElementChild).toBe(live[0]!);
+      expect(live[0]?.previousElementSibling?.textContent).toContain("The answer.");
+      expect(live[0]?.querySelector("summary")?.textContent).toBe("Thinking");
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working={false} />));
+      expect(dom.container.querySelector(".worked.live")).toBeNull();
+    }
+  });
+
+  test("live work follows each non-activity tail and disappears", async () => {
+    dom.root = createRoot(dom.container);
+    const tails = [
+      { type: "source-url", sourceId: "s", url: "https://example.com" },
+      { type: "tool-ui", toolCallId: "ui", state: "input-available", input: { root: "a", elements: { a: { type: "text", props: { md: "Interface" } } } } },
+      { type: "data-attachment", data: { path: "a", mediaType: "text/plain", filename: "a.txt", size: 1 } },
+      { type: "file", mediaType: "text/plain", url: "https://example.com/a", filename: "a.txt" },
+      { type: "data-note", data: { id: "n1" } },
+      { type: "step-start" },
+    ] as unknown as UIMessage["parts"];
+    for (const tail of tails) {
+      const parts: UIMessage["parts"] = [{ type: "text", text: "The answer." }, tail];
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+      const live = dom.container.querySelectorAll(".worked.live");
+      expect(live).toHaveLength(1);
+      expect(dom.container.lastElementChild).toBe(live[0]!);
+      await act(async () => dom.root?.render(<MessageParts parts={parts} working={false} />));
+      expect(dom.container.querySelector(".worked.live")).toBeNull();
+    }
+  });
+
+  test("a completed call settles before text and live work follows it", async () => {
+    dom.root = createRoot(dom.container);
+    const parts: UIMessage["parts"] = [call("done", "pwd"), { type: "text", text: "The answer." }];
+    await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+    const settled = dom.container.querySelectorAll(".worked:not(.live)");
+    const live = dom.container.querySelectorAll(".worked.live");
+    expect(settled).toHaveLength(1);
+    expect(live).toHaveLength(1);
+    expect(settled[0]?.nextElementSibling?.textContent).toContain("The answer.");
+    expect(live[0]?.previousElementSibling).toBe(settled[0]?.nextElementSibling);
+    expect(dom.container.lastElementChild).toBe(live[0]!);
+    expect(live[0]?.querySelector("summary")?.textContent).toBe("Thinking");
+    await act(async () => dom.root?.render(<MessageParts parts={parts} working={false} />));
+    expect(dom.container.querySelector(".worked.live")).toBeNull();
+  });
+
+  test("live work keeps its node as a step and thought arrive after text", async () => {
+    dom.root = createRoot(dom.container);
+    const text = { type: "text", text: "The answer." } as UIMessage["parts"][number];
+    const step = { type: "step-start" } as UIMessage["parts"][number];
+    await act(async () => dom.root?.render(<MessageParts parts={[text]} working />));
+    const live = dom.container.querySelector(".worked.live");
+    expect(live).not.toBeNull();
+    await act(async () => dom.root?.render(<MessageParts parts={[text, step]} working />));
+    expect(dom.container.querySelector(".worked.live")).toBe(live);
+    await act(async () => dom.root?.render(<MessageParts parts={[text, step, thought("A new thought.")]} working />));
+    expect(dom.container.querySelector(".worked.live")).toBe(live);
+    expect(live?.querySelector(".live-thought")?.textContent).toBe("A new thought.");
+    await act(async () => dom.root?.render(<MessageParts parts={[text, step, thought("A new thought.")]} working={false} />));
+    expect(dom.container.querySelector(".worked.live")).toBeNull();
+  });
+
+  test("thought-only fold keeps its open state when it settles", async () => {
+    dom.root = createRoot(dom.container);
+    const parts = [{ type: "step-start" }, thought("A thought.") ] as UIMessage["parts"];
+    await act(async () => dom.root?.render(<MessageParts parts={parts} working />));
+    const fold = dom.container.querySelector<HTMLDetailsElement>("details")!;
+    await act(() => { fold.open = true; });
+    await act(async () => dom.root?.render(<MessageParts parts={parts} />));
+    expect(dom.container.querySelector("details")).toBe(fold);
+    expect(fold.open).toBe(true);
+    expect(fold.querySelector("summary")?.textContent).toBe("Thought");
+  });
+
   test("an empty reasoning part breaks neither a run nor the fold", async () => {
     dom.root = createRoot(dom.container);
     await act(async () => {
@@ -4161,7 +4566,7 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     dom.container.querySelector<HTMLDetailsElement>(".worked")!;
   const render = (parts: UIMessage["parts"], streaming: boolean) =>
     act(async () => {
-      dom.root?.render(<MessageParts parts={parts} streaming={streaming} />);
+      dom.root?.render(<MessageParts parts={parts} streaming={streaming} working={streaming} />);
     });
   const toggle = () =>
     act(() => {
@@ -4172,7 +4577,7 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "input-available")], true);
     expect(fold().open).toBe(false);
-    expect(fold().textContent).toContain("Working for");
+    expect(fold().querySelector("summary")?.textContent).toContain("Running b1");
     expect(dom.container.querySelector(".tool-run")!.hasAttribute("open")).toBe(false);
     await render(
       [part("b1", "output-available"), part("b2", "input-available")],
@@ -4323,19 +4728,19 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     const { layout } = cappedList(120);
     layout.scrollHeight = 300;
     await render([part("b1", "output-available")], false);
-    expect(fold().querySelector("summary")!.textContent).toContain("Worked");
+    expect(fold().className).toBe("worked");
     expect(layout.scrollTop).toBe(0);
   });
 
   test("a run that owns the tail of a streaming reply reads as working between calls", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "output-available")], true);
-    expect(fold().querySelector("summary")!.textContent).toContain("Working for");
+    expect(fold().querySelector("summary")!.textContent).toContain("Running b1");
     await render(
       [part("b1", "output-available"), { type: "text", text: "done" }],
       true,
     );
-    expect(fold().querySelector("summary")!.textContent).toContain("Worked");
+    expect(fold().querySelector("summary")!.textContent).toContain("bash b1 · exit 0");
     expect(fold().querySelector("summary")!.textContent).not.toContain("Working for");
   });
 

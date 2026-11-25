@@ -1,13 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-	lstatSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	readlinkSync,
-	renameSync,
-	rmSync,
-} from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Message } from "./message.ts";
 import { log } from "./log.ts";
@@ -73,7 +65,7 @@ function installProposal(
 	mkdirSync(staging, { recursive: true });
 	const trash = join(
 		staging,
-		`.replaced-approve-${(deps.now?.() ?? new Date()).getTime()}-${skill}`,
+		`.replaced-approve-${decisionTime(deps).getTime()}-${skill}`,
 	);
 	rmSync(trash, { recursive: true, force: true });
 	renameSync(target, trash);
@@ -103,6 +95,10 @@ function installProposal(
 	return { ok: true, replaced: true };
 }
 
+function decisionTime(deps: Pick<SkillDecisionDeps, "now">): Date {
+	return deps.now?.() ?? new Date();
+}
+
 function discardProposal(
 	deps: Pick<SkillDecisionDeps, "proposedDir" | "workspaceDir" | "now">,
 	skill: string,
@@ -128,7 +124,7 @@ function discardProposal(
 	if (rootStats !== undefined && !rootStats.isDirectory()) {
 		return { ok: false, reason: "skills-discarded is not a directory" };
 	}
-	const stamp = (deps.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
+	const stamp = decisionTime(deps).toISOString().replace(/[:.]/g, "-");
 	const keptAs = `${skill}.${stamp}`;
 	const target = join(root, keptAs);
 	try {

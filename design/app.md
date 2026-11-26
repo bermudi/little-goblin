@@ -467,12 +467,13 @@ after the latest roll, also while an earlier roll is open; the quiet gap and
 the new-subject check do not apply. It is off while a turn runs in the
 conversation on screen or in the latest roll; the server refuses it while a
 turn runs in the latest roll. It starts nothing when the latest roll is still
-empty. The operator lands in the new roll with the composer focused on every
-width: the landing takes the explicit focus path above once — opening that
-roll again later does not take it a second time — and the phone-width guard
-does not cover that path. The draft of the conversation that was
-on screen moves to the new roll; a draft in another roll stays there. The
-earlier roll keeps its history, its pending input and its settings. The new
+empty: the operator then lands in that empty roll. Either way the landing
+puts focus in the composer, on every width: it takes the explicit focus path
+above once — opening that roll again later does not take it a second time —
+and the phone-width guard does not cover that path. The draft of the
+conversation that was on screen moves to the roll the operator lands in, and
+it never replaces a draft already there; a draft in another roll stays there.
+The earlier roll keeps its history, its pending input and its settings. The new
 roll takes the app's model settings, like any roll, and wakes follow the rule
 above.
 

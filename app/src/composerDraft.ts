@@ -80,6 +80,11 @@ export function moveComposerDraft(from: string, to: string): boolean {
 	}
 	if (draft === null) return true;
 	try {
+		if (loadComposerDraft(to) !== null) return true;
+	} catch {
+		return false;
+	}
+	try {
 		saveComposerDraft(to, draft);
 	} catch {
 		return false;

@@ -835,6 +835,28 @@ describe("mobile: chats screen and navigation", () => {
 		expect(rollingChain.map((item) => item.id)).toEqual(["app/current"]);
 	});
 
+	test("New conversation into an empty latest roll keeps both drafts", async () => {
+		await rollByHand();
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => container.textContent?.includes("Back to latest") === true, "earlier roll");
+		await typeDraft("typed in the earlier roll");
+		rollingRollRequests.length = 0;
+		rollingRollReply = {
+			status: 200,
+			body: { conversationId: "app/fresh", rolled: false },
+			chain: [roll("fresh"), roll("current")],
+		};
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		await click(buttonText(".ctx-act", "New conversation"));
+		await waitFor(() => rollingRollRequests.length === 1, "second manual request");
+		await waitFor(() => container.textContent?.includes("Back to latest") === false, "back in the empty roll");
+		await waitFor(() => container.querySelector('.message-box[aria-label="Message draft"]') !== null, "composer");
+		await settle();
+		expect(draftText()).toBe("typed before the roll");
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => draftText() === "typed in the earlier roll", "draft of the earlier roll kept");
+	});
+
 	test("New conversation is not offered on an ordinary chat", async () => {
 		await mount();
 		await click(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]'));

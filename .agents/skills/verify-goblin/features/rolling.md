@@ -35,6 +35,8 @@ toggle). The popover's last row reads "Compact now", then "New
 conversation". "New conversation" starts a fresh roll at once: the
 transcript shows "— new conversation —" with "↑ Previous conversation",
 the text typed but not sent comes along, and the composer has focus on
-every width. The action is off while a turn runs in the conversation on
-screen or in the latest roll, and in an empty roll. An ordinary chat does
-not offer it. The log line is `app lane rolled` with `decidedBy: "manual"`.
+every width. When the latest roll is empty already, the action lands in
+that roll and keeps the draft that is already there. The action is off
+while a turn runs in the conversation on screen or in the latest roll,
+and in an empty roll. An ordinary chat does not offer it. The log line
+is `app lane rolled` with `decidedBy: "manual"`.

@@ -190,7 +190,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		draftScope?: string;
 		busy?: boolean;
 		onStop?: () => void;
-		quote?: { text: string; speaker: null; n: number } | null;
+		quote?: { text: string; speaker: null; messageId?: string | null; n: number } | null;
 	}) {
 		return (
 			<Composer
@@ -879,7 +879,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		]);
 	});
 
-	test("appending a quote keeps chips already in the draft", async () => {
+	test("inserting a quote keeps chips already in the draft", async () => {
 		saveComposerDraft("test", {
 			items: [{ type: "chip", chip: { kind: "note", id: "n-1", title: "Budget" } }],
 			shelf: [],
@@ -895,7 +895,9 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		});
 		await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 		expect(container.querySelector('.goblin-chip[aria-label="Note Budget"]')).not.toBeNull();
-		expect(container.querySelector(".message-box")?.textContent).toContain("> quoted words");
+		expect(container.querySelector('.goblin-chip[aria-label="Quote: quoted words"]')).not.toBeNull();
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain('"kind":"quote"');
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).not.toContain("> quoted words");
 	});
 
 	test("an accepted send clears the stored draft; a declined one keeps it", async () => {

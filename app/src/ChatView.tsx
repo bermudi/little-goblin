@@ -763,10 +763,12 @@ function Chat({
   const [quote, setQuote] = useState<{
     text: string;
     speaker: QuoteSpeaker | null;
+    messageId: string | null;
     n: number;
   }>({
     text: "",
     speaker: null,
+    messageId: null,
     n: 0,
   });
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1198,8 +1200,8 @@ function Chat({
         {header}
         <QuoteFab
           root={scrollRef}
-          onQuote={(text, speaker) =>
-            setQuote((q) => ({ text, speaker, n: q.n + 1 }))
+          onQuote={(text, speaker, messageId) =>
+            setQuote((q) => ({ text, speaker, messageId, n: q.n + 1 }))
           }
         />
         {/* The outline is a hover rail — a pointer affordance, so it does
@@ -1248,6 +1250,7 @@ function Chat({
                   <div
                     className={`msg user${prevUser ? " after-user" : ""}${nextUser ? " before-user" : ""}`}
                     data-outline-anchor={m.id}
+                    data-message-id={m.id}
                     onCopy={copyInlineSelection}
                   >
                     {isEditing ? (
@@ -1378,6 +1381,7 @@ function Chat({
                         ? "msg assistant streaming"
                         : "msg assistant"
                     }
+                    data-message-id={m.id}
                   >
                     {header}
                     <MessageParts
@@ -1501,6 +1505,15 @@ function Chat({
           busy={busy}
           liveCtx={liveCtx}
           onOpenNote={onOpenNote}
+          onGoToQuote={(messageId) => {
+            const source = scrollRef.current?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+            if (!(source instanceof HTMLElement)) return false;
+            source.scrollIntoView({ block: "center" });
+            source.classList.add("quote-source-flash");
+            setTimeout(() => source.classList.remove("quote-source-flash"), 1200);
+            follow.gesture("up");
+            return true;
+          }}
           quote={quote}
           draftRestore={draftRestore}
           onDraftRestored={() => {

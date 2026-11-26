@@ -10,7 +10,7 @@ import { clickConfirm, confirmSheet, confirmText, withLive } from "./testkit.ts"
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { placeSentMedia } from "./chat/sentMedia.ts";
 import { FoldMark, messageText, unlandedMeta } from "./chat/MetaLine.tsx";
-import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
+import { appendQuote, QuoteFab, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
 import { boxView } from "./chat/MessageBox.tsx";
@@ -5140,6 +5140,36 @@ describe("quoteSpeaker (happy-dom)", () => {
     dom.container.appendChild(bare);
     expect(quoteSpeaker(bare)).toBeNull();
     expect(quoteSpeaker(null)).toBeNull();
+  });
+});
+
+describe("QuoteFab source id (happy-dom)", () => {
+  const dom = mountDom();
+  test("onQuote receives the selected bubble's message id", async () => {
+    const bubble = document.createElement("div");
+    bubble.className = "msg assistant";
+    bubble.setAttribute("data-message-id", "reply-7");
+    const text = document.createTextNode("selected words");
+    bubble.appendChild(text);
+    dom.container.appendChild(bubble);
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    Object.defineProperty(range, "getClientRects", { value: () => [{ left: 10, right: 90, top: 10, bottom: 30, width: 80, height: 20 }] });
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    const calls: unknown[][] = [];
+    const ref = { current: dom.container };
+    await act(async () => {
+      dom.root = createRoot(dom.container);
+      dom.root.render(<QuoteFab root={ref} onQuote={(...args) => calls.push(args)} />);
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    const button = dom.container.querySelector(".quote-fab") as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    await act(async () => { button?.click(); });
+    expect(calls[0]?.[2]).toBe("reply-7");
   });
 });
 

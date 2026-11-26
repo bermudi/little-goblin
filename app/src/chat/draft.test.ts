@@ -311,3 +311,32 @@ describe("joinDrafts", () => {
 		expect(joinDrafts(textDraft("x"), emptyDraft())).toEqual(textDraft("x"));
 	});
 });
+
+describe("quote chips", () => {
+	test("without quote chips, internal blank lines keep their original bytes", () => {
+		expect(draftToParts(textDraft("a\n\n\n\nb"))).toEqual([{ type: "text", text: "a\n\n\n\nb" }]);
+	});
+
+	test("only whitespace at quote seams is trimmed", () => {
+		const quote: Chip = { kind: "quote", id: "q-seam", text: "q", speaker: "assistant" };
+		expect(draftToParts(draft([text("x\n\n\n"), chip(quote), text("\n\n\ny")]))).toEqual([
+			{ type: "text", text: "x\n\n[quoting Goblin's earlier reply]\n> q\n\ny" },
+		]);
+	});
+
+	test("send turns an assistant quote between text into one plain text part", () => {
+		const quote: Chip = { kind: "quote", id: "q1", text: "a\nb", speaker: "assistant" };
+		expect(draftToParts(draft([text("see "), chip(quote), text("why?")]))).toEqual([
+			{ type: "text", text: "see\n\n[quoting Goblin's earlier reply]\n> a\n> b\n\nwhy?" },
+		]);
+	});
+
+	test("notes follow quotes and adjacent quotes have one blank line", () => {
+		const a: Chip = { kind: "quote", id: "q1", text: "x", speaker: null, comment: "too slow" };
+		const b: Chip = { kind: "quote", id: "q2", text: "y", speaker: null };
+		expect(draftToParts(draft([chip(a)]))).toEqual([{ type: "text", text: "> x\n\ntoo slow" }]);
+		const parts = draftToParts(draft([chip(a), chip(b)]));
+		expect(parts).toEqual([{ type: "text", text: "> x\n\ntoo slow\n\n> y" }]);
+		expect(JSON.stringify(parts)).not.toContain('"inline"');
+	});
+});

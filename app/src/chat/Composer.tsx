@@ -13,7 +13,6 @@ import {
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
 import {
 	draftFromMessages,
-	draftText,
 	emptyDraft,
 	isEmptyDraft,
 	uploadState,
@@ -24,7 +23,7 @@ import { ModelPicker } from "../ModelPicker.tsx";
 import { SkillPickerSheet } from "../SkillPickerSheet.tsx";
 import { ContextGauge } from "./ContextGauge.tsx";
 import { NotePicker } from "./NotePicker.tsx";
-import { quoteBlock, type QuoteSpeaker } from "./QuoteFab.tsx";
+import type { QuoteSpeaker } from "./QuoteFab.tsx";
 import { MessageBox, type MessageBoxHandle } from "./MessageBox.tsx";
 import { useAttachments } from "./useAttachments.ts";
 import { useSkillNoteStaging } from "./useSkillNoteStaging.ts";
@@ -55,6 +54,7 @@ export function Composer({
 	onStop,
 	onCompacted,
 	onOpenNote,
+	onGoToQuote,
 	quote,
 	focusSignal,
 	stealFocus,
@@ -87,10 +87,8 @@ export function Composer({
 	// the transcript's fold marks update.
 	onCompacted?: () => void;
 	onOpenNote?: ((id: string) => void) | undefined;
-	// A select-to-quote request — `n` bumps per click, so even repeated
-	// text appends again. The speaker lands as the quote's annotation
-	// line; null quotes stay unattributed.
-	quote?: { text: string; speaker: QuoteSpeaker | null; n: number } | null;
+	onGoToQuote?: ((messageId: string) => boolean) | undefined;
+	quote?: { text: string; speaker: QuoteSpeaker | null; messageId?: string | null; n: number } | null;
 	// Bumped by the caller when the composer should grab focus (the
 	// "New conversation" click) — covers the already-mounted case that
 	// an autoFocus attribute can't.
@@ -374,10 +372,17 @@ export function Composer({
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
-		const quoted = quoteBlock(quote.text, quote.speaker ?? undefined);
-		const head = draftText(draftRef.current).trimEnd();
-		runBox(() => boxRef.current?.appendText(head === "" ? `${quoted}\n\n` : `\n\n${quoted}\n\n`));
-		boxRef.current?.focus("end");
+		const bytes = new Uint8Array(16);
+		crypto.getRandomValues(bytes);
+		const id = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+		runBox(() => boxRef.current?.insertChips([{
+			kind: "quote",
+			id,
+			text: quote.text.trim(),
+			speaker: quote.speaker,
+			...(quote.messageId == null ? {} : { messageId: quote.messageId }),
+		}]));
+		boxRef.current?.focus();
 	}, [quote, editedAfterSend]);
 	// The parent scopes this payload to its originating composer. Pending
 	// edits always restore, ahead of any newer draft; cancelled-send restores
@@ -470,6 +475,7 @@ export function Composer({
 					for (const f of files) pickFile(f);
 				}}
 				onOpenNote={onOpenNote}
+				onGoToQuote={onGoToQuote}
 				onUploadFailed={noteUploadError}
 				token={token}
 				ariaLabel="Message draft"

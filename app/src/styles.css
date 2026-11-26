@@ -2009,6 +2009,21 @@ h6.md-h {
 	white-space: nowrap;
 }
 
+.chip-details-quote {
+	max-height: 10rem;
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
+.msg.quote-source-flash {
+	animation: quote-source-flash 1.2s ease-out;
+}
+
+@keyframes quote-source-flash {
+	from { background: color-mix(in oklab, var(--app-accent) 24%, transparent); }
+	to { background: transparent; }
+}
+
 .msg-meta {
 	font-family: var(--font-mono);
 	font-size: 10.5px;

@@ -7496,7 +7496,6 @@ button.link:hover {
 }
 .win-break {
 	width: 100%;
-	max-width: var(--code-col);
 	border-collapse: collapse;
 	font-size: 12.5px;
 }
@@ -7523,6 +7522,19 @@ button.link:hover {
 	height: 6px;
 	border-radius: 3px;
 	background: color-mix(in oklab, var(--app-fg) 55%, var(--app-bg));
+}
+@media (min-width: 60rem) {
+	.win-break th,
+	.win-break td {
+		width: 1%;
+		white-space: nowrap;
+	}
+	.win-break .num {
+		padding-left: 2.5rem;
+	}
+	.win-break tr > :last-child {
+		width: 100%;
+	}
 }
 .win-fold {
 	border-top: 1px solid var(--app-divider);

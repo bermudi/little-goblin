@@ -99,3 +99,13 @@ describe("trajectory row time label", () => {
 		expect(Number(track) * 16).toBeGreaterThanOrEqual(16 * 10 * 0.6);
 	});
 });
+
+describe("space table width", () => {
+	test("the table has no width cap and gives the bars the rest of the line on a wide screen", () => {
+		const rule = /(?:^|\n)\.win-break \{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(rule).not.toContain("max-width");
+		expect(css).toMatch(
+			/@media \(min-width: 60rem\) \{[\s\S]*?\.win-break tr > :last-child \{\s*width: 100%;/,
+		);
+	});
+});

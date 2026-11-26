@@ -1014,10 +1014,10 @@ The view has two tabs. **Window** is the capture and its raw parts.
 model call, colored by prefix relation, and under it a thin bar per tool.
 Width is time and empty space is waiting. The Model calls table lives in
 this tab. The number tiles sit above the tabs, while "What takes the space"
-belongs to Window, so the chart starts right under the tiles. Until a prompt
-is captured, the view opens on this tab, so the calls stay reachable while
-the first turn runs. Tools that overlap in time sit on separate lines, so
-two tools that run at the same time are both visible.
+belongs to Window and spans its width, so the chart starts right under the
+tiles. Until a prompt is captured, the view opens on this tab, so the calls
+stay reachable while the first turn runs. Tools that overlap in time sit on
+separate lines, so two tools that run at the same time are both visible.
 
 Each row is one picture for assistive technology: it names the turn and
 the counts. The tools are also written as hidden text beside the picture,

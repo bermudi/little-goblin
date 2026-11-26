@@ -178,7 +178,7 @@ describe("uploads registry", () => {
 		const resolved = resolveDraft({ items: [{ type: "chip", chip }], shelf: [chip] });
 		expect(resolved).toEqual({
 			items: [{ type: "chip", chip: { ...chip, state: "failed" } }],
-			shelf: [{ ...chip, state: "failed" }],
+			shelf: [],
 		});
 		expect(retryUpload(chip)).toBeNull();
 	});

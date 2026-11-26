@@ -98,6 +98,11 @@ describe("normalizeDraft", () => {
 		);
 	});
 
+	test("a failed image keeps its chip but has no preview to show", () => {
+		const out = normalizeDraft(draft([text("see "), chip(failedChip)], [failedChip]));
+		expect(out).toEqual(draft([text("see "), chip(failedChip)], []));
+	});
+
 	test("non-image chips never join the shelf", () => {
 		const out = normalizeDraft(draft([chip(pdfChip()), chip(noteChip)], [pdfChip()]));
 		expect(out).toEqual(draft([chip(pdfChip()), chip(noteChip)], []));

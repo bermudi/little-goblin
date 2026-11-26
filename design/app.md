@@ -225,7 +225,9 @@ there are no typing shortcuts and no live Markdown styling.
   failed chips. Sending without the file was the old behaviour.
 - *Images keep a thumbnail above the text.* Deleting an image's chip leaves
   the thumbnail, and the image still goes with the message. Removing the
-  thumbnail asks first if the text still mentions the image.
+  thumbnail asks first if the text still mentions the image. A failed
+  upload has no picture to show, so it gets no thumbnail: only its chip,
+  which says it failed.
 - *Stored shape:* the same part as before with `inline: true` in its data,
   at its place between text parts. A part without the flag means what it
   always meant, so old messages keep their bytes for the model and their

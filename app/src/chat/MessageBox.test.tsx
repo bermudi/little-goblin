@@ -627,6 +627,7 @@ describe("MessageBox", () => {
 		});
 		const chipEl = container.querySelector(".goblin-chip");
 		expect(chipEl?.getAttribute("aria-label")).toBe("File b.png, upload failed");
+		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(0);
 		await edit((v) => {
 			expect(selectChip(v)).toBe(true);
 		});

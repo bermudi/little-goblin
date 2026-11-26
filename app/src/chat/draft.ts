@@ -188,7 +188,7 @@ export function normalizeDraft(draft: Draft): Draft {
 		i.type === "chip" && i.chip.kind === "file" ? [i.chip] : [],
 	);
 	for (const chip of [...draft.shelf, ...itemChips]) {
-		if (!isImageChip(chip)) continue;
+		if (!isImageChip(chip) || chip.state === "failed") continue;
 		const key = chipKey(chip);
 		if (seen.has(key)) continue;
 		seen.add(key);

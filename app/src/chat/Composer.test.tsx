@@ -717,6 +717,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		);
 		expect(container.querySelectorAll(".goblin-chip.failed").length).toBe(1);
 		expect(container.querySelectorAll(".goblin-chip").length).toBe(2);
+		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(1);
 		await act(async () => {
 			container.querySelector(".goblin-chip.failed")?.dispatchEvent(
 				new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,

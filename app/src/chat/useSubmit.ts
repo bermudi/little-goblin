@@ -62,7 +62,11 @@ export function useSubmit({
 				try {
 					const stored = loadComposerDraft(draftScope) ?? emptyDraft();
 					saveComposerDraft(draftScope, unsentRemainder(stored, draft));
-				} catch {}
+				} catch (e) {
+					setSendError(
+						`Sent, but the saved draft could not be updated: ${e instanceof Error ? e.message : String(e)}`,
+					);
+				}
 				setBoxDraft(remainder);
 			})
 			.catch((err: unknown) => {

@@ -561,12 +561,10 @@ export function copyInlineSelection(event: ClipboardEvent<HTMLElement>): void {
   if (range === null || range.collapsed || event.clipboardData === null) return;
   let holdsChip = false;
   for (const element of root.querySelectorAll("[data-goblin-chip]")) {
-    try {
-      if (range.intersectsNode(element)) {
-        holdsChip = true;
-        break;
-      }
-    } catch {}
+    if (range.intersectsNode(element)) {
+      holdsChip = true;
+      break;
+    }
   }
   if (!holdsChip) return;
   const fragment = range.cloneContents();

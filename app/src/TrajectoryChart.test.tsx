@@ -10,31 +10,53 @@ import type {
 import { buildTrajectory } from "./trajectory.ts";
 import { TrajectoryChart } from "./TrajectoryChart.tsx";
 
+const call: AppWindowCall = {
+	callId: "call-1",
+	purpose: null,
+	model: "test",
+	startedMs: 10,
+	finishedMs: 50,
+	status: "failed",
+	inputTokens: 10,
+	outputTokens: 2,
+	cacheRead: 0,
+	cacheWrite: 0,
+	prefixRelation: "append",
+	sharedMessages: 1,
+};
+
+const runs: AppWindowRun[] = [
+	{ runId: "r1", startedMs: 0, finishedMs: 100, status: "completed", resumedFrom: null },
+	{ runId: "r2", startedMs: 200, finishedMs: null, status: "running", resumedFrom: null },
+];
+
+function mount(): {
+	container: HTMLDivElement;
+	root: Root;
+	restore: () => void;
+} {
+	const win = new Window();
+	const previous = {
+		window: globalThis.window,
+		document: globalThis.document,
+		HTMLElement: globalThis.HTMLElement,
+	};
+	Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement });
+	const container = win.document.createElement("div");
+	const root: Root = createRoot(container as unknown as Element);
+	return {
+		container: container as unknown as HTMLDivElement,
+		root,
+		restore: () => {
+			Object.assign(globalThis, previous);
+			win.close();
+		},
+	};
+}
+
 describe("TrajectoryChart", () => {
 	test("renders accessible rows and status classes", () => {
-		const win = new Window();
-		const previous = {
-			window: globalThis.window,
-			document: globalThis.document,
-			HTMLElement: globalThis.HTMLElement,
-		};
-		Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement });
-		const container = win.document.createElement("div");
-		const root: Root = createRoot(container as unknown as Element);
-		const call: AppWindowCall = {
-			callId: "call-1",
-			purpose: null,
-			model: "test",
-			startedMs: 10,
-			finishedMs: 50,
-			status: "failed",
-			inputTokens: 10,
-			outputTokens: 2,
-			cacheRead: 0,
-			cacheWrite: 0,
-			prefixRelation: "append",
-			sharedMessages: 1,
-		};
+		const { container, root, restore } = mount();
 		const endedCall: AppWindowCall = {
 			...call,
 			callId: "call-unfinished",
@@ -48,10 +70,6 @@ describe("TrajectoryChart", () => {
 			finishedMs: null,
 			status: "started",
 		};
-		const runs: AppWindowRun[] = [
-			{ runId: "r1", startedMs: 0, finishedMs: 100, status: "completed", resumedFrom: null },
-			{ runId: "r2", startedMs: 200, finishedMs: null, status: "running", resumedFrom: null },
-		];
 		const tools: AppWindowToolRun[] = [
 			{
 				toolCallId: "tool-1",
@@ -71,6 +89,15 @@ describe("TrajectoryChart", () => {
 				settledMs: null,
 				modelCallId: "call-unfinished",
 			},
+			{
+				toolCallId: "tool-running",
+				runId: "r2",
+				name: "probe",
+				state: "dispatched",
+				beganMs: 220,
+				settledMs: null,
+				modelCallId: "call-live",
+			},
 		];
 		act(() => root.render(<TrajectoryChart rows={buildTrajectory([call, endedCall, liveCall], tools, runs)} />));
 		expect(container.querySelectorAll('[role="img"]')).toHaveLength(2);
@@ -89,8 +116,42 @@ describe("TrajectoryChart", () => {
 		expect(unfinishedTool!.classList.contains("running")).toBe(false);
 		expect(unfinishedTool!.classList.contains("failed")).toBe(false);
 		expect(container.querySelector(".win-traj-call.running")).not.toBeNull();
+		const runningTool = container.querySelector(".win-traj-tool.running");
+		expect(runningTool).not.toBeNull();
+		expect(runningTool!.textContent).toBe("probe");
 		act(() => root.unmount());
-		Object.assign(globalThis, previous);
-		win.close();
+		restore();
+	});
+
+	test("each prefix relation and each tool outcome gets its own class", () => {
+		const { container, root, restore } = mount();
+		const relations = ["first", "same", "append", "rewrite"] as const;
+		const calls: AppWindowCall[] = relations.map((relation, index) => ({
+			...call,
+			callId: `call-${relation}`,
+			startedMs: index * 20,
+			finishedMs: index * 20 + 10,
+			status: "completed",
+			prefixRelation: relation,
+		}));
+		const tools: AppWindowToolRun[] = (["completed", "failed"] as const).map((state, index) => ({
+			toolCallId: `tool-${state}`,
+			runId: "r1",
+			name: "probe",
+			state,
+			beganMs: 20 + index * 20,
+			settledMs: 29 + index * 20,
+			modelCallId: null,
+		}));
+		act(() => root.render(<TrajectoryChart rows={buildTrajectory(calls, tools, runs)} />));
+		expect([...container.querySelectorAll(".win-traj-call")].map((node) => node.className)).toEqual(
+			relations.map((relation) => `win-traj-call ${relation}`),
+		);
+		expect([...container.querySelectorAll(".win-traj-tool")].map((node) => node.className)).toEqual([
+			"win-traj-tool ok",
+			"win-traj-tool failed",
+		]);
+		act(() => root.unmount());
+		restore();
 	});
 });

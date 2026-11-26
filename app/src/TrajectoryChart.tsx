@@ -93,7 +93,7 @@ export function TrajectoryChart({ rows }: { rows: TrajectoryRow[] }): null | Rea
 													}}
 													title={`${tool.name} · ${tool.state} · ${ts(new Date(tool.beganMs).toISOString())}–${tool.settledMs === null ? "…" : ts(new Date(tool.settledMs).toISOString())} · ${seconds(tool.settledMs === null ? null : tool.settledMs - tool.beganMs)}`}
 												>
-													{tool.name}
+													<span>{tool.name}</span>
 												</span>
 											);
 										})}

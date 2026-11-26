@@ -7539,6 +7539,28 @@ button.link:hover {
 .win-fold .win-tools {
 	max-width: var(--code-col);
 }
+.win-page [data-slot="tabs-list"] {
+	display: flex;
+	gap: 0.2rem;
+	margin: 0.9rem 0 0.4rem;
+}
+.win-page [data-slot="tabs-tab"] {
+	padding: 0.35rem 0.95rem;
+	border: 0;
+	border-radius: 999px;
+	background: transparent;
+	color: var(--app-fg-muted);
+	font: inherit;
+	font-weight: 500;
+	cursor: pointer;
+}
+.win-page [data-slot="tabs-tab"][data-selected] {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.win-page [data-slot="tabs-panel"] {
+	padding-top: 0.5rem;
+}
 .win-traj {
 	display: grid;
 	gap: 0.45rem;
@@ -7578,6 +7600,17 @@ button.link:hover {
 	border-radius: 4px;
 	font: 10px var(--font-mono);
 	white-space: nowrap;
+	container-type: inline-size;
+}
+@container (max-width: 6.5rem) {
+	.win-traj-call > span {
+		display: none;
+	}
+}
+@container (max-width: 4rem) {
+	.win-traj-tool > span {
+		display: none;
+	}
 }
 .win-traj-call.same {
 	background: color-mix(in oklab, var(--app-accent) 85%, var(--app-fg));

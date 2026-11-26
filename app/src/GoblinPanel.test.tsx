@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import type { AppAttentionItem } from "../../src/http/app-wire.ts";
+import type { AppAttentionItem, AppConversationListItem } from "../../src/http/app-wire.ts";
 import { activityTime, GoblinPanel } from "./GoblinPanel.tsx";
 
 let win: Window;
@@ -19,6 +19,20 @@ const baseData = (working: number, attention: AppAttentionItem[] = []) => ({
 	attention, attentionError: false, delegations: [], programs: [], activity: { busy: [], otherBusy: 0, posts: [] },
 	loadError: false, working, reload() {},
 }) as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+const appConversation = (id: string, fields: Partial<AppConversationListItem> = {}): AppConversationListItem => ({
+	id: `app/${id}`,
+	title: id,
+	createdAt: "2026-11-20T00:00:00Z",
+	updatedAt: "2026-11-21T00:00:00Z",
+	preview: `${id} preview`,
+	archivedAt: null,
+	pinnedAt: null,
+	projectId: null,
+	parentId: null,
+	newReply: null,
+	busy: false,
+	...fields,
+});
 
 beforeEach(() => {
 	win = new Window({ url: "http://localhost/app/" });
@@ -74,7 +88,7 @@ test("tabs are Activity, Scheduled and Library; avatar opens profile", async () 
 	expect(profile).toBe(1);
 });
 
-test("activity puts running delegation before finished work and labels subagents", async () => {
+test("activity keeps delegations before finished work and omits subagent rows", async () => {
 	const data = {
 		...baseData(2),
 		activity: { busy: [{ id: "app/child", title: "Compare prices", parentId: "app/parent", rolling: false }], otherBusy: 0, posts: [] },
@@ -90,10 +104,159 @@ test("activity puts running delegation before finished work and labels subagents
 	const finished = rows.findIndex((row) => row.includes("old-task"));
 	expect(running).toBeGreaterThanOrEqual(0);
 	expect(finished).toBeGreaterThan(running);
-	expect(rows.some((row) => row.startsWith("Compare prices"))).toBe(true);
+	expect(rows.some((row) => row.startsWith("Compare prices"))).toBe(false);
 	expect([...container.querySelectorAll(".goblin-panel-group, .activity-row strong")].map((el) => el.textContent)).toEqual([
-		"Running", "Compare prices", "fix-sheet", "Earlier", "old-task",
+		"Running", "fix-sheet", "Earlier", "old-task",
 	]);
+});
+
+test("a busy parent groups a busy subagent under one Running row", async () => {
+	const data = {
+		...baseData(2),
+		activity: {
+			busy: [
+				{ id: "app/parent", title: "parent", parentId: null, rolling: false },
+				{ id: "app/child", title: "child", parentId: "app/parent", rolling: false },
+			],
+			otherBusy: 0,
+			posts: [],
+		},
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	await act(async () => root?.render(
+		<GoblinPanel
+			data={data}
+			conversations={[
+				appConversation("parent", { busy: true }),
+				appConversation("child", { parentId: "app/parent", title: "Compare prices", busy: true }),
+			]}
+			notes={null}
+			variant="column"
+			onOpenTarget={() => {}}
+			onOpenConversation={() => {}}
+			onOpenPage={() => {}}
+			onOpenNote={() => {}}
+			onOpenProfile={() => {}}
+		/>,
+	));
+	const running = [...container.querySelectorAll(".activity-row-wrap")].find((row) =>
+		row.querySelector(":scope > .activity-row-main strong")?.textContent === "parent",
+	);
+	expect(running?.querySelector(":scope > .activity-row-main .activity-detail")?.textContent)
+		.toBe("Replying · 1 subagent");
+	expect(running?.textContent).toContain("Compare prices");
+	expect(container.querySelectorAll(".goblin-panel-group").length).toBe(1);
+});
+
+test("idle parent stays in Running while two subagents run; its chevron collapses them", async () => {
+	const data = {
+		...baseData(2),
+		activity: {
+			busy: [
+				{ id: "app/one", title: "one", parentId: "app/parent", rolling: false },
+				{ id: "app/two", title: "two", parentId: "app/parent", rolling: false },
+			],
+			otherBusy: 0,
+			posts: [],
+		},
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	await act(async () => root?.render(
+		<GoblinPanel
+			data={data}
+			conversations={[
+				appConversation("parent"),
+				appConversation("one", { parentId: "app/parent", busy: true }),
+				appConversation("two", { parentId: "app/parent", busy: true }),
+			]}
+			notes={null}
+			variant="column"
+			onOpenTarget={() => {}}
+			onOpenConversation={() => {}}
+			onOpenPage={() => {}}
+			onOpenNote={() => {}}
+			onOpenProfile={() => {}}
+		/>,
+	));
+	const parent = [...container.querySelectorAll(".activity-row-wrap")].find((row) =>
+		row.querySelector(":scope > .activity-row-main strong")?.textContent === "parent",
+	);
+	const toggle = parent?.querySelector<HTMLButtonElement>(".activity-expand");
+	expect(parent?.querySelector(".activity-detail")?.textContent).toBe("Waiting on 2 subagents");
+	expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+	await act(async () => toggle?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+	expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+	expect(parent?.querySelector(".activity-subagents")?.hasAttribute("hidden")).toBe(true);
+});
+
+test("This chat lists busy then finished subagents and does not repeat its parent in Running", async () => {
+	const data = {
+		...baseData(1),
+		activity: {
+			busy: [{ id: "app/busy", title: "busy", parentId: "app/parent", rolling: false }],
+			otherBusy: 0,
+			posts: [],
+		},
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	await act(async () => root?.render(
+		<GoblinPanel
+			data={data}
+			conversations={[
+				appConversation("parent"),
+				appConversation("finished", { parentId: "app/parent", updatedAt: "2026-11-22T00:00:00Z" }),
+				appConversation("busy", { parentId: "app/parent", busy: true }),
+			]}
+			openConversationId="app/parent"
+			notes={null}
+			variant="column"
+			onOpenTarget={() => {}}
+			onOpenConversation={() => {}}
+			onOpenPage={() => {}}
+			onOpenNote={() => {}}
+			onOpenProfile={() => {}}
+		/>,
+	));
+	const headings = [...container.querySelectorAll(".goblin-panel-group")].map((heading) => heading.textContent);
+	expect(headings).toEqual(["This chat"]);
+	const rows = [...container.querySelectorAll(".activity-subagents strong")].map((label) => label.textContent);
+	expect(rows).toEqual(["busy", "finished"]);
+	expect(container.querySelector(".activity-subagents .mark-working")).not.toBeNull();
+	expect(container.querySelector(".activity-subagents .mark-done")).not.toBeNull();
+	expect([...container.querySelectorAll(".activity-row > strong")].map((label) => label.textContent))
+		.toContain("parent");
+	expect(container.querySelector(".goblin-panel-group")?.textContent).not.toBe("Running");
+});
+
+test("This chat opens a nested subagent; a null title uses its preview", async () => {
+	const data = {
+		...baseData(0),
+		activity: { busy: [], otherBusy: 0, posts: [] },
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	const opened: string[] = [];
+	root = createRoot(container);
+	await act(async () => root?.render(
+		<GoblinPanel
+			data={data}
+			conversations={[
+				appConversation("parent"),
+				appConversation("child", { parentId: "app/parent", title: null, preview: "A readable task name\nmore" }),
+			]}
+			openConversationId="app/parent"
+			notes={null}
+			variant="column"
+			onOpenTarget={() => {}}
+			onOpenConversation={(id) => opened.push(id)}
+			onOpenPage={() => {}}
+			onOpenNote={() => {}}
+			onOpenProfile={() => {}}
+		/>,
+	));
+	expect(container.querySelector(".activity-subagents strong")?.textContent).toBe("A readable task name more");
+	await act(async () => container.querySelector(".activity-subagents .activity-row")?.dispatchEvent(
+		new win.MouseEvent("click", { bubbles: true }) as unknown as Event,
+	));
+	expect(opened).toEqual(["app/child"]);
 });
 
 test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", async () => {
@@ -287,4 +450,68 @@ test("activity time is an age for a day, then a date", () => {
 	expect(ago(day - 1000)).toBe("23h");
 	expect(ago(day)).toBe(new Date(now - day).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
 	expect(activityTime("not a date", now)).toBe("");
+});
+
+async function mountActivity(
+	busy: Array<{ id: string; parentId: string | null }>,
+	conversations: AppConversationListItem[],
+	openConversationId: string | null = null,
+) {
+	const data = {
+		...baseData(busy.length),
+		activity: {
+			busy: busy.map((row) => ({ ...row, title: row.id.replace("app/", ""), rolling: false })),
+			otherBusy: 0,
+			posts: [],
+		},
+	} as unknown as Parameters<typeof GoblinPanel>[0]["data"];
+	root = createRoot(container);
+	const noop = () => {};
+	await act(async () => root?.render(
+		<GoblinPanel
+			data={data}
+			conversations={conversations}
+			openConversationId={openConversationId}
+			notes={null}
+			variant="column"
+			onOpenTarget={noop}
+			onOpenConversation={noop}
+			onOpenPage={noop}
+			onOpenNote={noop}
+			onOpenProfile={noop}
+		/>,
+	));
+}
+
+test("Running nests only the parent's running subagents", async () => {
+	await mountActivity(
+		[{ id: "app/busy", parentId: "app/parent" }],
+		[
+			appConversation("parent"),
+			appConversation("finished", { parentId: "app/parent" }),
+			appConversation("busy", { parentId: "app/parent", busy: true }),
+		],
+	);
+	expect([...container.querySelectorAll(".activity-subagents strong")].map((label) => label.textContent))
+		.toEqual(["busy"]);
+});
+
+test("an open busy chat without subagents stays in Running", async () => {
+	await mountActivity([{ id: "app/parent", parentId: null }], [appConversation("parent", { busy: true })], "app/parent");
+	expect([...container.querySelectorAll(".goblin-panel-group")].map((heading) => heading.textContent))
+		.toContain("Running");
+	expect([...container.querySelectorAll(".activity-row > strong")].map((label) => label.textContent))
+		.toContain("parent");
+});
+
+test("This chat keeps the working mark of a busy parent", async () => {
+	await mountActivity(
+		[{ id: "app/parent", parentId: null }],
+		[appConversation("parent", { busy: true }), appConversation("child", { parentId: "app/parent" })],
+		"app/parent",
+	);
+	const parent = container.querySelector(".activity-row-wrap > .activity-row-main > .activity-row");
+	expect(parent?.querySelector("strong")?.textContent).toBe("parent");
+	expect(parent?.querySelector(".mark-working")).not.toBeNull();
+	expect(parent?.querySelector(".activity-detail")?.textContent).toBe("Replying");
 });

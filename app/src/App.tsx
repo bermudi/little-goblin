@@ -576,7 +576,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		attention: goblin.attention ?? [],
 		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
 		open: railCurrent,
-		openRoll,
 		seen,
 	}, activeProjects, projectsOpen);
 	const desktopFlipRef = useFlip(home.orderSignature);
@@ -1404,6 +1403,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<ActivityView
 						token={token}
 						data={goblin}
+						conversations={[...all, ...rollingChain]}
+						rollingConversationIds={rollingChain.map((conversation) => conversation.id)}
 						onOpenConversation={openConversation}
 						onOpenPage={(p) => void openPage(p)}
 					/>
@@ -1771,6 +1772,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<GoblinPanel
 						variant="column"
 						data={goblin}
+						conversations={[...all, ...rollingChain]}
+						openConversationId={railCurrent ?? openRoll}
+						rollingConversationIds={rollingChain.map((conversation) => conversation.id)}
 						notes={notes}
 						notesError={notesError}
 						onOpenTarget={openAttentionTarget}
@@ -1794,6 +1798,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<GoblinPanel
 							variant="sheet"
 							data={goblin}
+							conversations={[...all, ...rollingChain]}
+							openConversationId={railCurrent ?? openRoll}
+							rollingConversationIds={rollingChain.map((conversation) => conversation.id)}
 							notes={notes}
 							notesError={notesError}
 							onOpenTarget={(target) => {

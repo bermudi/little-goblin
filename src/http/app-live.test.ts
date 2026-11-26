@@ -599,6 +599,7 @@ describe("app live feed", () => {
 			store.resolveAgentChild(
 				parent!,
 				"general",
+				"task",
 				{ model: "zai/m", thinking: "medium" },
 				new Date().toISOString(),
 			);

@@ -195,6 +195,18 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 	const rig = (opts: Parameters<typeof createRig>[0] = {}) => createRig(opts, make);
 	const reply = (text: string) => createReply(text);
 	const gated = (text: string) => createGate(text);
+	test("spawn titles the child from the task's first line and caps it at 60 characters", async () => {
+		const r = rig();
+		r.queue.push(reply("done"), reply("done"));
+		const first = await spawn(r, "  Compare\tprices  \nsecond line");
+		expect(r.store.get(first.child.conversationId)).toMatchObject({
+			title: "Compare prices",
+			titleImplicit: true,
+		});
+		const long = await spawn(r, "x".repeat(200));
+		expect(r.store.get(long.child.conversationId)?.title).toBe(`${"x".repeat(59)}…`);
+		expect(r.store.get(long.child.conversationId)?.title?.length).toBe(60);
+	});
 	test("spawn runs the child, settles done, wakes the parent with the fenced result", async () => {
 		const r = rig();
 		r.queue.push(reply("CHILD RESULT"));

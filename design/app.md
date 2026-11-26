@@ -878,6 +878,13 @@ moved (see "Live state" below). The activity route lists busy app
 conversations and counts busy conversations on other channels, so a
 Telegram turn still counts as work.
 
+**Subagents (operator, 2026-11-26, #961).** A subagent is never its own row.
+Running, it nests under its parent's row, which stays in Running while any
+subagent runs ("Waiting on 2 subagents"). The chevron opens and closes the
+nest; it starts open. When the open chat has subagents, a This chat group
+lists all of them, finished ones too, so the panel is the way into a finished
+subagent.
+
 ### Home screen (rulings 2026-11-23, #919)
 
 The list could not say which chat was busy, waiting or unread, and Goblin's
@@ -914,11 +921,10 @@ is now the home screen, and the avatar means only the agent.
 - **A row you open stays where it is until you leave it.** The client holds
   the place the row had when it was opened. Pinning, archiving and moving to a
   project still act at once.
-- **Subagents** fold under their parent as "N subagents", closed. The fold
-  shows while one runs or asks, or the parent or one of them is open. A pinned
-  subagent, and one whose parent is archived, is its own row with the
-  "subagent" label. The Rolling chat row folds the subagents of its rolls the
-  same way.
+- **Subagents** never show in the chat list, pinned or not (operator,
+  2026-11-26, #961). A running subagent still marks its parent working, and
+  its question marks the parent needs you. The Goblin panel shows subagents
+  under their parent chat.
 - **The Rolling chat row** shows the mark of any of its rolls (the newest 50)
   and opens the roll that has it, otherwise the newest.
 - **Goblin's avatar** is in the chat header, and on a phone also in the chats
@@ -929,9 +935,8 @@ is now the home screen, and the avatar means only the agent.
   readers. Moves animate, except under `prefers-reduced-motion`.
 
 Not chosen: the same marks with rows that stay in place; today's layout with
-correct marks. Accepted limits: a finished subagent of an unpinned project
-chat has no row, because its parent has none; another device can show a new
-reply for a moment before the open one marks it read.
+correct marks. Accepted limits: another device can show a new reply for a
+moment before the open one marks it read.
 
 ### Live state (ruling 2026-11-23, #918)
 

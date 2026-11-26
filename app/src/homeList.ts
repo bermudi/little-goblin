@@ -13,12 +13,6 @@ export interface Hold {
 	place: Place;
 }
 
-export interface Kid {
-	id: string;
-	conv: Conv;
-	mark: "needs" | "working" | null;
-}
-
 export interface ChatRow {
 	kind: "chat";
 	id: string;
@@ -26,9 +20,6 @@ export interface ChatRow {
 	mark: Mark | null;
 	line: string;
 	projectName?: string;
-	subagent: boolean;
-	kids: Kid[];
-	showKids: boolean;
 	place: Place;
 }
 
@@ -46,8 +37,6 @@ export interface RollingRow {
 	line: string;
 	target: string | null;
 	updatedAt: string | null;
-	kids: Kid[];
-	showKids: boolean;
 }
 
 export interface HomeList {
@@ -63,7 +52,6 @@ export interface HomeInput {
 	attention: readonly AppAttentionItem[];
 	delegations: readonly { appConversation: string | null; status: string }[];
 	open: string | null;
-	openRoll: string | null;
 	seen: string | null;
 }
 
@@ -92,7 +80,6 @@ export function buildHome(
 	const chatsById = new Map(conversations.map((conv) => [conv.id, conv]));
 	const rollIds = new Set(input.chain.map((conv) => conv.id));
 	const owners = findOwners(conversations, chatsById, rollIds);
-	const children = findChildren(conversations, owners);
 	const openOwner = input.open === null ? undefined : owners.get(input.open);
 	const openRow = openOwner?.roll === null ? openOwner.row : null;
 	const activeHold = prev?.id === openRow ? prev : null;
@@ -110,7 +97,9 @@ export function buildHome(
 		const owner = owners.get(conv.id);
 		if (owner?.row !== conv.id) continue;
 
-		const descendants = children.get(conv.id) ?? [];
+		const descendants = conversations.filter(
+			(candidate) => candidate.id !== conv.id && owners.get(candidate.id)?.row === conv.id,
+		);
 		const ids = new Set([conv.id, ...descendants.map((child) => child.id)]);
 		const rawResult = getMark(
 			conv,
@@ -132,16 +121,8 @@ export function buildHome(
 		const place = getPlacedPlace(conv, rawPlace, activeProjectIds, activeHold);
 		if (!place) continue;
 
-		const kidRows = descendants.map((kid) =>
-			makeKid(kid, attentionByConversation, runningByConversation),
-		);
 		const line = getChatLine(conv, visibleResult);
 		const projectName = conv.projectId == null ? undefined : projects.get(conv.projectId);
-		const showKids = kidRows.length > 0 && (
-			kidRows.some((kid) => kid.mark !== null) ||
-			input.open === conv.id ||
-			kidRows.some((kid) => kid.id === input.open)
-		);
 
 		rowById.set(conv.id, {
 			kind: "chat",
@@ -150,9 +131,6 @@ export function buildHome(
 			mark: visibleResult.mark,
 			line,
 			...(projectName === undefined ? {} : { projectName }),
-			subagent: conv.parentId !== null,
-			kids: kidRows,
-			showKids,
 			place,
 		});
 	}
@@ -198,7 +176,7 @@ function findOwners(
 
 		const conv = chatsById.get(id);
 		if (!conv) return { row: null, roll: null };
-		if (conv.parentId == null || conv.pinnedAt != null) {
+		if (conv.parentId == null) {
 			const owner = { row: conv.id, roll: null };
 			owners.set(id, owner);
 			return owner;
@@ -212,7 +190,7 @@ function findOwners(
 		const cycleIndex = visiting.indexOf(id);
 		if (cycleIndex >= 0) {
 			for (const cycleId of visiting.slice(cycleIndex)) {
-				owners.set(cycleId, { row: cycleId, roll: null });
+				owners.set(cycleId, { row: null, roll: null });
 			}
 			return owners.get(id)!;
 		}
@@ -221,7 +199,7 @@ function findOwners(
 		const parent = chatsById.get(conv.parentId);
 		if (!parent) {
 			visiting.pop();
-			const owner = { row: conv.id, roll: null };
+			const owner = { row: null, roll: null };
 			owners.set(id, owner);
 			return owner;
 		}
@@ -241,24 +219,6 @@ function findOwners(
 		visit(conv.id);
 	}
 	return owners;
-}
-
-function findChildren(
-	conversations: readonly Conv[],
-	owners: Map<string, Owner>,
-): Map<string, Conv[]> {
-	const children = new Map<string, Conv[]>();
-	for (const conv of conversations) {
-		const owner = owners.get(conv.id);
-		if (!owner || owner.row === null || owner.row === conv.id) continue;
-		const rows = children.get(owner.row) ?? [];
-		rows.push(conv);
-		children.set(owner.row, rows);
-	}
-	for (const rows of children.values()) {
-		rows.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
-	}
-	return children;
 }
 
 function groupAttention(items: readonly AppAttentionItem[]): Map<string, AppAttentionItem[]> {
@@ -325,20 +285,6 @@ function newestAttention(
 		}
 	}
 	return newest;
-}
-
-function makeKid(
-	conv: Conv,
-	attention: Map<string, AppAttentionItem[]>,
-	running: Set<string>,
-): Kid {
-	let mark: Kid["mark"] = null;
-	if (attention.has(conv.id)) {
-		mark = "needs";
-	} else if (conv.busy || running.has(conv.id)) {
-		mark = "working";
-	}
-	return { id: conv.id, conv, mark };
 }
 
 function getRawPlace(
@@ -440,25 +386,11 @@ function makeRollingRow(
 	} else if (picked?.result.mark === "working") {
 		line = "Working";
 	}
-	const kids = marked
-		.filter((entry) =>
-			entry.roll.id === input.openRoll ||
-			entry.kids.some((kid) =>
-				kid.busy ||
-				running.has(kid.id) ||
-				attention.has(kid.id) ||
-				kid.id === input.open
-			)
-		)
-		.flatMap((entry) => entry.kids.map((kid) => makeKid(kid, attention, running)))
-		.sort((left, right) => Date.parse(left.conv.createdAt) - Date.parse(right.conv.createdAt));
 	return {
 		mark: picked?.result.mark ?? null,
 		line,
 		target: picked?.roll.id ?? newest?.id ?? null,
 		updatedAt: newest?.updatedAt ?? null,
-		kids,
-		showKids: kids.length > 0,
 	};
 }
 

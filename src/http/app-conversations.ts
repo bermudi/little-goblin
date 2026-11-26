@@ -300,6 +300,7 @@ export async function handleConversationsRoute(
 	req: Request,
 	url: URL,
 	deps: AppChannelDeps,
+	now: () => number = Date.now,
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
@@ -793,7 +794,7 @@ export async function handleConversationsRoute(
 				calls,
 				toolRuns: listToolRuns(store.db, convId.id, sinceMs),
 				runs: listRuns(store.db, convId.id, sinceMs, untilMs),
-				nowMs: Date.now(),
+				nowMs: now(),
 			};
 		})();
 		const body: AppWindowView = {

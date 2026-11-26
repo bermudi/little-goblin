@@ -65,6 +65,19 @@ test("T1: sections stay ordered, pinned chats lead, archived and unpinned projec
 	expect(list.chats[1]?.conv.id).toBe("app/server-first");
 });
 
+test("ask attention marks a chat or its owning roll, while ui choices do not mark it", () => {
+	const ask = { ...item("app/chat", "Asks: q", "ask"), detail: "Waiting for your answer", target: { kind: "conversation" as const, conversationId: "app/chat" } };
+	const chat = chatRows(base([conv("chat")], { attention: [ask] }));
+	expect(chat.active.find((row) => row.kind === "chat" && row.id === "app/chat")).toMatchObject({ mark: "needs", line: "Asks: q" });
+	const oldRoll = conv("roll-old");
+	const newRoll = conv("roll-new");
+	const rolledAsk = { ...ask, conversationId: oldRoll.id, target: { kind: "conversation" as const, conversationId: oldRoll.id } };
+	const roll = chatRows(base([], { chain: [newRoll, oldRoll], attention: [rolledAsk] }));
+	expect(roll.rolling).toMatchObject({ mark: "needs", line: "Asks: q", target: oldRoll.id });
+	const uiOnly = chatRows(base([conv("ui", { newReply: null })]));
+	expect(uiOnly.chats.find((row) => row.id === "app/ui")?.mark).toBeNull();
+});
+
 test("T2: Active sorts by needs, new, working, then newest within each mark", () => {
 	const list = chatRows(base([
 		conv("work-old", { busy: true, updatedAt: time(2) }),

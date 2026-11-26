@@ -15,6 +15,7 @@ interface Swept {
 	wakes: number;
 	workEvents: number;
 	watches: number;
+	asks: number;
 }
 
 const MAX_SUBAGENT_DEPTH = 64;
@@ -134,6 +135,7 @@ export function makeConversationDelete(
 			// they ride the delete, in the same transaction.
 			const counts = sweepConversationWakes(db, id);
 			const watches = db.query("DELETE FROM watches WHERE conversation_id = ?").run(id).changes;
+			const asks = db.query("DELETE FROM asks WHERE conversation_id = ?").run(id).changes;
 			qDeleteEvents.run(id);
 			qDeleteCompactions.run(id);
 			qDeleteContexts.run(id);
@@ -143,7 +145,7 @@ export function makeConversationDelete(
 			qDeleteWindows.run(id);
 			qDeleteClaudeSessions.run(id);
 			qDeleteConv.run(id);
-			return { ...counts, watches };
+			return { ...counts, watches, asks };
 		})();
 		return swept;
 	}
@@ -158,6 +160,9 @@ export function makeConversationDelete(
 		}
 		if (swept.watches > 0) {
 			log.info("watch rows swept with conversation", { conversation: id, watches: swept.watches });
+		}
+		if (swept.asks > 0) {
+			log.info("ask rows swept with conversation", { conversation: id, asks: swept.asks });
 		}
 		// The purge waits for the commit: queued retention rides the
 		// append transaction only, so cancelling before the delete and

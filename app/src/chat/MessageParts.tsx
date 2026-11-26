@@ -27,6 +27,7 @@ import {
 import { liveThoughtLine } from "./liveThoughtLine.ts";
 import { LiveWork } from "./LiveWork.tsx";
 import { UiPart } from "../ui/UiPart.tsx";
+import { AskCard } from "./AskCard.tsx";
 import type { AttachmentRef } from "../../../src/agent/attachments.ts";
 import { hasInlineParts, inlineChipLabel, isInlinePart } from "../../../src/inline-parts.ts";
 import { fetchAttachmentUrl } from "./attachmentUrl.ts";
@@ -40,12 +41,17 @@ import {
 
 type ActivityPart = ToolUIPart | DynamicToolUIPart | ReasoningUIPart;
 type SentChip = Exclude<Chip, QuoteChip>;
+function isOpenAskPart(part: UIMessage["parts"][number]): boolean {
+  if (!isToolUIPart(part) || getToolName(part) !== "ask") return false;
+  const input = part.input as { action?: unknown } | undefined;
+  return input?.action === "open";
+}
 // A part that folds into an Activity run: a tool call (ui parts render
 // inline as the interface and never join) or thought text with
 // something in it.
 function isActivityPart(p: UIMessage["parts"][number]): boolean {
   return (
-    (isToolUIPart(p) && getToolName(p) !== "ui") ||
+    (isToolUIPart(p) && getToolName(p) !== "ui" && !isOpenAskPart(p)) ||
     (p.type === "reasoning" && p.text.trim() !== "")
   );
 }
@@ -730,6 +736,18 @@ function MessagePartsView({
       );
       continue;
     }
+    if (isOpenAskPart(p) && isToolUIPart(p)) {
+      out.push(
+        <AskCard
+          key={p.toolCallId === "" ? i : p.toolCallId}
+          part={p}
+          onAction={onAction}
+          busy={busy === true}
+          token={token ?? null}
+        />,
+      );
+      continue;
+    }
     if (p.type === "data-approval") {
       const data =
         typeof p.data === "object" && p.data !== null
@@ -756,7 +774,7 @@ function MessagePartsView({
       while (j < parts.length) {
         const q = parts[j]!;
         if (isToolUIPart(q)) {
-          if (getToolName(q) === "ui") break;
+          if (getToolName(q) === "ui" || isOpenAskPart(q)) break;
           run.push(q);
         } else if (q.type === "reasoning") {
           // Empty reasoning parts exist in history — providers that

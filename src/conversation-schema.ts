@@ -360,6 +360,17 @@ export function ensureConversationSchema(db: Database): void {
 				id INTEGER PRIMARY KEY CHECK (id = 1),
 				n INTEGER NOT NULL
 			)`);
+	db.run(`
+			CREATE TABLE IF NOT EXISTS asks (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				conversation_id TEXT NOT NULL,
+				question TEXT NOT NULL,
+				options TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				closed_at TEXT,
+				closed_by TEXT CHECK (closed_by IN ('goblin','tap','dismiss'))
+			)`);
+	db.run("CREATE INDEX IF NOT EXISTS asks_conversation_closed ON asks(conversation_id, closed_at)");
 	// Manual DM navigation is additive. The presence of the link column
 	// is the one-time migration marker: never rebuild links on later boots,
 	// or a /back → /new branch would silently become chronological again.

@@ -9,7 +9,7 @@ import { setLogFile } from "../log.ts";
 import type { TurnDone } from "../turn/sink.ts";
 import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { claudeScript } from "../testkit/turn-script-claude.ts";
-import { sleep, tmpDir, waitUntil } from "../testkit.ts";
+import { deferred, sleep, tmpDir, waitUntil } from "../testkit.ts";
 import type { AppChannelDeps } from "./app-shared.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
@@ -18,6 +18,103 @@ const engineName = (make: (typeof adapters)[number]) =>
 	make === sdkScript ? "ai-sdk" : "claude-code";
 
 describe("app chat", () => {
+	test("rolling roll is refused while the latest roll's turn runs", async () => {
+		const entered = deferred<void>();
+		const gate = deferred<void>();
+		const model = sdkScript();
+		model.script({ kind: "hold", parts: [], gate: gate.promise, entered: () => entered.resolve() });
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME, scriptedModel: model });
+		try {
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					rolling: true,
+					message: { id: "busy-message", role: "user", parts: [{ type: "text", text: "hold" }] },
+				}),
+			});
+			expect(chat.status).toBe(202);
+			await entered.promise;
+			const current = store.currentAppRoll();
+			const refused = await call("/api/app/rolling/roll", { method: "POST" });
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toEqual({
+				error: "a turn is still running in the latest conversation",
+			});
+			expect(store.currentAppRoll()?.id).toBe(current?.id);
+			const list = await (await call("/api/app/conversations")).json() as {
+				rolling: { chain: { id: string }[] };
+			};
+			expect(list.rolling.chain).toHaveLength(1);
+			gate.resolve();
+		} finally {
+			gate.resolve();
+			http.stop();
+		}
+	});
+
+	test("rolling roll starts a fresh roll after the latest one", async () => {
+		const { http, call, store, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const first = store.rollApp(configRef.current);
+			store.append(first.id, [{ id: "m1", role: "user", parts: [{ type: "text", text: "topic one" }] }]);
+			const response = await call("/api/app/rolling/roll", { method: "POST" });
+			const body = await response.json() as { conversationId: string; rolled: boolean };
+			expect(response.status).toBe(200);
+			expect(body).toMatchObject({ rolled: true });
+			expect(body.conversationId).toMatch(/^app\//);
+			expect(body.conversationId).not.toBe(first.id);
+			expect(store.currentAppRoll()?.id).toBe(body.conversationId);
+			expect(store.history(body.conversationId)).toEqual([]);
+			expect(store.history(first.id).map((message) => message.id)).toEqual(["m1"]);
+			const listResponse = await call("/api/app/conversations");
+			const list = await listResponse.json() as { rolling: { chain: { id: string }[] } };
+			expect(list.rolling.chain.map((item) => item.id)).toEqual([body.conversationId, first.id]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rolling roll starts nothing when the latest roll is empty", async () => {
+		const { http, call, store, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const first = store.rollApp(configRef.current);
+			const response = await call("/api/app/rolling/roll", { method: "POST" });
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ conversationId: first.id, rolled: false });
+			expect(store.currentAppRoll()?.id).toBe(first.id);
+			expect((await (await call("/api/app/conversations")).json() as { rolling: { chain: unknown[] } }).rolling.chain).toHaveLength(1);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rolling roll mints the first roll when none exists", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const response = await call("/api/app/rolling/roll", { method: "POST" });
+			const body = await response.json() as { conversationId: string; rolled: boolean };
+			expect(response.status).toBe(200);
+			expect(body.rolled).toBe(true);
+			expect(body.conversationId).toMatch(/^app\//);
+			expect(store.currentAppRoll()?.id).toBe(body.conversationId);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rolling roll refuses other methods and a missing token", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const get = await call("/api/app/rolling/roll");
+			expect(get.status).toBe(405);
+			expect(await get.json()).toEqual({ error: "method" });
+			expect((await call("/api/app/rolling/roll", { method: "POST" }, null)).status).toBe(401);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("draft model choice applies only to a newly minted rolling chat", async () => {
 		const { http, call, store, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
 		try {
@@ -1031,21 +1128,47 @@ describe("app chat", () => {
 		}
 	});
 
-	test("the first turn auto-titles an unnamed conversation", async () => {
+	test("retry retains earlier asks and removes asks from the retried exchange", async () => {
 		const model = sdkScript();
 		model.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "ask", input: { action: "open", question: "Older question?" } }],
+			},
 			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "ask", input: { action: "open", question: "Question being retried?" } }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
 			{ kind: "reply", parts: [{ type: "text", text: "retried reply" }] },
 		);
-		const { http, call, store, runtime } = setup({
+		const { http, call, store, runtime, asks } = setup({
 			token: APP_TOKEN_NAME,
 			scriptedModel: model,
+			ask: { now: () => new Date() },
 		});
 		try {
 			await createAndChat(call);
+			await waitUntil(() => model.calls() === 2 && !runtime.busy("app/chat-01"), "first ask settles");
+			const earlierAsk = asks.listOpen("app/chat-01").find((ask) => ask.question === "Older question?");
+			expect(earlierAsk).toBeDefined();
+			await Bun.sleep(2);
+			const second = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
+				}),
+			});
+			expect(second.status).toBe(202);
+			await waitUntil(() => model.calls() === 4 && !runtime.busy("app/chat-01"), "second ask settles");
+			const tailAsk = asks.listOpen("app/chat-01").find((ask) => ask.question === "Question being retried?");
+			expect(tailAsk).toBeDefined();
 			const events: { type: string; messageId?: string; replacedBy?: string }[] = [];
 			const unsubscribe = runtime.subscribeConversation("app/chat-01", (event) => events.push(event));
-			const originalAssistantId = store.history("app/chat-01")[1]!.id;
+			const originalAssistantId = store.history("app/chat-01").at(-1)!.id;
 			const res = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -1053,18 +1176,18 @@ describe("app chat", () => {
 			});
 			expect(res.status).toBe(202);
 			expect(await res.json()).toEqual({ submitted: true });
-			expect(events[0]).toEqual({ type: "rewound", messageId: "m1", replacedBy: "m1" });
+			expect(events[0]).toEqual({ type: "rewound", messageId: "m2", replacedBy: "m2" });
 			await waitUntil(
-				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
+				() => model.calls() === 5 && !runtime.busy("app/chat-01"),
 				"retry settles",
 			);
 			const history = store.history("app/chat-01");
-			expect(history.map((message) => message.role)).toEqual(["user", "assistant"]);
-			expect(history[0]!.id).toBe("m1");
-			expect(history[1]!.parts).toContainEqual(
+			expect(store.db.query("SELECT id FROM asks WHERE id = ?").get(earlierAsk!.id)).not.toBeNull();
+			expect(store.db.query("SELECT id FROM asks WHERE id = ?").get(tailAsk!.id)).toBeNull();
+			expect(history.at(-1)!.parts).toContainEqual(
 				expect.objectContaining({ type: "text", text: "retried reply" }),
 			);
-			expect(history[1]!.id).not.toBe(originalAssistantId);
+			expect(history.at(-1)!.id).not.toBe(originalAssistantId);
 			unsubscribe();
 		} finally {
 			http.stop();

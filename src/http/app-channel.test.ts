@@ -113,6 +113,59 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("ask close route handles tap, dismiss, repeats, missing ids, malformed input, methods, and auth", async () => {
+		const { http, call, asks, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const chat = store.resolve({ kind: "app", appId: "ask-route", chatId: 0, threadId: 0 }, "/tmp");
+			const opened = asks.open({ conversationId: chat.id, question: "Tap?" });
+			if ("error" in opened) throw new Error(opened.error);
+			const tap = await call(`/api/app/asks/${opened.id}/close`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "tap" }),
+			});
+			expect(tap.status).toBe(200);
+			expect(await tap.json()).toEqual({ ok: true, closed: true });
+			expect(store.db.query<{ closed_by: string }, [number]>("SELECT closed_by FROM asks WHERE id = ?").get(opened.id)?.closed_by).toBe("tap");
+			expect(await (await call(`/api/app/asks/${opened.id}/close`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "tap" }),
+			})).json()).toEqual({ ok: true, closed: false });
+			const dismissed = asks.open({ conversationId: chat.id, question: "Dismiss?" });
+			if ("error" in dismissed) throw new Error(dismissed.error);
+			expect((await call(`/api/app/asks/${dismissed.id}/close`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "dismiss" }),
+			})).status).toBe(200);
+			expect(store.db.query<{ closed_by: string }, [number]>("SELECT closed_by FROM asks WHERE id = ?").get(dismissed.id)?.closed_by).toBe("dismiss");
+			expect((await call("/api/app/asks/9999/close", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "tap" }),
+			})).status).toBe(404);
+			expect((await call("/api/app/asks/1/close", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "goblin" }),
+			})).status).toBe(400);
+			expect((await call("/api/app/asks/nope/close", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "tap" }),
+			})).status).toBe(400);
+			expect((await call(`/api/app/asks/${opened.id}/close`)).status).toBe(405);
+			expect((await call(`/api/app/asks/${opened.id}/close`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ by: "tap" }),
+			}, null)).status).toBe(401);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("the auth mode is boot-pinned — a mid-run appToken flip does not apply", async () => {
 		const { http, call, configRef } = setup({ token: APP_TOKEN_NAME });
 		try {

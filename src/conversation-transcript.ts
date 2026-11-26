@@ -23,6 +23,7 @@ export interface MessageEdit {
 	contexts: number;
 	projections: number;
 	ratings: number;
+	asks: number;
 }
 
 export function makeConversationTranscript(
@@ -87,6 +88,11 @@ export function makeConversationTranscript(
 			// before the event delete empties them.
 			const projections = Number(qRewindProjections.run(id, cut).changes);
 			const events = Number(qRewindEvents.run(id, cut).changes);
+			const asks = Number(db.run(
+				`DELETE FROM asks WHERE conversation_id = ?1 AND created_at >
+				 COALESCE((SELECT MAX(created_at) FROM events WHERE conversation_id = ?1), '')`,
+				[id],
+			).changes);
 			const compactions = Number(qRewindCompactions.run(id, cut, cut).changes);
 			const contexts = Number(qRewindContexts.run(id, cut).changes);
 			const ratings = Number(qRewindRatings.run(id, cut).changes);
@@ -126,7 +132,7 @@ export function makeConversationTranscript(
 			) {
 				unarchived = true;
 			}
-			return { seq, cutSeq: cut, events, compactions, contexts, projections, ratings };
+			return { seq, cutSeq: cut, events, compactions, contexts, projections, ratings, asks };
 		})();
 		if (edit === null) return null;
 		// Queued retention follows the events out. The purge waits for

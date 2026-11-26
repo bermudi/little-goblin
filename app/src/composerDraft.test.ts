@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { loadComposerDraft, moveComposerDraft, saveComposerDraft } from "./composerDraft.ts";
 import { emptyDraft, textDraft, unsentRemainder, type Draft } from "./chat/draft.ts";
 
 const win = new Window();
@@ -52,6 +52,42 @@ const chipDraft: Draft = {
 };
 
 describe("composerDraft", () => {
+	test("moveComposerDraft moves the record", () => {
+		const draft = textDraft("typed text");
+		saveComposerDraft("a", draft);
+		expect(moveComposerDraft("a", "b")).toBe(true);
+		expect(loadComposerDraft("a")).toBeNull();
+		expect(loadComposerDraft("b")).toEqual(draft);
+	});
+
+	test("moveComposerDraft with nothing stored is not a failure", () => {
+		expect(moveComposerDraft("a", "b")).toBe(true);
+		expect(loadComposerDraft("b")).toBeNull();
+	});
+
+	test("moveComposerDraft leaves an unreadable source in place", () => {
+		storage.setItem("goblin.composer-draft.v1:a", "{not json");
+		expect(moveComposerDraft("a", "b")).toBe(false);
+		expect(storage.getItem("goblin.composer-draft.v1:a")).toBe("{not json");
+		expect(loadComposerDraft("b")).toBeNull();
+	});
+
+	test("moveComposerDraft keeps a draft already stored for the destination", () => {
+		saveComposerDraft("a", textDraft("typed in the earlier roll"));
+		saveComposerDraft("b", textDraft("typed in the empty roll"));
+		expect(moveComposerDraft("a", "b")).toBe(true);
+		expect(loadComposerDraft("a")).toEqual(textDraft("typed in the earlier roll"));
+		expect(loadComposerDraft("b")).toEqual(textDraft("typed in the empty roll"));
+	});
+
+	test("moveComposerDraft leaves the source in place when the destination record is unreadable", () => {
+		saveComposerDraft("a", textDraft("typed text"));
+		storage.setItem("goblin.composer-draft.v1:b", "{not json");
+		expect(moveComposerDraft("a", "b")).toBe(false);
+		expect(loadComposerDraft("a")).toEqual(textDraft("typed text"));
+		expect(storage.getItem("goblin.composer-draft.v1:b")).toBe("{not json");
+	});
+
 	test("a draft with chips and shelf round-trips the real localStorage, per scope", () => {
 		saveComposerDraft("app/c-1", chipDraft);
 		expect(loadComposerDraft("app/c-1")).toEqual(chipDraft);

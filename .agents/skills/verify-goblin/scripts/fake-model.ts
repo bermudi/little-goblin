@@ -406,6 +406,8 @@ const server = Bun.serve({
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		const askMarker = /\[ask ([^\]]+)\]/.exec(lastUserText);
+		const askCloseMarker = /\[ask-close (\d+)\]/.exec(lastUserText);
 		if (parsed.data.stream === true && (lastUserText.includes("[work]") || lastUserText.includes("[think]"))) {
 			const step = parsed.data.messages.slice(lastUserIndex + 1).filter((m) => m.role === "tool").length;
 			if (lastUserText.includes("[think]")) return workReply(0, true);
@@ -445,6 +447,21 @@ const server = Bun.serve({
 			return longReply();
 		}
 		if (!toolAfterLastUser) {
+			if (askMarker !== null) {
+				const [question, ...options] = askMarker[1]!.split("|");
+				return toolCallResponse(
+					"ask",
+					{ action: "open", question: question!.trim(), ...(options.length > 0 ? { options: options.map((option) => option.trim()) } : {}) },
+					parsed.data.stream === true,
+				);
+			}
+			if (askCloseMarker !== null) {
+				return toolCallResponse(
+					"ask",
+					{ action: "close", id: Number(askCloseMarker[1]) },
+					parsed.data.stream === true,
+				);
+			}
 			const postMatch = /\[post ([^\]]*)\]/.exec(lastUserText);
 			if (postMatch !== null) {
 				return toolCallResponse("post", { text: postMatch[1]! }, parsed.data.stream === true);
@@ -463,6 +480,8 @@ const server = Bun.serve({
 				);
 			}
 		}
+		if (toolAfterLastUser && askMarker !== null) reply = "Asked.";
+		if (toolAfterLastUser && askCloseMarker !== null) reply = `Closed ${askCloseMarker[1]}.`;
 		if (parsed.data.stream !== true) {
 			return Response.json({
 				id: "verify",

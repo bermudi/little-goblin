@@ -199,6 +199,7 @@ describe("toolNames ↔ makeTools", () => {
 			sandbox: {} as unknown as SandboxToolDeps,
 			watch: {} as unknown as WatchToolDeps,
 			post: {} as unknown as PostToolDeps,
+			ask: { asks: {} as never, conversationId: "c" },
 			ui: true,
 		});
 		// Policy exhaustiveness, both ways: a mounted tool without a

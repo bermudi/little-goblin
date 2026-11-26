@@ -2,6 +2,7 @@ import type { Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
+import { type AskToolDeps, askTool } from "./ask.ts";
 import { type AskOperatorToolDeps, askOperatorTool } from "./ask-operator.ts";
 import { bashTool } from "./bash.ts";
 import { type ComputerToolDeps, computerTools } from "./computer.ts";
@@ -59,6 +60,7 @@ export interface TranscribeToolDeps {
 
 export type {
 	ArtifactToolDeps,
+	AskToolDeps,
 	AskOperatorToolDeps,
 	ComputerToolDeps,
 	DelegateToolDeps,
@@ -82,6 +84,7 @@ export interface MakeToolsOptions {
 	program?: ProgramToolDeps | undefined;
 	watch?: WatchToolDeps | undefined;
 	post?: PostToolDeps | undefined;
+	ask?: AskToolDeps | undefined;
 	file?: FileToolDeps | undefined;
 	artifact?: ArtifactToolDeps | undefined;
 	memory?: MemoryToolDeps | undefined;
@@ -123,6 +126,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		program,
 		watch,
 		post,
+		ask,
 		file,
 		artifact,
 		memory,
@@ -157,6 +161,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(program ? { program: programTool(program) } : {}),
 		...(watch ? { watch: watchTool(watch) } : {}),
 		...(post ? { post: postTool(post) } : {}),
+		...(ask ? { ask: askTool(ask) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),

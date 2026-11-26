@@ -204,6 +204,8 @@ export interface ConversationStore extends ConversationReads {
 	recordDelivery(id: string, messageId: number, seq: number): void;
 	deleteRefusal(id: string): string | null;
 	deleteConversation(id: string): void;
+	deleteConversationTree(id: string): string[];
+	subagentIds(id: string): string[];
 	close(): void;
 }
 

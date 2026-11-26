@@ -924,7 +924,9 @@ is now the home screen, and the avatar means only the agent.
 - **Subagents** never show in the chat list, pinned or not (operator,
   2026-11-26, #961). A running subagent still marks its parent working, and
   its question marks the parent needs you. The Goblin panel shows subagents
-  under their parent chat.
+  under their parent chat. The Archive page skips them too. Deleting a chat
+  deletes its subagents with it, after the same Undo window (operator,
+  2026-11-26): a subagent has no place without its parent.
 - **The Rolling chat row** shows the mark of any of its rolls (the newest 50)
   and opens the roll that has it, otherwise the newest.
 - **Goblin's avatar** is in the chat header, and on a phone also in the chats

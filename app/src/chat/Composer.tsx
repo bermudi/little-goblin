@@ -321,6 +321,24 @@ export function Composer({
 		});
 		if (incoming.length > 0) runBox(() => boxRef.current?.insertChips(incoming));
 	};
+	const {
+		fileInput,
+		micError,
+		micSupported,
+		recording,
+		recSec,
+		startRecording,
+		stopRecording,
+		pickFile,
+		uploadErrors,
+		noteUploadError,
+		clearUploadErrors,
+	} = useAttachments({
+		token,
+		busy: busy || (conversationId === undefined && configSaving),
+		onSend: sendWithModelSettings,
+		insertChips,
+	});
 	const { send, sendError, sendNote, clearSendNote, editedAfterSend } = useSubmit({
 		busy,
 		onStop,
@@ -329,6 +347,7 @@ export function Composer({
 		boxRef,
 		setBoxDraft: (next) => runBox(() => boxRef.current?.setDraft(next)),
 		onSend: sendWithModelSettings,
+		onSent: clearUploadErrors,
 	});
 	const currentUploadState = uploadState(draft);
 	useEffect(() => {
@@ -375,13 +394,6 @@ export function Composer({
 		onDraftRestored?.();
 		boxRef.current?.focus("end");
 	}, [draftRestore]);
-	const { fileInput, micError, micSupported, recording, recSec, startRecording, stopRecording, pickFile } =
-		useAttachments({
-			token,
-			busy: busy || (conversationId === undefined && configSaving),
-			onSend: sendWithModelSettings,
-			insertChips,
-		});
 	useKeyboard({
 		focusRef: boxRef,
 		focusSignal,
@@ -427,11 +439,14 @@ export function Composer({
 					Microphone {micError} — check the browser's permission for this page.
 				</div>
 			)}
+			{uploadErrors.map((message) => (
+				<div key={message} className="error" role="alert">
+					{message}
+				</div>
+			))}
 			{sendNote !== null && (
 				<div className="composer-note" role="status">
-					{sendNote === "uploading"
-						? "Upload still running. Send when it finishes."
-						: "Retry or remove the failed upload."}
+					Upload still running. Send when it finishes.
 				</div>
 			)}
 			{recording && (
@@ -455,6 +470,7 @@ export function Composer({
 					for (const f of files) pickFile(f);
 				}}
 				onOpenNote={onOpenNote}
+				onUploadFailed={noteUploadError}
 				token={token}
 				ariaLabel="Message draft"
 				placeholder="Message goblin"

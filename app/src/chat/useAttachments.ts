@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { uploadAttachment } from "../api.ts";
-import { failedChip, startUpload } from "./uploads.ts";
+import { startUpload } from "./uploads.ts";
 import type { Chip } from "./draft.ts";
 
 export function useAttachments({
@@ -21,6 +21,11 @@ export function useAttachments({
 	// The mic's failure mode is silent by browser default (a denied
 	// permission throws) — surface it like every other composer failure.
 	const [micError, setMicError] = useState<"denied" | "unavailable" | null>(null);
+	const [uploadErrors, setUploadErrors] = useState<string[]>([]);
+	const noteUploadError = useCallback((message: string) => {
+		setUploadErrors((prior) => (prior.includes(message) ? prior : [...prior, message]));
+	}, []);
+	const clearUploadErrors = useCallback(() => setUploadErrors([]), []);
 
 	// Voice notes: hold-to-record is MediaRecorder + upload; the server
 	// transcribes speech:true attachments at intake. Release sends —
@@ -106,8 +111,10 @@ export function useAttachments({
 									]);
 							});
 						}
-					} catch {
-						insertChipsRef.current([failedChip(file, { speech: true })]);
+					} catch (e) {
+						noteUploadError(
+							`The voice note failed to upload: ${e instanceof Error ? e.message : String(e)}`,
+						);
 					}
 				})();
 			};
@@ -133,6 +140,7 @@ export function useAttachments({
 
 	const pickFile = useCallback(
 		(file: File) => {
+			setUploadErrors([]);
 			insertChipsRef.current([startUpload(token, file)]);
 		},
 		[token],
@@ -173,6 +181,9 @@ export function useAttachments({
 	return {
 		fileInput,
 		micError,
+		uploadErrors,
+		noteUploadError,
+		clearUploadErrors,
 		micSupported,
 		recording,
 		recSec,

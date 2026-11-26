@@ -3762,7 +3762,7 @@ describe("ChatView edit and branch", () => {
     });
     await settle(() => dom.container.querySelector(".msg-edit .goblin-chip.uploading") !== null);
     expect(dom.container.querySelector('[role="status"]')?.textContent).toContain(
-      "Upload still running. Send when it finishes.",
+      "Upload still running. Save when it finishes.",
     );
     expect(dom.container.querySelector<HTMLButtonElement>(".msg-edit-actions .primary")?.disabled).toBe(true);
     expect(sends).toBe(0);

@@ -25,7 +25,7 @@ export const fileChipSchema = z.discriminatedUnion("state", [
 	z
 		.object({
 			kind: z.literal("file"),
-			state: z.enum(["uploading", "failed"]),
+			state: z.literal("uploading"),
 			uploadId: z.string().min(1),
 			filename: z.string(),
 			mediaType: z.string(),
@@ -188,7 +188,7 @@ export function normalizeDraft(draft: Draft): Draft {
 		i.type === "chip" && i.chip.kind === "file" ? [i.chip] : [],
 	);
 	for (const chip of [...draft.shelf, ...itemChips]) {
-		if (!isImageChip(chip) || chip.state === "failed") continue;
+		if (!isImageChip(chip)) continue;
 		const key = chipKey(chip);
 		if (seen.has(key)) continue;
 		seen.add(key);
@@ -329,7 +329,7 @@ export function draftToParts(draft: Draft): UIMessage["parts"] {
 	return parts;
 }
 
-export function uploadState(draft: Draft): "ready" | "uploading" | "failed" {
+export function uploadState(draft: Draft): "ready" | "uploading" {
 	for (const item of draft.items) {
 		if (item.type === "chip" && item.chip.kind === "file" && item.chip.state !== "ready")
 			return item.chip.state;

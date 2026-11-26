@@ -517,7 +517,6 @@ function SentChip({
               token={token}
               onOpenNote={(id) => onOpenNote?.(id)}
               onRemove={() => {}}
-              onRetry={() => {}}
               readOnly
             />
           </PopoverContent>

@@ -56,7 +56,6 @@ const uploadingChip: Chip = {
 	mediaType: "image/png",
 	size: 30,
 };
-const failedChip: Chip = { ...uploadingChip, state: "failed" };
 
 const text = (t: string): Draft["items"][number] => ({ type: "text", text: t });
 const chip = (c: Chip): Draft["items"][number] => ({ type: "chip", chip: c });
@@ -80,7 +79,6 @@ describe("chipKey", () => {
 	test("keys by identity and state", () => {
 		expect(chipKey(imageChip())).toBe("file:attachments/a.png");
 		expect(chipKey(uploadingChip)).toBe("file:u-1");
-		expect(chipKey(failedChip)).toBe("file:u-1");
 		expect(chipKey(noteChip)).toBe("note:n-1");
 		expect(chipKey(skillChip)).toBe("skill:deploy");
 		expect(chipKey(tempSkillChip)).toBe("skill:https://example.com/t.tar.gz\ncache/d41d8/deploy/SKILL.md");
@@ -96,11 +94,6 @@ describe("normalizeDraft", () => {
 		expect(out).toEqual(
 			draft([text("ab"), chip(imageChip()), text(" ")], [imageChip({ path: "attachments/c.png", filename: "c.png" }), imageChip()]),
 		);
-	});
-
-	test("a failed image keeps its chip but has no preview to show", () => {
-		const out = normalizeDraft(draft([text("see "), chip(failedChip)], [failedChip]));
-		expect(out).toEqual(draft([text("see "), chip(failedChip)], []));
 	});
 
 	test("non-image chips never join the shelf", () => {
@@ -159,10 +152,8 @@ describe("draftToParts", () => {
 		]);
 	});
 
-	test("uploading and failed chips are skipped, a mentioned shelf image is not repeated", () => {
-		const parts = draftToParts(
-			draft([text("a "), chip(uploadingChip), chip(failedChip)], [imageChip(), uploadingChip]),
-		);
+	test("uploading chips are skipped, a mentioned shelf image is not repeated", () => {
+		const parts = draftToParts(draft([text("a "), chip(uploadingChip)], [imageChip(), uploadingChip]));
 		expect(parts).toEqual([{ type: "text", text: "a" }, { type: "data-attachment", data: imageRef() }]);
 	});
 
@@ -175,10 +166,9 @@ describe("draftToParts", () => {
 });
 
 describe("uploadState", () => {
-	test("uploading and failed from items or shelf, ready otherwise", () => {
+	test("uploading from items or shelf, ready otherwise", () => {
 		expect(uploadState(draft([chip(uploadingChip)]))).toBe("uploading");
-		expect(uploadState(draft([chip(failedChip)]))).toBe("failed");
-		expect(uploadState(draft([], [failedChip]))).toBe("failed");
+		expect(uploadState(draft([], [uploadingChip]))).toBe("uploading");
 		expect(uploadState(draft([chip(imageChip())], [imageChip()]))).toBe("ready");
 	});
 });

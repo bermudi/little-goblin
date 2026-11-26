@@ -700,7 +700,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		]);
 	});
 
-	test("a failed same-name upload blocks send; removing it leaves its sibling", async () => {
+	test("a failed same-name upload leaves its chip out, says why, and its sibling still sends", async () => {
 		await mount();
 		await stage(["ONE", "TWO"]);
 		expect(uploads.length).toBe(2);
@@ -710,28 +710,20 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await act(async () => {
 			uploads[1]?.settle.ok(refFor("attachments/two"));
 		});
-		await submit();
-		expect(sent.length).toBe(0);
-		expect(container.querySelector('[role="status"]')?.textContent).toContain(
-			"Retry or remove the failed upload.",
-		);
-		expect(container.querySelectorAll(".goblin-chip.failed").length).toBe(1);
-		expect(container.querySelectorAll(".goblin-chip").length).toBe(2);
+		expect(container.querySelectorAll(".goblin-chip").length).toBe(1);
 		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(1);
-		await act(async () => {
-			container.querySelector(".goblin-chip.failed")?.dispatchEvent(
-				new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await act(async () => {
-			(container.querySelector('[role="dialog"] button:last-of-type') as HTMLButtonElement | null)?.click();
-		});
-		expect(container.querySelector('[role="status"]')).toBeNull();
+		const alerts = [...container.querySelectorAll('[role="alert"]')].map((el) => el.textContent ?? "");
+		expect(alerts.filter((text) => text.startsWith("image.jpg failed to upload"))).toHaveLength(1);
 		await submit();
 		expect(sent).toHaveLength(1);
 		expect(sent[0]).toEqual([
 			{ type: "data-attachment", data: { ...refFor("attachments/two"), inline: true } },
 		]);
+		expect(
+			[...container.querySelectorAll('[role="alert"]')].some((el) =>
+				(el.textContent ?? "").startsWith("image.jpg failed to upload"),
+			),
+		).toBe(false);
 	});
 
 	test("typing persists the draft per scope; a fresh mount restores it", async () => {

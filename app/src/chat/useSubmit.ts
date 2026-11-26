@@ -12,6 +12,7 @@ export function useSubmit({
 	boxRef,
 	setBoxDraft,
 	onSend,
+	onSent,
 }: {
 	busy: boolean;
 	onStop?: (() => void) | undefined;
@@ -23,10 +24,11 @@ export function useSubmit({
 		parts: UIMessage["parts"],
 		whenBusy?: "steer" | "followUp",
 	) => void | boolean | Promise<boolean>;
+	onSent?: (() => void) | undefined;
 }) {
 	const sendingRef = useRef(false);
 	const [sendError, setSendError] = useState<string | null>(null);
-	const [sendNote, setSendNote] = useState<"uploading" | "failed" | null>(null);
+	const [sendNote, setSendNote] = useState<"uploading" | null>(null);
 	const clearSendNote = useCallback(() => setSendNote(null), []);
 	const editedAfterSend = useRef(false);
 
@@ -42,10 +44,6 @@ export function useSubmit({
 		const uploads = uploadState(draft);
 		if (uploads === "uploading") {
 			setSendNote("uploading");
-			return;
-		}
-		if (uploads === "failed") {
-			setSendNote("failed");
 			return;
 		}
 		const parts = draftToParts(draft);
@@ -68,6 +66,7 @@ export function useSubmit({
 					);
 				}
 				setBoxDraft(remainder);
+				onSent?.();
 			})
 			.catch((err: unknown) => {
 				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);

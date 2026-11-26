@@ -209,7 +209,7 @@ function EditMessageBox({
     const root = editRef.current;
     return root !== null && target !== null && root.contains(target as Node);
   }, []);
-  const { fileInput, pickFile } = useAttachments({
+  const { fileInput, pickFile, uploadErrors, noteUploadError } = useAttachments({
     token,
     busy: false,
     onSend: () => false,
@@ -255,6 +255,7 @@ function EditMessageBox({
         onChange={onDraftChange}
         onFiles={(files) => files.forEach((file) => void pickFile(file))}
         onOpenNote={onOpenNote}
+        onUploadFailed={noteUploadError}
         token={token}
         ariaLabel="Edit message"
         placeholder="Edit message"
@@ -275,11 +276,14 @@ function EditMessageBox({
           skill
         </button>
       </div>
+      {uploadErrors.map((message) => (
+        <div key={message} className="error" role="alert">
+          {message}
+        </div>
+      ))}
       {currentUploadState !== "ready" && (
         <div className="composer-note" role="status">
-          {currentUploadState === "uploading"
-            ? "Upload still running. Send when it finishes."
-            : "Retry or remove the failed upload."}
+          Upload still running. Save when it finishes.
         </div>
       )}
       <div className="msg-edit-actions">

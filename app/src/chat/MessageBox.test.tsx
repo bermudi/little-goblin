@@ -94,9 +94,9 @@ const imageChip = {
 	state: "ready",
 	ref: { path: "attachments/a.png", mediaType: "image/png", filename: "a.png", size: 3 },
 } as const;
-const failedChip = {
+const lostChip = {
 	kind: "file",
-	state: "failed",
+	state: "uploading",
 	uploadId: "gone",
 	filename: "b.png",
 	mediaType: "image/png",
@@ -129,6 +129,7 @@ interface MountOpts {
 	onEnter?: (mode: "steer" | "followUp") => void;
 	onChange?: (draft: Draft) => void;
 	onFiles?: (files: File[]) => void;
+	onUploadFailed?: (message: string) => void;
 }
 const mount = async (opts: MountOpts = {}): Promise<MessageBoxHandle> => {
 	if (root !== null) {
@@ -146,6 +147,7 @@ const mount = async (opts: MountOpts = {}): Promise<MessageBoxHandle> => {
 				onEnter={opts.onEnter}
 				onChange={opts.onChange}
 				onFiles={opts.onFiles}
+				onUploadFailed={opts.onUploadFailed}
 				token="token"
 			/>,
 		);
@@ -568,33 +570,37 @@ describe("MessageBox", () => {
 		expect(content?.textContent).toContain("Budget");
 	});
 
-	test("a failed chip with a known upload shows the error, and rendering starts no upload", async () => {
-		let calls = 0;
-		globalThis.fetch = (async () => {
-			calls++;
-			throw new Error("net down");
-		}) as unknown as typeof fetch;
+	test("an upload that fails removes its chip and thumbnail and reports the file and reason once", async () => {
+		let fail: (err: Error) => void = () => {};
+		globalThis.fetch = (() =>
+			new Promise<Response>((_res, rej) => {
+				fail = rej;
+			})) as unknown as typeof fetch;
 		const file = new File([new Uint8Array([1])], "b.png", { type: "image/png" });
 		const chip = startUpload("token", file);
-		expect(chip.state).toBe("uploading");
-		await new Promise((r) => setTimeout(r, 10));
-		expect(calls).toBe(1);
-		const box = await mount();
+		const failures: string[] = [];
+		let last = null as Draft | null;
+		const box = await mount({
+			onUploadFailed: (message) => failures.push(message),
+			onChange: (draft) => {
+				last = draft;
+			},
+		});
+		await edit((v) => v.dispatch(v.state.tr.insertText("see ")));
 		await act(async () => {
 			box.insertChips([chip]);
 		});
-		await act(async () => {});
-		await edit((v) => {
-			expect(selectChip(v)).toBe(true);
-		});
+		expect(container.querySelectorAll(".goblin-chip").length).toBe(1);
+		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(1);
 		await act(async () => {
-			key("Enter");
+			fail(new Error("net down"));
+			await new Promise((r) => setTimeout(r, 0));
 		});
-		await act(async () => {});
-		const content = container.querySelector('[role="dialog"]');
-		expect(content?.textContent).toContain("Upload failed:");
-		expect(content?.textContent).toContain("net down");
-		expect(calls).toBe(1);
+		expect(container.querySelectorAll(".goblin-chip").length).toBe(0);
+		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(0);
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toMatch(/^b\.png failed to upload: .*net down/);
+		expect(last).toEqual({ items: [{ type: "text", text: "see " }], shelf: [] });
 	});
 
 	test("Open renders as a prefetched anchor for a ready image chip", async () => {
@@ -620,23 +626,14 @@ describe("MessageBox", () => {
 		expect(link?.textContent).toBe("Open");
 	});
 
-	test("a failed chip with no known upload says so, with no Retry", async () => {
-		const box = await mount();
-		await act(async () => {
-			box.insertChips([{ ...failedChip }]);
+	test("a restored chip whose upload is gone is removed on mount and reported", async () => {
+		const failures: string[] = [];
+		await mount({
+			initial: { items: [{ type: "text", text: "see " }, { type: "chip", chip: { ...lostChip } }], shelf: [] },
+			onUploadFailed: (message) => failures.push(message),
 		});
-		const chipEl = container.querySelector(".goblin-chip");
-		expect(chipEl?.getAttribute("aria-label")).toBe("File b.png, upload failed");
-		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(0);
-		await edit((v) => {
-			expect(selectChip(v)).toBe(true);
-		});
-		await act(async () => {
-			key("Enter");
-		});
-		const content = container.querySelector('[role="dialog"]');
-		expect(content?.textContent).toContain("Upload did not finish. Attach it again.");
-		expect([...container.querySelectorAll("button")].some((b) => b.textContent === "Retry")).toBe(false);
+		expect(container.querySelectorAll(".goblin-chip").length).toBe(0);
+		expect(failures).toEqual(["b.png did not finish uploading. Attach it again."]);
 	});
 
 	test("the shelf: deleting the chip keeps the thumbnail, and × then removes the orphaned image", async () => {

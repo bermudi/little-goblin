@@ -220,14 +220,14 @@ there are no typing shortcuts and no live Markdown styling.
 - *The draft owns its chips.* They stay with their own chat and survive a
   reload. Rejected: the old lists shared by every composer, where a file
   staged in one chat went out with the next one.
-- *An unfinished upload does not survive a reload*: the bytes are gone, so
-  the chip says to attach the file again. A send waits for uploads and for
-  failed chips. Sending without the file was the old behaviour.
+- *A failed upload is an error, not a chip* (operator, 2026-11-26). Its
+  chip and thumbnail go, and an error line above the box names the file
+  and the reason. An upload cut off by a reload fails the same way: the
+  bytes are gone, so the line says to attach the file again. A send waits
+  for running uploads.
 - *Images keep a thumbnail above the text.* Deleting an image's chip leaves
   the thumbnail, and the image still goes with the message. Removing the
-  thumbnail asks first if the text still mentions the image. A failed
-  upload has no picture to show, so it gets no thumbnail: only its chip,
-  which says it failed.
+  thumbnail asks first if the text still mentions the image.
 - *Stored shape:* the same part as before with `inline: true` in its data,
   at its place between text parts. A part without the flag means what it
   always meant, so old messages keep their bytes for the model and their

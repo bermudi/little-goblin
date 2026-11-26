@@ -2838,13 +2838,6 @@ button.pathchip:hover svg {
 		transform: rotate(360deg);
 	}
 }
-.goblin-chip.failed,
-.goblin-chip.failed .goblin-chip-name {
-	color: var(--app-danger);
-}
-.goblin-chip.failed {
-	border-color: var(--app-danger);
-}
 .box-shelf {
 	display: flex;
 	flex-wrap: wrap;
@@ -2866,9 +2859,6 @@ button.pathchip:hover svg {
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
-}
-.box-shelf-thumb[data-state="failed"] {
-	border-color: var(--app-danger);
 }
 .box-shelf-empty {
 	display: block;

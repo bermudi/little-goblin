@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
-import { canRetry, retryUpload, resolveDraft, startUpload, subscribe, thumbFor, uploadError } from "./uploads.ts";
+import { resolveChip, resolveDraft, startUpload, subscribe, thumbFor, uploadFailure } from "./uploads.ts";
 import { type Draft, type FileChip } from "./draft.ts";
 
 const jsonResponse = (body: unknown, status = 200): Response =>
@@ -100,56 +100,26 @@ describe("uploads registry", () => {
 		]);
 	});
 
-	test("canRetry and uploadError are pure reads of the registry", async () => {
-		const unknown: FileChip = {
-			kind: "file",
-			state: "failed",
-			uploadId: "nope",
-			filename: "x.txt",
-			mediaType: "text/plain",
-			size: 1,
-		};
-		expect(canRetry(unknown)).toBe(false);
-		expect(uploadError(unknown)).toBeNull();
+	test("a failed upload resolves to nothing and names the file and the reason", async () => {
 		const chip = startUpload("token", png);
 		if (chip.state !== "uploading") throw new Error("not uploading");
-		const known: FileChip = { ...chip, state: "failed" };
-		expect(canRetry(known)).toBe(true);
-		const done = settled();
-		failure?.(new Error("boom"));
-		await done;
-		expect(uploadError(known)).toContain("boom");
-	});
-
-	test("a failed upload maps to a failed chip", async () => {
-		const chip = startUpload("token", png);
-		if (chip.state !== "uploading") throw new Error("not uploading");
+		expect(uploadFailure(chip)).toBeNull();
 		const done = settled();
 		failure?.(new Error("upload boom"));
 		await done;
-		const resolved = resolveDraft({ items: [{ type: "chip", chip }], shelf: [] });
-		expect(resolved.items[0]).toEqual({ type: "chip", chip: { ...chip, state: "failed" } });
+		expect(resolveChip(chip)).toBeNull();
+		expect(uploadFailure(chip)).toMatch(/^a\.png failed to upload: .*upload boom/);
+		expect(resolveDraft({ items: [{ type: "chip", chip }], shelf: [chip] })).toEqual({ items: [], shelf: [] });
 	});
 
-	test("retry replaces a failed chip with a fresh uploading one that can settle", async () => {
+	test("a failed upload leaves stored drafts alone, so the box that shows it reports it", async () => {
 		const chip = startUpload("token", png);
-		if (chip.state !== "uploading") throw new Error("not uploading");
-		const failed = settled();
-		failure?.(new Error("upload boom"));
-		await failed;
-		const again = retryUpload({ ...chip, state: "failed" });
-		expect(again).not.toBeNull();
-		if (again === null || again.state === "ready") throw new Error("retry not uploading");
-		expect(again.state).toBe("uploading");
-		expect(again.uploadId).not.toBe(chip.uploadId);
+		const draft: Draft = { items: [{ type: "chip", chip }], shelf: [] };
+		saveComposerDraft("s", draft);
 		const done = settled();
-		pending?.(okResponse("attachments/two"));
+		failure?.(new Error("upload boom"));
 		await done;
-		const resolved = resolveDraft({ items: [{ type: "chip", chip: again }], shelf: [] });
-		expect(resolved.items[0]).toEqual({
-			type: "chip",
-			chip: { kind: "file", state: "ready", ref: { path: "attachments/two", mediaType: "image/png", filename: "a.png", size: 3 } },
-		});
+		expect(loadComposerDraft("s")).toEqual(draft);
 	});
 
 	test("a thumb is served while uploading and by path once ready", async () => {
@@ -166,7 +136,7 @@ describe("uploads registry", () => {
 		).not.toBeNull();
 	});
 
-	test("an unknown uploadId becomes failed, with no retry", () => {
+	test("an unknown uploadId resolves to nothing and says to attach it again", () => {
 		const chip: FileChip = {
 			kind: "file",
 			state: "uploading",
@@ -175,12 +145,8 @@ describe("uploads registry", () => {
 			mediaType: "image/png",
 			size: 3,
 		};
-		const resolved = resolveDraft({ items: [{ type: "chip", chip }], shelf: [chip] });
-		expect(resolved).toEqual({
-			items: [{ type: "chip", chip: { ...chip, state: "failed" } }],
-			shelf: [],
-		});
-		expect(retryUpload(chip)).toBeNull();
+		expect(resolveDraft({ items: [{ type: "chip", chip }], shelf: [chip] })).toEqual({ items: [], shelf: [] });
+		expect(uploadFailure(chip)).toBe("a.png did not finish uploading. Attach it again.");
 	});
 
 	test("a non-image upload keeps no local thumb", () => {

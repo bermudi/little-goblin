@@ -7,9 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type Dispatch,
   type ReactNode,
-  type SetStateAction,
 } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
@@ -30,7 +28,6 @@ import { placeSentMedia } from "./chat/sentMedia.ts";
 import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import {
   ActionBar,
   editedParts,
@@ -171,12 +168,6 @@ export function ChatView({
   title,
   seed,
   followAfter,
-  staged,
-  setStaged,
-  stagedNotes,
-  setStagedNotes,
-  stagedSkills,
-  setStagedSkills,
   noteProjectId,
   onSeeded,
   onSendAccepted,
@@ -195,17 +186,6 @@ export function ChatView({
   // being created — delivered once, on mount.
   seed: UIMessage["parts"] | null;
   followAfter?: string | undefined;
-  // The staged-upload list App owns — carried in so the conversation's
-  // composer renders the same entries the empty state's did.
-  staged: StagedUpload[];
-  setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
-  // Same lift as staged — note chips picked before the first send
-  // carry into the new conversation's composer.
-  stagedNotes: StagedNote[];
-  setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-  // Skill invocations staged before the first send carry the same way.
-  stagedSkills: StagedSkill[];
-  setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
   // The conversation's project — a note-card "New note" binds to it.
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
@@ -269,12 +249,6 @@ export function ChatView({
       initialCompactions={initial.compactions}
       seed={seed}
       followAfter={followAfter}
-      staged={staged}
-      setStaged={setStaged}
-      stagedNotes={stagedNotes}
-      setStagedNotes={setStagedNotes}
-      stagedSkills={stagedSkills}
-      setStagedSkills={setStagedSkills}
       noteProjectId={noteProjectId}
       onSeeded={onSeeded}
       onSendAccepted={onSendAccepted}
@@ -301,12 +275,6 @@ function Chat({
   initialCompactions,
   seed,
   followAfter,
-  staged,
-  setStaged,
-  stagedNotes,
-  setStagedNotes,
-  stagedSkills,
-  setStagedSkills,
   noteProjectId,
   onSeeded,
   onSendAccepted,
@@ -332,12 +300,6 @@ function Chat({
   initialCompactions: AppCompactionMark[];
   seed: UIMessage["parts"] | null;
   followAfter?: string | undefined;
-  staged: StagedUpload[];
-  setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
-  stagedNotes: StagedNote[];
-  setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-  stagedSkills: StagedSkill[];
-  setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
   onSendAccepted?: (() => void) | undefined;
@@ -545,7 +507,7 @@ function Chat({
   const refreshTranscript = () => reloadTranscript("merge");
   const [pendingItems, setPendingItems] = useState<AppPendingInput[]>([]);
   const [draftRestore, setDraftRestore] = useState<{
-    parts: UIMessage["parts"];
+    messages: UIMessage["parts"][];
     source?: "pending-edit";
     ids?: string[];
   } | null>(null);
@@ -837,7 +799,7 @@ function Chat({
 
   const mergeDraftRestore = (parts: UIMessage["parts"], ids: string[]) => {
     setDraftRestore((current) => ({
-      parts: [...(current?.parts ?? []), ...parts],
+      messages: [...(current?.messages ?? []), parts],
       source: "pending-edit",
       ids: [...(current?.ids ?? []), ...ids],
     }));
@@ -1383,12 +1345,7 @@ function Chat({
           draftScope={conversationId}
           busy={busy}
           liveCtx={liveCtx}
-          staged={staged}
-          setStaged={setStaged}
-          stagedNotes={stagedNotes}
-          setStagedNotes={setStagedNotes}
-          stagedSkills={stagedSkills}
-          setStagedSkills={setStagedSkills}
+          onOpenNote={onOpenNote}
           quote={quote}
           draftRestore={draftRestore}
           onDraftRestored={() => {
@@ -1420,10 +1377,11 @@ function Chat({
                   (entry) => !takenPendingIds.current.has(entry.id),
                 );
                 if (returned.length === 0) return;
-                mergeDraftRestore(
-                  returned.flatMap((entry) => entry.message.parts as UIMessage["parts"]),
-                  returned.map((entry) => entry.id),
-                );
+                for (const entry of returned)
+                  mergeDraftRestore(
+                    entry.message.parts as UIMessage["parts"],
+                    [entry.id],
+                  );
               })
               .catch((err: unknown) => {
                 if (!alive.current) return;

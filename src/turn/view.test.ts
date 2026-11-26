@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync as mkd, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { convertToModelMessages } from "ai";
 import type { PromptMessage } from "../prompt-message.ts";
 import type { Message } from "../message.ts";
 import { attachmentPart } from "../agent/attachments.ts";
+import { promptText, serializePrompt } from "../agent/claude-code/prompt.ts";
 import { summaryMessage } from "../conversation-events.ts";
 import { setLogFile } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
@@ -401,6 +402,324 @@ describe("the steer variant", () => {
 			],
 		} as unknown as Message;
 		await expect(convertSteeredMessage(ctx, poison)).rejects.toThrow("Invalid URL");
+	});
+});
+
+describe("inline chips in the model view", () => {
+	let home: string | null = null;
+	afterEach(() => {
+		if (home !== null) rmSync(home, { recursive: true, force: true });
+		home = null;
+		delete process.env.GOBLIN_HOME;
+	});
+	const skillCtx: ViewContext = {
+		convId: "dm:1",
+		modelRef: "test/model-1",
+		tools: {},
+		modalities: undefined,
+		carries: () => false,
+		skillRef: (ref) =>
+			"name" in ref
+				? { name: ref.name, body: `SKILL BODY ${ref.name}` }
+				: { name: "fetch", body: "TEMP BODY" },
+	};
+	const inlineMsg = {
+		id: "u1",
+		role: "user",
+		parts: [
+			{ type: "text", text: "look at " },
+			{
+				type: "data-attachment",
+				data: {
+					path: "/w/attachments/a.png",
+					mediaType: "image/png",
+					filename: "a.png",
+					size: 9,
+					inline: true,
+				},
+			},
+			{ type: "text", text: " and " },
+			{
+				type: "data-attachment",
+				data: {
+					path: "/w/attachments/report.pdf",
+					mediaType: "application/pdf",
+					filename: "report.pdf",
+					size: 99,
+					inline: true,
+				},
+			},
+			{ type: "text", text: " and " },
+			{
+				type: "data-note",
+				data: {
+					id: "note-1",
+					title: "Budget",
+					rev: 3,
+					body: "the note body",
+					projectId: null,
+					inline: true,
+				},
+			},
+			{ type: "text", text: " plus " },
+			{ type: "data-skill", data: { name: "deploy", inline: true } },
+			{ type: "text", text: " and " },
+			{ type: "data-skill", data: { name: "deploy", inline: true } },
+			{ type: "text", text: " please" },
+		],
+	} as unknown as Message;
+
+	test("a flagged message folds to a text part, then the mentioned items in first-mention order (S2)", async () => {
+		const view = await buildModelView(skillCtx, {
+			entries: entries([inlineMsg]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual([
+			"look at [image 1: a.png] and [file 1: report.pdf] and [note: Budget (id note-1)] plus [skill: deploy] and [skill: deploy] please",
+			"[image 1: a.png]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[file 1: report.pdf]",
+			"[attachment: /w/attachments/report.pdf — application/pdf, 99 bytes. Read it with read_file or bash tools.]",
+			'Attached note "Budget" (id note-1, rev 3 as of this message):\n<note id="note-1" rev="3" title="Budget">\nthe note body\n</note>',
+			"[skill: deploy]",
+		]);
+	});
+
+	test("the Claude prompt adapter renders the same order (S2)", async () => {
+		const view = await buildModelView(skillCtx, {
+			entries: entries([inlineMsg]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		const prompt = promptText(serializePrompt(view));
+		expect(prompt).toContain(
+			"look at [image 1: a.png] and [file 1: report.pdf] and [note: Budget (id note-1)] plus [skill: deploy] and [skill: deploy] please",
+		);
+		const firstImage = prompt.indexOf("[image 1: a.png]");
+		const fileLabel = prompt.indexOf("[file 1: report.pdf]");
+		const noteFence = prompt.indexOf("Attached note");
+		const skillMarker = prompt.lastIndexOf("[skill: deploy]");
+		expect([firstImage, fileLabel, noteFence, skillMarker].every((i) => i >= 0)).toBe(true);
+		expect(firstImage).toBeLessThan(fileLabel);
+		expect(fileLabel).toBeLessThan(noteFence);
+		expect(noteFence).toBeLessThan(skillMarker);
+	});
+
+	test("an unflagged [text, image, note, skill] message renders exactly as before (S2)", async () => {
+		const unflagged = {
+			id: "u1",
+			role: "user",
+			parts: [
+				{ type: "text", text: "see this" },
+				attachmentPart({
+					path: "/w/attachments/a.png",
+					mediaType: "image/png",
+					filename: "a.png",
+					size: 9,
+				}),
+				{
+					type: "data-note",
+					data: { id: "note-1", title: "Budget", rev: 3, body: "the note body", projectId: null },
+				},
+				{ type: "data-skill", data: { name: "deploy" } },
+			],
+		} as unknown as Message;
+		const view = await buildModelView(skillCtx, {
+			entries: entries([unflagged]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual([
+			"see this",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			'Attached note "Budget" (id note-1, rev 3 as of this message):\n<note id="note-1" rev="3" title="Budget">\nthe note body\n</note>',
+			"[skill: deploy]",
+		]);
+	});
+
+	test("a repeated mention reuses its number and one attachment part rides per item (S2)", async () => {
+		const repeated = {
+			id: "u2",
+			role: "user",
+			parts: [
+				{ type: "text", text: "a " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 9,
+						inline: true,
+					},
+				},
+				{ type: "text", text: " twice " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 9,
+						inline: true,
+					},
+				},
+				{ type: "text", text: "ok" },
+			],
+		} as unknown as Message;
+		const view = await buildModelView(skillCtx, {
+			entries: entries([repeated]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual([
+			"a [image 1: a.png] twice [image 1: a.png]ok",
+			"[image 1: a.png]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+		]);
+	});
+
+	test("a flagged message with only chips renders one fused text (S2)", async () => {
+		const chipsOnly = {
+			id: "u3",
+			role: "user",
+			parts: [
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 9,
+						inline: true,
+					},
+				},
+				{
+					type: "data-note",
+					data: {
+						id: "note-1",
+						title: "Budget",
+						rev: 3,
+						body: "the note body",
+						projectId: null,
+						inline: true,
+					},
+				},
+			],
+		} as unknown as Message;
+		const view = await buildModelView(skillCtx, {
+			entries: entries([chipsOnly]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual([
+			"[image 1: a.png][note: Budget (id note-1)]",
+			"[image 1: a.png]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			'Attached note "Budget" (id note-1, rev 3 as of this message):\n<note id="note-1" rev="3" title="Budget">\nthe note body\n</note>',
+		]);
+	});
+
+	test("a skill mentioned twice injects one body through the steer variant (S3)", async () => {
+		const message = {
+			id: "s9",
+			role: "user",
+			parts: [
+				{ type: "text", text: "run " },
+				{ type: "data-skill", data: { name: "deploy", inline: true } },
+				{ type: "text", text: " then " },
+				{ type: "data-skill", data: { name: "deploy", inline: true } },
+				{ type: "text", text: " again" },
+			],
+		} as unknown as Message;
+		const view = await convertSteeredMessage(skillCtx, message);
+		const joined = texts(view).join("\n");
+		expect(joined).toContain("run [skill: deploy] then [skill: deploy] again");
+		expect(joined.split("SKILL BODY deploy").length - 1).toBe(1);
+	});
+
+	test("a steered flagged message mentions inline with the same labels (S3)", async () => {
+		const message = {
+			id: "s8",
+			role: "user",
+			parts: [
+				{ type: "text", text: "check " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 9,
+						inline: true,
+					},
+				},
+				{ type: "text", text: " now" },
+			],
+		} as unknown as Message;
+		const view = await convertSteeredMessage(skillCtx, message);
+		expect(texts(view)).toEqual([
+			"check [image 1: a.png] now",
+			"[image 1: a.png]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+		]);
+	});
+
+	test("a loose unflagged image after inline chips rides last (S2)", async () => {
+		const mixed = {
+			id: "u4",
+			role: "user",
+			parts: [
+				{ type: "text", text: "this " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 9,
+						inline: true,
+					},
+				},
+				{ type: "text", text: " plus a loose one" },
+				attachmentPart({
+					path: "/w/attachments/b.png",
+					mediaType: "image/png",
+					filename: "b.png",
+					size: 8,
+				}),
+			],
+		} as unknown as Message;
+		const view = await buildModelView(skillCtx, {
+			entries: entries([mixed]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual([
+			"this [image 1: a.png] plus a loose one",
+			"[image 1: a.png]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/b.png — image/png, 8 bytes. Read it with read_file or bash tools.]",
+		]);
 	});
 });
 

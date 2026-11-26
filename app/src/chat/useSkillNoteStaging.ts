@@ -1,26 +1,17 @@
 // Skills and notes staged for the next send: the two picker popovers'
-// open state, their outside-press dismissal, and the deduping stage
-// callbacks that write into the lifted staged lists.
+// open state, their outside-press dismissal, and the callbacks that
+// drop the picked chip into the message box at the caret.
 
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppNoteSummary } from "../../../src/http/app-wire.ts";
-import { stagedKey, type StagedNote, type StagedSkill } from "./staged.ts";
-
-// Staging dedups by reference, never display name — a catalog skill
-// and a fetched copy that named itself the same are distinct skills,
-// and two temp refs pin different sources. Catalog refs equal by
-// name; temp refs by url and path together.
-export const skillRefEquals = (a: StagedSkill["ref"], b: StagedSkill["ref"]): boolean =>
-	"name" in a
-		? "name" in b && a.name === b.name
-		: "url" in b && a.url === b.url && a.path === b.path;
+import type { Chip, SkillChip } from "./draft.ts";
 
 export function useSkillNoteStaging({
-	setStagedNotes,
-	setStagedSkills,
+	insertChips,
 }: {
-	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
+	// The picked chip lands in the mounted message box — a repeat pick
+	// inserts another mention; nothing dedups.
+	insertChips: (chips: Chip[]) => void;
 }) {
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
 	const [skillPickerOpen, setSkillPickerOpen] = useState(false);
@@ -51,19 +42,13 @@ export function useSkillNoteStaging({
 
 	// Intake expands the id into the authoritative snapshot; the
 	// title rides along only so the just-sent chip isn't bare.
+	const insertChipsRef = useRef(insertChips);
+	insertChipsRef.current = insertChips;
 	const pickNote = (n: AppNoteSummary) =>
-		setStagedNotes((p) =>
-			p.some((e) => e.id === n.id)
-				? p
-				: [...p, { key: stagedKey(), id: n.id, title: n.title }],
-		);
+		insertChipsRef.current([{ kind: "note", id: n.id, title: n.title }]);
 
-	const stageSkill = (picked: { name: string; ref: StagedSkill["ref"] }) =>
-		setStagedSkills((p) =>
-			p.some((e) => skillRefEquals(e.ref, picked.ref))
-				? p
-				: [...p, { key: stagedKey(), name: picked.name, ref: picked.ref }],
-		);
+	const stageSkill = (picked: { name: string; ref: SkillChip["ref"] }) =>
+		insertChipsRef.current([{ kind: "skill", ref: picked.ref }]);
 
 	return {
 		notePickerOpen,

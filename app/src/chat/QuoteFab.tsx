@@ -23,13 +23,17 @@ export function quoteSourceNote(speaker: QuoteSpeaker): string {
 // (the proven #182 layout: blockquote on its own line, source named
 // above it). Trailing blank line lands the cursor under the block,
 // ready to type the answer.
-export function appendQuote(draft: string, text: string, speaker?: QuoteSpeaker): string {
+export function quoteBlock(text: string, speaker?: QuoteSpeaker): string {
 	const block = text
 		.trim()
 		.split("\n")
 		.map((l) => (l.trim() === "" ? ">" : `> ${l}`))
 		.join("\n");
-	const quoted = speaker === undefined ? block : `${quoteSourceNote(speaker)}\n${block}`;
+	return speaker === undefined ? block : `${quoteSourceNote(speaker)}\n${block}`;
+}
+
+export function appendQuote(draft: string, text: string, speaker?: QuoteSpeaker): string {
+	const quoted = quoteBlock(text, speaker);
 	const head = draft.trimEnd();
 	return head === "" ? `${quoted}\n\n` : `${head}\n\n${quoted}\n\n`;
 }

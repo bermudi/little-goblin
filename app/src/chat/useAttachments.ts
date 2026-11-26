@@ -1,29 +1,25 @@
 // The composer's attachment lane: file picking (picker, paste, drop)
-// and hold-to-record voice notes. Staging writes into the lifted list
-// App owns — entries outlive any one composer instance.
+// and hold-to-record voice notes. Files enter the message box as
+// uploading chips through the uploads registry; voice notes release-send
+// when the lane is free, and become chips otherwise.
 
-import {
-	useCallback,
-	useEffect,
-	useRef,
-	useState,
-	type Dispatch,
-	type SetStateAction,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { uploadAttachment } from "../api.ts";
-import { stagedKey, type StagedUpload } from "./staged.ts";
+import { failedChip, startUpload } from "./uploads.ts";
+import type { Chip } from "./draft.ts";
 
 export function useAttachments({
 	token,
 	busy,
 	onSend,
-	setStaged,
+	insertChips,
 }: {
 	token: string | null;
 	busy: boolean;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
-	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
+	// Chips land in the mounted message box, at the caret.
+	insertChips: (chips: Chip[]) => void;
 }) {
 	const fileInput = useRef<HTMLInputElement>(null);
 	// The mic's failure mode is silent by browser default (a denied
@@ -66,6 +62,8 @@ export function useAttachments({
 	busyRef.current = busy;
 	const onSendRef = useRef(onSend);
 	onSendRef.current = onSend;
+	const insertChipsRef = useRef(insertChips);
+	insertChipsRef.current = insertChips;
 	const micSupported =
 		typeof navigator !== "undefined" &&
 		navigator.mediaDevices !== undefined &&
@@ -102,10 +100,10 @@ export function useAttachments({
 						const { ref } = await uploadAttachment(token, file);
 						// Release-sends, but not mid-turn — a second send while a
 						// turn streams is the fork send()'s busy gate exists to
-						// prevent. Stage the ref instead: the chip shows it, the
-						// next send carries it with speech intact.
+						// prevent. Insert the chip instead: it shows in the box,
+						// and the next send carries it with speech intact.
 						if (busyRef.current || recDead.current) {
-							setStaged((p) => [...p, { key: stagedKey(), ref, speech: true }]);
+							insertChipsRef.current([{ kind: "file", state: "ready", ref: { ...ref, speech: true } }]);
 						} else {
 							// A declined send (failed lazy create) re-stages the
 							// note — the upload already landed server-side.
@@ -113,23 +111,13 @@ export function useAttachments({
 								onSendRef.current([{ type: "data-attachment", data: { ...ref, speech: true } }]),
 							).then((accepted) => {
 								if (accepted === false)
-									// Cancellation can restore this ref before onSend settles.
-									setStaged((p) =>
-										p.some((e) => e.ref.path === ref.path)
-											? p
-											: [...p, { key: stagedKey(), ref, speech: true }],
-									);
+									insertChipsRef.current([
+										{ kind: "file", state: "ready", ref: { ...ref, speech: true } },
+									]);
 							});
 						}
 					} catch {
-						setStaged((p) => [
-							...p,
-							{
-								key: stagedKey(),
-								ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-								failed: true,
-							},
-						]);
+						insertChipsRef.current([failedChip(file, { speech: true })]);
 					}
 				})();
 			};
@@ -154,32 +142,10 @@ export function useAttachments({
 	};
 
 	const pickFile = useCallback(
-		async (file: File) => {
-			const key = stagedKey();
-			const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
-			setStaged((p) => [
-				...p,
-				{
-					key,
-					ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-					uploading: true,
-					...(thumb !== undefined ? { thumb } : {}),
-				},
-			]);
-			try {
-				const { ref } = await uploadAttachment(token, file);
-				setStaged((p) =>
-					p.map((e) =>
-						e.key === key ? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) } : e,
-					),
-				);
-			} catch {
-				setStaged((p) =>
-					p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
-				);
-			}
+		(file: File) => {
+			insertChipsRef.current([startUpload(token, file)]);
 		},
-		[token, setStaged],
+		[token],
 	);
 
 	// Drop target: the whole window. Unhandled file drops trigger the
@@ -194,7 +160,7 @@ export function useAttachments({
 		const drop = (e: DragEvent) => {
 			if (!isFile(e)) return;
 			e.preventDefault();
-			for (const f of Array.from(e.dataTransfer?.files ?? [])) void pickFile(f);
+			for (const f of Array.from(e.dataTransfer?.files ?? [])) pickFile(f);
 		};
 		window.addEventListener("dragover", over);
 		window.addEventListener("drop", drop);
@@ -215,3 +181,4 @@ export function useAttachments({
 		pickFile,
 	};
 }
+

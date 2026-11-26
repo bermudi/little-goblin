@@ -42,7 +42,6 @@ import { useGoblinActivity } from "./useGoblinActivity.ts";
 import { Composer } from "./chat/Composer.tsx";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
-import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { loadProjectsOpen, saveProjectsOpen } from "./railFolders.ts";
 import { ConversationRow, relTime } from "./ConversationList.tsx";
@@ -248,17 +247,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		id: string;
 		parts: UIMessage["parts"];
 	} | null>(null);
-	// Staged uploads are owned here, above any composer: the first send
-	// swaps the empty state's composer for the new conversation's, and
-	// uploads still in flight (or failed chips) must carry across that
-	// unmount — their resolution writes this state, whichever composer
-	// is mounted.
-	const [staged, setStaged] = useState<StagedUpload[]>([]);
-	// Note chips ride beside the upload chips for the same reason —
-	// they must survive the empty-state → conversation composer swap.
-	const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
-	// Skill invocations staged from the picker — same lift, same reason.
-	const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
 	// The pre-creation memory choice — the conversation doesn't exist to
 	// PATCH until the first send creates it, so the exclusion stages
 	// here and rides into createConversation. Sticky like the staged
@@ -271,9 +259,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
 	// A cancelled send belongs only to the composer that dispatched it.
-	const [draftRestores, setDraftRestores] = useState<Record<string, { parts: UIMessage["parts"] }>>(
-		{},
-	);
+	const [draftRestores, setDraftRestores] = useState<
+		Record<string, { messages: UIMessage["parts"][] }>
+	>({});
 	const consumeRestore = (scope: string) =>
 		setDraftRestores((prev) => {
 			const next = { ...prev };
@@ -744,7 +732,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			// draft first, the same shape as the fenced path —
 			// note-originated starts carry no scope and restore nothing.
 			if (composerScope !== undefined) {
-				setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
+				setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
 			}
 			throw new Error("a conversation is still starting — resend once it finishes");
 		}
@@ -766,7 +754,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			// its select would skip the dirty-settings guard entirely.
 			if (seq !== startSeq.current) {
 				if (composerScope !== undefined) {
-					setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
+					setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
 				}
 				try {
 					await deleteConversation(token, created.id);
@@ -1556,12 +1544,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 										token={token}
 										draftScope={currentProject.id}
 										busy={starting}
-										staged={staged}
-										setStaged={setStaged}
-										stagedNotes={stagedNotes}
-										setStagedNotes={setStagedNotes}
-										stagedSkills={stagedSkills}
-										setStagedSkills={setStagedSkills}
 										stagedMemory={{
 											excluded: currentProject.memory === "off" || stagedMemoryExcluded,
 											locked: currentProject.memory === "off",
@@ -1612,12 +1594,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								token={token}
 								draftScope="new"
 								busy={starting}
-								staged={staged}
-								setStaged={setStaged}
-								stagedNotes={stagedNotes}
-								setStagedNotes={setStagedNotes}
-								stagedSkills={stagedSkills}
-								setStagedSkills={setStagedSkills}
 								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
 								onStagedMemoryToggle={setStagedMemoryExcluded}
 								focusSignal={composerFocus}
@@ -1653,12 +1629,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								conversationId={current}
 								title={flatTitle(currentTitle)}
 								seed={seed !== null && seed.id === current ? seed.parts : null}
-								staged={staged}
-								setStaged={setStaged}
-								stagedNotes={stagedNotes}
-								setStagedNotes={setStagedNotes}
-								stagedSkills={stagedSkills}
-								setStagedSkills={setStagedSkills}
 								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
 								onSendAccepted={() => void acted("conversations")}
@@ -1683,12 +1653,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								token={token}
 								draftScope="rolling"
 								busy={starting}
-								staged={staged}
-								setStaged={setStaged}
-								stagedNotes={stagedNotes}
-								setStagedNotes={setStagedNotes}
-								stagedSkills={stagedSkills}
-								setStagedSkills={setStagedSkills}
 								stagedMemory={{ excluded: false, locked: true }}
 								onStagedMemoryToggle={() => {}}
 								onSend={async (parts, _whenBusy, initialModelSettings) => {
@@ -1736,12 +1700,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							conversationId={rollingId}
 							title="Rolling chat"
 							seed={null}
-							staged={staged}
-							setStaged={setStaged}
-							stagedNotes={stagedNotes}
-							setStagedNotes={setStagedNotes}
-							stagedSkills={stagedSkills}
-							setStagedSkills={setStagedSkills}
 							noteProjectId={null}
 							rolling
 							onSeeded={() => {}}

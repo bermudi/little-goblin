@@ -1,27 +1,20 @@
-// The composer's send path: assembling the parts from draft + staged
-// chips, the busy/saving gates, and clearing only what a send actually
-// sent — a declined send (failed lazy create) keeps everything
-// composed so the operator can resend.
+// The composer's send path: assembling the parts from the message box's
+// draft, the busy/saving gates, and clearing only what a send actually
+// sent — a declined send (failed lazy create) keeps everything composed
+// so the operator can resend.
 
-import { useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useRef, useState, type RefObject } from "react";
 import type { UIMessage } from "ai";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
-import { draftText, textDraft } from "./draft.ts";
-import type { StagedNote, StagedSkill, StagedUpload } from "./staged.ts";
+import { draftToParts, emptyDraft, unsentRemainder, uploadState, type Draft } from "./draft.ts";
+import type { MessageBoxHandle } from "./MessageBox.tsx";
 
 export function useSubmit({
 	busy,
 	onStop,
 	configSaving,
 	draftScope,
-	draft,
-	setDraft,
-	staged,
-	setStaged,
-	stagedNotes,
-	setStagedNotes,
-	stagedSkills,
-	setStagedSkills,
+	boxRef,
 	onSend,
 }: {
 	busy: boolean;
@@ -30,14 +23,9 @@ export function useSubmit({
 	// Durable-draft key — one per composer home: the conversation id,
 	// the project id, "new" for the empty start state.
 	draftScope: string;
-	draft: string;
-	setDraft: Dispatch<SetStateAction<string>>;
-	staged: StagedUpload[];
-	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
-	stagedNotes: StagedNote[];
-	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-	stagedSkills: StagedSkill[];
-	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
+	// The mounted message box — the draft reads and the post-send
+	// remainder land there.
+	boxRef: RefObject<MessageBoxHandle | null>;
 	onSend: (
 		parts: UIMessage["parts"],
 		whenBusy?: "steer" | "followUp",
@@ -45,15 +33,10 @@ export function useSubmit({
 }) {
 	const sendingRef = useRef(false);
 	const [sendError, setSendError] = useState<string | null>(null);
+	// Enter against a blocked send: the affordance the disabled buttons
+	// can't give. role="status" — it informs, it never interrupts.
+	const [sendNote, setSendNote] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
-
-	// An entry leaves the staged list (sent or removed) — its preview
-	// URL goes with it. A composer unmount revokes nothing: staged
-	// entries outlive any one composer, and an undropped thumb dies
-	// with the document itself.
-	const dropEntry = (e: StagedUpload) => {
-		if (e.thumb !== undefined) URL.revokeObjectURL(e.thumb);
-	};
 
 	const send = (whenBusy: "steer" | "followUp" = "steer") => {
 		// A send while a turn runs steers it (onSend drops the stale
@@ -61,62 +44,43 @@ export function useSubmit({
 		// lane, so a lazy create still refuses mid-flight: a second
 		// send must not fork a second conversation.
 		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
-		const text = draft.trim();
-		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
-		if (text === "" && ready.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0)
+		const box = boxRef.current;
+		if (box === null) return;
+		const draft = box.getDraft();
+		const uploads = uploadState(draft);
+		if (uploads === "uploading") {
+			setSendNote("Upload still running. Send when it finishes.");
 			return;
-		const parts: UIMessage["parts"] = [];
-		if (text !== "") parts.push({ type: "text", text });
-		for (const e of ready)
-			parts.push({
-				type: "data-attachment",
-				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
-			} as UIMessage["parts"][number]);
-		// Intake expands the id into the authoritative snapshot; the
-		// title rides along only so the just-sent chip isn't bare.
-		for (const n of stagedNotes)
-			parts.push({
-				type: "data-note",
-				data: { id: n.id, title: n.title },
-			} as UIMessage["parts"][number]);
-		// Explicit invocations ride their own part; the server injects
-		// the body into the owning turn.
-		for (const s of stagedSkills)
-			parts.push({ type: "data-skill", data: s.ref } as UIMessage["parts"][number]);
+		}
+		if (uploads === "failed") {
+			setSendNote("Retry or remove the failed upload.");
+			return;
+		}
+		const parts = draftToParts(draft);
+		if (parts.length === 0) return;
 		// Clear only once the send is accepted — a compose wiped before
-		// a lazy-create failure leaves nothing to resend (blob URLs are
-		// unrecoverable). Typing that lands mid-flight survives: only
-		// the sent prefix comes off.
+		// a lazy-create failure leaves nothing to resend. Typing that
+		// lands mid-flight survives: only the sent prefix comes off.
 		sendingRef.current = true;
 		setSendError(null);
+		setSendNote(null);
 		void Promise.resolve()
 			.then(() => onSend(parts, whenBusy) ?? true)
 			.then((accepted) => {
 				if (accepted === false) return;
+				const remainder = unsentRemainder(boxRef.current?.getDraft() ?? draft, draft);
 				// The accept continuation can outlive this composer — a lazy
 				// create swaps the view before it runs, and an unmounted
 				// composer's persist effect never fires. Write the post-send
-				// remainder to storage directly, against the stored text.
+				// remainder to storage directly, against the stored draft.
 				try {
-					const stored = draftText(loadComposerDraft(draftScope) ?? textDraft(""));
-					saveComposerDraft(
-						draftScope,
-						textDraft(
-							stored === draft ? "" : stored.startsWith(draft) ? stored.slice(draft.length) : stored,
-						),
-					);
+					const stored = loadComposerDraft(draftScope) ?? emptyDraft();
+					saveComposerDraft(draftScope, unsentRemainder(stored, draft));
 				} catch {
 					// Unreadable records stay put, and a mounted composer's
 					// effect still reports its own save failures.
 				}
-				setDraft((d) => (d === draft ? "" : d.startsWith(draft) ? d.slice(draft.length) : d));
-				// Entries that weren't sent — uploads still in flight, failed
-				// chips — stay staged. Clearing them would drop files the
-				// operator still sees in the composer.
-				for (const e of ready) dropEntry(e);
-				setStaged((p) => p.filter((e) => !ready.includes(e)));
-				setStagedNotes((p) => p.filter((n) => !stagedNotes.includes(n)));
-				setStagedSkills((p) => p.filter((s) => !stagedSkills.includes(s)));
+				boxRef.current?.setDraft(remainder);
 			})
 			.catch((err: unknown) => {
 				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);
@@ -126,5 +90,5 @@ export function useSubmit({
 			});
 	};
 
-	return { send, sendError, editedAfterSend, dropEntry };
+	return { send, sendError, sendNote, editedAfterSend };
 }

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { NodeSelection, TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
+import { startUpload } from "./uploads.ts";
 import { boxView, MessageBox, type MessageBoxHandle } from "./MessageBox.tsx";
 import type { Draft } from "./draft.ts";
 
@@ -439,6 +440,169 @@ describe("MessageBox", () => {
 		await act(async () => {});
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 		expect(chipCount()).toBe(1);
+	});
+
+	test("beforeinput deleteContentBackward with the caret after a chip deletes the chip, and undo restores it", async () => {
+		const draft: Draft = {
+			items: [
+				{ type: "text", text: "hi " },
+				{ type: "chip", chip: { ...noteChip } },
+				{ type: "text", text: " bye" },
+			],
+			shelf: [],
+		};
+		await mount({ initial: draft });
+		await new Promise((r) => setTimeout(r, 550));
+		await edit((v) => {
+			v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, 5)));
+		});
+		const IE = (win as unknown as { InputEvent: typeof InputEvent }).InputEvent;
+		await act(async () => {
+			view()?.dom.dispatchEvent(
+				new IE("beforeinput", {
+					inputType: "deleteContentBackward",
+					bubbles: true,
+					cancelable: true,
+				}) as unknown as Event,
+			);
+		});
+		expect(chipCount()).toBe(0);
+		expect(docText()).toBe("hi  bye");
+		await act(async () => {
+			key("z", { ctrlKey: true });
+		});
+		expect(chipCount()).toBe(1);
+	});
+
+	test("beforeinput deleteContentForward with the caret before a chip deletes the chip", async () => {
+		const draft: Draft = {
+			items: [
+				{ type: "text", text: "hi " },
+				{ type: "chip", chip: { ...noteChip } },
+				{ type: "text", text: " bye" },
+			],
+			shelf: [],
+		};
+		await mount({ initial: draft });
+		await edit((v) => {
+			v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, 4)));
+		});
+		const IE = (win as unknown as { InputEvent: typeof InputEvent }).InputEvent;
+		await act(async () => {
+			view()?.dom.dispatchEvent(
+				new IE("beforeinput", {
+					inputType: "deleteContentForward",
+					bubbles: true,
+					cancelable: true,
+				}) as unknown as Event,
+			);
+		});
+		expect(chipCount()).toBe(0);
+		expect(docText()).toBe("hi  bye");
+	});
+
+	test("beforeinput delete with the DOM selection inside the chip's name deletes the chip", async () => {
+		const draft: Draft = {
+			items: [
+				{ type: "text", text: "look " },
+				{ type: "chip", chip: { ...noteChip } },
+				{ type: "text", text: " here" },
+			],
+			shelf: [],
+		};
+		await mount({ initial: draft });
+		await edit((v) => {
+			v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, 12)));
+		});
+		const nameEl = container.querySelector(".goblin-chip-name") as HTMLElement | null;
+		const textNode = nameEl?.firstChild ?? null;
+		expect(textNode).not.toBeNull();
+		const range = win.document.createRange();
+		const node = textNode as unknown as Parameters<typeof range.setStart>[0];
+		range.setStart(node, 0);
+		range.setEnd(node, 1);
+		const sel = win.document.getSelection();
+		sel?.removeAllRanges();
+		sel?.addRange(range);
+		const IE = (win as unknown as { InputEvent: typeof InputEvent }).InputEvent;
+		await act(async () => {
+			view()?.dom.dispatchEvent(
+				new IE("beforeinput", {
+					inputType: "deleteContentBackward",
+					bubbles: true,
+					cancelable: true,
+				}) as unknown as Event,
+			);
+		});
+		expect(chipCount()).toBe(0);
+	});
+
+	test("a plain click event on a chip opens the popover", async () => {
+		const box = await mount();
+		await act(async () => {
+			box.insertChips([{ ...noteChip }]);
+		});
+		const ME = (win as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent;
+		await act(async () => {
+			container.querySelector(".goblin-chip")?.dispatchEvent(
+				new ME("click", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		const content = container.querySelector('[role="dialog"]');
+		expect(content).not.toBeNull();
+		expect(content?.textContent).toContain("Budget");
+	});
+
+	test("a failed chip with a known upload shows the error, and rendering starts no upload", async () => {
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls++;
+			throw new Error("net down");
+		}) as unknown as typeof fetch;
+		const file = new File([new Uint8Array([1])], "b.png", { type: "image/png" });
+		const chip = startUpload("token", file);
+		expect(chip.state).toBe("uploading");
+		await new Promise((r) => setTimeout(r, 10));
+		expect(calls).toBe(1);
+		const box = await mount();
+		await act(async () => {
+			box.insertChips([chip]);
+		});
+		await act(async () => {});
+		await edit((v) => {
+			expect(selectChip(v)).toBe(true);
+		});
+		await act(async () => {
+			key("Enter");
+		});
+		await act(async () => {});
+		const content = container.querySelector('[role="dialog"]');
+		expect(content?.textContent).toContain("Upload failed:");
+		expect(content?.textContent).toContain("net down");
+		expect(calls).toBe(1);
+	});
+
+	test("Open renders as a prefetched anchor for a ready image chip", async () => {
+		const draft: Draft = {
+			items: [{ type: "text", text: "see " }, { type: "chip", chip: { ...imageChip } }],
+			shelf: [{ ...imageChip }],
+		};
+		await mount({ initial: draft });
+		await edit((v) => {
+			const pos = findChip(v);
+			expect(pos).not.toBeNull();
+			v.dispatch(v.state.tr.setSelection(NodeSelection.create(v.state.doc, pos as number)));
+		});
+		await act(async () => {
+			key("Enter");
+		});
+		await act(async () => {});
+		const link = container.querySelector('[role="dialog"] a');
+		expect(link).not.toBeNull();
+		expect(link?.getAttribute("href")).toMatch(/^blob:/);
+		expect(link?.getAttribute("target")).toBe("_blank");
+		expect(link?.getAttribute("rel")).toBe("noreferrer");
+		expect(link?.textContent).toBe("Open");
 	});
 
 	test("a failed chip with no known upload says so, with no Retry", async () => {

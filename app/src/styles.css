@@ -2688,10 +2688,6 @@ button.pathchip:hover svg {
 	color: var(--app-danger);
 }
 
-.composer-attachments {
-	padding: 0.35rem 0.5rem 0;
-}
-
 /* ---------- composer ---------- */
 
 /* The box must read against the transcript scrolling above it: on
@@ -2789,6 +2785,8 @@ button.pathchip:hover svg {
 	margin: 0 0.1rem;
 	white-space: nowrap;
 	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
 }
 .goblin-chip-icon {
 	display: inline-flex;
@@ -3351,6 +3349,9 @@ button.pathchip:hover svg {
 }
 
 /* Recording state replaces the textarea with a live pill. */
+.composer.recording .message-box-host {
+	display: none;
+}
 .rec-row {
 	display: flex;
 	align-items: center;

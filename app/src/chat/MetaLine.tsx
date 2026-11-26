@@ -2,6 +2,7 @@
 // (MetaLine), fold marks, and the copy/read/rate/edit action bars.
 
 import type { UIMessage } from "ai";
+import { hasInlineParts, proseOf } from "../../../src/inline-parts.ts";
 import { Markdown } from "../markdown.tsx";
 import { Age } from "./messageAge.tsx";
 import { SpeechPlayer, useSpeech } from "../speech.tsx";
@@ -161,6 +162,7 @@ export function unlandedMeta(m: UIMessage): {
 }
 
 export function messageText(m: UIMessage): string {
+	if (hasInlineParts(m.parts)) return proseOf(m.parts);
 	return m.parts
 		.map((p) => (p.type === "text" ? p.text : ""))
 		.join("\n")

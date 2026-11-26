@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { MemoryConfig } from "../config-schema.ts";
 import type { Conversation } from "../conversation-read.ts";
+import { hasInlineParts, proseOf } from "../inline-parts.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { isMachineryText, memoryBlockId } from "../tags.ts";
@@ -55,6 +56,31 @@ export function buildDestinationClient(
 // ---------- text extraction ----------
 
 export function messageText(message: Message): string {
+	if (hasInlineParts(message.parts)) {
+		const out = [proseOf(message.parts)];
+		for (const part of message.parts) {
+			if (part.type !== "data-attachment") continue;
+			const ref =
+				typeof (part as { data?: unknown }).data === "object" &&
+				(part as { data?: unknown }).data !== null
+					? ((part as { data?: unknown }).data as {
+							path?: unknown;
+							filename?: unknown;
+							transcript?: unknown;
+						})
+					: null;
+			if (typeof ref?.transcript === "string") {
+				const path =
+					typeof ref.path === "string"
+						? ref.path
+						: typeof ref.filename === "string"
+							? ref.filename
+							: "unnamed";
+				out.push(`[attachment: ${path} — transcript: ${JSON.stringify(ref.transcript)}]`);
+			}
+		}
+		return out.join("\n").trim();
+	}
 	const out: string[] = [];
 	for (const part of message.parts) {
 		if (typeof part !== "object" || part === null) continue;

@@ -20,6 +20,18 @@ function newId(): string {
 	return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+export function failedChip(file: File, opts: { speech?: true } = {}): FileChip {
+	return {
+		kind: "file",
+		state: "failed",
+		uploadId: newId(),
+		filename: file.name,
+		mediaType: file.type,
+		size: file.size,
+		...(opts.speech === true ? { speech: true } : {}),
+	};
+}
+
 export function startUpload(token: string | null, file: File, opts: { speech?: true } = {}): FileChip {
 	const uploadId = newId();
 	const chip: FileChip = {
@@ -54,8 +66,31 @@ async function settle(uploadId: string, run: Promise<{ ref: FileRef }>): Promise
 	if (entry === undefined) return;
 	entry.state = outcome;
 	if (outcome.settled === "ready" && entry.thumb !== null) thumbs.set(outcome.ref.path, entry.thumb);
-	rewriteComposerDrafts((draft) => resolveDraft(draft));
+	rewriteComposerDrafts((draft) => rewriteDraftOf(draft, uploadId));
 	for (const listener of [...listeners]) listener();
+}
+
+function rewriteDraftOf(draft: Draft, uploadId: string): Draft {
+	const rewrite = (chip: FileChip): FileChip =>
+		chip.state === "ready" || chip.uploadId !== uploadId ? chip : resolveChip(chip);
+	return normalizeDraft({
+		items: draft.items.map((item) =>
+			item.type === "chip" && item.chip.kind === "file" ? { type: "chip", chip: rewrite(item.chip) } : item,
+		),
+		shelf: draft.shelf.map(rewrite),
+	});
+}
+
+export function canRetry(chip: FileChip): boolean {
+	if (chip.state === "ready") return false;
+	return entries.get(chip.uploadId) !== undefined;
+}
+
+export function uploadError(chip: FileChip): string | null {
+	if (chip.state !== "failed") return null;
+	const entry = entries.get(chip.uploadId);
+	if (entry === undefined) return null;
+	return typeof entry.state === "object" && entry.state.settled === "error" ? entry.state.message : "";
 }
 
 export function retryUpload(chip: FileChip): FileChip | null {
@@ -92,7 +127,9 @@ export function resolveChip(chip: Chip): Chip {
 
 export function resolveDraft(draft: Draft): Draft {
 	return normalizeDraft({
-		items: draft.items.map((item) => (item.type === "chip" ? { type: "chip", chip: resolveChip(item.chip) } : item)),
+		items: draft.items.map((item) =>
+			item.type === "chip" ? { type: "chip", chip: resolveChip(item.chip) } : item,
+		),
 		shelf: draft.shelf.map((chip: FileChip) => resolveChip(chip)),
 	});
 }

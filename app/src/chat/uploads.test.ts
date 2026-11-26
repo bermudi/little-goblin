@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
-import { retryUpload, resolveDraft, startUpload, subscribe, thumbFor } from "./uploads.ts";
+import { canRetry, retryUpload, resolveDraft, startUpload, subscribe, thumbFor, uploadError } from "./uploads.ts";
 import { type Draft, type FileChip } from "./draft.ts";
 
 const jsonResponse = (body: unknown, status = 200): Response =>
@@ -65,6 +65,60 @@ describe("uploads registry", () => {
 				{ kind: "file", state: "ready", ref: { path: "attachments/one", mediaType: "image/png", filename: "a.png", size: 3 } },
 			],
 		});
+	});
+
+	test("a settle rewrites only the chip that settled, not another tab's uploading chip", async () => {
+		const chip = startUpload("token", png);
+		const other: FileChip = {
+			kind: "file",
+			state: "uploading",
+			uploadId: "other-tab",
+			filename: "z.png",
+			mediaType: "image/png",
+			size: 9,
+		};
+		const draft: Draft = {
+			items: [{ type: "text", text: "see " }, { type: "chip", chip: other }, { type: "chip", chip }],
+			shelf: [chip],
+		};
+		saveComposerDraft("app/c-2", draft);
+		const done = settled();
+		pending?.(okResponse("attachments/four"));
+		await done;
+		const stored = loadComposerDraft("app/c-2");
+		expect(stored).not.toBeNull();
+		if (stored === null) throw new Error("no stored draft");
+		const items = stored.items;
+		expect(items[1]).toEqual({ type: "chip", chip: other });
+		expect(items[2]).toEqual({
+			type: "chip",
+			chip: { kind: "file", state: "ready", ref: { path: "attachments/four", mediaType: "image/png", filename: "a.png", size: 3 } },
+		});
+		expect(stored.shelf).toEqual([
+			{ kind: "file", state: "ready", ref: { path: "attachments/four", mediaType: "image/png", filename: "a.png", size: 3 } },
+			other,
+		]);
+	});
+
+	test("canRetry and uploadError are pure reads of the registry", async () => {
+		const unknown: FileChip = {
+			kind: "file",
+			state: "failed",
+			uploadId: "nope",
+			filename: "x.txt",
+			mediaType: "text/plain",
+			size: 1,
+		};
+		expect(canRetry(unknown)).toBe(false);
+		expect(uploadError(unknown)).toBeNull();
+		const chip = startUpload("token", png);
+		if (chip.state !== "uploading") throw new Error("not uploading");
+		const known: FileChip = { ...chip, state: "failed" };
+		expect(canRetry(known)).toBe(true);
+		const done = settled();
+		failure?.(new Error("boom"));
+		await done;
+		expect(uploadError(known)).toContain("boom");
 	});
 
 	test("a failed upload maps to a failed chip", async () => {

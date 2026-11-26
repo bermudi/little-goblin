@@ -6,13 +6,14 @@ import { useCallback, useEffect, useRef, type RefObject } from "react";
 import { usePhoneWidth } from "../usePhoneWidth.ts";
 
 export function useKeyboard({
-	textareaRef,
+	focusRef,
 	focusSignal,
 	stealFocus,
 	busy,
 	pickersOpen,
 }: {
-	textareaRef: RefObject<HTMLTextAreaElement | null>;
+	// Anything with a focus() — the message box handle today.
+	focusRef: RefObject<{ focus(): void } | null>;
 	// Bumped by the caller when the composer should grab focus (the
 	// "New conversation" click) — covers the already-mounted case that
 	// an autoFocus attribute can't.
@@ -26,9 +27,8 @@ export function useKeyboard({
 	pickersOpen: boolean;
 }) {
 	useEffect(() => {
-		const textarea = textareaRef.current;
-		if ((focusSignal ?? 0) > 0) textarea?.focus();
-	}, [focusSignal, textareaRef]);
+		if ((focusSignal ?? 0) > 0) focusRef.current?.focus();
+	}, [focusSignal, focusRef]);
 
 	// Focus stealing (`stealFocus`, the thread view): on mount, at every
 	// busy → idle settle, and when the window comes back to the
@@ -57,8 +57,8 @@ export function useKeyboard({
 		if (stealGuard.current.pickers) return;
 		if (document.querySelector(".composer-pick") !== null) return;
 		if (document.querySelector('[role="dialog"]') !== null) return;
-		textareaRef.current?.focus();
-	}, [textareaRef]);
+		focusRef.current?.focus();
+	}, [focusRef]);
 	useEffect(() => {
 		if (!stealFocus || phone || busy) return;
 		claimFocus();

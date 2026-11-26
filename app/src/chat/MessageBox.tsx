@@ -16,7 +16,7 @@ import { inlineChipLabel } from "../../../src/inline-parts.ts";
 import { useConfirm } from "../confirm.tsx";
 import { bytes } from "../opsShared.tsx";
 import { fetchAttachmentUrl } from "./MessageParts.tsx";
-import { resolveChip, resolveDraft, retryUpload, subscribe, thumbFor } from "./uploads.ts";
+import { canRetry, resolveChip, resolveDraft, retryUpload, subscribe, thumbFor, uploadError } from "./uploads.ts";
 import { chipKey, normalizeDraft, parseChip, sameDraft, type Chip, type Draft, type DraftItem, type FileChip } from "./draft.ts";
 
 export interface MessageBoxHandle {
@@ -43,6 +43,13 @@ interface PopState {
 	chip: Chip;
 	anchor: HTMLElement;
 	key: string;
+}
+
+function failedMessage(chip: FileChip): string {
+	const message = chip.state === "failed" ? uploadError(chip) : null;
+	return message !== null && message !== ""
+		? `Upload failed: ${message}`
+		: "Upload did not finish. Attach it again.";
 }
 
 function chipName(chip: Chip): string {
@@ -306,6 +313,7 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 	const onEnterRef = useRef(onEnter);
 	const onFilesRef = useRef(onFiles);
 	const onOpenNoteRef = useRef(onOpenNote);
+	const remoteThumbUrls = useRef(new Map<string, string>());
 	const syncRef = useRef<() => void>(() => {});
 	const popRef = useRef<PopState | null>(null);
 	popRef.current = pop;
@@ -415,12 +423,31 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 			handleKeyDown: (_view, event) => {
 				return event.key === "Enter" && (event as KeyboardEvent).isComposing === true;
 			},
-			handleClickOn: (view, _pos, node, nodePos) => {
-				if (node.type === boxSchema.nodes.goblinChip) {
-					openPopoverAt(view, nodePos);
+			handleDOMEvents: {
+				beforeinput: (view, event) => {
+					const e = event as InputEvent;
+					const backward = e.inputType === "deleteContentBackward";
+					if (!backward && e.inputType !== "deleteContentForward") return false;
+					const pos = chipAtDeleteEdge(view, backward);
+					if (pos === null) return false;
+					const node = view.state.doc.nodeAt(pos);
+					if (node === null || node.type !== boxSchema.nodes.goblinChip) return false;
+					view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
+					e.preventDefault();
 					return true;
-				}
-				return false;
+				},
+				click: (view, event) => {
+					const target = event.target;
+					if (!(target instanceof HTMLElement)) return false;
+					const chipEl = target.closest(".goblin-chip");
+					if (chipEl === null) return false;
+					const pos = view.posAtDOM(chipEl, 0);
+					const node = view.state.doc.nodeAt(pos);
+					if (node === null || node.type !== boxSchema.nodes.goblinChip) return false;
+					openPopoverAt(view, pos);
+					event.preventDefault();
+					return true;
+				},
 			},
 			handlePaste: (view, event) => {
 				const files = Array.from(event.clipboardData?.items ?? []).flatMap((i) =>
@@ -546,14 +573,22 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 			prepend: (draft: Draft) => {
 				const view = viewRef.current;
 				if (view === null) return;
-				const incoming = docFromDraft(resolveDraft(normalizeDraft(draft)));
+				const resolved = resolveDraft(normalizeDraft(draft));
+				const incoming = docFromDraft(resolved);
 				const current = view.state.doc;
+				const currentEmpty =
+					current.childCount === 1 && current.child(0).content.size === 0;
 				const blocks: PMNode[] = [];
 				incoming.forEach((child) => blocks.push(child));
-				if (blocks.length > 0 && current.content.size > 0)
+				if (blocks.length > 0 && !currentEmpty && current.content.size > 0)
 					blocks.push(boxSchema.nodes.paragraph.create());
-				current.forEach((child) => blocks.push(child));
+				if (!currentEmpty) current.forEach((child) => blocks.push(child));
 				view.dispatch(view.state.tr.replaceWith(0, current.content.size, Fragment.fromArray(blocks)));
+				if (resolved.shelf.length > 0) {
+					const keys = new Set(shelfRef.current.map(chipKey));
+					const add = resolved.shelf.filter((chip) => !keys.has(chipKey(chip)));
+					if (add.length > 0) setShelfBoth([...shelfRef.current, ...add]);
+				}
 			},
 			appendText: (text: string) => {
 				const view = viewRef.current;
@@ -592,6 +627,10 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 							key={chipKey(chip)}
 							chip={chip}
 							token={token}
+							onUrl={(path, url) => {
+								if (url === null) remoteThumbUrls.current.delete(path);
+								else remoteThumbUrls.current.set(path, url);
+							}}
 							onRemove={() => void removeShelfChip(chip)}
 						/>
 					))}
@@ -624,6 +663,11 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 						<ChipDetails
 							chip={pop.chip}
 							token={token}
+							thumbUrl={
+								pop.chip.kind === "file" && pop.chip.state === "ready"
+									? (thumbFor(pop.chip) ?? remoteThumbUrls.current.get(pop.chip.ref.path))
+									: undefined
+							}
 							onOpenNote={(id) => onOpenNoteRef.current?.(id)}
 							onRemove={() => {
 								removeChipNodes(pop.key);
@@ -651,6 +695,24 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 	);
 });
 
+function chipAtDeleteEdge(view: EditorView, backward: boolean): number | null {
+	const sel = view.state.selection;
+	if (sel instanceof NodeSelection && sel.node.type === boxSchema.nodes.goblinChip) return sel.from;
+	const cursor = sel instanceof TextSelection ? sel.$cursor : null;
+	if (cursor !== null) {
+		const node = backward ? cursor.nodeBefore : cursor.nodeAfter;
+		if (node !== null && node !== undefined && node.type === boxSchema.nodes.goblinChip) {
+			return backward ? sel.from - node.nodeSize : sel.to;
+		}
+	}
+	const dom = view.dom.ownerDocument.getSelection()?.anchorNode ?? null;
+	const el = dom === null ? null : dom.nodeType === 1 ? (dom as HTMLElement) : dom.parentElement;
+	const chipEl = el === null ? null : el.closest(".goblin-chip");
+	if (chipEl === null || chipEl === undefined) return null;
+	const pos = view.posAtDOM(chipEl, 0);
+	return view.state.doc.nodeAt(pos)?.type === boxSchema.nodes.goblinChip ? pos : null;
+}
+
 function findChipPos(view: EditorView, key: string): number | null {
 	let found: number | null = null;
 	view.state.doc.descendants((node, pos) => {
@@ -667,10 +729,12 @@ function findChipPos(view: EditorView, key: string): number | null {
 function ShelfThumb({
 	chip,
 	token,
+	onUrl,
 	onRemove,
 }: {
 	chip: FileChip;
 	token: string | null;
+	onUrl?: (path: string, url: string | null) => void;
 	onRemove: () => void;
 }) {
 	const [remote, setRemote] = useState<string | null>(null);
@@ -683,6 +747,7 @@ function ShelfThumb({
 				if (live) {
 					url = u;
 					setRemote(u);
+					onUrl?.(chip.ref.path, u);
 				} else {
 					URL.revokeObjectURL(u);
 				}
@@ -692,8 +757,9 @@ function ShelfThumb({
 		return () => {
 			live = false;
 			if (url !== null) URL.revokeObjectURL(url);
+			onUrl?.(chip.ref.path, null);
 		};
-	}, [chip, token]);
+	}, [chip, token, onUrl]);
 	const src = thumbFor(chip) ?? (remote ?? undefined);
 	return (
 		<span className="box-shelf-thumb" data-state={chip.state}>
@@ -709,24 +775,55 @@ function ShelfThumb({
 	);
 }
 
-function ChipDetails({
+export function ChipDetails({
 	chip,
 	token,
+	thumbUrl,
 	onOpenNote,
 	onRemove,
 	onRetry,
 }: {
 	chip: Chip;
 	token: string | null;
+	thumbUrl?: string | undefined;
 	onOpenNote: (id: string) => void;
 	onRemove: () => void;
 	onRetry: () => void;
 }) {
 	const [openError, setOpenError] = useState<string | null>(null);
-	const retryable = chip.kind === "file" && chip.state === "failed" && retryUpload(chip) !== null;
+	const [href, setHref] = useState<string | null>(thumbUrl ?? null);
+	const navigated = useRef(false);
+	const retryable = chip.kind === "file" && canRetry(chip);
 	const readyFile = chip.kind === "file" && chip.state === "ready";
 	const openImage = readyFile && chip.ref.mediaType.startsWith("image/");
 	const downloadFile = readyFile && !chip.ref.mediaType.startsWith("image/");
+	useEffect(() => {
+		if (!openImage) return;
+		if (thumbUrl !== undefined) {
+			setHref(thumbUrl);
+			return;
+		}
+		if (chip.kind !== "file" || chip.state !== "ready") return;
+		let live = true;
+		let url: string | null = null;
+		void fetchAttachmentUrl(token, chip.ref.path).then(
+			(u) => {
+				if (live) {
+					url = u;
+					setHref(u);
+				} else {
+					URL.revokeObjectURL(u);
+				}
+			},
+			(e: unknown) => {
+				if (live) setOpenError(e instanceof Error ? e.message : "download failed");
+			},
+		);
+		return () => {
+			live = false;
+			if (url !== null && !navigated.current) URL.revokeObjectURL(url);
+		};
+	}, [openImage, chip, token, thumbUrl]);
 	const open = () => {
 		if (chip.kind !== "file" || chip.state !== "ready") return;
 		const { path, filename } = chip.ref;
@@ -764,13 +861,21 @@ function ChipDetails({
 					{"name" in chip.ref ? "Skill from your catalog" : `Skill from ${skillHost(chip)}`}
 				</p>
 			)}
-			{chip.kind === "file" && chip.state === "failed" && !retryable && (
-				<p className="chip-details-meta">Upload did not finish. Attach it again.</p>
+			{chip.kind === "file" && chip.state === "failed" && (
+				<p className="chip-details-meta">{failedMessage(chip)}</p>
 			)}
-			{openImage && (
-				<button type="button" onClick={open}>
+			{openImage && href !== null && (
+				<a
+					href={href}
+					target="_blank"
+					rel="noreferrer"
+					onClick={() => {
+						navigated.current = true;
+						setTimeout(() => URL.revokeObjectURL(href), 60000);
+					}}
+				>
 					Open
-				</button>
+				</a>
 			)}
 			{downloadFile && (
 				<button type="button" onClick={open}>

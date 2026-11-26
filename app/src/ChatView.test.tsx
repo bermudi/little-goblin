@@ -12,7 +12,7 @@ import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
+import { boxView } from "./chat/MessageBox.tsx";
 import { ChatView, mergeTranscript, replyStarted, rewindTranscript } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
@@ -430,9 +430,7 @@ describe("reply work header", () => {
     dom.root = createRoot(dom.container);
     await act(async () => dom.root?.render(
       <ChatView
-        token={null} conversationId="app/work-test" title={null} seed={null}
-        staged={[]} setStaged={() => {}} stagedNotes={[]} setStagedNotes={() => {}}
-        stagedSkills={[]} setStagedSkills={() => {}} onSeeded={() => {}}
+        token={null} conversationId="app/work-test" title={null} seed={null} onSeeded={() => {}}
       />,
     ));
   };
@@ -639,12 +637,6 @@ describe("reply work header", () => {
         conversationId="app/work-test"
         title={null}
         seed={[{ type: "text", text: "hello" }]}
-        staged={[]}
-        setStaged={() => {}}
-        stagedNotes={[]}
-        setStagedNotes={() => {}}
-        stagedSkills={[]}
-        setStagedSkills={() => {}}
         onSeeded={() => {}}
       />,
     ));
@@ -882,12 +874,6 @@ describe("unlanded turn records (issue #408)", () => {
             conversationId="app/unlanded-01"
             title={null}
             seed={null}
-            staged={[]}
-            setStaged={() => {}}
-            stagedNotes={[]}
-            setStagedSkills={() => {}}
-            stagedSkills={[]}
-            setStagedNotes={() => {}}
             onSeeded={() => {}}
           />,
         );
@@ -1139,12 +1125,6 @@ describe("turn metadata usage", () => {
           conversationId="app/meta-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       );
@@ -1211,12 +1191,6 @@ describe("turn metadata usage", () => {
           conversationId="app/meta-ttft"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       );
@@ -1330,12 +1304,6 @@ describe("reply ratings", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -1457,12 +1425,6 @@ describe("ChatView reload window (issue #79)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -1549,12 +1511,6 @@ describe("ChatView reload window (issue #79)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       );
@@ -1637,12 +1593,6 @@ describe("ChatView reload window (issue #79)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -1730,12 +1680,6 @@ describe("ChatView reload window (issue #79)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -1839,12 +1783,6 @@ describe("ChatView reload window (issue #79)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -1934,12 +1872,6 @@ describe("ChatView reload window (issue #79)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={[{ type: "text", text: "seed input" }]}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -1961,6 +1893,22 @@ describe("ChatView reload window (issue #79)", () => {
 // Sends and the conversation reader are independent.
 describe("ChatView mid-turn steer", () => {
   const dom = mountDom();
+  const boxViewOf = () => {
+    const el = dom.container.querySelector(".message-box-wrap");
+    return el === null ? undefined : boxView(el);
+  };
+  const boxText = () => {
+    const v = boxViewOf();
+    if (v === undefined) return "";
+    let out = "";
+    v.state.doc.forEach((para, i) => {
+      if (i > 0) out += "\n";
+      para.forEach((node) => {
+        out += node.isText ? (node.text ?? "") : "☒";
+      });
+    });
+    return out;
+  };
 
   const jsonResponse = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), {
@@ -2083,12 +2031,6 @@ describe("ChatView mid-turn steer", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -2108,26 +2050,14 @@ describe("ChatView mid-turn steer", () => {
       .toMatch(/^Working for (2[89]|3\d)s$/);
     expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
     expect(dom.container.querySelector(".send-btn")).toBeNull();
-    const ta = dom.container.querySelector<HTMLTextAreaElement>(
-      "form.composer textarea",
-    )!;
+    const boxViewOf = () => {
+      const el = dom.container.querySelector(".message-box-wrap");
+      return el === null ? undefined : boxView(el);
+    };
     await act(async () => {
-      // Focus + keyup too — React's text-input fallback needs it in
-      // this environment.
-      (ta as HTMLElement).focus();
-      Object.getOwnPropertyDescriptor(
-        dom.win.HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(ta, "steer it");
-      ta.dispatchEvent(
-        new dom.win.Event("input", { bubbles: true }) as unknown as Event,
-      );
-      ta.dispatchEvent(
-        new dom.win.KeyboardEvent("keyup", {
-          bubbles: true,
-          key: "e",
-        }) as unknown as Event,
-      );
+      const v = boxViewOf();
+      v?.focus();
+      v?.dispatch(v.state.tr.insertText("steer it"));
     });
     expect(dom.container.querySelector(".stop-btn")).toBeNull();
     expect(dom.container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
@@ -2156,10 +2086,10 @@ describe("ChatView mid-turn steer", () => {
     expect(dom.container.textContent).toContain("steer it");
     expect(dom.container.querySelector(".msg.user")?.textContent).not.toContain("steer it");
     expect(stopPosts).toBe(0);
-    for (let i = 0; i < 100 && ta.value !== ""; i++) {
+    for (let i = 0; i < 100 && boxText() !== ""; i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
-    expect(ta.value).toBe("");
+    expect(boxText()).toBe("");
     await act(async () => {
       dom.container
         .querySelector<HTMLButtonElement>(".pending-input-edit")!
@@ -2169,7 +2099,7 @@ describe("ChatView mid-turn steer", () => {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
     expect(pendingDeletes).toBe(1);
-    expect(ta.value).toBe("steer it");
+    expect(boxText()).toBe("steer it");
     expect(dom.container.querySelector(".pending-inputs")).toBeNull();
     await act(async () => {
       live.enqueue(
@@ -2194,18 +2124,17 @@ describe("ChatView mid-turn steer", () => {
     expect(stopPosts).toBe(0);
 
     await act(async () => {
-      (ta as HTMLElement).focus();
-      Object.getOwnPropertyDescriptor(
-        dom.win.HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(ta, "queue this");
-      ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
-      ta.dispatchEvent(
-        new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+      const v = boxViewOf();
+      v?.focus();
+      v?.dispatch(
+        v.state.tr.insertText("queue this", 0, v.state.doc.content.size),
       );
-      ta.dispatchEvent(
+    });
+    await act(async () => {
+      boxViewOf()?.dom.dispatchEvent(
         new dom.win.KeyboardEvent("keydown", {
           bubbles: true,
+          cancelable: true,
           key: "Enter",
           altKey: true,
         }) as unknown as Event,
@@ -2270,12 +2199,6 @@ describe("ChatView mid-turn steer", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -2283,17 +2206,10 @@ describe("ChatView mid-turn steer", () => {
     for (let i = 0; i < 100 && !dom.container.textContent?.includes("restore this text"); i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
-    const textarea = dom.container.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
-      (textarea as HTMLElement).focus();
-      Object.getOwnPropertyDescriptor(
-        dom.win.HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(textarea, "keep this draft");
-      textarea.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
-      textarea.dispatchEvent(
-        new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "t" }) as unknown as Event,
-      );
+      const v = boxViewOf();
+      v?.focus();
+      v?.dispatch(v.state.tr.insertText("keep this draft"));
     });
     await act(async () => {
       dom.container.querySelector<HTMLButtonElement>(".pending-input-edit")!.click();
@@ -2302,7 +2218,7 @@ describe("ChatView mid-turn steer", () => {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
     expect(removed).toBe(1);
-    expect(textarea.value).toBe("restore this text\n\nkeep this draft");
+    expect(boxText()).toBe("restore this text\n\nkeep this draft");
     expect(dom.container.querySelector(".pending-inputs")).toBeNull();
 
     const removedItem = {
@@ -2386,27 +2302,29 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     });
     return { promise, resolve };
   };
-  const typeInto = async (text: string) => {
-    const ta = dom.container.querySelector<HTMLTextAreaElement>(
-      "form.composer textarea",
-    )!;
-    await act(async () => {
-      (ta as HTMLElement).focus();
-      Object.getOwnPropertyDescriptor(
-        dom.win.HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(ta, text);
-      ta.dispatchEvent(
-        new dom.win.Event("input", { bubbles: true }) as unknown as Event,
-      );
-      ta.dispatchEvent(
-        new dom.win.KeyboardEvent("keyup", {
-          bubbles: true,
-          key: "t",
-        }) as unknown as Event,
-      );
+  const boxViewOf = () => {
+    const el = dom.container.querySelector(".message-box-wrap");
+    return el === null ? undefined : boxView(el);
+  };
+  const boxText = () => {
+    const v = boxViewOf();
+    if (v === undefined) return "";
+    let out = "";
+    v.state.doc.forEach((para, i) => {
+      if (i > 0) out += "\n";
+      para.forEach((node) => {
+        out += node.isText ? (node.text ?? "") : "☒";
+      });
     });
-    return ta;
+    return out;
+  };
+  const typeInto = async (text: string) => {
+    const v = boxViewOf();
+    await act(async () => {
+      v?.focus();
+      v?.dispatch(v.state.tr.insertText(text));
+    });
+    return v;
   };
   const waitFor = async (condition: () => boolean) => {
     for (let i = 0; i < 100 && !condition(); i++) {
@@ -2417,22 +2335,13 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     expect(condition()).toBeTrue();
   };
 
-  function StagedHost() {
-    const [staged, setStaged] = useState<StagedUpload[]>([]);
-    const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
-    const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
+  function ChatHost() {
     return (
       <ChatView
         token={null}
         conversationId="app/chat-01"
         title={null}
         seed={null}
-        staged={staged}
-        setStaged={setStaged}
-        stagedNotes={stagedNotes}
-        setStagedNotes={setStagedNotes}
-        stagedSkills={stagedSkills}
-        setStagedSkills={setStagedSkills}
         onSeeded={() => {}}
       />
     );
@@ -2441,7 +2350,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
   const mountChat = async () => {
     dom.root = createRoot(dom.container);
     await act(async () => {
-      dom.root?.render(<StagedHost />);
+      dom.root?.render(<ChatHost />);
     });
   };
 
@@ -2507,7 +2416,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
         if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
         if (url.includes("/pending/") && init?.method === "DELETE") {
           const id = decodeURIComponent(url.split("/").at(-1)!);
-          const box = dom.container.querySelector("textarea")?.value ?? "";
+          const box = boxText();
           deletes.push({ id, box });
           const message = pendingRows.find((row) => row.id === id)?.message;
           pendingRows = pendingRows.filter((row) => row.id !== id);
@@ -2544,11 +2453,10 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
         }),
       );
     });
-    await waitFor(() => ta.value === "first\n\nsecond\n\ntyped");
+    await waitFor(() => boxText() === "first\n\nsecond\n\ntyped");
     expect(
-      dom.container.querySelector(".composer-attachments .attachment .attachment-name")
-        ?.textContent,
-    ).toContain("one.png");
+      dom.container.querySelector('.box-shelf button[aria-label="Remove one.png"]'),
+    ).not.toBeNull();
     await waitFor(() => deletes.length >= 2);
     expect(deletes.map((entry) => entry.id).sort()).toEqual(["p1", "p2"]);
     for (const entry of deletes) expect(entry.box).toBe("first\n\nsecond\n\ntyped");
@@ -2616,8 +2524,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
       () => dom.container.textContent?.includes("Stop request failed") ?? false,
     );
     expect(dom.container.textContent).toContain("stop exploded");
-    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
-    expect(ta.value).toBe("");
+    expect(boxText()).toBe("");
     expect(deletes).toEqual([]);
     const notSentSection = dom.container.querySelector('section[aria-label="Not sent"]');
     expect(notSentSection).not.toBeNull();
@@ -2683,8 +2590,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     await act(async () => {
       (dom.container.querySelector(".stop-btn") as HTMLElement).click();
     });
-    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
-    await waitFor(() => ta.value === "kept text");
+    await waitFor(() => boxText() === "kept text");
     await waitFor(() => deletes.length === 1);
     const notSentSection = dom.container.querySelector('section[aria-label="Not sent"]');
     expect(notSentSection).not.toBeNull();
@@ -2804,7 +2710,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
         if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
         if (url.includes("/pending/") && init?.method === "DELETE") {
           const id = decodeURIComponent(url.split("/").at(-1)!);
-          const box = dom.container.querySelector("textarea")?.value ?? "";
+          const box = boxText();
           deletes.push({ id, box });
           if (id === "p1") return removeDelete.promise;
           const message = pendingRows.find((row) => row.id === id)?.message;
@@ -2841,8 +2747,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
         }),
       );
     });
-    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
-    await waitFor(() => ta.value === "second");
+    await waitFor(() => boxText() === "second");
     await waitFor(
       () => deletes.some((entry) => entry.id === "p2"),
     );
@@ -2917,9 +2822,8 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
       tapDelete.resolve(jsonResponse({ message: rows[0]!.message }));
       await new Promise((resolve) => setTimeout(resolve, 5));
     });
-    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
     await waitFor(() => pendingRows.length === 0);
-    expect(ta.value.split("\n\n").sort()).toEqual(["first", "second"]);
+    expect(boxText().split("\n\n").sort()).toEqual(["first", "second"]);
   });
 
   test("Not sent rows load beside waiting rows and act the same on tap and ×", async () => {
@@ -2994,16 +2898,15 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     expect(notSent.querySelector(".pending-input-mode")).toBeNull();
     expect(notSent.querySelector('.pending-input-edit[aria-label="Edit not sent message"]')).not.toBeNull();
     expect(notSent.querySelector('.pending-input-remove[aria-label="Remove not sent message"]')).not.toBeNull();
-    const ta = dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
     await act(async () => {
       (notSent.querySelector('.pending-input-edit[aria-label="Edit not sent message"]') as HTMLElement).click();
     });
-    await waitFor(() => ta.value === "lost one");
+    await waitFor(() => boxText() === "lost one");
     await act(async () => {
       (dom.container.querySelector('.pending-input-remove[aria-label="Remove not sent message"]') as HTMLElement).click();
     });
     await waitFor(() => deletes.includes("n2"));
-    expect(ta.value).toBe("lost one");
+    expect(boxText()).toBe("lost one");
     expect(
       dom.container.querySelector('section[aria-label="Pending input"]')?.textContent,
     ).toContain("queued text");
@@ -3074,12 +2977,6 @@ describe("ChatView seed send (issue #412)", () => {
           conversationId="app/chat-03"
           title={null}
           seed={[{ type: "text", text: "first!" }]}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3158,12 +3055,6 @@ describe("ChatView seed send (issue #412)", () => {
           conversationId="app/chat-03"
           title={null}
           seed={[{ type: "text", text: "first!" }]}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3228,12 +3119,6 @@ describe("ChatView seed send (issue #412)", () => {
           conversationId="app/chat-04"
           title={null}
           seed={[{ type: "text", text: "first!" }]}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3286,12 +3171,6 @@ describe("ChatView seed send (issue #412)", () => {
           conversationId="app/chat-05"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3390,12 +3269,6 @@ describe("ChatView edit and branch", () => {
           conversationId="app/meta-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3491,12 +3364,6 @@ describe("ChatView edit and branch", () => {
           conversationId="app/meta-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3832,12 +3699,6 @@ describe("ChatView edit and branch", () => {
           conversationId="app/meta-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -3911,12 +3772,6 @@ describe("ChatView edit and branch", () => {
           conversationId="app/meta-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
           onBranched={(id) => opened.push(id)}
         />,
@@ -3975,12 +3830,6 @@ describe("ChatView edit and branch", () => {
           conversationId="app/meta-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
           onBranched={() => {
             opened += 1;
@@ -4048,12 +3897,6 @@ describe("ChatView paged history", () => {
           conversationId="app/paged-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -4454,12 +4297,6 @@ describe("FoldMark", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -4534,12 +4371,6 @@ describe("NotePicker dismissal", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -5550,12 +5381,6 @@ describe("composer model knob (happy-dom)", () => {
           conversationId="app/chat-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -5781,12 +5606,6 @@ describe("composer staged memory toggle (happy-dom)", () => {
           token={null}
           draftScope="new"
           busy={false}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           stagedMemory={stagedMemory}
           onStagedMemoryToggle={(v) => {
             toggled = v;
@@ -5839,6 +5658,17 @@ describe("composer staged memory toggle (happy-dom)", () => {
 // it is.
 describe("composer focus stealing", () => {
   const dom = mountDom();
+  const boxViewOf = () => {
+    const el = dom.container.querySelector(".message-box-wrap");
+    return el === null ? undefined : boxView(el);
+  };
+  const typeInto = async (text: string) => {
+    const v = boxViewOf();
+    await act(async () => {
+      v?.focus();
+      v?.dispatch(v.state.tr.insertText(text));
+    });
+  };
 
   const jsonResponse = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), {
@@ -5953,12 +5783,6 @@ describe("composer focus stealing", () => {
           conversationId="app/focus-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       ),
@@ -5967,26 +5791,9 @@ describe("composer focus stealing", () => {
       () => dom.container.textContent?.includes("done once") ?? false,
     );
   };
-  const composerTa = () =>
-    dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea");
+  const composerTa = () => boxViewOf()?.dom;
   const typeAgain = async () => {
-    const ta = composerTa()!;
-    await act(async () => {
-      ta.focus();
-      Object.getOwnPropertyDescriptor(
-        dom.win.HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(ta, "again");
-      ta.dispatchEvent(
-        new dom.win.Event("input", { bubbles: true }) as unknown as Event,
-      );
-      ta.dispatchEvent(
-        new dom.win.KeyboardEvent("keyup", {
-          bubbles: true,
-          key: "e",
-        }) as unknown as Event,
-      );
-    });
+    await typeInto("again");
   };
   const submitAgain = async () => {
     await act(async () => {
@@ -6009,7 +5816,7 @@ describe("composer focus stealing", () => {
     installFetch();
     await mountThread();
     expect(composerTa()).toBeTruthy();
-    expect(document.activeElement).toBe(composerTa());
+    expect(document.activeElement).toBe(composerTa() ?? null);
   });
 
   test("a settled turn re-claims focus after it drifted to a control", async () => {
@@ -6032,7 +5839,7 @@ describe("composer focus stealing", () => {
     await settle(
       () => dom.container.textContent?.includes("done twice") ?? false,
     );
-    expect(document.activeElement).toBe(composerTa());
+    expect(document.activeElement).toBe(composerTa() ?? null);
   });
 
   test("a foreign text entry keeps its focus — the steal never fights typing", async () => {
@@ -6073,7 +5880,7 @@ describe("composer focus stealing", () => {
     await act(async () => {
       window.dispatchEvent(new dom.win.Event("focus") as unknown as Event);
     });
-    expect(document.activeElement).toBe(composerTa());
+    expect(document.activeElement).toBe(composerTa() ?? null);
   });
 
   test("a foreign text entry survives the foreground return", async () => {
@@ -6156,7 +5963,7 @@ describe("composer focus stealing", () => {
     veil.setAttribute("role", "dialog");
     document.body.appendChild(veil);
     await mountThread();
-    expect(document.activeElement).not.toBe(composerTa());
+    expect(document.activeElement).not.toBe(composerTa() ?? null);
   });
 
   test("phone widths never steal — the keyboard stays closed", async () => {
@@ -6169,7 +5976,7 @@ describe("composer focus stealing", () => {
     installFetch();
     await mountThread();
     expect(composerTa()).toBeTruthy();
-    expect(document.activeElement).not.toBe(composerTa());
+    expect(document.activeElement).not.toBe(composerTa() ?? null);
   });
 });
 
@@ -6224,12 +6031,6 @@ describe("user message runs", () => {
           conversationId="app/runs-01"
           title={null}
           seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
           onSeeded={() => {}}
         />,
       );

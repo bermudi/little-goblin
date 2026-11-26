@@ -34,6 +34,7 @@ export const attachmentRefSchema = z.object({
 	// Intake marks recorded voice/video notes so speech can inline; arbitrary
 	// audio stays a path instead of base64-ing music into every request.
 	speech: z.boolean().optional(),
+	inline: z.literal(true).optional(),
 });
 
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>;

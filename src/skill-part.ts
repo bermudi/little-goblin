@@ -36,10 +36,11 @@ export function isCachedSkillPath(path: string): boolean {
 }
 
 export const skillPartDataSchema = z.union([
-	z.object({ name: z.string().regex(SKILL_NAME_RE).max(64) }),
+	z.object({ name: z.string().regex(SKILL_NAME_RE).max(64), inline: z.literal(true).optional() }),
 	z.object({
 		url: z.string().url().startsWith("https://"),
 		path: z.string().min(1).refine(isCachedSkillPath),
+		inline: z.literal(true).optional(),
 	}),
 ]);
 

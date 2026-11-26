@@ -670,6 +670,7 @@ async function boot() {
 		notes,
 		posts,
 		asks,
+		agents: agentChildren,
 		auth,
 		configRef,
 		gate: () => system1Gate ?? undefined,

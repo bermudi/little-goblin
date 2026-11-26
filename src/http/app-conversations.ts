@@ -1239,7 +1239,10 @@ export async function handleConversationsRoute(
 				log.warn("app conversation delete refused", { conversation: convId.id, refusal });
 				return Response.json({ error: refusal }, { status: 409, headers: NO_STORE });
 			}
-			for (const subagent of subagents) runtime.stop(subagent);
+			for (const subagent of subagents) {
+				deps.agents?.stop(subagent);
+				runtime.stop(subagent);
+			}
 			const { stopped } = runtime.stop(convId.id);
 			let deleted: string[];
 			try {

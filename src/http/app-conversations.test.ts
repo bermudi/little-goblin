@@ -1614,7 +1614,16 @@ describe("app conversations", () => {
 	});
 
 	test("delete takes the conversation's subagents with it and leaves other chats", async () => {
-		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const stopped: string[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			agents: {
+				stop: (id) => {
+					stopped.push(id);
+					return { error: `no agent child ${id}` };
+				},
+			},
+		});
 		try {
 			for (const id of ["chat-01", "chat-02"]) {
 				await call("/api/app/conversations", {
@@ -1635,6 +1644,7 @@ describe("app conversations", () => {
 			expect(store.get(grandchild.id)).toBeNull();
 			expect(store.get("app/chat-02")).not.toBeNull();
 			expect(store.get(other.id)?.parentId).toBe("app/chat-02");
+			expect(stopped.sort()).toEqual([child.id, grandchild.id].sort());
 		} finally {
 			http.stop();
 		}

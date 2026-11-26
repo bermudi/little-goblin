@@ -81,6 +81,14 @@ export function buildHome(
 	const chatsById = new Map(conversations.map((conv) => [conv.id, conv]));
 	const rollIds = new Set(input.chain.map((conv) => conv.id));
 	const owners = findOwners(conversations, chatsById, rollIds);
+	const descendantsByRow = new Map<string, Conv[]>();
+	for (const candidate of conversations) {
+		const row = owners.get(candidate.id)?.row;
+		if (row == null || row === candidate.id) continue;
+		const group = descendantsByRow.get(row) ?? [];
+		group.push(candidate);
+		descendantsByRow.set(row, group);
+	}
 	const openOwner = input.open === null ? undefined : owners.get(input.open);
 	const openRow = openOwner?.roll === null ? openOwner.row : null;
 	const activeHold = prev?.id === openRow ? prev : null;
@@ -98,9 +106,7 @@ export function buildHome(
 		const owner = owners.get(conv.id);
 		if (owner?.row !== conv.id) continue;
 
-		const descendants = conversations.filter(
-			(candidate) => candidate.id !== conv.id && owners.get(candidate.id)?.row === conv.id,
-		);
+		const descendants = descendantsByRow.get(conv.id) ?? [];
 		const ids = new Set([conv.id, ...descendants.map((child) => child.id)]);
 		const rawResult = getMark(
 			conv,

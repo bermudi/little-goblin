@@ -1049,6 +1049,7 @@ describe("app chat", () => {
 		const { http, call, store, runtime, asks } = setup({
 			token: APP_TOKEN_NAME,
 			scriptedModel: model,
+			ask: { now: () => new Date() },
 		});
 		try {
 			await createAndChat(call);

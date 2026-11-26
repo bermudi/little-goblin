@@ -51,6 +51,7 @@ export function setup(
 		scriptedModel?: ScriptedModel;
 		makeTools?: TurnToolMaker;
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
+		ask?: { now: () => Date };
 	} = {},
 ) {
 	const home = useHome("goblin-app-");
@@ -58,7 +59,10 @@ export function setup(
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const posts = makePosts(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
-	const asks = makeAsks(store.db, () => new Date());
+	const asks = makeAsks(
+		store.db,
+		opts.ask?.now ?? (() => new Date("2026-11-22T08:00:00.000Z")),
+	);
 	const turnJournal = openTurnJournal(store.db);
 	// The context-window rows ride the same db — prod wires them
 	// unconditionally (src/index.ts), so the rig does too.
@@ -95,7 +99,7 @@ export function setup(
 	runtime.mount({ makeTools: (conv, deliverVoice, recording, deliverFile) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
 			const tools = opts.makeTools?.(conv, deliverVoice, recording, deliverFile) ?? {};
-			return channelOf(conv.id) === "app" && conv.agentType === null
+			return opts.ask !== undefined && channelOf(conv.id) === "app" && conv.agentType === null
 				? { ...tools, ask: askTool({ asks, conversationId: conv.id }) }
 				: tools;
 		} });

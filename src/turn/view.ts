@@ -21,9 +21,11 @@ import {
 } from "../skill-part.ts";
 import {
 	ADDITIONAL_TOOLS_PREFIX,
+	INCREMENTAL_TOOLS_NOTICE,
 	TOOLS_PART,
 	foldDeclarations,
-	toolChangeSchema,
+	storedToolChanges,
+	toolRemovalNotice,
 	type ToolChange,
 	type ToolDeclaration,
 } from "../agent/tool-declarations.ts";
@@ -204,16 +206,7 @@ export async function buildModelView(
 		options.summarySeq,
 	);
 	if (options.partial !== null) view.push(options.partial);
-	const storedChanges = (options.toolHistory ?? options.entries).flatMap(({ message }) =>
-		message.parts.flatMap((part) => {
-			if (part.type !== TOOLS_PART) return [];
-			const parsed = toolChangeSchema.safeParse((part as { data?: unknown }).data);
-			if (!parsed.success) {
-				throw new Error(`malformed ${TOOLS_PART} part in conversation ${ctx.convId}, message ${message.id}`);
-			}
-			return [{ messageId: message.id, change: parsed.data }];
-		}),
-	);
+	const storedChanges = storedToolChanges(options.toolHistory ?? options.entries, ctx.convId);
 	const owned = new Set(options.ownedSeqs ?? []);
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
@@ -356,25 +349,30 @@ function toolChangeMessages(
 	unavailable: Set<string>,
 ): PromptMessage[] {
 	const out: PromptMessage[] = [];
-	foldUnavailable(change, unavailable);
+	for (const declaration of change.added) unavailable.delete(declaration.name);
 	const unavailableNames = [...unavailable];
 	const notice =
-		"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.";
+		unavailableNames.length > 0
+			? `${INCREMENTAL_TOOLS_NOTICE}\nStill unavailable: ${unavailableNames.join(", ")}.`
+			: INCREMENTAL_TOOLS_NOTICE;
 	out.push({
 		role: "system",
-		content:
-			folded.size > 0
-				? `${notice}\nStill unavailable: ${unavailableNames.length > 0 ? unavailableNames.join(", ") : "none"}.`
-				: notice,
+		content: notice,
 		providerOptions: { codex: { inInput: true } },
 	});
 	if (change.added.length > 0) out.push(toolMarker(change.added));
-	if (unavailableNames.length > 0 && change.removed.length > 0) {
+	const added = new Set(change.added.map((declaration) => declaration.name));
+	const removed = change.removed.filter((name) => !added.has(name));
+	if (removed.length > 0) {
 		out.push({
 			role: "system",
-			content: `The following tools are no longer available. Do not call them:\n${change.removed.filter((name) => !change.added.some((item) => item.name === name)).map((name) => `- ${name}`).join("\n")}`,
+			content: toolRemovalNotice(removed),
 			providerOptions: { codex: { inInput: true } },
 		});
+	}
+	for (const name of removed) {
+		unavailable.add(name);
+		folded.delete(name);
 	}
 	for (const name of change.removed) folded.delete(name);
 	for (const declaration of change.added) folded.set(declaration.name, declaration);
@@ -382,8 +380,11 @@ function toolChangeMessages(
 }
 
 function foldUnavailable(change: ToolChange, unavailable: Set<string>): void {
-	for (const name of change.removed) unavailable.add(name);
 	for (const declaration of change.added) unavailable.delete(declaration.name);
+	const added = new Set(change.added.map((declaration) => declaration.name));
+	for (const name of change.removed) {
+		if (!added.has(name)) unavailable.add(name);
+	}
 }
 
 function dropProviderExecuted(ctx: ViewContext, messages: PromptMessage[]): PromptMessage[] {

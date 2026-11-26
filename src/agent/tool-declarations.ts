@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { inputJsonSchema } from "../tool.ts";
 import { isHosted, type Tools } from "../tool.ts";
+import type { Message } from "../message.ts";
 
 export const TOOLS_PART = "data-tools";
 export const ADDITIONAL_TOOLS_PREFIX = "GOBLIN_ADDITIONAL_TOOLS:";
+export const INCREMENTAL_TOOLS_NOTICE =
+	"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.";
 
 export interface ToolDeclaration {
 	type: "function";
@@ -16,6 +19,42 @@ export interface ToolDeclaration {
 export interface ToolChange {
 	added: ToolDeclaration[];
 	removed: string[];
+}
+
+export function toolRemovalNotice(names: readonly string[]): string {
+	return `The following tools are no longer available. Do not call them:\n${names.map((name) => `- ${name}`).join("\n")}`;
+}
+
+export function isInInputSystem(message: {
+	role?: unknown;
+	providerOptions?: unknown;
+}): boolean {
+	if (message.role !== "system") return false;
+	const options = message.providerOptions;
+	if (typeof options !== "object" || options === null || Array.isArray(options)) return false;
+	const codex = (options as Record<string, unknown>).codex;
+	return (
+		typeof codex === "object" &&
+		codex !== null &&
+		!Array.isArray(codex) &&
+		(codex as Record<string, unknown>).inInput === true
+	);
+}
+
+export function storedToolChanges(
+	entries: { message: Message }[],
+	convId: string,
+): { messageId: string; change: ToolChange }[] {
+	return entries.flatMap(({ message }) =>
+		message.parts.flatMap((part) => {
+			if (part.type !== TOOLS_PART) return [];
+			const parsed = toolChangeSchema.safeParse((part as { data?: unknown }).data);
+			if (!parsed.success) {
+				throw new Error(`malformed ${TOOLS_PART} part in conversation ${convId}, message ${message.id}`);
+			}
+			return [{ messageId: message.id, change: parsed.data }];
+		}),
+	);
 }
 
 export const toolDeclarationSchema = z.object({

@@ -19,7 +19,7 @@ import { defineTool } from "../../tool.ts";
 import { isTransientTurnFailure, quotaExhausted } from "../provider-errors.ts";
 import { fromSdkError } from "../sdk-errors.ts";
 import type { FetchLike } from "./auth.ts";
-import { codexModel, RESPONSES_URL } from "./model.ts";
+import { codexModel, RESPONSES_URL, rewriteAdditionalToolsRequestBody } from "./model.ts";
 import { quotaFromMetadata } from "./receipts.ts";
 import { codexSessionId } from "./session.ts";
 import { declarationsOf } from "../tool-declarations.ts";
@@ -179,6 +179,11 @@ describe("codexModel — request headers", () => {
 // ---------- T2 body ----------
 
 describe("codexModel — request body", () => {
+	test("request bodies without a tool marker pass through as the same string", () => {
+		const body = `{"input":[{"type":"input_image","image_url":"data:image/png;base64,${"a".repeat(1_000_000)}"}]}`;
+		expect(rewriteAdditionalToolsRequestBody(body)).toBe(body);
+	});
+
 	test("in-input markers stay ordered; ordinary system content remains instructions", async () => {
 		const declaration = {
 			type: "function",
@@ -275,7 +280,7 @@ describe("codexModel — request body", () => {
 				{
 					role: "system",
 					content:
-						"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.\nStill unavailable: none.",
+						"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.",
 					providerOptions: { codex: { inInput: true } },
 				},
 				{

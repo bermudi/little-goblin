@@ -29,6 +29,7 @@ import { fromSdkError } from "./sdk-errors.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 import { fromV4Usage } from "./v4-usage.ts";
 import { isZaiHost, zaiReasoningFetch, zaiStatelessReplay } from "./zai-responses.ts";
+import { isInInputSystem } from "./tool-declarations.ts";
 
 // Every chat-turn, compaction, title and reviewer model comes through
 // here, so the quota filter lives here once. The SDK retries only
@@ -295,15 +296,8 @@ export function callHashes(
 	prompt: readonly unknown[],
 	tools: unknown,
 ): { headHash: string; requestHash: string; promptHashes: string[] } {
-	const system = (prompt as { role?: unknown; content?: unknown }[]).filter((message) => {
-		if (message.role !== "system") return false;
-		if (typeof message.content !== "string") return true;
-		return (
-			!message.content.startsWith("GOBLIN_ADDITIONAL_TOOLS:") &&
-			!message.content.startsWith("This is an incremental tools update.") &&
-			!message.content.startsWith("The following tools are no longer available.")
-		);
-	});
+	const system = (prompt as { role?: unknown; content?: unknown; providerOptions?: unknown }[])
+		.filter((message) => message.role === "system" && !isInInputSystem(message));
 	const visibleTools = Array.isArray(tools)
 		? tools.filter((tool) => {
 				if (typeof tool !== "object" || tool === null) return true;

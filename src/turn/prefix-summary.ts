@@ -7,6 +7,7 @@ import type { ConversationStore } from "../conversation.ts";
 import type { MemoryTurnDeps } from "../memory/mod.ts";
 import type { Message } from "../message.ts";
 import type { PromptMessage } from "../prompt-message.ts";
+import { omitFunctionToolsFromRequest } from "./ai-sdk-tools.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
 import { fromSdkError } from "../agent/sdk-errors.ts";
@@ -111,19 +112,7 @@ function makePrefixRequest(
 	}) => void,
 ): PrefixSummarizer {
 	const { conv, step, store, tools } = input;
-	if (step.toolsInInput === true) {
-		for (const [name, definition] of Object.entries(sdkTools)) {
-			if (definition.type === "provider") continue;
-			const providerOptions = definition.providerOptions ?? {};
-			sdkTools[name] = {
-				...definition,
-				providerOptions: {
-					...providerOptions,
-					openai: { ...(providerOptions.openai ?? {}), omitFromRequestTools: true },
-				},
-			};
-		}
-	}
+	const requestTools = step.toolsInInput === true ? omitFunctionToolsFromRequest(sdkTools) : sdkTools;
 	const hydratedModelOutputTools = new Set(input.hydratedModelOutputTools ?? []);
 	const view: ViewContext = {
 		convId: conv.id,
@@ -251,7 +240,7 @@ function makePrefixRequest(
 				allowSystemInMessages: step.toolsInInput === true,
 				model: step.model,
 				instructions: step.system,
-				tools: sdkTools,
+				tools: requestTools,
 				messages: requestMessages,
 				...(step.providerOptions !== undefined ? { providerOptions: step.providerOptions } : {}),
 				...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),

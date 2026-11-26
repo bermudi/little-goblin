@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
+import type { Message } from "../message.ts";
 import { defineTool } from "../tool.ts";
 import {
+	ADDITIONAL_TOOLS_PREFIX,
+	INCREMENTAL_TOOLS_NOTICE,
 	declarationsOf,
 	diffDeclarations,
 	foldDeclarations,
+	isInInputSystem,
+	storedToolChanges,
 	toolChangeSchema,
+	toolRemovalNotice,
 	type ToolChange,
 	type ToolDeclaration,
 } from "./tool-declarations.ts";
@@ -45,5 +51,35 @@ describe("tool declarations", () => {
 
 	test("rejects malformed stored changes", () => {
 		expect(toolChangeSchema.safeParse({ added: [{ name: "bad" }], removed: [] }).success).toBe(false);
+		const bad = {
+			id: "message-1",
+			role: "assistant",
+			parts: [{ type: "data-tools", data: { added: [{ name: "bad" }], removed: [] } }],
+		} as unknown as Message;
+		expect(() => storedToolChanges([{ message: bad }], "dm:1")).toThrow(
+			/malformed data-tools part in conversation dm:1, message message-1/,
+		);
+	});
+
+	test("exports exact Codex update notices and identifies flagged system messages", () => {
+		expect(INCREMENTAL_TOOLS_NOTICE).toBe(
+			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.",
+		);
+		expect(toolRemovalNotice(["first", "second"])).toBe(
+			"The following tools are no longer available. Do not call them:\n- first\n- second",
+		);
+		expect(ADDITIONAL_TOOLS_PREFIX).toBe("GOBLIN_ADDITIONAL_TOOLS:");
+		expect(isInInputSystem({
+			role: "system",
+			providerOptions: { codex: { inInput: true } },
+		})).toBe(true);
+		expect(isInInputSystem({
+			role: "system",
+			providerOptions: { codex: { inInput: false } },
+		})).toBe(false);
+		expect(isInInputSystem({
+			role: "developer",
+			providerOptions: { codex: { inInput: true } },
+		})).toBe(false);
 	});
 });

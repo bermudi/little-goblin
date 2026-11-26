@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { defineTool } from "../tool.ts";
-import { persistableToolSet, restoreToolSet, ToolExecuteError, toToolSet } from "./ai-sdk-tools.ts";
+import {
+	omitFunctionToolsFromRequest,
+	persistableToolSet,
+	restoreToolSet,
+	ToolExecuteError,
+	toToolSet,
+} from "./ai-sdk-tools.ts";
 
 describe("toToolSet", () => {
 	test("preserves function tool names, descriptions, order, and execution context", async () => {
@@ -99,6 +105,22 @@ describe("toToolSet", () => {
 			id: "openai.web_search",
 			args: { externalWebAccess: true },
 		});
+	});
+
+	test("omits only function tools from the request and preserves their options", () => {
+		const tools = toToolSet({
+			local: defineTool({
+				description: "local",
+				input: z.object({}),
+				execute: () => "ok",
+			}),
+			web_search: { hosted: "codex.web_search", args: { externalWebAccess: true } },
+		});
+		const omitted = omitFunctionToolsFromRequest(tools);
+		expect(omitted.local?.providerOptions?.openai).toMatchObject({
+			omitFromRequestTools: true,
+		});
+		expect(omitted.web_search).toBe(tools.web_search);
 	});
 
 	test("hosted search survives the persisted tool-set round trip", async () => {

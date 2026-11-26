@@ -76,7 +76,7 @@ test(
 		const updatedDeclaration = declaration("old_probe", "Return the word updated.");
 		const addedDeclaration = declaration("new_probe", "Return the word newly-added.");
 		const notice =
-			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.\nStill unavailable: none.";
+			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.";
 		const two = observingFetch();
 		let calledNewTool = false;
 		const second = streamText({

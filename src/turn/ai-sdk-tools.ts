@@ -166,3 +166,25 @@ export function toToolSet(tools: Tools): ToolSet {
 	}
 	return out;
 }
+
+export function omitFunctionToolsFromRequest(tools: ToolSet): ToolSet {
+	const out: ToolSet = {};
+	for (const [name, definition] of Object.entries(tools)) {
+		if (definition.type === "provider") {
+			out[name] = definition;
+			continue;
+		}
+		const providerOptions = definition.providerOptions ?? {};
+		out[name] = {
+			...definition,
+			providerOptions: {
+				...providerOptions,
+				openai: {
+					...(providerOptions.openai ?? {}),
+					omitFromRequestTools: true,
+				},
+			},
+		};
+	}
+	return out;
+}

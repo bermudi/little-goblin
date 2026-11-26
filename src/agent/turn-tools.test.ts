@@ -5,13 +5,14 @@ import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
-import type { JSONObject } from "../message.ts";
+import type { JSONObject, Message } from "../message.ts";
+import { declarationsOf, TOOLS_PART } from "./tool-declarations.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
 import type { GitHub } from "../github.ts";
 import type { Watches } from "../watches.ts";
-import { setLogFile, setLogWriter } from "../log.ts";
+import { log, setLogFile, setLogWriter } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { NoteStore } from "../notes.ts";
@@ -125,6 +126,29 @@ describe("hosted web_search mount", () => {
 		const other = rigTools(cfgFor("live"), conv("zai/glm-5.3"))(conv("zai/glm-5.3"));
 		expect("web_search" in other).toBe(false);
 		expect("search" in other).toBe(true);
+	});
+
+	test("default Codex declarations fit in a stored part and test conversation", () => {
+		useHome("goblin-default-tool-stamp-size-");
+		const conversation = conv("codex/gpt-6.1-sol");
+		const tools = rigTools(cfgFor("off"), conversation)(conversation);
+		const dataPart = {
+			type: TOOLS_PART,
+			data: { added: declarationsOf(tools), removed: [] },
+		};
+		const message: Message = {
+			id: "assistant-tool-stamp",
+			role: "assistant",
+			parts: [dataPart as Message["parts"][number], { type: "text", text: "ready" }],
+		};
+		const sizeBytes = Buffer.byteLength(JSON.stringify(dataPart));
+		expect(message.parts[0]?.type).toBe(TOOLS_PART);
+		expect(sizeBytes).toBeGreaterThan(0);
+		log.info("default Codex tool part size", {
+			bytes: sizeBytes,
+			tools: declarationsOf(tools).length,
+			message: message.id,
+		});
 	});
 
 	test("the watch tool mounts in a Telegram conversation and in a project conversation", () => {

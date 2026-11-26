@@ -15,7 +15,7 @@ import {
 	declarationsOf,
 	diffDeclarations,
 	foldDeclarations,
-	toolChangeSchema,
+	storedToolChanges,
 	type ToolChange,
 } from "./agent/tool-declarations.ts";
 import { PendingInputs, type PendingInput, type PendingInputMode } from "./pending-input.ts";
@@ -1168,16 +1168,7 @@ export class Runtime {
 			skillRef: resolveSkillRef,
 		};
 		const toolHistory = this.deps.store.historyEntries(convId);
-		const changes = toolHistory.flatMap(({ message }) =>
-			message.parts.flatMap((part) => {
-				if (part.type !== TOOLS_PART) return [];
-				const parsed = toolChangeSchema.safeParse((part as { data?: unknown }).data);
-				if (!parsed.success) {
-					throw new Error(`malformed ${TOOLS_PART} part in conversation ${convId}, message ${message.id}`);
-				}
-				return [parsed.data];
-			}),
-		);
+		const changes = storedToolChanges(toolHistory, convId).map(({ change }) => change);
 		const pendingToolChange = diffDeclarations(foldDeclarations(changes), declarationsOf(tools));
 		ctx.pendingToolChange = pendingToolChange;
 		const claudeRec =

@@ -34,8 +34,16 @@ test("callHashes ignores Codex input markers and omitted function tools in the h
 	const appended = callHashes(
 		[
 			{ role: "system", content: "stable" },
-			{ role: "system", content: "GOBLIN_ADDITIONAL_TOOLS:[]" },
-			{ role: "system", content: "This is an incremental tools update." },
+			{
+				role: "system",
+				content: "GOBLIN_ADDITIONAL_TOOLS:[]",
+				providerOptions: { codex: { inInput: true } },
+			},
+			{
+				role: "system",
+				content: "This is an incremental tools update.",
+				providerOptions: { codex: { inInput: true } },
+			},
 			{ role: "user", content: "first" },
 			{ role: "user", content: "second" },
 		],
@@ -46,6 +54,9 @@ test("callHashes ignores Codex input markers and omitted function tools in the h
 	);
 	expect(appended.headHash).toBe(base.headHash);
 	expect(appended.requestHash).not.toBe(base.requestHash);
+	expect(
+		callHashes([{ role: "system", content: "GOBLIN_ADDITIONAL_TOOLS:[]" }], []).headHash,
+	).not.toBe(callHashes([], []).headHash);
 });
 
 // resolveModel resolves auth through a literal-key fixture — no records,

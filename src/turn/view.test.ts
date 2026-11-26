@@ -181,12 +181,15 @@ describe("the model view", () => {
 	test("Codex change notices and additions stay before their stored event", async () => {
 		const oldTool = declaration("old");
 		const newTool = declaration("new");
+		const laterTool = declaration("later");
 		const view = await build(
 			entries([
 				user("u1", "first"),
 				{ ...asst("a1", "answer"), parts: [toolStamp({ added: [oldTool], removed: [] }), { type: "text", text: "answer" }] },
 				user("u2", "second"),
 				{ ...asst("a2", "answer two"), parts: [toolStamp({ added: [newTool], removed: ["old"] }), { type: "text", text: "answer two" }] },
+				user("u3", "third"),
+				{ ...asst("a3", "answer three"), parts: [toolStamp({ added: [laterTool], removed: [] }), { type: "text", text: "answer three" }] },
 			]),
 			[],
 			null,
@@ -197,9 +200,11 @@ describe("the model view", () => {
 		const systems = view.filter((message) => message.role === "system");
 		expect(systems.map((message) => message.content)).toEqual([
 			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([oldTool])}`,
-			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.\nStill unavailable: old.",
+			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.",
 			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([newTool])}`,
 			"The following tools are no longer available. Do not call them:\n- old",
+			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.\nStill unavailable: old.",
+			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([laterTool])}`,
 		]);
 		expect(systems.every((message) => message.providerOptions?.codex?.inInput === true)).toBe(true);
 		expect(view.some((message) => JSON.stringify(message).includes(TOOLS_PART))).toBe(false);

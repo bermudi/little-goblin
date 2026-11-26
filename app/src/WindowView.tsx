@@ -297,12 +297,6 @@ function WindowSummary({
 	const pct = ctx?.pct ?? null;
 	const note = nextTurnNote(ctx, stale);
 	const nearing = pct !== null && pct >= 100;
-	const segments = view.segments;
-	const totalChars = segments === null ? null : SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
-	const tokens =
-		ctx?.segments != null && ctx.segments.length > 0
-			? new Map(ctx.segments.map((s) => [s.key, s.tokens]))
-			: null;
 	return (
 		<section className="win-summary">
 			<div className="sumstrip">
@@ -339,18 +333,30 @@ function WindowSummary({
 				</div>
 			)}
 			{note !== null && <p className={nearing ? "win-next warn" : "win-next"}>{note}</p>}
-			{segments !== null && totalChars !== null && (
-				<>
-					<h3 className="win-h3">What takes the space</h3>
-					<Breakdown segments={segments} tokens={tokens} />
-					<p className="win-cap">
-						{num(totalChars)} chars serialized
-						{segments.toolResults > 0 && ` · ${num(segments.toolResults)} of the history are tool calls and results`}
-						{tokens !== null && " · tokens are the gauge's scaling of the same split"}
-					</p>
-				</>
-			)}
 		</section>
+	);
+}
+
+function WindowBreakdown({ view, ctx }: { view: AppWindowView; ctx: AppContextView | null }) {
+	const segments = view.segments;
+	if (segments === null) return null;
+	const totalChars = SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
+	if (totalChars === 0) return null;
+	const tokens =
+		ctx?.segments != null && ctx.segments.length > 0
+			? new Map(ctx.segments.map((s) => [s.key, s.tokens]))
+			: null;
+	return (
+		<>
+			<h3 className="win-h3">What takes the space</h3>
+			<Breakdown segments={segments} tokens={tokens} />
+			<p className="win-cap">
+				{num(totalChars)} chars serialized
+				{segments.toolResults > 0 &&
+					` · ${num(segments.toolResults)} of the history are tool calls and results`}
+				{tokens !== null && " · tokens are the gauge's scaling of the same split"}
+			</p>
+		</>
 	);
 }
 
@@ -522,6 +528,7 @@ export function WindowView({
 					<TabsPanel value="window">
 						{view.capturedAt !== null ? (
 							<>
+								<WindowBreakdown view={view} ctx={ctx} />
 								<h3 className="win-h3">Raw parts</h3>
 								<Fold
 									title="System prompt"

@@ -233,6 +233,34 @@ describe("WindowView", () => {
 		expect(text).toContain("500 of the history are tool calls and results");
 	});
 
+	test("keeps the space breakdown inside the Window panel before Raw parts", async () => {
+		mount();
+		await act(async () => {});
+		const panel = container.querySelector('[data-slot="tabs-panel"]');
+		const headings = [...(panel?.querySelectorAll("h3") ?? [])];
+		expect(headings.find((heading) => heading.textContent === "What takes the space")).toBeDefined();
+		expect(headings.findIndex((heading) => heading.textContent === "What takes the space")).toBeLessThan(
+			headings.findIndex((heading) => heading.textContent === "Raw parts"),
+		);
+	});
+
+	test("shows the space breakdown only in the Window tab", async () => {
+		const h = mount();
+		await act(async () => {});
+		await h.click(button("Trajectory"));
+		const panel = container.querySelector('[data-slot="tabs-panel"]');
+		expect(container.textContent).not.toContain("What takes the space");
+		expect(container.querySelector(".win-break")).toBeNull();
+		expect(panel?.textContent).toContain("Model calls over time");
+		expect([...container.querySelectorAll(".sumtile")].length).toBeGreaterThan(0);
+		expect([...container.querySelectorAll(".sumtile")].every((tile) => !panel?.contains(tile))).toBe(
+			true,
+		);
+		await h.click(button("Window"));
+		const windowPanel = container.querySelector('[data-slot="tabs-panel"]');
+		expect(windowPanel?.textContent).toContain("What takes the space");
+	});
+
 	test("adds the first-call item to the trajectory legend", async () => {
 		const h = mount();
 		await act(async () => {});

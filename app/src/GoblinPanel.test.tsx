@@ -515,3 +515,16 @@ test("This chat keeps the working mark of a busy parent", async () => {
 	expect(parent?.querySelector(".mark-working")).not.toBeNull();
 	expect(parent?.querySelector(".activity-detail")?.textContent).toBe("Replying");
 });
+
+test("an untitled parent reads as its preview, not Untitled", async () => {
+	await mountActivity(
+		[{ id: "app/child", parentId: "app/parent" }],
+		[
+			appConversation("parent", { title: null, preview: "Plan the launch\nsoon" }),
+			appConversation("child", { parentId: "app/parent", busy: true }),
+		],
+	);
+	const labels = [...container.querySelectorAll(".activity-row > strong")].map((label) => label.textContent);
+	expect(labels).toContain("Plan the launch soon");
+	expect(labels).not.toContain("Untitled");
+});

@@ -242,10 +242,12 @@ export function activityRows(
 		}
 		return current;
 	};
+	const chatLabel = (conversation: AppConversationListItem, fallback: string): string =>
+		flatTitle(conversation.title) ?? (flatLine(conversation.preview).slice(0, 60) || fallback);
 	const subagentItem = (conversation: AppConversationListItem): ActivityItem => ({
 		key: `subagent:${conversation.id}`,
 		at: at(conversation.updatedAt),
-		label: flatTitle(conversation.title) ?? (flatLine(conversation.preview).slice(0, 60) || "Subagent"),
+		label: chatLabel(conversation, "Subagent"),
 		detail: "",
 		time: conversation.busy || busyConversationIds.has(conversation.id) ? "now" : activityTime(conversation.updatedAt),
 		iso: conversation.busy || busyConversationIds.has(conversation.id) ? null : conversation.updatedAt,
@@ -291,7 +293,7 @@ export function activityRows(
 		const parentRow: ActivityItem = {
 			key: `chat:${parentId}`,
 			at: Number.POSITIVE_INFINITY,
-			label: parent === undefined || rollingIds.has(parentId) ? "Rolling chat" : oneLine(parent.title ?? "Untitled"),
+			label: parent === undefined || rollingIds.has(parentId) ? "Rolling chat" : chatLabel(parent, "Untitled"),
 			detail: busyParent
 				? `Replying · ${children.length} subagent${children.length === 1 ? "" : "s"}`
 				: `Waiting on ${children.length} subagent${children.length === 1 ? "" : "s"}`,
@@ -314,7 +316,11 @@ export function activityRows(
 		.map((c) => ({
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
-		label: c.rolling ? "Rolling chat" : oneLine(c.title ?? "Untitled"),
+		label: c.rolling
+			? "Rolling chat"
+			: conversationsById.has(c.id)
+			? chatLabel(conversationsById.get(c.id)!, "Untitled")
+			: oneLine(c.title ?? "Untitled"),
 		detail: parentRows.get(c.id)?.detail ?? "Replying",
 		time: "now",
 		iso: null,
@@ -336,7 +342,7 @@ export function activityRows(
 		? {
 				key: `this-chat:${openParent.id}`,
 				at: 0,
-				label: rollingIds.has(openParent.id) ? "Rolling chat" : flatTitle(openParent.title) ?? "Untitled",
+				label: rollingIds.has(openParent.id) ? "Rolling chat" : chatLabel(openParent, "Untitled"),
 				detail: openRunning?.detail ?? "",
 				time: openRunning?.time ?? "",
 				iso: null,

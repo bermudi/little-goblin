@@ -8,7 +8,13 @@ import { setLogFile } from "./log.ts";
 import { tmpDb } from "./testkit.ts";
 import { buildRetryGuard } from "./turn/retry-guard.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
-import { listRuns, listToolRuns, openTurnJournal, replayKey } from "./turn-journal.ts";
+import {
+	countToolRuns,
+	listRuns,
+	listToolRuns,
+	openTurnJournal,
+	replayKey,
+} from "./turn-journal.ts";
 
 setLogFile(null);
 
@@ -43,17 +49,21 @@ describe("turn journal", () => {
 			"UPDATE turn_tool_calls SET began_ms = 10020, model_call_id = 'c-late' WHERE run_id = ? AND tool_call_id = 't6'",
 			[runId],
 		);
+		expect(countToolRuns(store.db, conv.id, 15000, ["c-late"])).toBe(1);
 		expect(listToolRuns(store.db, conv.id, 15000, ["c-late"])).toHaveLength(1);
+		expect(countToolRuns(store.db, conv.id, 15000, [])).toBe(0);
 		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
 		store.db.run(
 			"UPDATE turn_tool_calls SET began_ms = 16000 WHERE run_id = ? AND tool_call_id = 't6'",
 			[runId],
 		);
+		expect(countToolRuns(store.db, conv.id, 15000, [])).toBe(0);
 		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
 		store.db.run(
 			"UPDATE turn_tool_calls SET model_call_id = NULL WHERE run_id = ? AND tool_call_id = 't6'",
 			[runId],
 		);
+		expect(countToolRuns(store.db, conv.id, 15000, [])).toBe(1);
 		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(1);
 		store.close();
 	});
@@ -79,6 +89,10 @@ describe("turn journal", () => {
 		}
 		const rows = listToolRuns(store.db, conv.id, 0, []);
 		expect(rows).toHaveLength(2000);
+		expect(countToolRuns(store.db, conv.id, 0, [])).toBe(2001);
+		expect(countToolRuns(store.db, conv.id, 0, [])).toBe(
+			listToolRuns(store.db, conv.id, 0, [], 100000).length,
+		);
 		expect(rows[0]!.toolCallId).toBe("t00001");
 		expect(rows[1999]!.toolCallId).toBe("t02000");
 		store.close();

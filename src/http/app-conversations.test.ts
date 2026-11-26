@@ -2278,6 +2278,96 @@ test("the window read leaves out a stamped tool whose call fell off the list whe
 	}
 });
 
+test("the window read sends how many model calls and tool rows exist", async () => {
+	const id = "window-trajectory-counts";
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call, store } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", id);
+		const conversation = store.get(`app/${id}`)!;
+		const turnCalls = store.db
+			.query(
+				"SELECT call_id, started_ms FROM model_cache_calls WHERE conversation_id = ? AND purpose IS NULL ORDER BY started_ms, rowid",
+			)
+			.all(conversation.id) as { call_id: string; started_ms: number }[];
+		expect(turnCalls).toHaveLength(2);
+		const second = turnCalls[1]!.call_id;
+		const initial = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			callCount: number;
+			toolRunCount: number;
+		};
+		expect(initial.callCount).toBe(2);
+		expect(initial.toolRunCount).toBe(1);
+		const later = store.db.query(
+			`INSERT INTO model_cache_calls (call_id, conversation_id, purpose, route_key, model, started_ms,
+				finished_ms, head_hash, request_hash, settings_hash, prompt_hashes, status, input_tokens,
+				cache_read, cache_write, output_tokens, idle_ms, prefix_relation, shared_messages, cache_ttl_ms)
+			SELECT ?, conversation_id, purpose, route_key, model, ?, ?, head_hash, request_hash, settings_hash,
+				prompt_hashes, status, input_tokens, cache_read, cache_write, output_tokens, idle_ms,
+				prefix_relation, shared_messages, cache_ttl_ms
+			FROM model_cache_calls WHERE call_id = ?`,
+		);
+		for (let index = 0; index < 199; index++) {
+			const startedMs = turnCalls[0]!.started_ms - 199 + index;
+			later.run(`later-${index}`, startedMs, startedMs + 10, second);
+		}
+		const tool = store.db
+			.query(
+				"SELECT run_id, tool_call_id, name, args, args_hash, state, began_ms FROM turn_tool_calls WHERE tool_call_id = 'tool-1'",
+			)
+			.get() as {
+			run_id: string;
+			tool_call_id: string;
+			name: string;
+			args: string;
+			args_hash: string;
+			state: string;
+			began_ms: number | null;
+		};
+		const copyTool = store.db.query(
+			`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, began_ms, model_call_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		);
+		for (let index = 0; index < 2000; index++) {
+			copyTool.run(
+				tool.run_id,
+				`tool-copy-${index}`,
+				tool.name,
+				tool.args,
+				tool.args_hash,
+				tool.state,
+				tool.began_ms,
+				second,
+			);
+		}
+		const body = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			calls: unknown[];
+			callCount: number;
+			toolRuns: unknown[];
+			toolRunCount: number;
+		};
+		expect(body.calls).toHaveLength(200);
+		expect(body.callCount).toBe(201);
+		expect(body.toolRuns).toHaveLength(2000);
+		expect(body.toolRunCount).toBe(2001);
+	} finally {
+		http.stop();
+	}
+});
+
 test.each([
 	{ name: "legacy", final: {}, input: 900, cacheRead: 800 },
 	{

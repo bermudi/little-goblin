@@ -220,6 +220,18 @@ function CallsTable({ calls }: { calls: AppWindowView["calls"] }) {
 
 const num = (n: number): string => n.toLocaleString();
 
+function cutNote(view: AppWindowView): string {
+	const callsCut = view.calls.length < view.callCount;
+	const toolsCut = view.toolRuns.length < view.toolRunCount;
+	if (callsCut && toolsCut) {
+		return `Shows the newest ${num(view.calls.length)} of ${num(view.callCount)} model calls and the newest ${num(view.toolRuns.length)} of ${num(view.toolRunCount)} tools.`;
+	}
+	if (callsCut) {
+		return `Shows the newest ${num(view.calls.length)} of ${num(view.callCount)} model calls.`;
+	}
+	return `Shows the newest ${num(view.toolRuns.length)} of ${num(view.toolRunCount)} tools.`;
+}
+
 // The parts of the window, biggest first. Characters come from the
 // captured window; tokens come from the context read (the gauge's scaling
 // of the same itemization) when it answered. Neither is invented here.
@@ -640,6 +652,9 @@ export function WindowView({
 						)}
 					</TabsPanel>
 					<TabsPanel value="trajectory">
+						{(view.calls.length < view.callCount || view.toolRuns.length < view.toolRunCount) && (
+							<p className="win-traj-cut">{cutNote(view)}</p>
+						)}
 						{rows.length > 0 && (
 							<>
 								<h3 className="win-h3">Model calls over time</h3>

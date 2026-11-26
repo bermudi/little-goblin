@@ -107,6 +107,8 @@ describe("WindowView", () => {
 				modelCallId: "call-1",
 			},
 		],
+		callCount: 1,
+		toolRunCount: 1,
 		runs: [
 			{
 				runId: "run-1",
@@ -376,7 +378,9 @@ describe("WindowView", () => {
 			tools: null,
 			messages: null,
 			calls: [],
+			callCount: 0,
 			toolRuns: [],
+			toolRunCount: 0,
 			runs: [],
 		});
 		await act(async () => {});
@@ -397,6 +401,46 @@ describe("WindowView", () => {
 		await h.click(button("Window"));
 		expect(container.querySelector(".win-traj")).toBeNull();
 		expectNoModelCallsFold();
+	});
+
+	test("the Trajectory tab says when its list is cut", async () => {
+		const cases: { over: Partial<AppWindowView>; note: string }[] = [
+			{
+				over: { callCount: VIEW.calls.length + 1140 },
+				note: "Shows the newest 1 of 1,141 model calls.",
+			},
+			{
+				over: { toolRunCount: VIEW.toolRuns.length + 812 },
+				note: "Shows the newest 1 of 813 tools.",
+			},
+			{
+				over: {
+					callCount: VIEW.calls.length + 1140,
+					toolRunCount: VIEW.toolRuns.length + 812,
+				},
+				note: "Shows the newest 1 of 1,141 model calls and the newest 1 of 813 tools.",
+			},
+		];
+		for (const { over, note } of cases) {
+			const h = mount(over);
+			await act(async () => {});
+			expect(container.querySelector(".win-traj-cut")).toBeNull();
+			await h.click(button("Trajectory"));
+			expect(container.querySelector(".win-traj-cut")?.textContent).toBe(note);
+			await h.click(button("Window"));
+			expect(container.querySelector(".win-traj-cut")).toBeNull();
+			await act(async () => {
+				root?.unmount();
+				root = null;
+			});
+		}
+	});
+
+	test("the Trajectory tab shows no cut note when nothing is cut", async () => {
+		const h = mount();
+		await act(async () => {});
+		await h.click(button("Trajectory"));
+		expect(container.querySelector(".win-traj-cut")).toBeNull();
 	});
 
 	test("back returns to the conversation", async () => {

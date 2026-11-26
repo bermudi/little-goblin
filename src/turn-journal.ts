@@ -451,6 +451,13 @@ const toolRunRowSchema = z.object({
 	model_call_id: z.string().nullable(),
 });
 
+const TOOL_RUN_MATCH = `FROM turn_tool_calls c JOIN turn_runs r ON r.run_id = c.run_id
+	WHERE r.conversation_id = ? AND c.origin_run IS NULL AND c.began_ms IS NOT NULL
+		AND (c.model_call_id IN (SELECT value FROM json_each(?))
+			OR (c.model_call_id IS NULL AND c.began_ms >= ?))`;
+
+const toolRunCountSchema = z.object({ count: z.number() });
+
 export function listToolRuns(
 	db: Database,
 	conversationId: string,
@@ -461,11 +468,7 @@ export function listToolRuns(
 	const rows = db
 		.query(
 			`SELECT c.tool_call_id, c.run_id, c.name, c.state, c.began_ms, c.settled_ms, c.model_call_id
-			FROM turn_tool_calls c JOIN turn_runs r ON r.run_id = c.run_id
-			WHERE r.conversation_id = ? AND c.origin_run IS NULL AND c.began_ms IS NOT NULL
-				AND (c.model_call_id IN (SELECT value FROM json_each(?))
-					OR (c.model_call_id IS NULL AND c.began_ms >= ?))
-			ORDER BY c.rowid DESC LIMIT ?`,
+			${TOOL_RUN_MATCH} ORDER BY c.rowid DESC LIMIT ?`,
 		)
 		.all(conversationId, JSON.stringify(callIds), sinceMs, limit);
 	rows.reverse();
@@ -481,6 +484,18 @@ export function listToolRuns(
 			modelCallId: row.model_call_id,
 		};
 	});
+}
+
+export function countToolRuns(
+	db: Database,
+	conversationId: string,
+	sinceMs: number,
+	callIds: string[],
+): number {
+	const row = db
+		.query(`SELECT COUNT(*) AS count ${TOOL_RUN_MATCH}`)
+		.get(conversationId, JSON.stringify(callIds), sinceMs);
+	return toolRunCountSchema.parse(row).count;
 }
 
 export interface RunRow {

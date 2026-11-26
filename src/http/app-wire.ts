@@ -469,6 +469,8 @@ export interface AppWindowView {
 	calls: AppWindowCall[];
 	toolRuns: AppWindowToolRun[];
 	runs: AppWindowRun[];
+	callCount: number;
+	toolRunCount: number;
 	nowMs: number;
 }
 

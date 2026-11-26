@@ -1060,8 +1060,9 @@ What the first version accepts:
   model calls. A tool row stamped to a listed call is read whatever its
   start time says, and the run of every listed tool row is read with it.
   The time bound applies only to rows without a stamp. More than 2000
-  tool rows can qualify. The newest are kept, and the view does not say
-  so.
+  tool rows can qualify. The newest are kept. When a list is cut, the tab
+  says so in one line above the chart: how many of how many it shows. The
+  operator chose that note over a silent cut (2026-11-26).
 - **Refresh is manual.** The tab reads once per visit and when the
   operator presses Refresh. It does not follow a running turn by itself.
   The read carries the whole captured prompt, so following a turn needs a

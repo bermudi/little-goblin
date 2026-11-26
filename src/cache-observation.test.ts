@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
 	NEWEST_TURN_CALL_SQL,
+	countCalls,
+	listCalls,
 	newestTurnCall,
 	openCacheObservation,
 	type CacheCallInput,
@@ -60,6 +62,17 @@ test("newestTurnCall follows insertion order and skips purpose calls", () => {
 	observation.begin(input({ callId: "newest" }));
 	observation.begin(input({ callId: "purpose-later", purpose: "review" }));
 	expect(newestTurnCall(db, "conv-1")).toBe("newest");
+	db.close();
+});
+
+test("countCalls counts every call of one conversation", () => {
+	const db = new Database(tmpDb("goblin-cache-count-"));
+	const observation = openCacheObservation(db, clock());
+	observation.begin(input({ callId: "first-a", conversationId: "first" }));
+	observation.begin(input({ callId: "first-b", conversationId: "first" }));
+	observation.begin(input({ callId: "other", conversationId: "other" }));
+	expect(countCalls(db, "first")).toBe(2);
+	expect(countCalls(db, "first")).toBe(listCalls(db, "first", 100).length);
 	db.close();
 });
 

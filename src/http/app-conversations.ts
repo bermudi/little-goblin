@@ -7,8 +7,8 @@ import { codexContextWindow } from "../agent/codex/models.ts";
 import { agentTypeUncapped } from "../agent-types.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
-import { listCalls } from "../cache-observation.ts";
-import { listRuns, listToolRuns } from "../turn-journal.ts";
+import { countCalls, listCalls } from "../cache-observation.ts";
+import { countToolRuns, listRuns, listToolRuns } from "../turn-journal.ts";
 import { ConfigValidationError, parseConfig } from "../config.ts";
 import { splitModelRef } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
@@ -790,15 +790,13 @@ export async function handleConversationsRoute(
 			const calls = listCalls(store.db, convId.id);
 			const sinceMs = calls.length === 0 ? 0 : Math.min(...calls.map((call) => call.startedMs));
 			const untilMs = calls.length === 0 ? 0 : Math.max(...calls.map((call) => call.startedMs));
-			const toolRuns = listToolRuns(
-				store.db,
-				convId.id,
-				sinceMs,
-				calls.map((call) => call.callId),
-			);
+			const callIds = calls.map((call) => call.callId);
+			const toolRuns = listToolRuns(store.db, convId.id, sinceMs, callIds);
 			return {
 				calls,
 				toolRuns,
+				callCount: countCalls(store.db, convId.id),
+				toolRunCount: countToolRuns(store.db, convId.id, sinceMs, callIds),
 				runs: listRuns(
 					store.db,
 					convId.id,
@@ -834,6 +832,8 @@ export async function handleConversationsRoute(
 			})),
 			toolRuns: trajectory.toolRuns,
 			runs: trajectory.runs,
+			callCount: trajectory.callCount,
+			toolRunCount: trajectory.toolRunCount,
 			nowMs: trajectory.nowMs,
 		};
 		log.debug("app window served", {

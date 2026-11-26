@@ -444,3 +444,13 @@ export function listCalls(db: Database, conversationId: string, limit = 200): Ca
 		};
 	});
 }
+
+const callCountSchema = z.object({ count: z.number() });
+
+export function countCalls(db: Database, conversationId: string): number {
+	db.run(MODEL_CACHE_CALLS_DDL);
+	const row = db
+		.query("SELECT COUNT(*) AS count FROM model_cache_calls WHERE conversation_id = ?")
+		.get(conversationId);
+	return callCountSchema.parse(row).count;
+}

@@ -7567,7 +7567,7 @@ button.link:hover {
 }
 .win-traj-row {
 	display: grid;
-	grid-template-columns: 5.4rem minmax(0, 1fr);
+	grid-template-columns: 6.6rem minmax(0, 1fr);
 	gap: 0.5rem;
 }
 .win-traj-label {

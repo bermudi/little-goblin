@@ -90,3 +90,12 @@ describe("touch conversation actions", () => {
 		);
 	});
 });
+
+describe("trajectory row time label", () => {
+	test("desktop label track fits a 16-character time at 10px mono", () => {
+		const rule = /(?:^|\n)\.win-traj-row \{([^}]*)\}/.exec(css)?.[1] ?? "";
+		const track = /grid-template-columns:\s*([0-9.]+)rem/.exec(rule)?.[1];
+		expect(track).toBeDefined();
+		expect(Number(track) * 16).toBeGreaterThanOrEqual(16 * 10 * 0.6);
+	});
+});

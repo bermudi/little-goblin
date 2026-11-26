@@ -62,7 +62,13 @@ export function buildTrajectory(
 				(stamped === undefined
 					? undefined
 					: rows.find((item) => item.run?.runId === stamped.runId)) ??
-				[...rows].reverse().find((item) => item.startedMs <= call.startedMs) ??
+				[...rows]
+					.reverse()
+					.find(
+						(item) =>
+							item.startedMs <= call.startedMs &&
+							call.startedMs <= (item.run?.finishedMs ?? Number.POSITIVE_INFINITY),
+					) ??
 				unplaced;
 			const group = { call, tools: [] as TrajectoryTool[] };
 			row.calls.push(group);
@@ -74,7 +80,12 @@ export function buildTrajectory(
 		if (match === undefined) {
 			match = [...placed]
 				.reverse()
-				.find((item) => item.call.finishedMs !== null && item.call.finishedMs <= tool.beganMs);
+				.find(
+					(item) =>
+						item.row.run?.runId === tool.runId &&
+						item.call.finishedMs !== null &&
+						item.call.finishedMs <= tool.beganMs,
+				);
 		}
 		if (match === undefined) continue;
 		const group = toolGroups.get(match) ?? [];
@@ -85,14 +96,7 @@ export function buildTrajectory(
 		const tools = (toolGroups.get(item) ?? []).sort(
 			(a, b) => a.beganMs - b.beganMs || a.toolCallId.localeCompare(b.toolCallId),
 		);
-		const laneEnds: number[] = [];
-		for (const tool of tools) {
-			let lane = laneEnds.findIndex((end) => end <= tool.beganMs);
-			if (lane < 0) lane = laneEnds.length;
-			laneEnds[lane] = Math.max(tool.settledMs ?? tool.beganMs, tool.beganMs);
-			item.tools.push({ tool, lane });
-		}
-		item.row.lanes = Math.max(item.row.lanes, laneEnds.length);
+		item.tools.push(...tools.map((tool) => ({ tool, lane: 0 })));
 	}
 	const turnOf = new Map<string, number>();
 	let lastTurn = 0;
@@ -117,6 +121,23 @@ export function buildTrajectory(
 		row.startedMs = Math.min(...starts);
 		row.finishedMs = Math.max(...ends);
 		if (row.finishedMs <= row.startedMs) row.finishedMs = row.startedMs + 1;
+	}
+	for (const item of placed) {
+		const laneEnds: number[] = [];
+		for (const placedTool of item.tools) {
+			const { tool } = placedTool;
+			let lane = laneEnds.findIndex((end) => end <= tool.beganMs);
+			if (lane < 0) lane = laneEnds.length;
+			const end =
+				tool.settledMs !== null
+					? Math.max(tool.settledMs, tool.beganMs)
+					: item.row.run !== null && item.row.run.finishedMs === null
+						? item.row.finishedMs
+						: tool.beganMs;
+			laneEnds[lane] = end;
+			placedTool.lane = lane;
+		}
+		item.row.lanes = Math.max(item.row.lanes, laneEnds.length);
 	}
 	if (orphaned) {
 		const next = rows.findIndex((row) => row.startedMs > unplaced.startedMs);

@@ -363,7 +363,8 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 		}
 		const raw = normalizeDraft({ items: itemsFromDoc(view.state.doc), shelf: shelfRef.current });
 		const draft = resolveDraft(raw);
-		if (!sameDraft(draft, raw)) setShelfBoth(draft.shelf);
+		if (!sameDraft({ items: [], shelf: draft.shelf }, { items: [], shelf: shelfRef.current }))
+			setShelfBoth(draft.shelf);
 		setShowPlaceholder(
 			draft.items.every((i) => i.type === "text" && i.text.trim() === ""),
 		);

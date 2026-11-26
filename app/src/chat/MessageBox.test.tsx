@@ -309,6 +309,7 @@ describe("MessageBox", () => {
 		await act(async () => {
 			(first.current as MessageBoxHandle).insertChips([{ ...imageChip }]);
 		});
+		expect(boxes[0]?.closest(".message-box-host")?.querySelectorAll(".box-shelf-thumb").length).toBe(1);
 		await edit((v) =>
 			v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, 1, v.state.doc.content.size - 1))),
 		);
@@ -335,6 +336,7 @@ describe("MessageBox", () => {
 			{ type: "text", text: " " },
 		]);
 		expect(draft.shelf).toEqual([{ ...imageChip }]);
+		expect(boxes[1]?.closest(".message-box-host")?.querySelectorAll(".box-shelf-thumb").length).toBe(1);
 	});
 
 	test("a hostile data-goblin-chip pastes as text", async () => {

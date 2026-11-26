@@ -16,6 +16,7 @@ import type {
 	AppActivityResponse,
 	AppPostsResponse,
 	AppCompactResponse,
+	AppRollResponse,
 	AppSuggestTitleResponse,
 	AppConfigPatch,
 	AppConfigPatchResponse,
@@ -690,6 +691,10 @@ export function compactConversation(
 			? { headers: { "content-type": "application/json" }, body: JSON.stringify({ focus }) }
 			: {}),
 	});
+}
+
+export function rollRollingChat(token: string | null): Promise<AppRollResponse> {
+	return request(token, "/api/app/rolling/roll", { method: "POST" });
 }
 
 // Suggest only — the caller decides whether to save via patchConversation.

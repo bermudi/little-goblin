@@ -54,6 +54,8 @@ export function Composer({
 	onSend,
 	onStop,
 	onCompacted,
+	onRoll,
+	rollDisabled,
 	onOpenNote,
 	quote,
 	focusSignal,
@@ -86,6 +88,8 @@ export function Composer({
 	// A manual compact landed a pointer — the host re-reads history so
 	// the transcript's fold marks update.
 	onCompacted?: () => void;
+	onRoll?: (() => Promise<string | null>) | undefined;
+	rollDisabled?: boolean | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
 	// A select-to-quote request — `n` bumps per click, so even repeated
 	// text appends again. The speaker lands as the quote's annotation
@@ -784,6 +788,8 @@ export function Composer({
 					live={liveCtx}
 					model={cfg?.model}
 					onCompacted={onCompacted}
+					onRoll={onRoll}
+					rollDisabled={rollDisabled}
 				/>
 				{busy && onStop !== undefined && isEmptyDraft(draft) ? (
 					// Stop means stop: ask the runtime to abort the turn, then

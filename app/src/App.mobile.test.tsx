@@ -17,6 +17,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
+import { loadComposerDraft } from "./composerDraft.ts";
 import { boxView } from "./chat/MessageBox.tsx";
 import { LIST_ENTRY, clickConfirm, confirmSheet, confirmText, goblinFeedResponse } from "./testkit.ts";
 
@@ -75,6 +76,9 @@ describe("mobile: chats screen and navigation", () => {
 	let rollingHistories: Map<string, AppMessageList["messages"]>;
 	let rollingRequests: { body: { rolling?: boolean; conversationId?: unknown; message?: { parts?: { text?: string }[] } } }[];
 	let rollingReply: { status: number; conversationId: string; rolled: boolean; chain: AppConversationList["rolling"]["chain"] } | null;
+	let rollingRollRequests: { method: string; url: string }[];
+	let rollingRollReply: { status: number; body: { conversationId?: string; rolled?: boolean; error?: string }; chain?: AppConversationList["rolling"]["chain"] } | null;
+	let contextTurns: number;
 	let holdRollingList = false;
 	let rollingListResolvers: Array<() => void> = [];
 	let settings: typeof SETTINGS;
@@ -105,6 +109,9 @@ describe("mobile: chats screen and navigation", () => {
 		rollingHistories = new Map();
 		rollingRequests = [];
 		rollingReply = null;
+		rollingRollRequests = [];
+		rollingRollReply = null;
+		contextTurns = 0;
 		holdRollingList = false;
 		rollingListResolvers = [];
 		settings = SETTINGS;
@@ -186,6 +193,12 @@ describe("mobile: chats screen and navigation", () => {
 			const feed = goblinFeedResponse(url);
 			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/rolling/roll") {
+				rollingRollRequests.push({ method, url });
+				const reply = rollingRollReply ?? { status: 200, body: { conversationId: "app/fresh", rolled: true } };
+				if (reply.chain !== undefined) rollingChain = reply.chain;
+				return Promise.resolve(json(reply.body, reply.status));
+			}
 			const patchMatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
 			if (patchMatch !== null && method === "PATCH") {
 				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -278,7 +291,7 @@ describe("mobile: chats screen and navigation", () => {
 						limit: null,
 						pct: null,
 						modelLimit: null,
-						turns: 0,
+						turns: contextTurns,
 						segments: null,
 					}),
 				);
@@ -499,6 +512,47 @@ describe("mobile: chats screen and navigation", () => {
 		});
 		await settle();
 	};
+	const rollByHand = async () => {
+		rollingChain = [roll("current")];
+		rollingHistories.set("app/current", [{
+			id: "earlier",
+			role: "user",
+			parts: [{ type: "text", text: "earlier message" }],
+		} as AppMessageList["messages"][number]]);
+		rollingHistories.set("app/fresh", []);
+		contextTurns = 1;
+		if (phone) await openRolling();
+		else {
+			root = createRoot(container);
+			await act(async () => {
+				root?.render(<App />);
+			});
+			await waitFor(
+				() => container.querySelector('.rolling-row a[href="/app/rolling"]') !== null,
+				"desktop list",
+			);
+			await click(container.querySelector('.rolling-row a[href="/app/rolling"]'));
+			await waitFor(() => win.location.pathname === "/app/rolling", "Rolling chat route");
+		}
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("earlier message") === true,
+			"prior transcript",
+		);
+		await typeDraft("typed before the roll");
+		rollingRollReply = {
+			status: 200,
+			body: { conversationId: "app/fresh", rolled: true },
+			chain: [roll("fresh"), roll("current")],
+		};
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		await click(buttonText(".ctx-act", "New conversation"));
+		await waitFor(() => rollingRollRequests.length === 1, "manual rolling request");
+		expect(rollingRollRequests).toEqual([{ method: "POST", url: "/api/app/rolling/roll" }]);
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("earlier message") === false,
+			"fresh transcript",
+		);
+	};
 	const buttonText = (selector: string, text: string) =>
 		[...container.querySelectorAll(selector)].find((b) => b.textContent?.trim() === text);
 	const openYou = async (label: string) => {
@@ -694,6 +748,56 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector(".transcript")).toBe(transcript);
 		expect([...container.querySelectorAll(".transcript p")].filter((p) => p.textContent === "same conversation")).toHaveLength(1);
 		expect(container.textContent).not.toContain("Earlier conversation");
+	});
+
+	test("New conversation starts a fresh roll, lands in it, and brings the draft", async () => {
+		await rollByHand();
+		expect(draftText()).toBe("typed before the roll");
+		expect(loadComposerDraft("app/current")).toBeNull();
+		expect(container.textContent).toContain("— new conversation —");
+		expect(container.textContent).toContain("↑ Previous conversation");
+	});
+
+	test("New conversation leaves the composer focused on a desktop width", async () => {
+		phone = false;
+		await rollByHand();
+		expect(draftText()).toBe("typed before the roll");
+		const editor = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (editor as unknown)).toBe(true);
+	});
+
+	test("New conversation refused keeps the conversation and the draft", async () => {
+		rollingChain = [roll("current")];
+		rollingHistories.set("app/current", [{
+			id: "earlier",
+			role: "user",
+			parts: [{ type: "text", text: "earlier message" }],
+		} as AppMessageList["messages"][number]]);
+		contextTurns = 1;
+		await openRolling();
+		await waitFor(() => container.querySelector(".transcript")?.textContent?.includes("earlier message") === true, "prior transcript");
+		await typeDraft("typed before the roll");
+		rollingRollReply = {
+			status: 409,
+			body: { error: "a turn is still running in the latest conversation" },
+		};
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		await click(buttonText(".ctx-act", "New conversation"));
+		await waitFor(() => container.querySelector(".ctx-outcome") !== null, "roll refusal");
+		expect(container.querySelector(".transcript")?.textContent).toContain("earlier message");
+		expect(draftText()).toBe("typed before the roll");
+		expect(container.querySelector(".ctx-outcome")?.textContent).toBe(
+			"couldn't start a new conversation: a turn is still running in the latest conversation",
+		);
+		expect(rollingChain.map((item) => item.id)).toEqual(["app/current"]);
+	});
+
+	test("New conversation is not offered on an ordinary chat", async () => {
+		await mount();
+		await click(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]'));
+		await waitFor(() => container.querySelector(".transcript") !== null, "ordinary chat");
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		expect([...container.querySelectorAll(".ctx-act")].map((button) => button.textContent)).toEqual(["Compact now"]);
 	});
 
 	test("T4: a new routed roll switches once without an earlier bar flash", async () => {

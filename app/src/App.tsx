@@ -31,8 +31,10 @@ import {
 	listConversations,
 	loadToken,
 	patchConversation,
+	rollRollingChat,
 	telegramDoor,
 } from "./api.ts";
+import { moveComposerDraft } from "./composerDraft.ts";
 import { LiveStore } from "./live.ts";
 import { LiveProvider, useLive, useLiveStatus, useLiveStore } from "./useLive.tsx";
 import { ChatView } from "./ChatView.tsx";
@@ -877,6 +879,24 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		setRollingRouted(null);
 		void openPage("rolling");
 	};
+	const rollChat = async (): Promise<string | null> => {
+		const from = rollingId;
+		const routeAt = routeRef.current;
+		try {
+			const result = await rollRollingChat(token);
+			if (from !== null && from !== result.conversationId)
+				moveComposerDraft(from, result.conversationId);
+			if (routeRef.current === routeAt && routeAt.kind === "page" && routeAt.page === "rolling") {
+				setRollingViewing(null);
+				setRollingRouted(result.conversationId);
+				setRollingFollow(null);
+			}
+			await acted("conversations");
+			return null;
+		} catch (err) {
+			return err instanceof Error ? err.message : String(err);
+		}
+	};
 	const renderHomeList = (navRef: (node: HTMLElement | null) => void) => (
 		<HomeList
 			home={home}
@@ -1702,6 +1722,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							seed={null}
 							noteProjectId={null}
 							rolling
+							onRoll={rollChat}
 							onSeeded={() => {}}
 							onSendAccepted={() => void acted("conversations")}
 							onRollingAccepted={(id, _rolled, messageId) => {

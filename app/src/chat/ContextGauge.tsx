@@ -52,6 +52,8 @@ export function ContextGauge({
 	live,
 	model,
 	onCompacted,
+	onRoll,
+	rollDisabled,
 }: {
 	token: string | null;
 	conversationId: string | undefined;
@@ -69,6 +71,8 @@ export function ContextGauge({
 	// so the pill appears. Only fires for the conversation the POST
 	// was issued under (the identity guard below).
 	onCompacted?: (() => void) | undefined;
+	onRoll?: (() => Promise<string | null>) | undefined;
+	rollDisabled?: boolean | undefined;
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -80,7 +84,8 @@ export function ContextGauge({
 	// The manual lever's own readout — the gauge numbers are the last
 	// turn's usage, so a fold doesn't move them until the next turn;
 	// the outcome line is the feedback that it happened.
-	const [compactNote, setCompactNote] = useState<string | null>(null);
+	const [outcome, setOutcome] = useState<string | null>(null);
+	const [rolling, setRolling] = useState(false);
 	const seq = useRef(0);
 	// seq also ticks per read — identity moves only on a credential or
 	// conversation switch, which is what actually orphans a pending
@@ -105,7 +110,8 @@ export function ContextGauge({
 		setLastError(null);
 		setOpen(false);
 		setCompacting(false);
-		setCompactNote(null);
+		setOutcome(null);
+		setRolling(false);
 	}, [token, conversationId]);
 	const read = () => {
 		if (conversationId === undefined || busy) return;
@@ -368,44 +374,75 @@ export function ContextGauge({
 						{busy ? " · turn in flight" : ""}
 						{shown.limit === null ? " · limit unknown" : ""}
 					</p>
-					<button
-						type="button"
-						className="ctx-act"
-						disabled={compacting}
-						onClick={() => {
-							if (conversationId === undefined) return;
-							const id = conversationId;
-							const n = identity.current;
-							setCompacting(true);
-							setCompactNote(null);
-							void compactConversation(token, id)
-								.then((outcome) => {
-									if (n !== identity.current) return;
-									setCompactNote(
-										outcome.compacted
-											? `folded ${outcome.eventsCompacted} messages (~${Math.round(outcome.tokensBefore / 1000)}k tok) — kept the last ${outcome.tailEvents}`
-											: `nothing to compact — ${outcome.reason}`,
-									);
-									// The pointer is durable — the transcript marks it
-									// on the re-read (a noop changes nothing).
-									if (outcome.compacted) onCompacted?.();
-								})
-								.catch((err: unknown) => {
-									if (n === identity.current)
-										setCompactNote(
-											`compact failed: ${err instanceof Error ? err.message : String(err)}`,
+					<div className="ctx-actions">
+						<button
+							type="button"
+							className="ctx-act"
+							disabled={compacting || rolling}
+							onClick={() => {
+								if (conversationId === undefined) return;
+								const id = conversationId;
+								const n = identity.current;
+								setCompacting(true);
+								setOutcome(null);
+								void compactConversation(token, id)
+									.then((outcome) => {
+										if (n !== identity.current) return;
+										setOutcome(
+											outcome.compacted
+												? `folded ${outcome.eventsCompacted} messages (~${Math.round(outcome.tokensBefore / 1000)}k tok) — kept the last ${outcome.tailEvents}`
+												: `nothing to compact — ${outcome.reason}`,
 										);
-								})
-								.finally(() => {
-									if (n === identity.current) setCompacting(false);
-								});
-						}}
-					>
-						{compacting ? "Compacting…" : "Compact now"}
-					</button>
-					{compactNote !== null && (
+										// The pointer is durable — the transcript marks it
+										// on the re-read (a noop changes nothing).
+										if (outcome.compacted) onCompacted?.();
+									})
+									.catch((err: unknown) => {
+										if (n === identity.current)
+											setOutcome(
+												`compact failed: ${err instanceof Error ? err.message : String(err)}`,
+											);
+									})
+									.finally(() => {
+										if (n === identity.current) setCompacting(false);
+									});
+							}}
+						>
+							{compacting ? "Compacting…" : "Compact now"}
+						</button>
+						{onRoll !== undefined && (
+							<button
+								type="button"
+								className="ctx-act"
+								disabled={compacting || rolling || busy || rollDisabled === true}
+								onClick={() => {
+									const n = identity.current;
+									setRolling(true);
+									setOutcome(null);
+									void onRoll()
+										.then((reason) => {
+											if (n !== identity.current) return;
+											if (reason !== null)
+												setOutcome(`couldn't start a new conversation: ${reason}`);
+										})
+										.catch((err: unknown) => {
+											if (n === identity.current)
+												setOutcome(
+													`couldn't start a new conversation: ${err instanceof Error ? err.message : String(err)}`,
+												);
+										})
+										.finally(() => {
+											if (n === identity.current) setRolling(false);
+										});
+								}}
+							>
+								{rolling ? "Starting…" : "New conversation"}
+							</button>
+						)}
+					</div>
+					{outcome !== null && (
 						<p className="ctx-outcome" role="status">
-							{compactNote}
+							{outcome}
 						</p>
 					)}
 				</div>

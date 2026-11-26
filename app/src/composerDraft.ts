@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { draftSchema, isEmptyDraft, sameDraft, textDraft, type Draft } from "./chat/draft.ts";
+import { draftSchema, emptyDraft, isEmptyDraft, sameDraft, textDraft, type Draft } from "./chat/draft.ts";
 
 const DRAFT_SCHEMA = z
 	.object({
@@ -69,6 +69,27 @@ export function saveComposerDraft(scope: string, draft: Draft): void {
 	} catch (e) {
 		throw new Error(`localStorage write failed: ${e instanceof Error ? e.message : String(e)}`);
 	}
+}
+
+export function moveComposerDraft(from: string, to: string): boolean {
+	let draft: Draft | null;
+	try {
+		draft = loadComposerDraft(from);
+	} catch {
+		return false;
+	}
+	if (draft === null) return true;
+	try {
+		saveComposerDraft(to, draft);
+	} catch {
+		return false;
+	}
+	try {
+		saveComposerDraft(from, emptyDraft());
+	} catch {
+		return false;
+	}
+	return true;
 }
 
 export function rewriteComposerDrafts(map: (draft: Draft) => Draft): void {

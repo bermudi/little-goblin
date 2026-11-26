@@ -331,6 +331,7 @@ export function ChatView({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  onRoll,
   rolling = false,
   onRollingAccepted,
   onFollowStarted,
@@ -352,6 +353,7 @@ export function ChatView({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch opened a new conversation — the host refreshes and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  onRoll?: (() => Promise<string | null>) | undefined;
   rolling?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
@@ -412,6 +414,7 @@ export function ChatView({
       onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
+      onRoll={onRoll}
       rolling={rolling}
       onRollingAccepted={onRollingAccepted}
       onFollowStarted={onFollowStarted}
@@ -438,6 +441,7 @@ function Chat({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  onRoll,
   rolling = false,
   onRollingAccepted,
   onFollowStarted,
@@ -464,6 +468,7 @@ function Chat({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  onRoll?: (() => Promise<string | null>) | undefined;
   rolling?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
@@ -1515,6 +1520,8 @@ function Chat({
           }}
           stealFocus
           onCompacted={refreshTranscript}
+          onRoll={onRoll}
+          rollDisabled={displayed.length === 0}
           onSend={(parts, whenBusy) => {
             askNotifyPermission();
             return submit({ parts }, whenBusy);

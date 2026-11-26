@@ -457,11 +457,12 @@ after the latest roll, also while an earlier roll is open; the quiet gap and
 the new-subject check do not apply. It is off while a turn runs in the
 conversation on screen, and the server refuses it while a turn runs in the
 latest roll. It starts nothing when the latest roll is still empty. The
-operator lands in the new roll with the composer focused. The draft of the
-conversation that was on screen moves to the new roll; a draft in another
-roll stays there. The earlier roll keeps its history, its pending input and
-its settings. The new roll takes the app's model settings, like any roll,
-and wakes follow the rule above.
+operator lands in the new roll, and its composer claims focus by the
+thread view's rule above, so on phone widths the keyboard does not open
+by itself. The draft of the conversation that was on screen moves to the
+new roll; a draft in another roll stays there. The earlier roll keeps
+its history, its pending input and its settings. The new roll takes the
+app's model settings, like any roll, and wakes follow the rule above.
 
 **Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, with its own loop icon and no

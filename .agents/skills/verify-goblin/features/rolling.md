@@ -26,3 +26,16 @@ The fake decision model answers `follow_up` with 0.05 when `state.next`
 contains `[new topic]`, otherwise 0.9. This affects rolling-chat routing;
 ordinary chat and project behavior still use the scripted chat-completion
 endpoint.
+
+## Starting a new roll by hand
+
+In a roll that has messages, open the context gauge
+(`.ctx-gauge > .ctx-btn`; the composer's other `.ctx-btn` is the memory
+toggle). The popover's last row reads "Compact now", then "New
+conversation". "New conversation" starts a fresh roll at once: the
+transcript shows "— new conversation —" with "↑ Previous conversation",
+and the text typed but not sent comes along. On a desktop width the
+composer has focus; on phone widths the app never takes focus, so the
+keyboard stays closed. The action is off while a turn runs and in an
+empty roll, and an ordinary chat does not offer it. The log line is
+`app lane rolled` with `decidedBy: "manual"`.

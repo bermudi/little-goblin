@@ -178,7 +178,7 @@ export function FileIcon() {
 const INLINE_IMAGE =
   /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
 const INLINE_AUDIO = /^audio\//;
-async function fetchAttachmentUrl(
+export async function fetchAttachmentUrl(
   token: string | null,
   path: string,
 ): Promise<string> {

@@ -2736,6 +2736,202 @@ button.pathchip:hover svg {
 .composer textarea::placeholder {
 	color: var(--app-fg-subtle);
 }
+
+/* ---------- message box ---------- */
+
+/* The ProseMirror box mirrors the textarea it replaces: same font,
+   padding and 30vh ceiling, growing with its paragraphs instead of
+   field-sizing. */
+.message-box-wrap {
+	position: relative;
+}
+.message-box {
+	display: block;
+	width: 100%;
+	font: inherit;
+	font-size: 15px;
+	line-height: 1.5;
+	color: var(--app-fg);
+	background: transparent;
+	border: 0;
+	outline: none;
+	padding: 0.6rem 0.6rem 0.2rem;
+	min-height: 2.5rem;
+	max-height: 30vh;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	cursor: text;
+}
+.message-box p {
+	margin: 0;
+}
+.box-placeholder {
+	position: absolute;
+	top: 0.6rem;
+	left: 0.6rem;
+	font-size: 15px;
+	line-height: 1.5;
+	color: var(--app-fg-subtle);
+	pointer-events: none;
+}
+.goblin-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+	max-width: 100%;
+	vertical-align: baseline;
+	font-size: 12px;
+	color: var(--app-accent);
+	border: 1px solid var(--app-border);
+	border-radius: 999px;
+	padding: 0.1rem 0.5rem 0.1rem 0.35rem;
+	margin: 0 0.1rem;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.goblin-chip-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 0.8rem;
+	flex: none;
+	color: var(--app-fg-subtle);
+}
+.goblin-chip-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.goblin-chip.uploading {
+	border-style: dashed;
+}
+.goblin-chip.uploading .goblin-chip-icon {
+	position: relative;
+	color: transparent;
+}
+.goblin-chip.uploading .goblin-chip-icon::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border: 1.5px solid var(--app-fg-subtle);
+	border-top-color: transparent;
+	border-radius: 999px;
+	animation: box-spin 0.8s linear infinite;
+}
+@keyframes box-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+.goblin-chip.failed,
+.goblin-chip.failed .goblin-chip-name {
+	color: var(--app-danger);
+}
+.goblin-chip.failed {
+	border-color: var(--app-danger);
+}
+.box-shelf {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	padding: 0.35rem 0.5rem 0;
+}
+.box-shelf-thumb {
+	position: relative;
+	width: 2.2rem;
+	height: 2.2rem;
+	border: 1px solid var(--app-border);
+	border-radius: 6px;
+	overflow: hidden;
+	background: var(--app-gray-100);
+	flex: none;
+}
+.box-shelf-thumb img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+.box-shelf-thumb[data-state="failed"] {
+	border-color: var(--app-danger);
+}
+.box-shelf-empty {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+.box-shelf-thumb[data-state="uploading"] .box-shelf-empty {
+	margin: 30% auto;
+	width: 40%;
+	height: 40%;
+	border: 1.5px solid var(--app-fg-subtle);
+	border-top-color: transparent;
+	border-radius: 999px;
+	animation: box-spin 0.8s linear infinite;
+}
+.box-shelf-thumb button {
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 1rem;
+	height: 1rem;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	line-height: 1;
+	color: var(--app-fg-muted);
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 0 0 0 999px;
+	cursor: pointer;
+}
+.box-shelf-thumb button:hover {
+	color: var(--app-fg);
+}
+.chip-pop {
+	z-index: 80;
+	min-width: 11rem;
+	max-width: 18rem;
+	padding: 0.4rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	background: var(--app-bg);
+	color: var(--app-fg);
+	box-shadow: 0 8px 28px rgb(0 0 0 / 22%);
+}
+.chip-details-name {
+	font-size: 13px;
+	font-weight: 600;
+	margin: 0.15rem 0.35rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.chip-details-meta {
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+	margin: 0.15rem 0.35rem 0.3rem;
+}
+.chip-details button {
+	display: block;
+	width: 100%;
+	text-align: left;
+	font-size: 13px;
+	padding: 0.35rem 0.5rem;
+	border: none;
+	border-radius: 5px;
+	background: none;
+	color: var(--app-fg);
+	cursor: pointer;
+}
+.chip-details button:hover {
+	background: var(--app-hover);
+}
+.chip-details-error {
+	font-size: 11px;
+	color: var(--app-danger);
+	margin: 0.3rem 0.35rem 0.15rem;
+}
 .composer-bar {
 	display: flex;
 	align-items: center;

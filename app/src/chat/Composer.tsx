@@ -18,6 +18,7 @@ import {
 	toggleFavorite,
 } from "../api.ts";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
+import { draftText, textDraft } from "./draft.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
 import { SkillPickerSheet } from "../SkillPickerSheet.tsx";
 import { bytes } from "../opsShared.tsx";
@@ -124,7 +125,7 @@ export function Composer({
 	let draftLoadFailure: string | null = null;
 	const [draft, setDraft] = useState(() => {
 		try {
-			return loadComposerDraft(draftScope) ?? "";
+			return draftText(loadComposerDraft(draftScope) ?? textDraft(""));
 		} catch (e) {
 			draftLoadFailure = `A saved draft couldn't be read (${e instanceof Error ? e.message : String(e)}) — typing here replaces it.`;
 			return "";
@@ -141,7 +142,7 @@ export function Composer({
 			return;
 		}
 		try {
-			saveComposerDraft(draftScope, draft);
+			saveComposerDraft(draftScope, textDraft(draft));
 			setDraftError(null);
 		} catch (e) {
 			setDraftError(

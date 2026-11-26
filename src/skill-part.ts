@@ -51,25 +51,7 @@ export function isTempSkillRef(d: SkillRef): d is TempSkillRef {
 	return "url" in d;
 }
 
-// The model-view marker — every view shows the invocation happened;
-// only the owning turn also gets the body. These strings never enter
-// stored history text (the transcript renders the part as a chip), so
-// they are free of the machinery-tag namespace on purpose.
-export function skillMarkerText(name: string): string {
-	return `[skill: ${name}]`;
-}
-
-// The temp marker's name comes from the cached descriptor — the part
-// itself carries only {url, path}.
-export function tempSkillMarkerText(name: string, url: string): string {
-	let host = url;
-	try {
-		host = new URL(url).host;
-	} catch {
-		// The wire validated the URL; an unparseable one keeps the full form.
-	}
-	return `[temp skill: ${name} (${host})]`;
-}
+export { skillMarkerText, tempSkillMarkerText } from "./inline-parts.ts";
 
 // The descriptor the fetch pipeline writes beside the bytes — the
 // preview's verdict rides injection from here, so the part stays lean.

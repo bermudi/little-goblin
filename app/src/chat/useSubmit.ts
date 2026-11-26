@@ -6,6 +6,7 @@
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { UIMessage } from "ai";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
+import { draftText, textDraft } from "./draft.ts";
 import type { StagedNote, StagedSkill, StagedUpload } from "./staged.ts";
 
 export function useSubmit({
@@ -97,10 +98,12 @@ export function useSubmit({
 				// composer's persist effect never fires. Write the post-send
 				// remainder to storage directly, against the stored text.
 				try {
-					const stored = loadComposerDraft(draftScope) ?? "";
+					const stored = draftText(loadComposerDraft(draftScope) ?? textDraft(""));
 					saveComposerDraft(
 						draftScope,
-						stored === draft ? "" : stored.startsWith(draft) ? stored.slice(draft.length) : stored,
+						textDraft(
+							stored === draft ? "" : stored.startsWith(draft) ? stored.slice(draft.length) : stored,
+						),
 					);
 				} catch {
 					// Unreadable records stay put, and a mounted composer's

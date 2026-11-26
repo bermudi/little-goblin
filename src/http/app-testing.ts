@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
-import { openCacheObservation } from "../cache-observation.ts";
+import { newestTurnCall, openCacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
@@ -55,7 +55,9 @@ export function setup(
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const posts = makePosts(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
-	const turnJournal = openTurnJournal(store.db);
+	const turnJournal = openTurnJournal(store.db, {
+		modelCallId: (conversationId) => newestTurnCall(store.db, conversationId),
+	});
 	// The context-window rows ride the same db — prod wires them
 	// unconditionally (src/index.ts), so the rig does too.
 	const windowCapture = openWindowCapture(store.db);
@@ -71,7 +73,12 @@ export function setup(
 		},
 		windowVersion: windowCapture.version,
 		buildStep: (conv) => {
-			if (opts.scriptedModel !== undefined) return opts.scriptedModel.step();
+			if (opts.scriptedModel !== undefined) {
+				const step = opts.scriptedModel.step();
+				return "model" in step
+					? { ...step, model: observedModel(step.model, { conversation: conv.id, observation: cacheObservations }) }
+					: step;
+			}
 			// The default stays an observed AI SDK model: cache-lineage
 			// surfaces read what observedModel records at the SDK seam.
 			return {

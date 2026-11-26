@@ -1,12 +1,14 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { z } from "zod";
 import {
 	_primeModelsDevForTest,
 	_primeOpenRouterCatalog,
 	_resetModelsDevForTest,
 } from "../agent/models-dev.ts";
 import { openStore } from "../conversation.ts";
+import { defineTool } from "../tool.ts";
 import { appAddress } from "../conversation-address.ts";
 
 import { deferred, sleep, waitUntil } from "../testkit.ts";
@@ -2079,10 +2081,14 @@ test("the context window view serves the captured prompt and the call lineage", 
 			capturedAt: string | null;
 			messages: unknown[] | null;
 			calls: unknown[];
+			toolRuns: unknown[];
+			runs: unknown[];
 		};
 		expect(empty.capturedAt).toBeNull();
 		expect(empty.messages).toBeNull();
 		expect(empty.calls).toEqual([]);
+		expect(empty.toolRuns).toEqual([]);
+		expect(empty.runs).toEqual([]);
 
 		// A real turn: the runtime recorded its final step's prompt, and
 		// the observation logged the call.
@@ -2130,6 +2136,39 @@ test("the context window view serves the captured prompt and the call lineage", 
 		expect(body.calls[0]!.inputTokens).toBeGreaterThan(0);
 	} finally {
 		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
+test("the window endpoint returns tool stamps and overlapping run rows", async () => {
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", "window-tool");
+		const body = (await (await call("/api/app/conversations/window-tool/window")).json()) as {
+			calls: { callId: string; startedMs: number }[];
+			toolRuns: { modelCallId: string | null; runId: string; toolCallId: string }[];
+			runs: { runId: string; startedMs: number }[];
+		};
+		expect(body.toolRuns).toHaveLength(1);
+		const stamp = body.toolRuns[0]!.modelCallId;
+		expect(stamp).not.toBeNull();
+		expect(body.calls.some((entry) => entry.callId === stamp)).toBe(true);
+		expect(body.runs.some((entry) => entry.runId === body.toolRuns[0]!.runId && entry.startedMs <= body.calls[0]!.startedMs)).toBe(true);
+	} finally {
 		http.stop();
 	}
 });

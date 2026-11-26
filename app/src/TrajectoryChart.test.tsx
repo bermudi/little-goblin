@@ -1,0 +1,96 @@
+import { describe, expect, test } from "bun:test";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { Window } from "happy-dom";
+import type {
+	AppWindowCall,
+	AppWindowRun,
+	AppWindowToolRun,
+} from "../../src/http/app-wire.ts";
+import { buildTrajectory } from "./trajectory.ts";
+import { TrajectoryChart } from "./TrajectoryChart.tsx";
+
+describe("TrajectoryChart", () => {
+	test("renders accessible rows and status classes", () => {
+		const win = new Window();
+		const previous = {
+			window: globalThis.window,
+			document: globalThis.document,
+			HTMLElement: globalThis.HTMLElement,
+		};
+		Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement });
+		const container = win.document.createElement("div");
+		const root: Root = createRoot(container as unknown as Element);
+		const call: AppWindowCall = {
+			callId: "call-1",
+			purpose: null,
+			model: "test",
+			startedMs: 10,
+			finishedMs: 50,
+			status: "failed",
+			inputTokens: 10,
+			outputTokens: 2,
+			cacheRead: 0,
+			cacheWrite: 0,
+			prefixRelation: "append",
+			sharedMessages: 1,
+		};
+		const endedCall: AppWindowCall = {
+			...call,
+			callId: "call-unfinished",
+			finishedMs: null,
+			status: "started",
+		};
+		const liveCall: AppWindowCall = {
+			...call,
+			callId: "call-live",
+			startedMs: 210,
+			finishedMs: null,
+			status: "started",
+		};
+		const runs: AppWindowRun[] = [
+			{ runId: "r1", startedMs: 0, finishedMs: 100, status: "completed", resumedFrom: null },
+			{ runId: "r2", startedMs: 200, finishedMs: null, status: "running", resumedFrom: null },
+		];
+		const tools: AppWindowToolRun[] = [
+			{
+				toolCallId: "tool-1",
+				runId: "r1",
+				name: "probe",
+				state: "completed",
+				beganMs: 20,
+				settledMs: 30,
+				modelCallId: "call-1",
+			},
+			{
+				toolCallId: "tool-unfinished",
+				runId: "r1",
+				name: "probe",
+				state: "dispatched",
+				beganMs: 40,
+				settledMs: null,
+				modelCallId: "call-unfinished",
+			},
+		];
+		act(() => root.render(<TrajectoryChart rows={buildTrajectory([call, endedCall, liveCall], tools, runs)} />));
+		expect(container.querySelectorAll('[role="img"]')).toHaveLength(2);
+		expect(container.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
+			"2 model calls, 2 tools",
+		);
+		expect(container.querySelector(".win-traj-call.append")).not.toBeNull();
+		expect(container.querySelector(".win-traj-call.failed")).not.toBeNull();
+		expect(container.querySelector(".win-traj-tool.ok")).not.toBeNull();
+		const unfinishedCall = container.querySelector(".win-traj-call.unfinished");
+		expect(unfinishedCall).not.toBeNull();
+		expect(unfinishedCall!.classList.contains("running")).toBe(false);
+		expect(unfinishedCall!.classList.contains("failed")).toBe(false);
+		const unfinishedTool = container.querySelector(".win-traj-tool.unfinished");
+		expect(unfinishedTool).not.toBeNull();
+		expect(unfinishedTool!.classList.contains("running")).toBe(false);
+		expect(unfinishedTool!.classList.contains("failed")).toBe(false);
+		expect(container.querySelector(".win-traj-call.running")).not.toBeNull();
+		act(() => root.unmount());
+		Object.assign(globalThis, previous);
+		win.close();
+	});
+});

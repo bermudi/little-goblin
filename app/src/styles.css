@@ -7539,8 +7539,121 @@ button.link:hover {
 .win-fold .win-tools {
 	max-width: var(--code-col);
 }
+.win-traj {
+	display: grid;
+	gap: 0.45rem;
+}
+.win-traj-row {
+	display: grid;
+	grid-template-columns: 5.4rem minmax(0, 1fr);
+	gap: 0.5rem;
+}
+.win-traj-label {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	overflow: hidden;
+	font: 10px var(--font-mono);
+	color: var(--app-fg-subtle);
+}
+.win-traj-label strong {
+	color: var(--app-fg);
+}
+.win-traj-time {
+	white-space: nowrap;
+}
+.win-traj-track {
+	min-width: 0;
+	border-bottom: 1px solid var(--app-border);
+}
+.win-traj-call,
+.win-traj-tool {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	min-width: 2px;
+	overflow: hidden;
+	padding: 0 0.35rem;
+	border-radius: 4px;
+	font: 10px var(--font-mono);
+	white-space: nowrap;
+}
+.win-traj-call.same {
+	background: color-mix(in oklab, var(--app-accent) 85%, var(--app-fg));
+	color: var(--app-bg);
+}
+.win-traj-call.append {
+	background: color-mix(in oklab, var(--app-accent) 52%, var(--app-bg));
+	color: var(--app-fg);
+}
+.win-traj-call.rewrite {
+	background: color-mix(in oklab, var(--app-warning) 85%, var(--app-bg));
+	outline: 1px solid var(--app-warning);
+	color: var(--app-fg);
+}
+.win-traj-call.first {
+	background: color-mix(in oklab, var(--app-fg-subtle) 35%, var(--app-bg));
+	color: var(--app-fg);
+}
+.win-traj-call.failed {
+	background: color-mix(in oklab, var(--app-danger) 80%, var(--app-bg));
+}
+.win-traj-call.running {
+	background: transparent;
+	border: 1px dashed var(--app-accent);
+}
+.win-traj-tool.ok {
+	background: color-mix(in oklab, var(--app-success) 55%, var(--app-fg));
+	color: var(--app-bg);
+}
+.win-traj-tool.failed {
+	background: var(--app-danger);
+	color: var(--app-bg);
+}
+.win-traj-tool.running {
+	background: repeating-linear-gradient(135deg, var(--app-fg-subtle) 0 4px, transparent 4px 8px);
+	border: 1px dashed var(--app-fg-subtle);
+}
+.win-traj-call.unfinished,
+.win-traj-tool.unfinished {
+	background: color-mix(in oklab, var(--app-fg-subtle) 35%, var(--app-bg));
+	border: 1px dashed var(--app-fg-subtle);
+}
+.win-traj-legend {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.35rem 0.7rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.win-traj-swatch {
+	display: inline-block;
+	width: 0.8rem;
+	height: 0.65rem;
+	border-radius: 2px;
+	vertical-align: middle;
+	margin-right: 0.2rem;
+}
+.win-traj-swatch.same {
+	background: color-mix(in oklab, var(--app-accent) 85%, var(--app-fg));
+}
+.win-traj-swatch.append {
+	background: color-mix(in oklab, var(--app-accent) 52%, var(--app-bg));
+}
+.win-traj-swatch.rewrite {
+	background: color-mix(in oklab, var(--app-warning) 85%, var(--app-bg));
+	outline: 1px solid var(--app-warning);
+}
 @media (max-width: 40rem) {
 	.win-break-bar {
+		display: none;
+	}
+	.win-traj-row {
+		grid-template-columns: 3.8rem minmax(0, 1fr);
+	}
+	.win-traj-time {
 		display: none;
 	}
 }

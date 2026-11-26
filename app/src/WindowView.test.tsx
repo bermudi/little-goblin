@@ -96,6 +96,26 @@ describe("WindowView", () => {
 				sharedMessages: 4,
 			},
 		],
+		toolRuns: [
+			{
+				toolCallId: "tool-1",
+				runId: "run-1",
+				name: "bash",
+				state: "completed",
+				beganMs: 1761100001000,
+				settledMs: 1761100001500,
+				modelCallId: "call-1",
+			},
+		],
+		runs: [
+			{
+				runId: "run-1",
+				startedMs: 1761099999000,
+				finishedMs: 1761100003000,
+				status: "completed",
+				resumedFrom: null,
+			},
+		],
 	};
 
 	beforeEach(() => {
@@ -109,6 +129,9 @@ describe("WindowView", () => {
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("Event", win.Event);
+		installGlobal("MouseEvent", win.MouseEvent);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 	});
@@ -180,8 +203,12 @@ describe("WindowView", () => {
 
 	const button = (label: string) =>
 		[...container.querySelectorAll("button")].find((b) => b.textContent === label);
+	const expectNoModelCallsFold = () => {
+		const summaries = [...container.querySelectorAll("details.win-fold summary")];
+		expect(summaries.some((summary) => summary.textContent?.includes("Model calls"))).toBe(false);
+	};
 
-	test("renders the captured window: system, tools, every message, the lineage", async () => {
+	test("renders the captured window and defaults to raw parts", async () => {
 		mount();
 		await act(async () => {});
 		const text = container.textContent ?? "";
@@ -193,9 +220,9 @@ describe("WindowView", () => {
 		expect(text).toContain("image/png");
 		expect(text).toContain("bytes omitted");
 		expect(container.querySelectorAll("img").length).toBe(0);
-		// The call lineage table carries the cache split.
-		expect(text).toContain("append");
-		expect(text).toContain("3,100");
+		expect(text).toContain("Raw parts");
+		expect(container.querySelector(".win-traj")).toBeNull();
+		expectNoModelCallsFold();
 		// The breakdown table names the biggest slice first.
 		const rows = [...container.querySelectorAll(".win-break tbody tr")].map(
 			(r) => r.firstElementChild?.textContent,
@@ -208,6 +235,7 @@ describe("WindowView", () => {
 	test("leads with used / limit and says when compaction happens", async () => {
 		mount();
 		await act(async () => {});
+		expectNoModelCallsFold();
 		const tiles = [...container.querySelectorAll(".sumtile")].map((e) => e.textContent);
 		expect(tiles[0]).toContain("3,100");
 		expect(tiles[0]).toContain("of 10,000");
@@ -219,6 +247,7 @@ describe("WindowView", () => {
 	test("above the threshold the note says the history compacts", async () => {
 		mount({}, { input: 10000, pct: 100, modelLimit: 20000 });
 		await act(async () => {});
+		expectNoModelCallsFold();
 		expect(container.textContent).toContain("At or above the 10,000-token limit");
 		expect(container.textContent).toContain("The model itself takes up to 20,000.");
 	});
@@ -226,6 +255,7 @@ describe("WindowView", () => {
 	test("without the context read the page still shows the capture", async () => {
 		mount({}, null);
 		await act(async () => {});
+		expectNoModelCallsFold();
 		const text = container.textContent ?? "";
 		expect(text).toContain("3,700 chars serialized");
 		expect(text).not.toContain("room remain");
@@ -233,7 +263,7 @@ describe("WindowView", () => {
 	});
 
 	test("a null segments row keeps the no-window and no-model states working", async () => {
-		mount({
+		const h = mount({
 			capturedModel: null,
 			segments: null,
 			system: null,
@@ -241,14 +271,17 @@ describe("WindowView", () => {
 			messages: null,
 		});
 		await act(async () => {});
+		expectNoModelCallsFold();
 		const text = container.textContent ?? "";
 		expect(text).not.toContain("chars serialized");
-		expect(text).toContain("Model calls");
+		await h.click(button("Trajectory"));
+		expect(container.querySelectorAll(".win-table tbody tr")).toHaveLength(1);
 	});
 
 	test("role filters narrow the message list, raw JSON swaps the rendering", async () => {
 		const h = mount();
 		await act(async () => {});
+		expectNoModelCallsFold();
 		await h.click(button("you"));
 		expect(container.querySelectorAll(".win-msg").length).toBe(2);
 		// Cards keep their index in the captured window — the second "you"
@@ -268,11 +301,12 @@ describe("WindowView", () => {
 	test("the stale-model note appears when the captured model differs", async () => {
 		mount({ model: "openai/gpt-6" });
 		await act(async () => {});
+		expectNoModelCallsFold();
 		expect(container.textContent).toContain("now runs openai/gpt-6");
 	});
 
 	test("a conversation with no captured window says so and still lists calls", async () => {
-		mount({
+		const h = mount({
 			capturedAt: null,
 			capturedModel: null,
 			steps: null,
@@ -284,12 +318,52 @@ describe("WindowView", () => {
 		await act(async () => {});
 		const text = container.textContent ?? "";
 		expect(text).toContain("No model call yet");
-		expect(text).toContain("Model calls");
+		expect(container.textContent).not.toContain("No captured prompt yet.");
+		expect(container.textContent).toContain("Model calls");
+		expect(container.querySelectorAll(".win-table tbody tr")).toHaveLength(1);
+		expectNoModelCallsFold();
+		await h.click(button("Window"));
+		expect(container.textContent).toContain("No captured prompt yet.");
+		expect(container.querySelectorAll("details.win-fold")).toHaveLength(0);
+	});
+
+	test("a conversation with no model call shows no tabs", async () => {
+		mount({
+			capturedAt: null,
+			capturedModel: null,
+			steps: null,
+			segments: null,
+			system: null,
+			tools: null,
+			messages: null,
+			calls: [],
+			toolRuns: [],
+			runs: [],
+		});
+		await act(async () => {});
+		expect(container.textContent).toContain("No model call yet");
+		expect(button("Trajectory")).toBeUndefined();
+		expect(button("Window")).toBeUndefined();
+	});
+
+	test("Trajectory tab shows rows and the calls table", async () => {
+		const h = mount();
+		await act(async () => {});
+		expectNoModelCallsFold();
+		await h.click(button("Trajectory"));
+		expect(container.querySelectorAll(".win-traj-row")).toHaveLength(1);
+		expect(container.textContent).toContain("Model calls");
+		expect(container.textContent).toContain("3,100");
+		expect(container.textContent).toContain("append");
+		await h.click(button("Window"));
+		expect(container.querySelector(".win-traj")).toBeNull();
+		expectNoModelCallsFold();
 	});
 
 	test("back returns to the conversation", async () => {
 		const h = mount();
 		await act(async () => {});
+		expectNoModelCallsFold();
 		const back = [...container.querySelectorAll(".ops-back button")].at(-1);
 		await h.click(back);
 		expect(h.backCalled()).toBe(true);

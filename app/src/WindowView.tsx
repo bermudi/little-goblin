@@ -8,6 +8,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getContext, getWindow } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
 import { bytes, describe, ts } from "./opsShared.tsx";
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
+import { TrajectoryChart } from "./TrajectoryChart.tsx";
+import { buildTrajectory } from "./trajectory.ts";
 import type { AppContextView, AppWindowView } from "../../src/http/app-wire.ts";
 
 type Segments = NonNullable<AppWindowView["segments"]>;
@@ -387,9 +390,11 @@ export function WindowView({
 	const [role, setRole] = useState<RoleFilter>("all");
 	const [openBodies, setOpenBodies] = useState(false);
 	const [raw, setRaw] = useState(false);
+	const [tab, setTab] = useState<"window" | "trajectory">("window");
 	const [query, setQuery] = useState("");
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const seq = useRef(0);
+	const opened = useRef(false);
 
 	const load = useCallback(() => {
 		const n = ++seq.current;
@@ -406,7 +411,12 @@ export function WindowView({
 		);
 		getWindow(token, conversationId).then(
 			(v) => {
-				if (n === seq.current) setView(v);
+				if (n !== seq.current) return;
+				setView(v);
+				if (!opened.current) {
+					opened.current = true;
+					if (v.capturedAt === null && v.calls.length > 0) setTab("trajectory");
+				}
 			},
 			(e) => {
 				if (n === seq.current) setErr(describe(e));
@@ -420,6 +430,10 @@ export function WindowView({
 	// on the multi-megabyte payloads this view exists for.
 	const haystacks = useMemo(
 		() => (view?.messages ?? []).map((m) => JSON.stringify(m).toLowerCase()),
+		[view],
+	);
+	const rows = useMemo(
+		() => (view === null ? [] : buildTrajectory(view.calls, view.toolRuns, view.runs)),
 		[view],
 	);
 
@@ -490,120 +504,150 @@ export function WindowView({
 				)}
 			</p>
 
-			{view.capturedAt !== null && (
-				<>
-					<WindowSummary view={view} ctx={ctx} stale={stale} />
-
-					<h3 className="win-h3">Raw parts</h3>
-					<Fold
-						title="System prompt"
-						count={view.system !== null ? `${num(view.system.length)} chars` : undefined}
-					>
-						{view.system === null ? (
-							<p className="empty">not captured</p>
-						) : raw ? (
-							<Json value={view.system} />
-						) : (
-							<pre className="win-json">{view.system}</pre>
-						)}
-					</Fold>
-
-					<Fold title="Tools" count={view.tools !== null ? String(view.tools.length) : undefined}>
-						{view.tools === null || view.tools.length === 0 ? (
-							<p className="empty">{view.tools === null ? "not captured" : "no tools mounted"}</p>
-						) : (
-							<ul className="win-tools">
-								{view.tools.map((t) => (
-									<li key={t.name}>
-										<details key={`tool${raw ? "r" : "p"}`}>
-											<summary>
-												{t.name}
-												<span className="win-size">
-													{" "}
-													{chars(t.parameters).toLocaleString()} chars
-												</span>
-											</summary>
-											{t.description !== null && <p className="win-tooldesc">{t.description}</p>}
-											<Json value={t.parameters} />
-										</details>
-									</li>
-								))}
-							</ul>
-						)}
-					</Fold>
-
-					<Fold
-						title="Messages"
-						count={`${messages.length}${
-							messages.length !== (view.messages ?? []).length
-								? ` of ${(view.messages ?? []).length}`
-								: ""
-						}`}
-					>
-						<div className="win-controls">
-							<div className="chips" role="group" aria-label="role filter">
-								{ROLE_FILTERS.map((f) => (
-									<button
-										key={f.key}
-										type="button"
-										className={role === f.key ? "chip on" : "chip"}
-										aria-pressed={role === f.key}
-										onClick={() => setRole(f.key)}
-									>
-										{f.label}
-									</button>
-								))}
-							</div>
-							<div className="chips" role="group" aria-label="display">
-								<button
-									type="button"
-									className={openBodies ? "chip on" : "chip"}
-									aria-pressed={openBodies}
-									onClick={() => setOpenBodies(!openBodies)}
+			{view.capturedAt !== null && <WindowSummary view={view} ctx={ctx} stale={stale} />}
+			{(view.capturedAt !== null || view.calls.length > 0) && (
+				<Tabs
+					value={tab}
+					onValueChange={(value) => setTab(value === "trajectory" ? "trajectory" : "window")}
+				>
+					<TabsList aria-label="Context window views">
+						<TabsTab value="window">Window</TabsTab>
+						<TabsTab value="trajectory">Trajectory</TabsTab>
+					</TabsList>
+					<TabsPanel value="window">
+						{view.capturedAt !== null ? (
+							<>
+								<h3 className="win-h3">Raw parts</h3>
+								<Fold
+									title="System prompt"
+									count={view.system !== null ? `${num(view.system.length)} chars` : undefined}
 								>
-									thinking &amp; tool bodies
-								</button>
-								<button
-									type="button"
-									className={raw ? "chip on" : "chip"}
-									aria-pressed={raw}
-									onClick={() => setRaw(!raw)}
+									{view.system === null ? (
+										<p className="empty">not captured</p>
+									) : raw ? (
+										<Json value={view.system} />
+									) : (
+										<pre className="win-json">{view.system}</pre>
+									)}
+								</Fold>
+								<Fold
+									title="Tools"
+									count={view.tools !== null ? String(view.tools.length) : undefined}
 								>
-									raw JSON
-								</button>
-							</div>
-							<input
-								type="search"
-								className="win-search"
-								placeholder="filter messages…"
-								aria-label="filter messages"
-								value={query}
-								onChange={(e) => setQuery(e.target.value)}
-							/>
-						</div>
-						<ul className="win-msgs">
-							{messages.map((e) => (
-								<MessageCard
-									key={e.index}
-									message={e.message}
-									index={e.index}
-									raw={raw}
-									openBodies={openBodies}
-								/>
-							))}
-						</ul>
-						{messages.length === 0 && <p className="empty">nothing matches</p>}
-					</Fold>
-				</>
+									{view.tools === null || view.tools.length === 0 ? (
+										<p className="empty">
+											{view.tools === null ? "not captured" : "no tools mounted"}
+										</p>
+									) : (
+										<ul className="win-tools">
+											{view.tools.map((t) => (
+												<li key={t.name}>
+													<details key={`tool${raw ? "r" : "p"}`}>
+														<summary>
+															{t.name}
+															<span className="win-size">
+																{" "}
+																{chars(t.parameters).toLocaleString()} chars
+															</span>
+														</summary>
+														{t.description !== null && (
+															<p className="win-tooldesc">{t.description}</p>
+														)}
+														<Json value={t.parameters} />
+													</details>
+												</li>
+											))}
+										</ul>
+									)}
+								</Fold>
+								<Fold
+									title="Messages"
+									count={`${messages.length}${
+										messages.length !== (view.messages ?? []).length
+											? ` of ${(view.messages ?? []).length}`
+											: ""
+									}`}
+								>
+									<div className="win-controls">
+										<div className="chips" role="group" aria-label="role filter">
+											{ROLE_FILTERS.map((f) => (
+												<button
+													key={f.key}
+													type="button"
+													className={role === f.key ? "chip on" : "chip"}
+													aria-pressed={role === f.key}
+													onClick={() => setRole(f.key)}
+												>
+													{f.label}
+												</button>
+											))}
+										</div>
+										<div className="chips" role="group" aria-label="display">
+											<button
+												type="button"
+												className={openBodies ? "chip on" : "chip"}
+												aria-pressed={openBodies}
+												onClick={() => setOpenBodies(!openBodies)}
+											>
+												thinking &amp; tool bodies
+											</button>
+											<button
+												type="button"
+												className={raw ? "chip on" : "chip"}
+												aria-pressed={raw}
+												onClick={() => setRaw(!raw)}
+											>
+												raw JSON
+											</button>
+										</div>
+										<input
+											type="search"
+											className="win-search"
+											placeholder="filter messages…"
+											aria-label="filter messages"
+											value={query}
+											onChange={(e) => setQuery(e.target.value)}
+										/>
+									</div>
+									<ul className="win-msgs">
+										{messages.map((e) => (
+											<MessageCard
+												key={e.index}
+												message={e.message}
+												index={e.index}
+												raw={raw}
+												openBodies={openBodies}
+											/>
+										))}
+									</ul>
+									{messages.length === 0 && <p className="empty">nothing matches</p>}
+								</Fold>
+							</>
+						) : (
+							<p className="empty">No captured prompt yet.</p>
+						)}
+					</TabsPanel>
+					<TabsPanel value="trajectory">
+						{rows.length > 0 && (
+							<>
+								<h3 className="win-h3">Model calls over time</h3>
+								<p className="win-traj-legend">
+									<span><i className="win-traj-swatch same" />same prefix</span>
+									<span><i className="win-traj-swatch append" />append</span>
+									<span><i className="win-traj-swatch rewrite" />rewrite · cache lost</span>
+									<span>
+										Width is time. A block is a model call. A thin bar under it is a tool that
+										call asked for. Empty space is waiting.
+									</span>
+								</p>
+								<TrajectoryChart rows={rows} />
+							</>
+						)}
+						<h3 className="win-h3">Model calls</h3>
+						<CallsTable calls={view.calls} />
+					</TabsPanel>
+				</Tabs>
 			)}
-
-			<Fold title="Model calls" count={String(view.calls.length)}>
-				{view.calls.length === 0 ? (
-					<p className="empty">no model calls recorded for this conversation</p>
-				) : (
-					<CallsTable calls={view.calls} />
-				)}
-			</Fold>
 
 			<div className="ops-back">
 				<button type="button" className="ghost" onClick={onBack}>

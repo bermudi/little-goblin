@@ -86,7 +86,6 @@ export function Composer({
 	// A manual compact landed a pointer — the host re-reads history so
 	// the transcript's fold marks update.
 	onCompacted?: () => void;
-	// A chip's popover asked to open the note it names.
 	onOpenNote?: ((id: string) => void) | undefined;
 	// A select-to-quote request — `n` bumps per click, so even repeated
 	// text appends again. The speaker lands as the quote's annotation
@@ -122,6 +121,8 @@ export function Composer({
 		}
 	});
 	const [draftError, setDraftError] = useState<string | null>(draftLoadFailure);
+	const draftRef = useRef(draft);
+	draftRef.current = draft;
 	// The mount run writes nothing: on restore it would rewrite the
 	// value it just loaded, and after a corrupt load it would delete
 	// the unreadable record before the operator ever sees why.
@@ -294,10 +295,6 @@ export function Composer({
 		);
 
 	const boxRef = useRef<MessageBoxHandle | null>(null);
-	// Programmatic box writes (restores) must not read as operator edits —
-	// the cancelled-send restore keeps its "nothing typed since" guard.
-	// The mount sync's own onChange is skipped the same way: it reports
-	// the draft it just loaded, not a keystroke.
 	const programmatic = useRef(false);
 	const mountSync = useRef(true);
 	const runBox = (fn: () => void) => {
@@ -309,7 +306,20 @@ export function Composer({
 		}
 	};
 	const insertChips = (chips: Chip[]) => {
-		runBox(() => boxRef.current?.insertChips(chips));
+		const existing = boxRef.current?.getDraft();
+		const incoming = chips.filter((chip) => {
+			if (chip.kind !== "file" || chip.state !== "ready" || existing === undefined) return true;
+			return (
+				!existing.items.some(
+					(item) =>
+						item.type === "chip" &&
+						item.chip.kind === "file" &&
+						item.chip.state === "ready" &&
+						item.chip.ref.path === chip.ref.path,
+				) && !existing.shelf.some((file) => file.state === "ready" && file.ref.path === chip.ref.path)
+			);
+		});
+		if (incoming.length > 0) runBox(() => boxRef.current?.insertChips(incoming));
 	};
 	const { send, sendError, sendNote, editedAfterSend } = useSubmit({
 		busy,
@@ -317,11 +327,15 @@ export function Composer({
 		configSaving,
 		draftScope,
 		boxRef,
+		setBoxDraft: (next) => runBox(() => boxRef.current?.setDraft(next)),
 		onSend: sendWithModelSettings,
 	});
 	const onBoxChange = (next: Draft) => {
-		if (mountSync.current) mountSync.current = false;
-		else if (!programmatic.current) editedAfterSend.current = true;
+		if (mountSync.current) {
+			mountSync.current = false;
+			return;
+		}
+		if (!programmatic.current) editedAfterSend.current = true;
 		setDraft(next);
 	};
 	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
@@ -338,10 +352,10 @@ export function Composer({
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
 		const quoted = quoteBlock(quote.text, quote.speaker ?? undefined);
-		const head = draftText(draft).trimEnd();
+		const head = draftText(draftRef.current).trimEnd();
 		runBox(() => boxRef.current?.appendText(head === "" ? `${quoted}\n\n` : `\n\n${quoted}\n\n`));
 		boxRef.current?.focus("end");
-	}, [quote, draft, editedAfterSend]);
+	}, [quote, editedAfterSend]);
 	// The parent scopes this payload to its originating composer. Pending
 	// edits always restore, ahead of any newer draft; cancelled-send restores
 	// keep the edit guard so they never replace newer operator text.

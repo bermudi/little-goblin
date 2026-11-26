@@ -1,5 +1,6 @@
 import {
 	forwardRef,
+	useCallback,
 	useEffect,
 	useImperativeHandle,
 	useRef,
@@ -302,6 +303,11 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 	const hadFocusRef = useRef(false);
 	const shelfRef = useRef<FileChip[]>(normalizeDraft(initial ?? { items: [], shelf: [] }).shelf);
 	const [shelf, setShelf] = useState<FileChip[]>(shelfRef.current);
+	const remoteThumbUrls = useRef(new Map<string, string>());
+	const rememberRemoteThumb = useCallback((path: string, url: string | null) => {
+		if (url === null) remoteThumbUrls.current.delete(path);
+		else remoteThumbUrls.current.set(path, url);
+	}, []);
 	const [pop, setPop] = useState<PopState | null>(null);
 	const [showPlaceholder, setShowPlaceholder] = useState(
 		normalizeDraft(initial ?? { items: [], shelf: [] }).items.every(
@@ -313,7 +319,6 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 	const onEnterRef = useRef(onEnter);
 	const onFilesRef = useRef(onFiles);
 	const onOpenNoteRef = useRef(onOpenNote);
-	const remoteThumbUrls = useRef(new Map<string, string>());
 	const syncRef = useRef<() => void>(() => {});
 	const popRef = useRef<PopState | null>(null);
 	popRef.current = pop;
@@ -627,10 +632,7 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 							key={chipKey(chip)}
 							chip={chip}
 							token={token}
-							onUrl={(path, url) => {
-								if (url === null) remoteThumbUrls.current.delete(path);
-								else remoteThumbUrls.current.set(path, url);
-							}}
+							onUrl={rememberRemoteThumb}
 							onRemove={() => void removeShelfChip(chip)}
 						/>
 					))}
@@ -798,6 +800,8 @@ export function ChipDetails({
 	const openImage = readyFile && chip.ref.mediaType.startsWith("image/");
 	const downloadFile = readyFile && !chip.ref.mediaType.startsWith("image/");
 	useEffect(() => {
+		navigated.current = false;
+		setHref(null);
 		if (!openImage) return;
 		if (thumbUrl !== undefined) {
 			setHref(thumbUrl);

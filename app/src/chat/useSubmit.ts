@@ -1,8 +1,3 @@
-// The composer's send path: assembling the parts from the message box's
-// draft, the busy/saving gates, and clearing only what a send actually
-// sent — a declined send (failed lazy create) keeps everything composed
-// so the operator can resend.
-
 import { useRef, useState, type RefObject } from "react";
 import type { UIMessage } from "ai";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
@@ -15,17 +10,15 @@ export function useSubmit({
 	configSaving,
 	draftScope,
 	boxRef,
+	setBoxDraft,
 	onSend,
 }: {
 	busy: boolean;
 	onStop?: (() => void) | undefined;
 	configSaving: boolean;
-	// Durable-draft key — one per composer home: the conversation id,
-	// the project id, "new" for the empty start state.
 	draftScope: string;
-	// The mounted message box — the draft reads and the post-send
-	// remainder land there.
 	boxRef: RefObject<MessageBoxHandle | null>;
+	setBoxDraft: (draft: Draft) => void;
 	onSend: (
 		parts: UIMessage["parts"],
 		whenBusy?: "steer" | "followUp",
@@ -33,8 +26,6 @@ export function useSubmit({
 }) {
 	const sendingRef = useRef(false);
 	const [sendError, setSendError] = useState<string | null>(null);
-	// Enter against a blocked send: the affordance the disabled buttons
-	// can't give. role="status" — it informs, it never interrupts.
 	const [sendNote, setSendNote] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
 
@@ -58,9 +49,7 @@ export function useSubmit({
 		}
 		const parts = draftToParts(draft);
 		if (parts.length === 0) return;
-		// Clear only once the send is accepted — a compose wiped before
-		// a lazy-create failure leaves nothing to resend. Typing that
-		// lands mid-flight survives: only the sent prefix comes off.
+		editedAfterSend.current = false;
 		sendingRef.current = true;
 		setSendError(null);
 		setSendNote(null);
@@ -69,18 +58,11 @@ export function useSubmit({
 			.then((accepted) => {
 				if (accepted === false) return;
 				const remainder = unsentRemainder(boxRef.current?.getDraft() ?? draft, draft);
-				// The accept continuation can outlive this composer — a lazy
-				// create swaps the view before it runs, and an unmounted
-				// composer's persist effect never fires. Write the post-send
-				// remainder to storage directly, against the stored draft.
 				try {
 					const stored = loadComposerDraft(draftScope) ?? emptyDraft();
 					saveComposerDraft(draftScope, unsentRemainder(stored, draft));
-				} catch {
-					// Unreadable records stay put, and a mounted composer's
-					// effect still reports its own save failures.
-				}
-				boxRef.current?.setDraft(remainder);
+				} catch {}
+				setBoxDraft(remainder);
 			})
 			.catch((err: unknown) => {
 				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);

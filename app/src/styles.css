@@ -2788,6 +2788,10 @@ button.pathchip:hover svg {
 	user-select: none;
 	-webkit-user-select: none;
 }
+.goblin-chip * {
+	user-select: none;
+	-webkit-user-select: none;
+}
 .goblin-chip-icon {
 	display: inline-flex;
 	align-items: center;

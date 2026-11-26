@@ -103,6 +103,19 @@ const chatBody = z
 								continue;
 							}
 							if (p.type === SKILL_PART) {
+								if (
+									typeof p.data === "object" &&
+									p.data !== null &&
+									"inline" in p.data &&
+									p.data.inline !== undefined &&
+									p.data.inline !== true
+								) {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "data", "inline"],
+										message: "inline, when set, is true",
+									});
+								}
 								const ref = skillPartDataSchema.safeParse(p.data);
 								if (!ref.success) {
 									ctx.addIssue({
@@ -114,6 +127,19 @@ const chatBody = z
 								continue;
 							}
 							if (p.type !== ATTACHMENT_PART) continue;
+							if (
+								typeof p.data === "object" &&
+								p.data !== null &&
+								"inline" in p.data &&
+								p.data.inline !== undefined &&
+								p.data.inline !== true
+							) {
+								ctx.addIssue({
+									code: "custom",
+									path: [i, "data", "inline"],
+									message: "inline, when set, is true",
+								});
+							}
 							const ref = attachmentRefSchema.safeParse(p.data);
 							if (!ref.success || !isStoredAttachmentPath(ref.data.path)) {
 								ctx.addIssue({
@@ -271,7 +297,10 @@ export async function handleChatRoute(
 		if (!parsed.success) {
 			return Response.json(
 				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
+				{
+					status: parsed.error.issues.some((issue) => issue.path.includes("inline")) ? 400 : 422,
+					headers: NO_STORE,
+				},
 			);
 		}
 		for (const part of parsed.data.message?.parts ?? []) {

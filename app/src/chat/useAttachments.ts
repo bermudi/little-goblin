@@ -1,8 +1,3 @@
-// The composer's attachment lane: file picking (picker, paste, drop)
-// and hold-to-record voice notes. Files enter the message box as
-// uploading chips through the uploads registry; voice notes release-send
-// when the lane is free, and become chips otherwise.
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { uploadAttachment } from "../api.ts";
@@ -18,7 +13,6 @@ export function useAttachments({
 	token: string | null;
 	busy: boolean;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
-	// Chips land in the mounted message box, at the caret.
 	insertChips: (chips: Chip[]) => void;
 }) {
 	const fileInput = useRef<HTMLInputElement>(null);
@@ -98,15 +92,9 @@ export function useAttachments({
 				void (async () => {
 					try {
 						const { ref } = await uploadAttachment(token, file);
-						// Release-sends, but not mid-turn — a second send while a
-						// turn streams is the fork send()'s busy gate exists to
-						// prevent. Insert the chip instead: it shows in the box,
-						// and the next send carries it with speech intact.
 						if (busyRef.current || recDead.current) {
 							insertChipsRef.current([{ kind: "file", state: "ready", ref: { ...ref, speech: true } }]);
 						} else {
-							// A declined send (failed lazy create) re-stages the
-							// note — the upload already landed server-side.
 							void Promise.resolve(
 								onSendRef.current([{ type: "data-attachment", data: { ...ref, speech: true } }]),
 							).then((accepted) => {
@@ -181,4 +169,3 @@ export function useAttachments({
 		pickFile,
 	};
 }
-

@@ -1,7 +1,3 @@
-// Skills and notes staged for the next send: the two picker popovers'
-// open state, their outside-press dismissal, and the callbacks that
-// drop the picked chip into the message box at the caret.
-
 import { useEffect, useRef, useState } from "react";
 import type { AppNoteSummary } from "../../../src/http/app-wire.ts";
 import type { Chip, SkillChip } from "./draft.ts";
@@ -9,8 +5,6 @@ import type { Chip, SkillChip } from "./draft.ts";
 export function useSkillNoteStaging({
 	insertChips,
 }: {
-	// The picked chip lands in the mounted message box — a repeat pick
-	// inserts another mention; nothing dedups.
 	insertChips: (chips: Chip[]) => void;
 }) {
 	const [notePickerOpen, setNotePickerOpen] = useState(false);

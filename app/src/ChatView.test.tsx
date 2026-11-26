@@ -8,7 +8,7 @@ import type { AppCompactionMark } from "../../src/http/app-wire.ts";
 import { clickConfirm, confirmSheet, confirmText, withLive } from "./testkit.ts";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { placeSentMedia } from "./chat/sentMedia.ts";
-import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
+import { editedParts, FoldMark, messageText, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
@@ -830,6 +830,21 @@ describe("unlanded turn records (issue #408)", () => {
           system({ unlanded: { kind: "aborted", runId: "r1", reply: [] } }),
         ),
       ).toEqual({ kind: "aborted", runId: "r1", reply: [] });
+    });
+  });
+
+  describe("messageText with inline chips", () => {
+    test("the visible text keeps each chip label at its place", () => {
+      const message = asMsg({
+        id: "u-inline",
+        role: "user",
+        parts: [
+          { type: "text", text: "look at " },
+          { type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+          { type: "text", text: " please" },
+        ],
+      });
+      expect(messageText(message)).toBe("look at [Budget] please");
     });
   });
 
@@ -2360,7 +2375,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
       id: "m1",
       role: "user",
       parts: [
-        { type: "text", text: "first" },
+        { type: "text", text: "first " },
         {
           type: "data-attachment",
           data: {
@@ -2368,8 +2383,10 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
             mediaType: "image/png",
             filename: "one.png",
             size: 3,
+            inline: true,
           },
         },
+        { type: "text", text: " message" },
       ],
     } as unknown as UIMessage;
     const secondMessage = userMsg("m2", "second");
@@ -2453,13 +2470,13 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
         }),
       );
     });
-    await waitFor(() => boxText() === "first\n\nsecond\n\ntyped");
+    await waitFor(() => boxText() === "first ☒ message\n\nsecond\n\ntyped");
     expect(
       dom.container.querySelector('.box-shelf button[aria-label="Remove one.png"]'),
     ).not.toBeNull();
     await waitFor(() => deletes.length >= 2);
     expect(deletes.map((entry) => entry.id).sort()).toEqual(["p1", "p2"]);
-    for (const entry of deletes) expect(entry.box).toBe("first\n\nsecond\n\ntyped");
+    for (const entry of deletes) expect(entry.box).toBe("first ☒ message\n\nsecond\n\ntyped");
     await waitFor(
       () => dom.container.querySelector(".pending-inputs") === null,
     );
@@ -2838,7 +2855,24 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     const notSentOne = {
       id: "n1",
       mode: "steer" as const,
-      message: userMsg("m2", "lost one"),
+      message: {
+        id: "m2",
+        role: "user",
+        parts: [
+          { type: "text", text: "lost " },
+          {
+            type: "data-attachment",
+            data: {
+              path: "/box/files/steer.png",
+              mediaType: "image/png",
+              filename: "steer.png",
+              size: 3,
+              inline: true,
+            },
+          },
+          { type: "text", text: " one" },
+        ],
+      } as unknown as UIMessage,
       createdAt: "2026-01-01T00:00:01.000Z",
       status: "notSent" as const,
     };
@@ -2901,12 +2935,12 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     await act(async () => {
       (notSent.querySelector('.pending-input-edit[aria-label="Edit not sent message"]') as HTMLElement).click();
     });
-    await waitFor(() => boxText() === "lost one");
+    await waitFor(() => boxText() === "lost ☒ one");
     await act(async () => {
       (dom.container.querySelector('.pending-input-remove[aria-label="Remove not sent message"]') as HTMLElement).click();
     });
     await waitFor(() => deletes.includes("n2"));
-    expect(boxText()).toBe("lost one");
+    expect(boxText()).toBe("lost ☒ one");
     expect(
       dom.container.querySelector('section[aria-label="Pending input"]')?.textContent,
     ).toContain("queued text");

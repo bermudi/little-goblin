@@ -1,7 +1,3 @@
-// The composer's focus claiming: the caller's focusSignal, and the
-// thread view's stealFocus — focus at the moments the next keystroke
-// is a reply, never against a surface typing for itself.
-
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import { usePhoneWidth } from "../usePhoneWidth.ts";
 
@@ -12,7 +8,6 @@ export function useKeyboard({
 	busy,
 	pickersOpen,
 }: {
-	// Anything with a focus() — the message box handle today.
 	focusRef: RefObject<{ focus(): void } | null>;
 	// Bumped by the caller when the composer should grab focus (the
 	// "New conversation" click) — covers the already-mounted case that

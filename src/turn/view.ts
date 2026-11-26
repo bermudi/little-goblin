@@ -9,16 +9,14 @@ import {
 	materializeAttachments,
 } from "../agent/attachments.ts";
 import { log } from "../log.ts";
-import { inlineMentions } from "../inline-parts.ts";
+import { inlineMentions, skillMarkerText, tempSkillMarkerText } from "../inline-parts.ts";
 import { messageText, type RecallContext, withMemoryBlocks } from "../memory/mod.ts";
 import { CONTEXT_PART, contextPartDataSchema, contextText } from "../message-context.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
 import {
 	SKILL_PART,
 	isTempSkillRef,
-	skillMarkerText,
 	skillPartDataSchema,
-	tempSkillMarkerText,
 	type SkillRef,
 } from "../skill-part.ts";
 

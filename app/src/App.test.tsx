@@ -21,6 +21,7 @@ import type {
 } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App } from "./App.tsx";
+import { boxView } from "./chat/MessageBox.tsx";
 import { flatLine } from "./flatText.ts";
 import {
 	clickConfirm,
@@ -73,6 +74,19 @@ interface Deferred {
 
 const jsonResponse = (body: unknown, status = 200): Response =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const composerText = (): string => {
+	const editor = boxView(document.querySelector(".message-box-wrap"));
+	if (editor === undefined) return "";
+	let text = "";
+	editor.state.doc.forEach((paragraph, index) => {
+		if (index > 0) text += "\n";
+		paragraph.forEach((node) => {
+			if (node.isText) text += node.text ?? "";
+		});
+	});
+	return text;
+};
 
 function deferredUpload(): Deferred {
 	let ok!: (res: Response) => void;
@@ -203,7 +217,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		installed = [];
 	});
 
-	test("an upload still in flight when the conversation is created stays staged", async () => {
+	test("an upload still in flight blocks send until it finishes", async () => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(<App />);
@@ -236,8 +250,6 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		// The uploading chip is part of the composer before the send.
 		expect(container.textContent).toContain("pending.jpg");
 
-		// The send creates the conversation — the empty-state composer
-		// unmounts, ChatView mounts with the seed.
 		await act(async () => {
 			container
 				.querySelector("form")
@@ -245,10 +257,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
 				);
 		});
-		await act(async () => {
-			await new Promise((r) => setTimeout(r, 30));
-		});
-		expect(created).toBe(true);
+		expect(created).toBe(false);
 
 		await act(async () => {
 			uploads[1]?.settle.ok({
@@ -258,6 +267,15 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 				size: 1,
 			});
 		});
+		await act(async () => {
+			container
+				.querySelector("form")
+				?.dispatchEvent(
+					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			await new Promise((r) => setTimeout(r, 30));
+		});
+		expect(created).toBe(true);
 		expect(container.textContent).toContain("pending.jpg");
 	});
 });
@@ -1239,14 +1257,30 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	};
 	const typeInto = async (el: Element, value: string, proto: object) => {
 		await act(async () => {
-			// Focus + keyup too — React's text-input fallback needs it in
-			// this environment.
-			(el as HTMLElement).focus();
-			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
-			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
-			);
+			const editor = boxView(el);
+			if (editor !== undefined) {
+				editor.focus();
+				let hasChip = false;
+				editor.state.doc.descendants((node) => {
+					if (node.type.name === "goblinChip") hasChip = true;
+				});
+				editor.dispatch(
+					hasChip
+						? editor.state.tr.insertText(value)
+						: editor.state.tr.replaceWith(
+								1,
+								editor.state.doc.content.size - 1,
+								value === "" ? [] : editor.state.schema.text(value),
+							),
+				);
+			} else {
+				(el as HTMLElement).focus();
+				Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+				el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+				el.dispatchEvent(
+					new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+				);
+			}
 		});
 		await settle();
 	};
@@ -1844,7 +1878,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer");
 		const composer = container.querySelector("form.composer")!;
-		await typeInto(composer.querySelector("textarea")!, "hello", win.HTMLTextAreaElement.prototype);
+		await typeInto(composer.querySelector(".message-box")!, "hello", win.HTMLTextAreaElement.prototype);
 		await act(async () => {
 			composer.dispatchEvent(
 				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
@@ -1876,7 +1910,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer");
 		await typeInto(
-			container.querySelector("form.composer textarea")!,
+			container.querySelector("form.composer .message-box")!,
 			"hello",
 			win.HTMLTextAreaElement.prototype,
 		);
@@ -1901,8 +1935,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		await newChat();
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer again");
-		const restored = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
-		expect(restored.value).toBe("hello");
+		const restored = container.querySelector("form.composer .message-box")! as HTMLElement;
+		expect(composerText()).toBe("hello");
 		// Away and back — the one-shot restore must not replay (its
 		// delivery above was consumed), but the durable draft is a
 		// different mechanism: the fenced text survives navigation and
@@ -1911,7 +1945,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await openPage("Settings");
 		await newChat();
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer third");
-		expect((container.querySelector("form.composer textarea")! as HTMLTextAreaElement).value).toBe(
+		expect(composerText()).toBe(
 			"hello",
 		);
 	});
@@ -3002,14 +3036,30 @@ describe("app projects surface", () => {
 
 	const typeInto = async (el: Element, value: string, proto: object) => {
 		await act(async () => {
-			// Focus + keyup too — React's text-input fallback needs it in
-			// this environment.
-			(el as HTMLElement).focus();
-			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
-			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
-			);
+			const editor = boxView(el);
+			if (editor !== undefined) {
+				editor.focus();
+				let hasChip = false;
+				editor.state.doc.descendants((node) => {
+					if (node.type.name === "goblinChip") hasChip = true;
+				});
+				editor.dispatch(
+					hasChip
+						? editor.state.tr.insertText(value)
+						: editor.state.tr.replaceWith(
+								1,
+								editor.state.doc.content.size - 1,
+								value === "" ? [] : editor.state.schema.text(value),
+							),
+				);
+			} else {
+				(el as HTMLElement).focus();
+				Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+				el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+				el.dispatchEvent(
+					new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+				);
+			}
 		});
 		await settle();
 	};
@@ -3423,7 +3473,7 @@ describe("app projects surface", () => {
 		const composer = container.querySelector("form.composer");
 		expect(composer).not.toBeNull();
 		await typeInto(
-			composer!.querySelector("textarea")!,
+			composer!.querySelector(".message-box")!,
 			"hello project",
 			win.HTMLTextAreaElement.prototype,
 		);
@@ -3538,7 +3588,7 @@ describe("app projects surface", () => {
 		await click(
 			[...pick!.querySelectorAll("[role=option] button")].find((b) => b.textContent === "Shopping"),
 		);
-		expect(container.querySelector(".note-chip")!.textContent).toContain("Shopping");
+		expect(container.querySelector(".goblin-chip")!.textContent).toContain("Shopping");
 
 		const form = container.querySelector("form.composer")!;
 		await act(async () => {
@@ -3554,7 +3604,7 @@ describe("app projects surface", () => {
 		// server still expands the stored note authoritatively.
 		expect(msg.parts).toContainEqual({
 			type: "data-note",
-			data: { id: "n-shopping", title: "Shopping" },
+			data: { id: "n-shopping", title: "Shopping", inline: true },
 		});
 		// The live transcript labels the just-sent chip before any
 		// history reload — and the chip still navigates.
@@ -3577,10 +3627,8 @@ describe("app projects surface", () => {
 			),
 		);
 		await sendComposer("keep this compose");
-		expect((container.querySelector("form.composer textarea") as HTMLTextAreaElement).value).toBe(
-			"keep this compose",
-		);
-		expect(container.querySelectorAll("form.composer .note-chip")).toHaveLength(1);
+		expect(composerText()).toBe(" keep this compose");
+		expect(container.querySelectorAll("form.composer .goblin-chip")).toHaveLength(1);
 		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
 		failCreate = false;
 		await act(async () =>
@@ -3595,10 +3643,10 @@ describe("app projects surface", () => {
 		const chats = posts.filter((p) => p.url === "/api/app/chat");
 		expect(chats).toHaveLength(1);
 		expect((chats[0]!.body as { message: { parts: unknown[] } }).message.parts).toEqual([
-			{ type: "text", text: "keep this compose" },
-			{ type: "data-note", data: { id: "n-shopping", title: "Shopping" } },
+			{ type: "data-note", data: { id: "n-shopping", title: "Shopping", inline: true } },
+			{ type: "text", text: " keep this compose" },
 		]);
-		expect(container.querySelector("form.composer .note-chip")).toBeNull();
+		expect(container.querySelector("form.composer .goblin-chip")).toBeNull();
 	});
 
 	test("a fenced lazy create restores text without duplicating the still-staged note chip", async () => {
@@ -3621,17 +3669,15 @@ describe("app projects surface", () => {
 		await settle();
 		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
 		await settle();
-		expect((container.querySelector("form.composer textarea") as HTMLTextAreaElement).value).toBe(
-			"come back to this",
-		);
-		expect(container.querySelectorAll("form.composer .note-chip")).toHaveLength(1);
+		expect(composerText()).toBe(" come back to this");
+		expect(container.querySelectorAll("form.composer .goblin-chip")).toHaveLength(1);
 		expect(posts.filter((p) => p.url === "/api/app/chat")).toHaveLength(0);
 	});
 
 	test("the note picker's Enter and Escape stay picker-local — no send, draft kept", async () => {
 		notes = [noteRow("Shopping")];
 		await mount();
-		const draft = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
+		const draft = container.querySelector("form.composer .message-box")! as HTMLElement;
 		await typeInto(draft, "keep me", win.HTMLTextAreaElement.prototype);
 
 		await click(container.querySelector('button[aria-label="Attach a note"]'));
@@ -3650,7 +3696,7 @@ describe("app projects surface", () => {
 		});
 		expect(enter.defaultPrevented).toBe(true);
 		expect(posts.some((p) => p.url === "/api/app/chat")).toBe(false);
-		expect(draft.value).toBe("keep me");
+		expect(composerText()).toBe("keep me");
 		expect(container.querySelector(".composer-pick")).not.toBeNull();
 
 		// Escape must not touch the draft.
@@ -3664,7 +3710,7 @@ describe("app projects surface", () => {
 		});
 		expect(escape.defaultPrevented).toBe(true);
 		expect(container.querySelector(".composer-pick")).toBeNull();
-		expect(draft.value).toBe("keep me");
+		expect(composerText()).toBe("keep me");
 	});
 
 	test("the attachment note picker discloses truncation until a complete search returns", async () => {
@@ -4852,7 +4898,7 @@ describe("app projects surface", () => {
 	const sendComposer = async (text: string) => {
 		const form = container.querySelector("form.composer")!;
 		expect(form).not.toBeNull();
-		await typeInto(form.querySelector("textarea")!, text, win.HTMLTextAreaElement.prototype);
+		await typeInto(form.querySelector(".message-box")!, text, win.HTMLTextAreaElement.prototype);
 		await act(async () => {
 			form.dispatchEvent(
 				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
@@ -5602,16 +5648,10 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		// conversation, and its refresh — the newer sequence — settles
 		// with the row.
 		await act(async () => {
-			const ta = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
-			ta.focus();
-			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
-				ta,
-				"hi",
-			);
-			ta.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			ta.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
-			);
+			const editor = boxView(container.querySelector("form.composer .message-box"));
+			editor?.dispatch(editor.state.tr.insertText("hi", 1));
+		});
+		await act(async () => {
 			container
 				.querySelector("form.composer")!
 				.dispatchEvent(

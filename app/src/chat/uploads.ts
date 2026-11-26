@@ -121,7 +121,12 @@ export function resolveChip(chip: Chip): Chip {
 	const entry = entries.get(chip.uploadId);
 	if (entry === undefined) return chip.state === "failed" ? chip : { ...chip, state: "failed" };
 	if (entry.state === "uploading") return chip;
-	if (entry.state.settled === "ready") return { kind: "file", state: "ready", ref: entry.state.ref };
+	if (entry.state.settled === "ready")
+		return {
+			kind: "file",
+			state: "ready",
+			ref: { ...entry.state.ref, ...(entry.speech === true ? { speech: true } : {}) },
+		};
 	return chip.state === "failed" ? chip : { ...chip, state: "failed" };
 }
 

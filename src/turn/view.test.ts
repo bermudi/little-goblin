@@ -592,6 +592,52 @@ describe("inline chips in the model view", () => {
 		]);
 	});
 
+	test("two inline images keep first-mention numbering and materialized order (S2)", async () => {
+		const twoImages = {
+			id: "u-image-order",
+			role: "user",
+			parts: [
+				{ type: "text", text: "compare " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 3,
+						inline: true,
+					},
+				},
+				{ type: "text", text: " with " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/w/attachments/b.jpg",
+						mediaType: "image/jpeg",
+						filename: "b.jpg",
+						size: 4,
+						inline: true,
+					},
+				},
+			],
+		} as unknown as Message;
+		const view = await buildModelView(skillCtx, {
+			entries: entries([twoImages]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual([
+			"compare [image 1: a.png] with [image 2: b.jpg]",
+			"[image 1: a.png]",
+			"[attachment: /w/attachments/a.png — image/png, 3 bytes. Read it with read_file or bash tools.]",
+			"[image 2: b.jpg]",
+			"[attachment: /w/attachments/b.jpg — image/jpeg, 4 bytes. Read it with read_file or bash tools.]",
+		]);
+	});
+
 	test("a flagged message with only chips renders one fused text (S2)", async () => {
 		const chipsOnly = {
 			id: "u3",

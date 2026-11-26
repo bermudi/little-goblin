@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { UIMessage } from "ai";
+import { quoteBlock } from "./QuoteFab.tsx";
 
 const refSchema = z
 	.object({
@@ -64,7 +65,16 @@ export const skillChipSchema = z
 	})
 	.strict();
 
-export const chipSchema = z.union([fileChipSchema, noteChipSchema, skillChipSchema]);
+export const quoteChipSchema = z.object({
+	kind: z.literal("quote"),
+	id: z.string().min(1),
+	text: z.string().min(1),
+	speaker: z.enum(["user", "assistant"]).nullable(),
+	messageId: z.string().min(1).optional(),
+	comment: z.string().min(1).optional(),
+}).strict();
+
+export const chipSchema = z.union([fileChipSchema, noteChipSchema, skillChipSchema, quoteChipSchema]);
 
 const draftItemSchema = z.discriminatedUnion("type", [
 	z
@@ -92,6 +102,7 @@ export type FileChip = z.infer<typeof fileChipSchema>;
 export type FileRef = z.infer<typeof refSchema>;
 export type NoteChip = z.infer<typeof noteChipSchema>;
 export type SkillChip = z.infer<typeof skillChipSchema>;
+export type QuoteChip = z.infer<typeof quoteChipSchema>;
 export type Chip = z.infer<typeof chipSchema>;
 export type DraftItem = z.infer<typeof draftItemSchema>;
 export type Draft = z.infer<typeof draftSchema>;
@@ -117,6 +128,8 @@ export function chipKey(chip: Chip): string {
 			return `note:${chip.id}`;
 		case "skill":
 			return "name" in chip.ref ? `skill:${chip.ref.name}` : `skill:${chip.ref.url}\n${chip.ref.path}`;
+		case "quote":
+			return `quote:${chip.id}`;
 	}
 }
 
@@ -164,6 +177,9 @@ function sameChip(a: Chip, b: Chip): boolean {
 			: "url" in a.ref && "url" in b.ref
 				? a.ref.url === b.ref.url && a.ref.path === b.ref.path
 				: false;
+	if (a.kind === "quote" && b.kind === "quote")
+		return a.id === b.id && a.text === b.text && a.speaker === b.speaker &&
+			a.messageId === b.messageId && a.comment === b.comment;
 	return false;
 }
 
@@ -281,6 +297,7 @@ function chipToPart(chip: Chip): UIMessage["parts"][number] | null {
 			data: { id: chip.id, title: chip.title, inline: true },
 		} as UIMessage["parts"][number];
 	}
+	if (chip.kind === "quote") return null;
 	return {
 		type: "data-skill",
 		data: { ...chip.ref, inline: true },
@@ -288,7 +305,36 @@ function chipToPart(chip: Chip): UIMessage["parts"][number] | null {
 }
 
 export function draftToParts(draft: Draft): UIMessage["parts"] {
-	const normalized = normalizeDraft(draft);
+	const expanded: DraftItem[] = [];
+	let previousWasQuote = false;
+	for (const item of draft.items) {
+		if (item.type === "chip" && item.chip.kind === "quote") {
+			const previous = expanded[expanded.length - 1];
+			if (previous?.type === "text") {
+				if (previousWasQuote) previous.text = previous.text.slice(0, -2);
+				else previous.text = previous.text.replace(/\s+$/, "");
+			}
+			expanded.push({
+				type: "text",
+				text: `\n\n${quoteBlock(item.chip.text, item.chip.speaker ?? undefined)}${item.chip.comment ? `\n\n${item.chip.comment}` : ""}\n\n`,
+			});
+			previousWasQuote = true;
+			continue;
+		}
+		if (item.type === "text") {
+			const next = { ...item };
+			if (previousWasQuote) {
+				next.text = next.text.replace(/^\s+/, "");
+				if (next.text === "") continue;
+			}
+			expanded.push(next);
+		} else expanded.push(item);
+		previousWasQuote = false;
+	}
+	const normalized = normalizeDraft({
+		...draft,
+		items: expanded,
+	});
 	const sendable = normalized.items.filter(
 		(i) => i.type === "text" || (i.type === "chip" && chipToPart(i.chip) !== null),
 	);

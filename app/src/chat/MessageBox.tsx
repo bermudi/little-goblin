@@ -19,6 +19,7 @@ import { bytes } from "../opsShared.tsx";
 import { fetchAttachmentUrl } from "./attachmentUrl.ts";
 import { resolveChip, resolveDraft, subscribe, thumbFor, uploadFailure } from "./uploads.ts";
 import { chipKey, normalizeDraft, parseChip, sameDraft, type Chip, type Draft, type DraftItem, type FileChip } from "./draft.ts";
+import { quoteBlock } from "./QuoteFab.tsx";
 
 export interface MessageBoxHandle {
 	getDraft(): Draft;
@@ -35,6 +36,7 @@ export interface MessageBoxProps {
 	onEnter?: ((mode: "steer" | "followUp") => void) | undefined;
 	onFiles?: ((files: File[]) => void) | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
+	onGoToQuote?: ((messageId: string) => boolean) | undefined;
 	onUploadFailed?: ((message: string) => void) | undefined;
 	token: string | null;
 	ariaLabel?: string | undefined;
@@ -48,6 +50,11 @@ interface PopState {
 }
 
 function chipName(chip: Chip): string {
+	if (chip.kind === "quote") {
+		if (chip.comment) return chip.comment;
+		const text = chip.text.replace(/\s+/g, " ").trim();
+		return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+	}
 	if (chip.kind === "note") return chip.title === "" ? "note" : chip.title;
 	if (chip.kind === "skill") {
 		if ("name" in chip.ref) return chip.ref.name === "" ? "skill" : chip.ref.name;
@@ -60,7 +67,9 @@ function chipName(chip: Chip): string {
 
 function chipAria(chip: Chip): string {
 	const base =
-		chip.kind === "note"
+		chip.kind === "quote"
+			? `Quote${chip.speaker === "assistant" ? " from Goblin" : chip.speaker === "user" ? " from you" : ""}: ${chipName(chip)}`
+			: chip.kind === "note"
 			? `Note ${chip.title}`
 			: chip.kind === "skill"
 				? `Skill ${chipName(chip)}`
@@ -105,7 +114,7 @@ const boxSchema = new Schema({
 						"aria-label": chipAria(chip),
 						contenteditable: "false",
 					},
-					["span", { class: "goblin-chip-icon", "aria-hidden": "true" }, chip.kind === "skill" ? "⚡" : "•"],
+				["span", { class: "goblin-chip-icon", "aria-hidden": "true" }, chip.kind === "quote" ? "❝" : chip.kind === "skill" ? "⚡" : "•"],
 					["span", { class: "goblin-chip-name" }, chipName(chip)],
 				];
 			},
@@ -127,6 +136,7 @@ const boxSchema = new Schema({
 			],
 			leafText: (node: PMNode): string => {
 				const chip = node.attrs.chip as Chip;
+				if (chip.kind === "quote") return quoteBlock(chip.text, chip.speaker ?? undefined) + (chip.comment ? `\n\n${chip.comment}` : "");
 				return `[${inlineChipLabel(chip.kind, chipName(chip))}]`;
 			},
 		},
@@ -287,7 +297,7 @@ function sliceFromChippedHtml(html: string, text: string): Slice {
 }
 
 export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function MessageBox(
-	{ initial, onChange, onEnter, onFiles, onOpenNote, onUploadFailed, token, ariaLabel, placeholder },
+	{ initial, onChange, onEnter, onFiles, onOpenNote, onGoToQuote, onUploadFailed, token, ariaLabel, placeholder },
 	ref,
 ) {
 	const hostRef = useRef<HTMLDivElement | null>(null);
@@ -312,6 +322,7 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 	const onEnterRef = useRef(onEnter);
 	const onFilesRef = useRef(onFiles);
 	const onOpenNoteRef = useRef(onOpenNote);
+	const onGoToQuoteRef = useRef(onGoToQuote);
 	const onUploadFailedRef = useRef(onUploadFailed);
 	const reportedRef = useRef(new Set<string>());
 	const syncRef = useRef<() => void>(() => {});
@@ -322,6 +333,7 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 	onEnterRef.current = onEnter;
 	onFilesRef.current = onFiles;
 	onOpenNoteRef.current = onOpenNote;
+	onGoToQuoteRef.current = onGoToQuote;
 	onUploadFailedRef.current = onUploadFailed;
 
 	const setShelfBoth = (next: FileChip[]) => {
@@ -687,6 +699,28 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 									: undefined
 							}
 							onOpenNote={(id) => onOpenNoteRef.current?.(id)}
+							{...(onGoToQuoteRef.current === undefined
+								? {}
+								: {
+										onGoToQuote: (id: string) => {
+											const found = onGoToQuoteRef.current?.(id) ?? false;
+											if (found) setPop(null);
+											return found;
+										},
+									})}
+							onUpdateQuote={(comment) => {
+								const view = viewRef.current;
+								if (view === null) return;
+								const pos = findChipPos(view, pop.key);
+								if (pos === null) return;
+								const node = view.state.doc.nodeAt(pos);
+								if (node?.attrs.chip?.kind !== "quote") return;
+								const chip = { ...node.attrs.chip, ...(comment === "" ? {} : { comment }) };
+								if (comment === "") delete chip.comment;
+								view.dispatch(view.state.tr.setNodeMarkup(pos, null, { chip }));
+								syncRef.current();
+								setPop((current) => current === null ? null : { ...current, chip });
+							}}
 							onRemove={() => {
 								removeChipNodes(pop.key);
 								setPop(null);
@@ -794,6 +828,8 @@ export function ChipDetails({
 	token,
 	thumbUrl,
 	onOpenNote,
+	onGoToQuote,
+	onUpdateQuote,
 	onRemove,
 	readOnly = false,
 }: {
@@ -801,10 +837,15 @@ export function ChipDetails({
 	token: string | null;
 	thumbUrl?: string | undefined;
 	onOpenNote: (id: string) => void;
+	onGoToQuote?: (id: string) => boolean;
+	onUpdateQuote?: (comment: string) => void;
 	onRemove: () => void;
 	readOnly?: boolean | undefined;
 }) {
 	const [openError, setOpenError] = useState<string | null>(null);
+	const [editingNote, setEditingNote] = useState(false);
+	const [noteDraft, setNoteDraft] = useState(chip.kind === "quote" ? chip.comment ?? "" : "");
+	const [quoteError, setQuoteError] = useState<string | null>(null);
 	const [href, setHref] = useState<string | null>(thumbUrl ?? null);
 	const navigated = useRef(false);
 	const readyFile = chip.kind === "file" && chip.state === "ready";
@@ -875,6 +916,35 @@ export function ChipDetails({
 				<p className="chip-details-meta">
 					{"name" in chip.ref ? "Skill from your catalog" : `Skill from ${skillHost(chip)}`}
 				</p>
+			)}
+			{chip.kind === "quote" && (
+				<>
+					<p className="chip-details-quote">{chip.text}</p>
+					<p className="chip-details-meta">
+						{chip.speaker === "assistant" ? "From Goblin's reply" : chip.speaker === "user" ? "From your message" : "Source unknown"}
+					</p>
+					{chip.messageId !== undefined && onGoToQuote !== undefined && (
+						<button type="button" onClick={() => {
+							if (!onGoToQuote(chip.messageId as string)) setQuoteError("That message is not on screen.");
+						}}>Go to message</button>
+					)}
+					{!readOnly && !editingNote && (
+						<button type="button" onClick={() => setEditingNote(true)}>
+							{chip.comment ? "Edit note" : "Add note"}
+						</button>
+					)}
+					{!readOnly && editingNote && (
+						<div>
+							<textarea autoFocus aria-label="Quote note" value={noteDraft} onInput={(event) => setNoteDraft(event.currentTarget.value)} onKeyDown={(event) => {
+								if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditingNote(false); setNoteDraft(chip.comment ?? ""); }
+								if (event.key === "Enter") event.stopPropagation();
+							}} />
+							<button type="button" onClick={() => { onUpdateQuote?.(noteDraft.trim()); setEditingNote(false); }}>Save</button>
+							<button type="button" onClick={() => { setEditingNote(false); setNoteDraft(chip.comment ?? ""); }}>Cancel</button>
+						</div>
+					)}
+					{quoteError !== null && <p role="status">{quoteError}</p>}
+				</>
 			)}
 			{openImage && href !== null && (
 				<a

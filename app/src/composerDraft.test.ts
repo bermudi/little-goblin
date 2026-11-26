@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
-import { emptyDraft, textDraft, type Draft } from "./chat/draft.ts";
+import { emptyDraft, textDraft, unsentRemainder, type Draft } from "./chat/draft.ts";
 
 const win = new Window();
 const storage = win.localStorage;
@@ -57,6 +57,27 @@ describe("composerDraft", () => {
 		expect(loadComposerDraft("app/c-1")).toEqual(chipDraft);
 		expect(loadComposerDraft("app/c-2")).toBeNull();
 		expect(storage.getItem(KEY)).toContain("\"version\":2");
+	});
+
+	test("quote chips round-trip all fields and an unchanged sent quote has no remainder", () => {
+		const draft: Draft = {
+			items: [{
+				type: "chip",
+				chip: {
+					kind: "quote",
+					id: "quote-1",
+					text: "first\nsecond",
+					speaker: "assistant",
+					messageId: "message-9",
+					comment: "keep this in view",
+				},
+			}],
+			shelf: [],
+		};
+		saveComposerDraft("app/c-1", draft);
+		const loaded = loadComposerDraft("app/c-1");
+		expect(loaded).toEqual(draft);
+		expect(unsentRemainder(loaded as Draft, draft)).toEqual(emptyDraft());
 	});
 
 	test("a version 1 text record loads as that text", () => {

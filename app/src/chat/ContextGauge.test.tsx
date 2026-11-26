@@ -944,6 +944,118 @@ describe("ContextGauge", () => {
 	});
 	});
 
+	test("New conversation is offered only when hosted, calls once, and reports refusal", async () => {
+		globalThis.fetch = mockFetch((input) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith("/context")) return Promise.resolve(json(view({ turns: 1 })));
+			return Promise.reject(new Error(`unexpected fetch ${url}`));
+		});
+		root = createRoot(container);
+		let calls = 0;
+		const onRoll = async () => {
+			calls++;
+			return "a turn is still running in the latest conversation";
+		};
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		act(() => (container.querySelector(".ctx-btn") as HTMLButtonElement).click());
+		expect([...container.querySelectorAll(".ctx-act")].map((button) => button.textContent)).toEqual([
+			"Compact now",
+		]);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} onRoll={onRoll} />);
+		});
+		expect([...container.querySelectorAll(".ctx-act")].map((button) => button.textContent)).toEqual([
+			"Compact now",
+			"New conversation",
+		]);
+		await act(async () => {
+			(container.querySelectorAll(".ctx-act")[1] as HTMLButtonElement).click();
+			await Promise.resolve();
+		});
+		expect(calls).toBe(1);
+		expect(container.querySelector(".ctx-outcome")?.textContent).toBe(
+			"couldn't start a new conversation: a turn is still running in the latest conversation",
+		);
+		expect(container.querySelectorAll(".ctx-act")[1]?.textContent).toBe("New conversation");
+	});
+
+	test("New conversation is off while a turn runs and on an empty conversation", async () => {
+		globalThis.fetch = mockFetch((input) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			return Promise.resolve(json(view({ turns: 1 })));
+		});
+		root = createRoot(container);
+		const onRoll = async () => null;
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} onRoll={onRoll} />);
+		});
+		act(() => (container.querySelector(".ctx-btn") as HTMLButtonElement).click());
+		const rollButton = () => container.querySelectorAll(".ctx-act")[1] as HTMLButtonElement;
+		expect(rollButton().disabled).toBe(false);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy onRoll={onRoll} />);
+		});
+		expect(rollButton().disabled).toBe(true);
+		await act(async () => {
+			root?.render(
+				<ContextGauge token={null} conversationId="app/aaa" busy={false} onRoll={onRoll} rollDisabled />,
+			);
+		});
+		expect(rollButton().disabled).toBe(true);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} onRoll={onRoll} />);
+		});
+		expect((container.querySelectorAll(".ctx-act")[1] as HTMLButtonElement).disabled).toBe(false);
+	});
+
+	test("New conversation reports a thrown host error", async () => {
+		globalThis.fetch = mockFetch((input) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			return Promise.resolve(json(view({ turns: 1 })));
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} onRoll={() => Promise.reject(new Error("boom"))} />);
+		});
+		act(() => (container.querySelector(".ctx-btn") as HTMLButtonElement).click());
+		await act(async () => {
+			(container.querySelectorAll(".ctx-act")[1] as HTMLButtonElement).click();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(container.querySelector(".ctx-outcome")?.textContent).toBe(
+			"couldn't start a new conversation: boom",
+		);
+	});
+
+	test("while the host rolls, both actions are off", async () => {
+		globalThis.fetch = mockFetch((input) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			return Promise.resolve(json(view({ turns: 1 })));
+		});
+		root = createRoot(container);
+		let release!: (value: null) => void;
+		const onRoll = () => new Promise<null>((resolve) => { release = resolve; });
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} onRoll={onRoll} />);
+		});
+		act(() => (container.querySelector(".ctx-btn") as HTMLButtonElement).click());
+		await act(async () => {
+			(container.querySelectorAll(".ctx-act")[1] as HTMLButtonElement).click();
+		});
+		expect(container.querySelectorAll(".ctx-act")[1]?.textContent).toBe("Starting…");
+		expect([...container.querySelectorAll(".ctx-act")].every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+		await act(async () => {
+			release(null);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(container.querySelectorAll(".ctx-act")[1]?.textContent).toBe("New conversation");
+		expect(container.querySelector(".ctx-outcome")).toBeNull();
+	});
+
 	// A fetch stand-in that satisfies DOM's typeof fetch (preconnect
 	// included), so the casts stay honest.
 	function mockFetch(impl: (input: RequestInfo | URL) => Promise<Response>): typeof fetch {

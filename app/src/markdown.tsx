@@ -1,7 +1,7 @@
 // Transcript markdown — comfortable reading, not CommonMark
 // conformance: anything unrecognized stays literal text.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
 	Check,
 	Code,
@@ -104,44 +104,77 @@ function fileDestination(dest: string): string | null {
 export function inline(
 	text: string,
 	onFileLink?: ((path: string) => void) | undefined,
+	chips?: readonly ReactNode[] | undefined,
+	chipLabels?: readonly string[] | undefined,
 ): ReactNode[] {
 	const out: ReactNode[] = [];
+	const tokenNodes = (value: string): ReactNode[] => {
+		if (chips === undefined) {
+			return [value];
+		}
+		const nodes: ReactNode[] = [];
+		const token = /\uE000(\d+)\uE001/g;
+		let from = 0;
+		for (const match of value.matchAll(token)) {
+			const index = Number(match[1]);
+			if (match.index > from) nodes.push(value.slice(from, match.index));
+			nodes.push(
+				Number.isSafeInteger(index) && index >= 0 && index < chips.length ? (
+					<Fragment key={`chip-${match.index}`}>{chips[index] ?? null}</Fragment>
+				) : null,
+			);
+			from = match.index + match[0].length;
+		}
+		if (from < value.length) nodes.push(value.slice(from));
+		return nodes;
+	};
+	const addText = (value: string) => out.push(...tokenNodes(value));
 	let last = 0;
 	let i = 0;
 	for (const m of text.matchAll(INLINE)) {
-		if (m.index > last) out.push(text.slice(last, m.index));
+		if (m.index > last) addText(text.slice(last, m.index));
 		if (m[1] !== undefined)
 			out.push(
 				<a key={i} href={m[2]} target="_blank" rel="noreferrer">
-					{m[1]}
+					{tokenNodes(m[1])}
 				</a>,
 			);
-		else if (m[3] !== undefined) out.push(<code key={i}>{m[3]}</code>);
-		else if (m[4] !== undefined) out.push(<strong key={i}>{m[4]}</strong>);
-		else if (m[5] !== undefined) out.push(<em key={i}>{m[5]}</em>);
-		else if (m[6] !== undefined) out.push(<em key={i}>{m[6]}</em>);
-		else if (m[7] !== undefined) out.push(<s key={i}>{m[7]}</s>);
+		else if (m[3] !== undefined) out.push(<code key={i}>{labelsIn(m[3], chipLabels)}</code>);
+		else if (m[4] !== undefined) out.push(<strong key={i}>{tokenNodes(m[4])}</strong>);
+		else if (m[5] !== undefined) out.push(<em key={i}>{tokenNodes(m[5])}</em>);
+		else if (m[6] !== undefined) out.push(<em key={i}>{tokenNodes(m[6])}</em>);
+		else if (m[7] !== undefined) out.push(<s key={i}>{tokenNodes(m[7])}</s>);
 		else if (m[8] !== undefined)
 			out.push(
 				<a key={i} href={m[8]} target="_blank" rel="noreferrer">
-					{m[8]}
+					{tokenNodes(m[8])}
 				</a>,
 			);
 		else if (m[9] !== undefined && onFileLink !== undefined) {
 			const dest = fileDestination(m[10]!);
-			if (dest === null) out.push(m[0]);
+			if (dest === null) addText(m[0]);
 			else
 				out.push(
 					<button key={i} type="button" className="md-filelink" onClick={() => onFileLink(dest)}>
-						{m[9]}
+						{tokenNodes(m[9])}
 					</button>,
 				);
-		} else out.push(m[0]);
+		} else addText(m[0]);
 		last = m.index + m[0].length;
 		i++;
 	}
-	if (last < text.length) out.push(text.slice(last));
+	if (last < text.length) addText(text.slice(last));
 	return out;
+}
+
+function labelsIn(text: string, labels?: readonly string[]): string {
+	if (labels === undefined) return text;
+	return text.replace(/\uE000(\d+)\uE001/g, (_token, raw: string) => {
+		const index = Number(raw);
+		return Number.isSafeInteger(index) && index >= 0 && index < labels.length
+			? (labels[index] ?? "")
+			: "";
+	});
 }
 
 // clipFences opt-in: a fence longer than CLIP_MIN clips to CLIP_LINES
@@ -309,10 +342,14 @@ function MdTable({
 	head,
 	rows,
 	onFileLink,
+	chips,
+	chipLabels,
 }: {
 	head: string[] | null;
 	rows: string[][];
 	onFileLink?: ((path: string) => void) | undefined;
+	chips?: readonly ReactNode[] | undefined;
+	chipLabels?: readonly string[] | undefined;
 }) {
 	const short = shortColumns(head, rows);
 	const cls = (c: number) => (short[c] ? "md-nw" : undefined);
@@ -324,7 +361,7 @@ function MdTable({
 						<tr>
 							{head.map((h, c) => (
 								<th key={c} className={cls(c)}>
-									{inline(h, onFileLink)}
+									{inline(h, onFileLink, chips, chipLabels)}
 								</th>
 							))}
 						</tr>
@@ -335,7 +372,7 @@ function MdTable({
 						<tr key={ri}>
 							{r.map((cell, ci) => (
 								<td key={ci} className={cls(ci)}>
-									{inline(cell, onFileLink)}
+									{inline(cell, onFileLink, chips, chipLabels)}
 								</td>
 							))}
 						</tr>
@@ -658,6 +695,8 @@ export function Markdown({
 	streaming,
 	clipFences,
 	onFileLink,
+	chips,
+	chipLabels,
 }: {
 	text: string;
 	// Host opt-in: long fences clip to a preview with a show-all tail.
@@ -666,6 +705,8 @@ export function Markdown({
 	// the host to open the file (the document viewer); unset they stay
 	// literal syntax.
 	onFileLink?: ((path: string) => void) | undefined;
+	chips?: readonly ReactNode[] | undefined;
+	chipLabels?: readonly string[] | undefined;
 } & MarkdownNoteContext) {
 	const blocks: ReactNode[] = [];
 	const lines = text.split("\n");
@@ -676,7 +717,7 @@ export function Markdown({
 		if (para.length === 0) return;
 		const body = para.join("\n").trim();
 		para = [];
-		if (body !== "") blocks.push(<p key={key++}>{inline(body, onFileLink)}</p>);
+		if (body !== "") blocks.push(<p key={key++}>{inline(body, onFileLink, chips, chipLabels)}</p>);
 	};
 
 	while (i < lines.length) {
@@ -699,7 +740,7 @@ export function Markdown({
 			}
 			const closed = i < lines.length;
 			if (closed) i++; // consume the closing fence
-			const body = codeLines.join("\n");
+			const body = labelsIn(codeLines.join("\n"), chipLabels);
 			// A `note` fence (the prompt's append convention) renders as a
 			// card — content plus the append affordance, never code. An
 			// unclosed fence mid-stream is a prefix: the card shows but
@@ -745,7 +786,7 @@ export function Markdown({
 			const Tag = `h${level}` as "h2" | "h3" | "h4" | "h5" | "h6";
 			blocks.push(
 				<Tag key={key++} className="md-h">
-					{inline(heading[2]!, onFileLink)}
+					{inline(heading[2]!, onFileLink, chips, chipLabels)}
 				</Tag>,
 			);
 			i++;
@@ -834,7 +875,9 @@ export function Markdown({
 				if (t === null)
 					blocks.push(<CodeBlock key={key++} lang="" code={run.join("\n")} clip={clipFences} />);
 				else
-					blocks.push(<MdTable key={key++} head={t.head} rows={t.rows} onFileLink={onFileLink} />);
+					blocks.push(
+						<MdTable key={key++} head={t.head} rows={t.rows} onFileLink={onFileLink} chips={chips} chipLabels={chipLabels} />,
+					);
 				i = j;
 				continue;
 			}
@@ -849,7 +892,9 @@ export function Markdown({
 				rows.push(splitRow(lines[i]!));
 				i++;
 			}
-			blocks.push(<MdTable key={key++} head={header} rows={rows} onFileLink={onFileLink} />);
+			blocks.push(
+				<MdTable key={key++} head={header} rows={rows} onFileLink={onFileLink} chips={chips} chipLabels={chipLabels} />,
+			);
 			continue;
 		}
 
@@ -868,7 +913,9 @@ export function Markdown({
 				});
 				i++;
 			}
-			blocks.push(<ListTree key={key++} items={items} onFileLink={onFileLink} />);
+			blocks.push(
+				<ListTree key={key++} items={items} onFileLink={onFileLink} chips={chips} chipLabels={chipLabels} />,
+			);
 			continue;
 		}
 
@@ -887,9 +934,13 @@ export function Markdown({
 function ListTree({
 	items,
 	onFileLink,
+	chips,
+	chipLabels,
 }: {
 	items: ListItem[];
 	onFileLink?: ((path: string) => void) | undefined;
+	chips?: readonly ReactNode[] | undefined;
+	chipLabels?: readonly string[] | undefined;
 }) {
 	interface Node {
 		item: ListItem;
@@ -916,7 +967,7 @@ function ListTree({
 						{n.item.checked ? "☑" : "☐"}
 					</span>
 				)}
-				{inline(n.item.text, onFileLink)}
+				{inline(n.item.text, onFileLink, chips, chipLabels)}
 				{n.kids.length > 0 && render(n.kids)}
 			</li>
 		));

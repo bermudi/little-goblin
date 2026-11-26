@@ -48,6 +48,8 @@ sqlite3 "$DB" "update mail_outbox set status = 'discarded'"                     
 
 A subagent: send `[agent find a hotel]` in `alpha`, then open the child and send `[slow] more` there. From any other chat, `alpha` is "working" with a closed "1 subagent" fold.
 
+Questions: send `[ask When should the nudge fire?|9:00|11:00]` in an ordinary chat. The question card appears outside Worked and the chat gets the amber `!` with `Asks: When should the nudge fire?`. Tap a choice to send the `[ask]` answer and close it; reopen another question and choose **No answer needed** to close without a message. Finally send `[ask-close <id>]` in the newest roll to close a question asked in an older roll.
+
 An older roll: make a second roll ([rolling.md](rolling.md)), open an ordinary chat, then set the first roll's `read_seq` to 0. The Rolling chat row gets the dot and opens that roll.
 
 Project chat: give a chat a `project_id` and `read_seq = 0`. Its row in Active ends with "in <project>", also when its last line is long.

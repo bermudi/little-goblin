@@ -28,18 +28,19 @@ test("descriptors reproduce the former name lists", () => {
 	expect(names((p) => p.guestSandbox)).toEqual(["search", "web_search"]);
 	expect(names((p) => !p.guestChannel)).toEqual(
 		[
-			"desktop",
-			"program",
-			"mail",
+			"ask",
 			"delegate",
-			"memory_search",
-			"memory_reflect",
+			"desktop",
+			"generate_image",
 			"history_search",
+			"mail",
+			"memory_reflect",
+			"memory_search",
 			"note",
 			"post",
-			"speak",
+			"program",
 			"send_file",
-			"generate_image",
+			"speak",
 		].sort(),
 	);
 	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "search", "web_search"]);

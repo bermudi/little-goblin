@@ -22,6 +22,7 @@ const KIND_LABEL = {
 	"memory-recall": "memory",
 	"skill-proposal": "skill",
 	"delegation-input": "delegation",
+	ask: "question",
 } as const satisfies Record<AppAttentionItem["kind"], string>;
 
 const DECISION_KINDS: ReadonlySet<AppAttentionItem["kind"]> = new Set([

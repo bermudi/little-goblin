@@ -1,34 +1,31 @@
-// The composer's attachment lane: file picking (picker, paste, drop)
-// and hold-to-record voice notes. Staging writes into the lifted list
-// App owns — entries outlive any one composer instance.
-
-import {
-	useCallback,
-	useEffect,
-	useRef,
-	useState,
-	type Dispatch,
-	type SetStateAction,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { uploadAttachment } from "../api.ts";
-import { stagedKey, type StagedUpload } from "./staged.ts";
+import { startUpload } from "./uploads.ts";
+import type { Chip } from "./draft.ts";
 
 export function useAttachments({
 	token,
 	busy,
 	onSend,
-	setStaged,
+	insertChips,
+	dropTarget,
 }: {
 	token: string | null;
 	busy: boolean;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
-	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
+	insertChips: (chips: Chip[]) => void;
+	dropTarget?: ((target: EventTarget | null) => boolean) | undefined;
 }) {
 	const fileInput = useRef<HTMLInputElement>(null);
 	// The mic's failure mode is silent by browser default (a denied
 	// permission throws) — surface it like every other composer failure.
 	const [micError, setMicError] = useState<"denied" | "unavailable" | null>(null);
+	const [uploadErrors, setUploadErrors] = useState<string[]>([]);
+	const noteUploadError = useCallback((message: string) => {
+		setUploadErrors((prior) => (prior.includes(message) ? prior : [...prior, message]));
+	}, []);
+	const clearUploadErrors = useCallback(() => setUploadErrors([]), []);
 
 	// Voice notes: hold-to-record is MediaRecorder + upload; the server
 	// transcribes speech:true attachments at intake. Release sends —
@@ -66,6 +63,8 @@ export function useAttachments({
 	busyRef.current = busy;
 	const onSendRef = useRef(onSend);
 	onSendRef.current = onSend;
+	const insertChipsRef = useRef(insertChips);
+	insertChipsRef.current = insertChips;
 	const micSupported =
 		typeof navigator !== "undefined" &&
 		navigator.mediaDevices !== undefined &&
@@ -100,36 +99,22 @@ export function useAttachments({
 				void (async () => {
 					try {
 						const { ref } = await uploadAttachment(token, file);
-						// Release-sends, but not mid-turn — a second send while a
-						// turn streams is the fork send()'s busy gate exists to
-						// prevent. Stage the ref instead: the chip shows it, the
-						// next send carries it with speech intact.
 						if (busyRef.current || recDead.current) {
-							setStaged((p) => [...p, { key: stagedKey(), ref, speech: true }]);
+							insertChipsRef.current([{ kind: "file", state: "ready", ref: { ...ref, speech: true } }]);
 						} else {
-							// A declined send (failed lazy create) re-stages the
-							// note — the upload already landed server-side.
 							void Promise.resolve(
 								onSendRef.current([{ type: "data-attachment", data: { ...ref, speech: true } }]),
 							).then((accepted) => {
 								if (accepted === false)
-									// Cancellation can restore this ref before onSend settles.
-									setStaged((p) =>
-										p.some((e) => e.ref.path === ref.path)
-											? p
-											: [...p, { key: stagedKey(), ref, speech: true }],
-									);
+									insertChipsRef.current([
+										{ kind: "file", state: "ready", ref: { ...ref, speech: true } },
+									]);
 							});
 						}
-					} catch {
-						setStaged((p) => [
-							...p,
-							{
-								key: stagedKey(),
-								ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-								failed: true,
-							},
-						]);
+					} catch (e) {
+						noteUploadError(
+							`The voice note failed to upload: ${e instanceof Error ? e.message : String(e)}`,
+						);
 					}
 				})();
 			};
@@ -154,32 +139,11 @@ export function useAttachments({
 	};
 
 	const pickFile = useCallback(
-		async (file: File) => {
-			const key = stagedKey();
-			const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
-			setStaged((p) => [
-				...p,
-				{
-					key,
-					ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-					uploading: true,
-					...(thumb !== undefined ? { thumb } : {}),
-				},
-			]);
-			try {
-				const { ref } = await uploadAttachment(token, file);
-				setStaged((p) =>
-					p.map((e) =>
-						e.key === key ? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) } : e,
-					),
-				);
-			} catch {
-				setStaged((p) =>
-					p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
-				);
-			}
+		(file: File) => {
+			setUploadErrors([]);
+			insertChipsRef.current([startUpload(token, file)]);
 		},
-		[token, setStaged],
+		[token],
 	);
 
 	// Drop target: the whole window. Unhandled file drops trigger the
@@ -192,9 +156,19 @@ export function useAttachments({
 			if (isFile(e)) e.preventDefault();
 		};
 		const drop = (e: DragEvent) => {
-			if (!isFile(e)) return;
+			const node = e.target instanceof Node ? e.target : null;
+			const element = node instanceof Element ? node : node?.parentElement;
+			if (
+				!isFile(e) ||
+				(dropTarget === undefined &&
+					element !== null &&
+					element !== undefined &&
+					element.closest("[data-message-edit]") !== null) ||
+				(dropTarget !== undefined && !dropTarget(e.target))
+			)
+				return;
 			e.preventDefault();
-			for (const f of Array.from(e.dataTransfer?.files ?? [])) void pickFile(f);
+			for (const f of Array.from(e.dataTransfer?.files ?? [])) pickFile(f);
 		};
 		window.addEventListener("dragover", over);
 		window.addEventListener("drop", drop);
@@ -202,11 +176,14 @@ export function useAttachments({
 			window.removeEventListener("dragover", over);
 			window.removeEventListener("drop", drop);
 		};
-	}, [pickFile]);
+	}, [dropTarget, pickFile]);
 
 	return {
 		fileInput,
 		micError,
+		uploadErrors,
+		noteUploadError,
+		clearUploadErrors,
 		micSupported,
 		recording,
 		recSec,

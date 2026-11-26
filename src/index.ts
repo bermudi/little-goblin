@@ -40,6 +40,7 @@ import { makeT3 } from "./t3.ts";
 import { makeGitHub } from "./github.ts";
 import { makeWatches } from "./watches.ts";
 import { makePosts } from "./posts.ts";
+import { makeAsks } from "./asks.ts";
 import { makeWatchObserver } from "./watch-observer.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
@@ -158,6 +159,7 @@ async function boot() {
 	const store = openStore(paths.db());
 	const watches = makeWatches(store.db, wallClock);
 	const posts = makePosts(store.db, wallClock);
+	const asks = makeAsks(store.db, wallClock);
 	// Browser push is an app-owned device registry. Its VAPID pair is an
 	// auth record generated on first enable, not operator config.
 	const appPush = openAppPush(store.db, {
@@ -563,6 +565,7 @@ async function boot() {
 		t3,
 		watches,
 		posts,
+		asks,
 		github,
 		mail: mailApproval,
 		programApproval,
@@ -667,6 +670,7 @@ async function boot() {
 		projects,
 		notes,
 		posts,
+		asks,
 		auth,
 		configRef,
 		gate: () => system1Gate ?? undefined,

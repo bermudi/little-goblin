@@ -1,4 +1,5 @@
 import type { Message } from "./message.ts";
+import { hasInlineParts, isInlinePart, proseOf } from "./inline-parts.ts";
 import { paths } from "./home-layout.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -37,7 +38,8 @@ export type RollDecidedBy =
 	| "fire" // a scheduled program landing in the DM
 	| "first" // no current conversation exists yet
 	| "check" // the follow-up check judged the burst
-	| "fallback"; // the check couldn't run — join current, answer the message
+	| "fallback" // the check couldn't run — join current, answer the message
+	| "manual";
 
 export interface RollResult {
 	conv: Conversation;
@@ -118,6 +120,27 @@ function laneRoll(
 	return { conv, rolled: true, decidedBy, ...(probability !== undefined ? { probability } : {}) };
 }
 
+export type ManualRoll =
+	| { kind: "rolled"; conv: Conversation }
+	| { kind: "busy"; conv: Conversation }
+	| { kind: "empty"; conv: Conversation };
+
+export function rollLaneNow(
+	deps: Pick<RollDeps, "store" | "runtime">,
+	lane: RollLane,
+): ManualRoll {
+	const current = lane.current();
+	if (current === null) return { kind: "rolled", conv: laneRoll(lane, null, "manual", null).conv };
+	if (deps.runtime.busy(current.id)) return { kind: "busy", conv: current };
+	if (
+		deps.store.lastEntry(current.id, "user") === null &&
+		deps.store.lastEntry(current.id, "assistant") === null
+	) {
+		return { kind: "empty", conv: current };
+	}
+	return { kind: "rolled", conv: laneRoll(lane, current, "manual", null).conv };
+}
+
 function laneContinued(
 	lane: RollLane,
 	conv: Conversation,
@@ -142,6 +165,33 @@ function elapsedMs(deps: RollDeps, conv: Conversation): number {
 
 // Head-cut — the state carries the shape of the exchange, not a transcript.
 export function projectRollText(parts: readonly Message["parts"][number][]): string {
+	const refOf = (part: Message["parts"][number]) => {
+		const data = (part as { data?: unknown }).data;
+		return typeof data === "object" && data !== null
+			? (data as { transcript?: unknown; mediaType?: unknown; filename?: unknown })
+			: null;
+	};
+	if (hasInlineParts(parts)) {
+		const out = [proseOf(parts)];
+		for (const part of parts) {
+			if (part.type !== "data-attachment") continue;
+			const ref = refOf(part);
+			if (isInlinePart(part)) {
+				if (typeof ref?.transcript === "string" && ref.transcript !== "") {
+					out.push(`[voice: ${ref.transcript}]`);
+				}
+				continue;
+			}
+			if (typeof ref?.transcript === "string" && ref.transcript !== "") {
+				out.push(`[voice: ${ref.transcript}]`);
+			} else if (typeof ref?.mediaType === "string" && ref.mediaType.startsWith("image/")) {
+				out.push("[photo]");
+			} else {
+				out.push(`[file: ${typeof ref?.filename === "string" ? ref.filename : "unnamed"}]`);
+			}
+		}
+		return out.join("\n").slice(0, HEAD_CHARS);
+	}
 	const out: string[] = [];
 	for (const part of parts) {
 		if (part.type === "text") {
@@ -149,11 +199,7 @@ export function projectRollText(parts: readonly Message["parts"][number][]): str
 			continue;
 		}
 		if (part.type !== "data-attachment") continue;
-		const data = (part as { data?: unknown }).data;
-		const ref =
-			typeof data === "object" && data !== null
-				? (data as { transcript?: unknown; mediaType?: unknown; filename?: unknown })
-				: null;
+		const ref = refOf(part);
 		if (typeof ref?.transcript === "string" && ref.transcript !== "") {
 			out.push(`[voice: ${ref.transcript}]`);
 		} else if (typeof ref?.mediaType === "string" && ref.mediaType.startsWith("image/")) {

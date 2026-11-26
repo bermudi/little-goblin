@@ -8,12 +8,14 @@
 // lands nowhere.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { act, useState } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
 import { Composer } from "./Composer.tsx";
-import type { StagedNote, StagedSkill, StagedUpload } from "./staged.ts";
+import { boxView } from "./MessageBox.tsx";
+import { draftText } from "./draft.ts";
+import { saveComposerDraft } from "../composerDraft.ts";
 
 // The server's side of the contract: each upload lands on its own
 // UUID-stemmed path (persistAttachment), so distinct uploads NEVER share
@@ -171,47 +173,39 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		installed = [];
 	});
 
-	// The staged list is owned above the composer (#118); for direct
-	// mounts this harness is that owner.
 	function ComposerHarness({
 		onSend,
 		draftRestore = null,
 		draftScope = "test",
 		busy = false,
 		onStop,
+		quote,
 	}: {
 		onSend: (
 			parts: UIMessage["parts"],
 			whenBusy?: "steer" | "followUp",
 			initialModelSettings?: { model: string; thinking: string },
 		) => void | boolean | Promise<boolean>;
-		draftRestore?: { parts: UIMessage["parts"] } | null;
+		draftRestore?: { messages: UIMessage["parts"][] } | null;
 		draftScope?: string;
 		busy?: boolean;
 		onStop?: () => void;
+		quote?: { text: string; speaker: null; messageId?: string | null; n: number } | null;
 	}) {
-		const [staged, setStaged] = useState<StagedUpload[]>([]);
-		const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
-		const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
 		return (
 			<Composer
 				token={null}
 				draftScope={draftScope}
 				busy={busy}
+				{...(quote === undefined ? {} : { quote })}
 				{...(onStop === undefined ? {} : { onStop })}
-				staged={staged}
-				setStaged={setStaged}
-				stagedNotes={stagedNotes}
-				setStagedNotes={setStagedNotes}
-				stagedSkills={stagedSkills}
-				setStagedSkills={setStagedSkills}
 				onSend={onSend}
 				draftRestore={draftRestore}
 			/>
 		);
 	}
 
-	const mount = async (draftRestore: { parts: UIMessage["parts"] } | null = null) => {
+	const mount = async (draftRestore: { messages: UIMessage["parts"][] } | null = null) => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(
@@ -250,7 +244,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	};
 
 	test("draft model selection is staged for this chat without writing defaults", async () => {
-		await mount({ parts: [{ type: "text", text: "hello" }] });
+		await mount({ messages: [[{ type: "text", text: "hello" }]] });
 		const model = container.querySelector<HTMLButtonElement>('button[aria-label="Model for this chat"]');
 		expect(model).not.toBeNull();
 		await act(async () => model!.click());
@@ -276,33 +270,43 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	});
 
 	test("untouched draft model settings do not override the defaults at creation", async () => {
-		await mount({ parts: [{ type: "text", text: "hello" }] });
+		await mount({ messages: [[{ type: "text", text: "hello" }]] });
 		await submit();
 		expect(sent).toHaveLength(1);
 		expect(sentModelSettings).toBeUndefined();
 	});
 
-	// Type through the real textarea — native value setter + input +
-	// keyup, React's text-input fallback included (same as ChatView's
-	// steering test).
 	const type = async (text: string) => {
-		const ta = container.querySelector("form.composer textarea");
-		expect(ta).not.toBeNull();
+		const editor = boxView(container.querySelector(".message-box-wrap")!);
+		expect(editor).toBeDefined();
 		await act(async () => {
-			const el = ta as HTMLElement;
-			el.focus();
-			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
-				el,
-				text,
-			);
-			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			const v = editor!;
+			v.focus();
+			v.dispatch(
+				v.state.tr.replaceWith(
+					1,
+					v.state.doc.content.size - 1,
+					text === "" ? [] : v.state.schema.text(text),
+				),
 			);
 		});
 	};
-	const textareaValue = () =>
-		container.querySelector<HTMLTextAreaElement>("form.composer textarea")?.value ?? null;
+	const textareaValue = () => {
+		const editor = boxView(container.querySelector(".message-box-wrap")!);
+		return editor === undefined ? null : draftText({
+			items: (() => {
+				const items: Array<{ type: "text"; text: string }> = [];
+				editor.state.doc.forEach((paragraph, index) => {
+					if (index > 0) items.push({ type: "text", text: "\n" });
+					paragraph.forEach((node) => {
+						if (node.isText) items.push({ type: "text", text: node.text ?? "" });
+					});
+				});
+				return items;
+			})(),
+			shelf: [],
+		});
+	};
 
 	const click = async (element: Element | null) => {
 		expect(element).not.toBeNull();
@@ -428,15 +432,30 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await stage(["image"]);
 		expect(container.querySelector(".stop-btn")).toBeNull();
 		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(true);
+		await act(async () => {
+			container.querySelector(".message-box")?.dispatchEvent(
+				new win.KeyboardEvent("keydown", {
+					key: "Enter",
+					bubbles: true,
+					cancelable: true,
+				}) as unknown as Event,
+			);
+		});
+		expect(container.querySelector('[role="status"]')?.textContent).toContain(
+			"Upload still running. Send when it finishes.",
+		);
 		await act(async () => uploads[0]?.settle.ok(refFor("attachments/test")));
+		expect(container.querySelector('[role="status"]')).toBeNull();
 		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
 		await submit();
-		expect(sent).toEqual([[{ type: "data-attachment", data: refFor("attachments/test") }]]);
+		expect(sent).toEqual([[
+			{ type: "data-attachment", data: { ...refFor("attachments/test"), inline: true } },
+		]]);
 		expect(container.querySelector(".stop-btn")).not.toBeNull();
 	});
 
 	test.each([false, true])(
-		"a declined voice send stages one resendable chip (restored while pending: %s)",
+		"a declined voice send inserts one resendable chip (restored while pending: %s)",
 		async (restoreWhilePending) => {
 			class FakeMediaRecorder {
 				static isTypeSupported() {
@@ -492,16 +511,16 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				// Lazy-create cancellation restores the scoped draft before its
 				// cleanup request finishes and onSend resolves false.
 				await act(async () => {
-					root?.render(<ComposerHarness onSend={onSend} draftRestore={{ parts: sent[0]! }} />);
+					root?.render(<ComposerHarness onSend={onSend} draftRestore={{ messages: [sent[0]!] }} />);
 				});
-				expect(container.querySelectorAll(".attachment").length).toBe(1);
+				expect(container.querySelectorAll(".goblin-chip").length).toBe(1);
 			}
 			await act(async () => decline(false));
-			expect(container.querySelectorAll(".attachment").length).toBe(1);
+			expect(container.querySelectorAll(".goblin-chip").length).toBe(1);
 			await submit();
 			expect(sent.length).toBe(2);
-			expect(sent[1]).toEqual([{ type: "data-attachment", data: { ...ref, speech: true } }]);
-			expect(container.querySelectorAll(".attachment").length).toBe(0);
+			expect(sent[1]).toEqual([{ type: "data-attachment", data: { ...ref, speech: true, inline: true } }]);
+			expect(container.querySelectorAll(".goblin-chip").length).toBe(0);
 		},
 	);
 
@@ -645,11 +664,20 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await act(async () => {
 			uploads[1]?.settle.ok(refFor("attachments/two"));
 		});
-		await submit();
+		await act(async () => {
+			container.querySelector(".message-box")?.dispatchEvent(
+				new win.KeyboardEvent("keydown", {
+					key: "Enter",
+					bubbles: true,
+					cancelable: true,
+				}) as unknown as Event,
+			);
+		});
 		expect(sent.length).toBe(1);
 		expect(sent[0]).toEqual([
-			{ type: "data-attachment", data: refFor("attachments/one") },
-			{ type: "data-attachment", data: refFor("attachments/two") },
+			{ type: "data-attachment", data: { ...refFor("attachments/one"), inline: true } },
+			{ type: "text", text: " " },
+			{ type: "data-attachment", data: { ...refFor("attachments/two"), inline: true } },
 		]);
 	});
 
@@ -666,12 +694,13 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await submit();
 		expect(sent.length).toBe(1);
 		expect(sent[0]).toEqual([
-			{ type: "data-attachment", data: refFor("attachments/one") },
-			{ type: "data-attachment", data: refFor("attachments/two") },
+			{ type: "data-attachment", data: { ...refFor("attachments/one"), inline: true } },
+			{ type: "text", text: " " },
+			{ type: "data-attachment", data: { ...refFor("attachments/two"), inline: true } },
 		]);
 	});
 
-	test("a failed same-name upload marks only its own entry; the other sends", async () => {
+	test("a failed same-name upload leaves its chip out, says why, and its sibling still sends", async () => {
 		await mount();
 		await stage(["ONE", "TWO"]);
 		expect(uploads.length).toBe(2);
@@ -681,12 +710,20 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await act(async () => {
 			uploads[1]?.settle.ok(refFor("attachments/two"));
 		});
+		expect(container.querySelectorAll(".goblin-chip").length).toBe(1);
+		expect(container.querySelectorAll(".box-shelf-thumb").length).toBe(1);
+		const alerts = [...container.querySelectorAll('[role="alert"]')].map((el) => el.textContent ?? "");
+		expect(alerts.filter((text) => text.startsWith("image.jpg failed to upload"))).toHaveLength(1);
 		await submit();
-		expect(sent.length).toBe(1);
-		expect(sent[0]).toEqual([{ type: "data-attachment", data: refFor("attachments/two") }]);
-		// The failed row stays staged as its own chip — the operator can
-		// remove it; it must not have swallowed the sibling.
-		expect(container.querySelectorAll(".attachment.failed").length).toBe(1);
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toEqual([
+			{ type: "data-attachment", data: { ...refFor("attachments/two"), inline: true } },
+		]);
+		expect(
+			[...container.querySelectorAll('[role="alert"]')].some((el) =>
+				(el.textContent ?? "").startsWith("image.jpg failed to upload"),
+			),
+		).toBe(false);
 	});
 
 	test("typing persists the draft per scope; a fresh mount restores it", async () => {
@@ -727,6 +764,140 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			);
 		});
 		expect(textareaValue()).toBe("");
+	});
+
+	test("a draft chip survives a composer remount and stays in its saved scope", async () => {
+		await mount();
+		const editor = boxView(container.querySelector(".message-box-wrap")!);
+		expect(editor).toBeDefined();
+		await act(async () => {
+			const chip = editor!.state.schema.nodes.goblinChip!.create({
+				chip: { kind: "note", id: "n-1", title: "Budget" },
+			});
+			editor!.dispatch(editor!.state.tr.insert(1, chip));
+		});
+		await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain('"title":"Budget"');
+		await act(async () => root?.unmount());
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		expect(container.querySelector('.goblin-chip[aria-label="Note Budget"]')).not.toBeNull();
+		await act(async () => root?.unmount());
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					draftScope="other"
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		expect(container.querySelector(".goblin-chip")).toBeNull();
+	});
+
+	test("an upload that settles after the composer leaves is ready when its scope returns", async () => {
+		await mount();
+		await stage(["IMAGE"]);
+		expect(uploads).toHaveLength(1);
+		await act(async () => {
+			root?.unmount();
+			root = null;
+		});
+		uploads[0]?.settle.ok(refFor("attachments/late"));
+		await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		const chip = container.querySelector<HTMLElement>(".goblin-chip");
+		expect(chip).not.toBeNull();
+		expect(JSON.parse(chip!.dataset.goblinChip ?? "{}")).toMatchObject({
+			kind: "file",
+			state: "ready",
+			ref: { path: "attachments/late" },
+		});
+		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
+	});
+
+	test("send preserves an image and note at their exact places in the prose", async () => {
+		await mount();
+		const editor = boxView(container.querySelector(".message-box-wrap")!);
+		expect(editor).toBeDefined();
+		await act(async () => {
+			let tr = editor!.state.tr.insertText("look at ", 1);
+			const image = editor!.state.schema.nodes.goblinChip!.create({
+				chip: {
+					kind: "file",
+					state: "ready",
+					ref: {
+						path: "attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 3,
+					},
+				},
+			});
+			tr = tr.insert(9, image).insertText(" and ", 10);
+			const note = editor!.state.schema.nodes.goblinChip!.create({
+				chip: { kind: "note", id: "n-1", title: "Budget" },
+			});
+			tr = tr.insert(15, note).insertText(" please", 16);
+			editor!.dispatch(tr);
+		});
+		await submit();
+		expect(sent[0]).toEqual([
+			{ type: "text", text: "look at " },
+			{
+				type: "data-attachment",
+				data: {
+					path: "attachments/a.png",
+					mediaType: "image/png",
+					filename: "a.png",
+					size: 3,
+					inline: true,
+				},
+			},
+			{ type: "text", text: " and " },
+			{ type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+			{ type: "text", text: " please" },
+		]);
+	});
+
+	test("inserting a quote keeps chips already in the draft", async () => {
+		saveComposerDraft("test", {
+			items: [{ type: "chip", chip: { kind: "note", id: "n-1", title: "Budget" } }],
+			shelf: [],
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					quote={{ text: "quoted words", speaker: null, n: 1 }}
+					onSend={() => {}}
+				/>,
+			);
+		});
+		await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+		expect(container.querySelector('.goblin-chip[aria-label="Note Budget"]')).not.toBeNull();
+		expect(container.querySelector('.goblin-chip[aria-label="Quote: quoted words"]')).not.toBeNull();
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain('"kind":"quote"');
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).not.toContain("> quoted words");
 	});
 
 	test("an accepted send clears the stored draft; a declined one keeps it", async () => {

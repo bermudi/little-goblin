@@ -352,6 +352,56 @@ describe("attachment transcripts in retention text", () => {
 		expect(doc?.content).toContain("water the fern before friday");
 	});
 
+	test("an inline-flagged message reads as its prose, transcripts after (S5)", () => {
+		const inline: Message = {
+			id: "u11",
+			role: "user",
+			parts: [
+				{ type: "text", text: "look at " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/workspace/attachments/a.png",
+						mediaType: "image/png",
+						filename: "a.png",
+						size: 9,
+						inline: true,
+					},
+				},
+				{ type: "text", text: " and " },
+				{
+					type: "data-note",
+					data: { id: "note-1", title: "Budget", inline: true },
+				},
+				{ type: "text", text: " please" },
+			],
+		} as unknown as Message;
+		expect(messageText(inline)).toBe("look at [a.png] and [Budget] please");
+
+		const voice: Message = {
+			id: "u12",
+			role: "user",
+			parts: [
+				{ type: "text", text: "hear " },
+				{
+					type: "data-attachment",
+					data: {
+						path: "/workspace/attachments/note.ogg",
+						mediaType: "audio/ogg",
+						filename: "note.ogg",
+						size: 3,
+						speech: true,
+						transcript: "spoken words",
+						inline: true,
+					},
+				},
+			],
+		} as unknown as Message;
+		expect(messageText(voice)).toBe(
+			'hear [note.ogg]\n[attachment: /workspace/attachments/note.ogg — transcript: "spoken words"]',
+		);
+	});
+
 	test("transcript-less attachments stay out — no text, no speech", () => {
 		const photo: Message = {
 			id: "u10",

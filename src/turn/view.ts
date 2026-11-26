@@ -9,15 +9,14 @@ import {
 	materializeAttachments,
 } from "../agent/attachments.ts";
 import { log } from "../log.ts";
+import { inlineMentions, skillMarkerText, tempSkillMarkerText } from "../inline-parts.ts";
 import { messageText, type RecallContext, withMemoryBlocks } from "../memory/mod.ts";
 import { CONTEXT_PART, contextPartDataSchema, contextText } from "../message-context.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
 import {
 	SKILL_PART,
 	isTempSkillRef,
-	skillMarkerText,
 	skillPartDataSchema,
-	tempSkillMarkerText,
 	type SkillRef,
 } from "../skill-part.ts";
 
@@ -194,16 +193,16 @@ export async function buildModelView(
 		options.summarySeq,
 	);
 	if (options.partial !== null) view.push(options.partial);
+	const owned = new Set(options.ownedSeqs ?? []);
+	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
+	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
 	const prepared = await materializeAttachments(
-		view,
+		view.map((m) => inlineMentions(m)),
 		ctx.modalities,
 		INLINE_ITEM_MAX_BYTES,
 		ctx.carries,
 	);
 	options.assertAuthority();
-	const owned = new Set(options.ownedSeqs ?? []);
-	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
-	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
 	const messages: PromptMessage[] = [];
 	const partialId = options.partial?.id ?? null;
 	let foreignReasoningMessages = 0;
@@ -339,7 +338,7 @@ export async function convertSteeredMessage(
 	sdkTools: ToolSet = ctx.sdkTools ?? toToolSet(ctx.tools),
 ): Promise<PromptMessage[]> {
 	const materialized = await materializeAttachments(
-		[message],
+		[inlineMentions(message)],
 		ctx.modalities,
 		INLINE_ITEM_MAX_BYTES,
 		ctx.carries,

@@ -12,6 +12,11 @@ export interface AppConversationList {
 	rolling: { chain: AppConversationListItem[] };
 }
 
+export interface AppRollResponse {
+	conversationId: string;
+	rolled: boolean;
+}
+
 export interface AppConversationListItem extends AppConversationSummary {
 	busy: boolean;
 }
@@ -574,7 +579,8 @@ export interface AppAttentionItem {
 		| "memory-outage"
 		| "memory-recall"
 		| "skill-proposal"
-		| "delegation-input";
+		| "delegation-input"
+		| "ask";
 	title: string;
 	detail: string;
 	createdAt: string | null;

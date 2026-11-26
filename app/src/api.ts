@@ -16,6 +16,7 @@ import type {
 	AppActivityResponse,
 	AppPostsResponse,
 	AppCompactResponse,
+	AppRollResponse,
 	AppSuggestTitleResponse,
 	AppConfigPatch,
 	AppConfigPatchResponse,
@@ -301,6 +302,18 @@ export function decideMailApproval(
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ action }),
+	});
+}
+
+export function closeAsk(
+	token: string | null,
+	id: number,
+	by: "tap" | "dismiss",
+): Promise<{ ok: true; closed: boolean }> {
+	return request(token, `/api/app/asks/${id}/close`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ by }),
 	});
 }
 
@@ -690,6 +703,10 @@ export function compactConversation(
 			? { headers: { "content-type": "application/json" }, body: JSON.stringify({ focus }) }
 			: {}),
 	});
+}
+
+export function rollRollingChat(token: string | null): Promise<AppRollResponse> {
+	return request(token, "/api/app/rolling/roll", { method: "POST" });
 }
 
 // Suggest only — the caller decides whether to save via patchConversation.

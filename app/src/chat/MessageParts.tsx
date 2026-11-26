@@ -1,6 +1,7 @@
 // Transcript rendering: one message's parts → transcript elements.
 
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { Popover, PopoverContent } from "@ui-sdk/react/popover";
 import {
   getToolName,
   isToolUIPart,
@@ -26,7 +27,12 @@ import {
 import { liveThoughtLine } from "./liveThoughtLine.ts";
 import { LiveWork } from "./LiveWork.tsx";
 import { UiPart } from "../ui/UiPart.tsx";
+import { AskCard } from "./AskCard.tsx";
 import type { AttachmentRef } from "../../../src/agent/attachments.ts";
+import { hasInlineParts, inlineChipLabel, isInlinePart } from "../../../src/inline-parts.ts";
+import { fetchAttachmentUrl } from "./attachmentUrl.ts";
+import { ChipDetails } from "./MessageBox.tsx";
+import { parseChip, type Chip, type QuoteChip } from "./draft.ts";
 import {
   type Artifact,
   artifactOf,
@@ -34,12 +40,18 @@ import {
 } from "../../../src/agent/tools/artifact-schema.ts";
 
 type ActivityPart = ToolUIPart | DynamicToolUIPart | ReasoningUIPart;
+type SentChip = Exclude<Chip, QuoteChip>;
+function isOpenAskPart(part: UIMessage["parts"][number]): boolean {
+  if (!isToolUIPart(part) || getToolName(part) !== "ask") return false;
+  const input = part.input as { action?: unknown } | undefined;
+  return input?.action === "open";
+}
 // A part that folds into an Activity run: a tool call (ui parts render
 // inline as the interface and never join) or thought text with
 // something in it.
 function isActivityPart(p: UIMessage["parts"][number]): boolean {
   return (
-    (isToolUIPart(p) && getToolName(p) !== "ui") ||
+    (isToolUIPart(p) && getToolName(p) !== "ui" && !isOpenAskPart(p)) ||
     (p.type === "reasoning" && p.text.trim() !== "")
   );
 }
@@ -169,33 +181,6 @@ export function FileIcon() {
   );
 }
 
-// Read-back for a stored attachment — bearer header, blob, object URL;
-// the server confines reads to workspace/attachments/.
-// Raster and audio formats keep their type for inline rendering (<img>,
-// <audio>, and their top-level documents run no script). Everything else —
-// SVG carries script, and blob: URLs execute in this origin — is re-wrapped
-// as octet-stream so opening it downloads, never executes.
-const INLINE_IMAGE =
-  /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
-const INLINE_AUDIO = /^audio\//;
-async function fetchAttachmentUrl(
-  token: string | null,
-  path: string,
-): Promise<string> {
-  const name = path.split("/").pop() ?? "";
-  const res = await fetch(`/api/app/attachments/${encodeURIComponent(name)}`, {
-    headers: token === null ? {} : { authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`http ${res.status}`);
-  const bytes = await res.blob();
-  if (INLINE_IMAGE.test(bytes.type) || INLINE_AUDIO.test(bytes.type)) {
-    return URL.createObjectURL(bytes);
-  }
-  return URL.createObjectURL(
-    new Blob([bytes], { type: "application/octet-stream" }),
-  );
-}
-
 // Transcript bytes are wire data — the persisted blob gets its shape
 // checked at this render boundary, never cast. The check is
 // structural (the server's zod schema imports node modules the
@@ -217,6 +202,7 @@ export function parseAttachmentRef(data: unknown): AttachmentRef | null {
   }
   return {
     path: o.path,
+    ...(typeof o.sha256 === "string" ? { sha256: o.sha256 } : {}),
     mediaType: o.mediaType,
     filename: o.filename,
     size: o.size,
@@ -224,7 +210,7 @@ export function parseAttachmentRef(data: unknown): AttachmentRef | null {
     ...(typeof o.transcriptionError === "string"
       ? { transcriptionError: o.transcriptionError }
       : {}),
-    ...(o.speech === true ? { speech: true } : {}),
+    ...(typeof o.speech === "boolean" ? { speech: o.speech } : {}),
   };
 }
 
@@ -449,6 +435,159 @@ function NoteChip({
   );
 }
 
+function inlineChip(part: UIMessage["parts"][number]): SentChip | null {
+  const value = (part as { data?: unknown }).data;
+  if (part.type === "data-attachment") {
+    const ref = parseAttachmentRef(value);
+    const chip = ref === null ? null : parseChip({ kind: "file", state: "ready", ref });
+    return chip?.kind === "file" ? chip : null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const data = value as Record<string, unknown>;
+  if (part.type === "data-note" && typeof data.id === "string") {
+    const chip = parseChip({
+      kind: "note",
+      id: data.id,
+      title: typeof data.title === "string" ? data.title : data.id,
+    });
+    return chip?.kind === "note" ? chip : null;
+  }
+  if (part.type === "data-skill") {
+    if (typeof data.name === "string") {
+      const chip = parseChip({ kind: "skill", ref: { name: data.name } });
+      return chip?.kind === "skill" ? chip : null;
+    }
+    if (typeof data.url === "string" && typeof data.path === "string") {
+      const chip = parseChip({ kind: "skill", ref: { url: data.url, path: data.path } });
+      return chip?.kind === "skill" ? chip : null;
+    }
+  }
+  return null;
+}
+
+function sentChipName(chip: SentChip): string {
+  if (chip.kind === "note") return chip.title;
+  if (chip.kind === "skill") {
+    if ("name" in chip.ref) return chip.ref.name;
+    return chip.ref.path.split("/").filter(Boolean).at(-2) ?? "skill";
+  }
+  return chip.state === "ready" ? chip.ref.filename : chip.filename;
+}
+
+function sentChipAria(chip: SentChip): string {
+  if (chip.kind === "note") return `Note ${chip.title}`;
+  if (chip.kind === "skill") return `Skill ${sentChipName(chip)}`;
+  return `File ${sentChipName(chip)}`;
+}
+
+function SentChip({
+  chip,
+  token,
+  onOpenNote,
+}: {
+  chip: SentChip;
+  token: string | null;
+  onOpenNote?: ((id: string) => void) | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLSpanElement>(null);
+  const activate = () => setOpen(true);
+  return (
+    <>
+      <span
+        ref={anchor}
+        className="goblin-chip"
+        role="button"
+        tabIndex={0}
+        aria-label={sentChipAria(chip)}
+        data-goblin-chip={JSON.stringify(chip)}
+        onClick={activate}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          activate();
+        }}
+      >
+        <span className="goblin-chip-icon" aria-hidden="true">
+          {chip.kind === "skill" ? "⚡" : "•"}
+        </span>
+        <span className="goblin-chip-name">{sentChipName(chip)}</span>
+      </span>
+      {open && anchor.current !== null && (
+        <Popover
+          open
+          onOpenChange={(next) => setOpen(next)}
+        >
+          <PopoverContent
+            anchor={anchor.current}
+            align="start"
+            sideOffset={6}
+            className="chip-pop"
+            finalFocus={() => anchor.current}
+          >
+            <ChipDetails
+              chip={chip}
+              token={token}
+              onOpenNote={(id) => onOpenNote?.(id)}
+              onRemove={() => {}}
+              readOnly
+            />
+          </PopoverContent>
+        </Popover>
+      )}
+    </>
+  );
+}
+
+function chipLabel(chip: SentChip): string {
+  return `[${inlineChipLabel(chip.kind, sentChipName(chip))}]`;
+}
+
+function inlineMarker(index: number): string {
+  return `\uE000${index}\uE001`;
+}
+
+function selectionText(node: Node): string {
+  if (node.nodeType === 3) return node.nodeValue ?? "";
+  if (node.nodeType !== 1) return Array.from(node.childNodes, selectionText).join("");
+  const element = node as Element;
+  if (element.matches("[data-goblin-chip]")) {
+    try {
+      const chip = parseChip(JSON.parse(element.getAttribute("data-goblin-chip") ?? ""));
+      return chip === null || chip.kind === "quote" ? "" : chipLabel(chip);
+    } catch {
+      return "";
+    }
+  }
+  if (element.tagName === "BR") return "\n";
+  const inner = Array.from(element.childNodes, selectionText).join("");
+  return /^(?:DIV|LI|P|BLOCKQUOTE|H[1-6])$/.test(element.tagName) && inner !== ""
+    ? `${inner}\n`
+    : inner;
+}
+
+export function copyInlineSelection(event: ClipboardEvent<HTMLElement>): void {
+  const root = event.currentTarget;
+  const selection = root.ownerDocument.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  if (range === null || range.collapsed || event.clipboardData === null) return;
+  let holdsChip = false;
+  for (const element of root.querySelectorAll("[data-goblin-chip]")) {
+    if (range.intersectsNode(element)) {
+      holdsChip = true;
+      break;
+    }
+  }
+  if (!holdsChip) return;
+  const fragment = range.cloneContents();
+  const text = selectionText(fragment).replace(/\n$/, "");
+  const container = root.ownerDocument.createElement("div");
+  container.append(fragment.cloneNode(true));
+  event.clipboardData.setData("text/plain", text);
+  event.clipboardData.setData("text/html", container.innerHTML);
+  event.preventDefault();
+}
+
 export function hasUiPart(parts: UIMessage["parts"]): boolean {
   return parts.some((p) => isToolUIPart(p) && getToolName(p) === "ui");
 }
@@ -491,6 +630,90 @@ function MessagePartsView({
   messages?: readonly UIMessage[] | undefined;
   sentMedia?: ReadonlyMap<string, readonly UIMessage[]> | undefined;
 }) {
+  if (hasInlineParts(parts)) {
+    const prose: string[] = [];
+    const chipNodes: ReactNode[] = [];
+    const chipLabels: string[] = [];
+    const imageMedia: UIMessage["parts"] = [];
+    const audioMedia: UIMessage["parts"] = [];
+    const mediaPaths = new Set<string>();
+    const remaining: UIMessage["parts"] = [];
+    for (const part of parts) {
+      if (part.type === "text") {
+        prose.push(part.text);
+        continue;
+      }
+      if (!isInlinePart(part)) {
+        remaining.push(part);
+        continue;
+      }
+      const chip = inlineChip(part);
+      if (chip === null) {
+        remaining.push(part);
+        continue;
+      }
+      const index = chipNodes.length;
+      const label = chipLabel(chip);
+      chipLabels.push(label);
+      chipNodes.push(
+        <SentChip
+          key={`${index}:${part.type}`}
+          chip={chip}
+          token={token ?? null}
+          onOpenNote={onOpenNote}
+        />,
+      );
+      prose.push(inlineMarker(index));
+      if (part.type === "data-attachment") {
+        const ref = chip.kind === "file" && chip.state === "ready" ? chip.ref : null;
+        if (
+          ref !== null &&
+          (ref.mediaType.startsWith("image/") || ref.mediaType.startsWith("audio/")) &&
+          !mediaPaths.has(ref.path)
+        ) {
+          mediaPaths.add(ref.path);
+          (ref.mediaType.startsWith("image/") ? imageMedia : audioMedia).push(part);
+        }
+      }
+    }
+    return (
+      <>
+        <Markdown
+          text={prose.join("")}
+          chips={chipNodes}
+          chipLabels={chipLabels}
+          token={token}
+          noteProjectId={noteProjectId}
+          onOpenNote={onOpenNote}
+          streaming={streaming}
+          clipFences={clipFences}
+        />
+        {[...imageMedia, ...audioMedia].map((part, index) => (
+          <AttachmentChip
+            key={`inline-media:${index}`}
+            data={(part as { data?: unknown }).data}
+            token={token ?? null}
+          />
+        ))}
+        {remaining.length > 0 && (
+          <MessagePartsView
+            parts={remaining}
+            token={token ?? null}
+            noteProjectId={noteProjectId}
+            onAction={onAction}
+            onOpenNote={onOpenNote}
+            clipFences={clipFences}
+            busy={busy}
+            streaming={streaming}
+            working={working}
+            ended={ended}
+            messages={messages}
+            sentMedia={sentMedia}
+          />
+        )}
+      </>
+    );
+  }
   const out: ReactNode[] = [];
   let liveDrawn = false;
   for (let i = 0; i < parts.length; i++) {
@@ -509,6 +732,18 @@ function MessagePartsView({
           onOpenNote={onOpenNote}
           messages={messages}
           streaming={streaming}
+        />,
+      );
+      continue;
+    }
+    if (isOpenAskPart(p) && isToolUIPart(p)) {
+      out.push(
+        <AskCard
+          key={p.toolCallId === "" ? i : p.toolCallId}
+          part={p}
+          onAction={onAction}
+          busy={busy === true}
+          token={token ?? null}
         />,
       );
       continue;
@@ -539,7 +774,7 @@ function MessagePartsView({
       while (j < parts.length) {
         const q = parts[j]!;
         if (isToolUIPart(q)) {
-          if (getToolName(q) === "ui") break;
+          if (getToolName(q) === "ui" || isOpenAskPart(q)) break;
           run.push(q);
         } else if (q.type === "reasoning") {
           // Empty reasoning parts exist in history — providers that

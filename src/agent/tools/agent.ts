@@ -23,6 +23,7 @@ export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 	"speak",
 	"send_file",
 	"ui",
+	"ask",
 	"mail",
 	"artifact",
 	"memory_search",

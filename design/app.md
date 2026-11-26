@@ -20,7 +20,8 @@ longer than "where you asked", the thinking is the bug.
 **Protocol.** Keep a shared storage and stream shape so a parallel
 translation layer cannot drift. Stop means stop server-side work, not just
 disconnect the browser. Manual compaction belongs in the gauge rather than
-a chat command grammar (2026-10-16).
+a chat command grammar (2026-10-16), and so does starting a new
+conversation by hand (2026-11-26, #957): the app has no `/new` command.
 
 **The context gauge measures occupancy, not cost.** Counting all billed
 steps once showed 223k tokens in a 37k window. Only the last call measures
@@ -205,8 +206,44 @@ beforeunload prompts exist precisely because those edits have no such
 persistence. Storage always holds the latest local draft, so a restore
 can never land over newer text; the one-shot restore rulings stand
 unchanged beside it. An unreadable record stays in place behind an
-error line until the first write replaces it. Text only — staged
-chips are uploads, not prose.
+error line until the first write replaces it. The draft holds its chips
+too (below).
+
+**Chips sit in the text (ruling 2026-11-25, #942; replaces "text only" of
+2026-10-20).** A file, a note or a skill added to a message is a chip at the
+cursor, cut, pasted and deleted like one character. A quote is also a
+chip (ruling 2026-11-26, #954); on send it becomes the #182 text
+(annotation line, `>` block, then its note), so the stored message, the
+model, memory and Telegram see exactly what they saw before. The sent
+bubble shows a normal quote.
+
+- *The box* is one small ProseMirror editor: paragraphs, text and one chip
+  node, no marks. ProseMirror is already in the client for notes. A
+  textarea cannot hold a chip; markers inside a textarea were rejected
+  because an edit can break a marker in half.
+- *The draft owns its chips.* They stay with their own chat and survive a
+  reload. Rejected: the old lists shared by every composer, where a file
+  staged in one chat went out with the next one.
+- *A failed upload is an error, not a chip* (operator, 2026-11-26). Its
+  chip and thumbnail go, and an error line above the box names the file
+  and the reason. An upload cut off by a reload fails the same way: the
+  bytes are gone, so the line says to attach the file again. A send waits
+  for running uploads.
+- *Images keep a thumbnail above the text.* Deleting an image's chip leaves
+  the thumbnail, and the image still goes with the message. Removing the
+  thumbnail asks first if the text still mentions the image.
+- *Stored shape:* the same part as before with `inline: true` in its data,
+  at its place between text parts. A part without the flag means what it
+  always meant, so old messages keep their bytes for the model and their
+  look in the transcript.
+- *Model view:* only for a flagged message, one text part with a label at
+  each chip's place (`[image 1: a.png]`), then each item once, files behind
+  the same label (`src/inline-parts.ts`). Part order alone was rejected:
+  the Claude prompt adapter sends images ahead of the text.
+- *Plain readings* (title, search, memory, copy) show a chip as its name in
+  brackets.
+- *A message given back* (Stop, Not sent, a cancelled send) puts its chips
+  back in their places.
 
 **The thread view's composer steals focus when it can (ruling
 2026-11-07, operator ask).** It claims keyboard focus at the moments
@@ -223,8 +260,10 @@ the latter matched by its `.composer-pick` class since its state lives
 in the gauge — while any dialog is open, and on phone widths,
 where focus() pops the on-screen keyboard over a thread the operator
 just opened to read. The conversation-less composers keep their
-explicit paths (the "New conversation" focusSignal) — stealing is a
-thread-view property, opt-in per mount.
+explicit paths (the focusSignal of the sidebar's "New chat"), and the
+Rolling chat's "New conversation" takes that path once for the roll it
+lands in (below) — stealing is a thread-view property, opt-in per
+mount.
 
 **A quote records its speaker (ruling 2026-11-08, #182).** The Quote
 button knows which message bubble the selection lives in, so the quote
@@ -239,7 +278,12 @@ statement (design/memory.md → quoted-speech ruling; the annotation
 above a surviving blockquote is the only layout that measured zero
 misattributions). A selection with no single bubble — spanning
 messages, in transcript chrome, a system notice — quotes unattributed,
-as before: the button records the speaker, it never guesses one.
+as before: the button records the speaker, it never guesses one. The
+Quote button appears below the selection, after the mouse is released,
+never over the selected text. It may cover a few words on the line
+below until it is clicked or dismissed, as T3 Code's does (operator,
+2026-11-26, #954; rejected: the right margin, a fixed spot above the
+message box).
 
 **Transcript rendering (ruling 2026-10-21, operator ask: tables blow out
 the column, the column wastes the desktop, machinery tags read as
@@ -414,6 +458,24 @@ stays where its trigger is, so a later roll cannot run it twice. A source
 moved to a project is no longer a roll, so its later wakes stay with it
 (#938). Mail and program approval notices stay beside their card, because
 they start no turn. Ordinary app chats keep their own wakes.
+
+**Starting a new conversation by hand (2026-11-26, #957).** `/new` and
+`/back` are Telegram commands; the app's send path parses none. The Rolling
+chat's context gauge offers "New conversation" beside "Compact now" on the
+popover's last row, and only on that page. It starts a new roll at once,
+after the latest roll, also while an earlier roll is open; the quiet gap and
+the new-subject check do not apply. It is off while a turn runs in the
+conversation on screen or in the latest roll; the server refuses it while a
+turn runs in the latest roll. It starts nothing when the latest roll is still
+empty: the operator then lands in that empty roll. Either way the landing
+puts focus in the composer, on every width: it takes the explicit focus path
+above once — opening that roll again later does not take it a second time —
+and the phone-width guard does not cover that path. The draft of the
+conversation that was on screen moves to the roll the operator lands in, and
+it never replaces a draft already there; a draft in another roll stays there.
+The earlier roll keeps its history, its pending input and its settings. The new
+roll takes the app's model settings, like any roll, and wakes follow the rule
+above.
 
 **Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, with its own loop icon and no
@@ -715,8 +777,9 @@ fresh turn in the same chat, and the same assistant lane answers. A tail the
 edit will drop is confirmed client-side first — `branch` is the
 non-destructive path, so the prompt names it. Nothing keeps the old tail:
 that is the point, and it is why the write is one transaction. Rendering is
-the bubble's own inline textarea; non-text parts (attachments, note and
-skill chips) ride into the replacement, only text is rewritten.
+the message box inside the bubble, so chips can be moved, added and removed
+(ruling 2026-11-25, #942; replaces "only text is rewritten"). Parts that the
+box cannot show ride into the replacement unchanged.
 
 Retry is an edit with the same text: the same rewind, so the reply it
 replaces is deleted, not kept above the new one (operator, 2026-11-21).
@@ -890,6 +953,45 @@ Not chosen: the same marks with rows that stay in place; today's layout with
 correct marks. Accepted limits: a finished subagent of an unpinned project
 chat has no row, because its parent has none; another device can show a new
 reply for a moment before the open one marks it read.
+
+### Questions (rulings 2026-11-24 and 2026-11-26, #930)
+
+A chat whose last reply asked the operator something looked like any other
+new reply, and opening it cleared the mark. Goblin now asks with the `ask`
+tool, and an [open question](../GLOSSARY.md#open-question) marks its chat
+as [needs you](../GLOSSARY.md#needs-you) until it is closed.
+
+- **The model decides.** Code shows, keeps and closes questions. When a
+  question is worth asking this way is Goblin's call, tuned by the operator
+  through memory or AGENTS.md. The tool description says what the tool
+  does, not when to use it, as for `post`.
+- **The tool.** `ask` has three actions. `open {question, options?}` adds a
+  question to this chat, with up to four buttons. `list` shows the open
+  questions of this chat; in a [roll](../GLOSSARY.md#roll), those of every
+  roll. `close {id}` closes one from the same set. App turns only, never a
+  subagent, never a guest.
+- **The card.** The question shows in the transcript where it was asked,
+  outside the Worked fold. A button sends `[ask] <question> → <label>` as
+  the operator's message, then closes the question. "No answer needed"
+  closes it without a message. Buttons are off while a reply runs; "No
+  answer needed" is not. A closed card says "Closed".
+- **Closing.** A question stays open until a tap, "No answer needed", or
+  Goblin's `close`. A message about something else does not close it. In
+  the Rolling chat a plain send goes to the newest roll, so a question
+  asked in an older roll is closed from the newest one.
+- **The mark.** Each open question is a Needs you item, `Asks: <question>`,
+  that opens its chat. Archiving hides it; unarchiving brings it back.
+  Deleting the chat deletes it. Editing or retrying drops the questions that
+  the dropped replies asked.
+- **Not chosen:** marking `ui` buttons and forms (Goblin rarely uses them,
+  and three of four sets were menus where nothing waits); marking replies
+  that end in `?` (half are offers such as "Want me to…?"); the operator's
+  next message closing every question (in the Rolling chat it is often
+  about something else); the AI SDK's client tool without `execute`, which
+  holds the call open until the answer. `ui` buttons stay as they were.
+- **Accepted limit:** a question asked by a reply that never landed (a
+  crash mid-turn) marks its chat with no card to answer it. Goblin can
+  still close it.
 
 ### Live state (ruling 2026-11-23, #918)
 
@@ -1437,13 +1539,11 @@ manual-only included, description + body size) and a from-link field.
 A link runs the fetch pipeline server-side
 (`POST /api/app/skills/preview`) and renders a preview card — name,
 description, body size, source repo, System One injection verdict —
-where yes stages the chip and no drops it; nothing is fetched into a
-send the card didn't approve. The staged chip rides the composer's
-existing staged-chip rows; send appends the `data-skill` part
-(ruling: design/skills.md → Skill invocation), and the transcript
-renders it as a chip on the user message, like attachments and notes.
-Drafts stay text-only — staged skills are references, not prose
-(Composer drafts, above). The listing endpoint's response gains the
+where yes inserts the chip and no drops it; nothing is fetched into a
+send the card didn't approve. The chip lands at the cursor and its
+`data-skill` part (ruling: design/skills.md → Skill invocation) is stored
+at that place; the transcript renders it there, like files and notes
+(Chips sit in the text, above). The listing endpoint's response gains the
 picker's catalog view; the operator Skills page is unchanged.
 
 **Picker presentation (ruling 2026-11-16).** A picker takes one of two

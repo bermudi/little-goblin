@@ -17,6 +17,8 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
+import { loadComposerDraft } from "./composerDraft.ts";
+import { boxView } from "./chat/MessageBox.tsx";
 import { LIST_ENTRY, clickConfirm, confirmSheet, confirmText, goblinFeedResponse } from "./testkit.ts";
 
 const json = (body: unknown, status = 200) =>
@@ -74,6 +76,9 @@ describe("mobile: chats screen and navigation", () => {
 	let rollingHistories: Map<string, AppMessageList["messages"]>;
 	let rollingRequests: { body: { rolling?: boolean; conversationId?: unknown; message?: { parts?: { text?: string }[] } } }[];
 	let rollingReply: { status: number; conversationId: string; rolled: boolean; chain: AppConversationList["rolling"]["chain"] } | null;
+	let rollingRollRequests: { method: string; url: string }[];
+	let rollingRollReply: { status: number; body: { conversationId?: string; rolled?: boolean; error?: string }; chain?: AppConversationList["rolling"]["chain"] } | null;
+	let contextTurns: number;
 	let holdRollingList = false;
 	let rollingListResolvers: Array<() => void> = [];
 	let settings: typeof SETTINGS;
@@ -104,6 +109,9 @@ describe("mobile: chats screen and navigation", () => {
 		rollingHistories = new Map();
 		rollingRequests = [];
 		rollingReply = null;
+		rollingRollRequests = [];
+		rollingRollReply = null;
+		contextTurns = 0;
 		holdRollingList = false;
 		rollingListResolvers = [];
 		settings = SETTINGS;
@@ -185,6 +193,12 @@ describe("mobile: chats screen and navigation", () => {
 			const feed = goblinFeedResponse(url);
 			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/rolling/roll") {
+				rollingRollRequests.push({ method, url });
+				const reply = rollingRollReply ?? { status: 200, body: { conversationId: "app/fresh", rolled: true } };
+				if (reply.chain !== undefined) rollingChain = reply.chain;
+				return Promise.resolve(json(reply.body, reply.status));
+			}
 			const patchMatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
 			if (patchMatch !== null && method === "PATCH") {
 				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -277,7 +291,7 @@ describe("mobile: chats screen and navigation", () => {
 						limit: null,
 						pct: null,
 						modelLimit: null,
-						turns: 0,
+						turns: contextTurns,
 						segments: null,
 					}),
 				);
@@ -446,17 +460,33 @@ describe("mobile: chats screen and navigation", () => {
 		await settle();
 	};
 	const typeDraft = async (value: string) => {
-		const el = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]');
+		const el = container.querySelector<HTMLElement>('.message-box[aria-label="Message draft"]');
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el!.focus();
-			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(el, value);
-			el!.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el!.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			const editor = boxView(el);
+			expect(editor).toBeDefined();
+			editor!.focus();
+			editor!.dispatch(
+				editor!.state.tr.replaceWith(
+					1,
+					editor!.state.doc.content.size - 1,
+					value === "" ? [] : editor!.state.schema.text(value),
+				),
 			);
 		});
 		await settle();
+	};
+	const draftText = () => {
+		const editor = boxView(container.querySelector(".message-box"));
+		if (editor === undefined) return "";
+		let text = "";
+		editor.state.doc.forEach((paragraph, index) => {
+			if (index > 0) text += "\n";
+			paragraph.forEach((node) => {
+				if (node.isText) text += node.text ?? "";
+			});
+		});
+		return text;
 	};
 	// The leave ask is a sheet in the app chrome — answering is a click
 	// on its buttons, like the operator.
@@ -484,6 +514,47 @@ describe("mobile: chats screen and navigation", () => {
 			for (const release of rollingListResolvers.splice(0)) release();
 		});
 		await settle();
+	};
+	const rollByHand = async () => {
+		rollingChain = [roll("current")];
+		rollingHistories.set("app/current", [{
+			id: "earlier",
+			role: "user",
+			parts: [{ type: "text", text: "earlier message" }],
+		} as AppMessageList["messages"][number]]);
+		rollingHistories.set("app/fresh", []);
+		contextTurns = 1;
+		if (phone) await openRolling();
+		else {
+			root = createRoot(container);
+			await act(async () => {
+				root?.render(<App />);
+			});
+			await waitFor(
+				() => container.querySelector('.rolling-row a[href="/app/rolling"]') !== null,
+				"desktop list",
+			);
+			await click(container.querySelector('.rolling-row a[href="/app/rolling"]'));
+			await waitFor(() => win.location.pathname === "/app/rolling", "Rolling chat route");
+		}
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("earlier message") === true,
+			"prior transcript",
+		);
+		await typeDraft("typed before the roll");
+		rollingRollReply = {
+			status: 200,
+			body: { conversationId: "app/fresh", rolled: true },
+			chain: [roll("fresh"), roll("current")],
+		};
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		await click(buttonText(".ctx-act", "New conversation"));
+		await waitFor(() => rollingRollRequests.length === 1, "manual rolling request");
+		expect(rollingRollRequests).toEqual([{ method: "POST", url: "/api/app/rolling/roll" }]);
+		await waitFor(
+			() => container.querySelector(".transcript")?.textContent?.includes("earlier message") === false,
+			"fresh transcript",
+		);
 	};
 	const buttonText = (selector: string, text: string) =>
 		[...container.querySelectorAll(selector)].find((b) => b.textContent?.trim() === text);
@@ -637,7 +708,7 @@ describe("mobile: chats screen and navigation", () => {
 
 	test("T3: empty-chain send routes through rolling and loads the new conversation", async () => {
 		await openRolling();
-		expect(container.querySelector('textarea[aria-label="Message draft"]')).toBeTruthy();
+		expect(container.querySelector('.message-box[aria-label="Message draft"]')).toBeTruthy();
 		holdRollingList = true;
 		let sawEarlier = false;
 		const observer = new win.MutationObserver(() => {
@@ -645,7 +716,7 @@ describe("mobile: chats screen and navigation", () => {
 		});
 		observer.observe(win.document.body, { childList: true, subtree: true, characterData: true });
 		await typeDraft("first rolling message");
-		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("first rolling message");
+		expect(draftText()).toBe("first rolling message");
 		await click(container.querySelector('button[aria-label="Send"]'));
 		expect(rollingRequests).toHaveLength(1);
 		await waitFor(() => rollingListResolvers.length > 0, "held list refresh");
@@ -680,6 +751,121 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector(".transcript")).toBe(transcript);
 		expect([...container.querySelectorAll(".transcript p")].filter((p) => p.textContent === "same conversation")).toHaveLength(1);
 		expect(container.textContent).not.toContain("Earlier conversation");
+	});
+
+	test("New conversation starts a fresh roll, lands in it, and brings the draft", async () => {
+		await rollByHand();
+		expect(draftText()).toBe("typed before the roll");
+		expect(loadComposerDraft("app/current")).toBeNull();
+		expect(container.textContent).toContain("— new conversation —");
+		expect(container.textContent).toContain("↑ Previous conversation");
+	});
+
+	test("New conversation leaves the composer focused on a desktop width", async () => {
+		phone = false;
+		await rollByHand();
+		expect(draftText()).toBe("typed before the roll");
+		const editor = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (editor as unknown)).toBe(true);
+	});
+
+	test("New conversation leaves the composer focused on a phone width, once", async () => {
+		await rollByHand();
+		expect(draftText()).toBe("typed before the roll");
+		const editor = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (editor as unknown)).toBe(true);
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => container.textContent?.includes("Back to latest") === true, "earlier roll");
+		const earlier = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (earlier as unknown)).toBe(false);
+		await click(buttonText("button", "Back to latest"));
+		await waitFor(() => draftText() === "typed before the roll", "back in the new roll");
+		const again = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (again as unknown)).toBe(false);
+	});
+
+	test("New conversation is off while the latest roll works and an earlier roll is open", async () => {
+		rollingChain = [{ ...roll("latest"), busy: true }, roll("earlier")];
+		rollingHistories.set("app/latest", [{
+			id: "latest-message",
+			role: "user",
+			parts: [{ type: "text", text: "latest message" }],
+		} as AppMessageList["messages"][number]]);
+		rollingHistories.set("app/earlier", [{
+			id: "earlier-message",
+			role: "user",
+			parts: [{ type: "text", text: "earlier message" }],
+		} as AppMessageList["messages"][number]]);
+		contextTurns = 1;
+		await openRolling();
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => container.textContent?.includes("Back to latest") === true, "earlier roll");
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		expect(
+			[...container.querySelectorAll(".ctx-act")].map((button) => [
+				button.textContent,
+				(button as HTMLButtonElement).disabled,
+			]),
+		).toEqual([
+			["Compact now", false],
+			["New conversation", true],
+		]);
+	});
+
+	test("New conversation refused keeps the conversation and the draft", async () => {
+		rollingChain = [roll("current")];
+		rollingHistories.set("app/current", [{
+			id: "earlier",
+			role: "user",
+			parts: [{ type: "text", text: "earlier message" }],
+		} as AppMessageList["messages"][number]]);
+		contextTurns = 1;
+		await openRolling();
+		await waitFor(() => container.querySelector(".transcript")?.textContent?.includes("earlier message") === true, "prior transcript");
+		await typeDraft("typed before the roll");
+		rollingRollReply = {
+			status: 409,
+			body: { error: "a turn is still running in the latest conversation" },
+		};
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		await click(buttonText(".ctx-act", "New conversation"));
+		await waitFor(() => container.querySelector(".ctx-outcome") !== null, "roll refusal");
+		expect(container.querySelector(".transcript")?.textContent).toContain("earlier message");
+		expect(draftText()).toBe("typed before the roll");
+		expect(container.querySelector(".ctx-outcome")?.textContent).toBe(
+			"couldn't start a new conversation: a turn is still running in the latest conversation",
+		);
+		expect(rollingChain.map((item) => item.id)).toEqual(["app/current"]);
+	});
+
+	test("New conversation into an empty latest roll keeps both drafts", async () => {
+		await rollByHand();
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => container.textContent?.includes("Back to latest") === true, "earlier roll");
+		await typeDraft("typed in the earlier roll");
+		rollingRollRequests.length = 0;
+		rollingRollReply = {
+			status: 200,
+			body: { conversationId: "app/fresh", rolled: false },
+			chain: [roll("fresh"), roll("current")],
+		};
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		await click(buttonText(".ctx-act", "New conversation"));
+		await waitFor(() => rollingRollRequests.length === 1, "second manual request");
+		await waitFor(() => container.textContent?.includes("Back to latest") === false, "back in the empty roll");
+		await waitFor(() => container.querySelector('.message-box[aria-label="Message draft"]') !== null, "composer");
+		await settle();
+		expect(draftText()).toBe("typed before the roll");
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => draftText() === "typed in the earlier roll", "draft of the earlier roll kept");
+	});
+
+	test("New conversation is not offered on an ordinary chat", async () => {
+		await mount();
+		await click(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]'));
+		await waitFor(() => container.querySelector(".transcript") !== null, "ordinary chat");
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		expect([...container.querySelectorAll(".ctx-act")].map((button) => button.textContent)).toEqual(["Compact now"]);
 	});
 
 	test("T4: a new routed roll switches once without an earlier bar flash", async () => {
@@ -794,7 +980,7 @@ describe("mobile: chats screen and navigation", () => {
 		await typeDraft("keep empty draft");
 		await click(container.querySelector('button[aria-label="Send"]'));
 		await waitFor(() => container.querySelector(".chat .error") !== null, "empty send error");
-		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("keep empty draft");
+		expect(draftText()).toBe("keep empty draft");
 
 		rollingChain = [roll("current")];
 		rollingHistories.set("app/current", []);
@@ -808,7 +994,7 @@ describe("mobile: chats screen and navigation", () => {
 		await typeDraft("keep open draft");
 		await click(container.querySelector('button[aria-label="Send"]'));
 		await waitFor(() => container.querySelector(".chat .error") !== null, "open send error");
-		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("keep open draft");
+		expect(draftText()).toBe("keep open draft");
 	});
 
 	test("touch hold opens row actions without opening the chat; mouse hold does not", async () => {

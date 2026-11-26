@@ -7,9 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type Dispatch,
   type ReactNode,
-  type SetStateAction,
 } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
@@ -25,15 +23,26 @@ import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
-import { hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
+import { copyInlineSelection, hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
 import { placeSentMedia } from "./chat/sentMedia.ts";
 import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
+import { NotePicker } from "./chat/NotePicker.tsx";
+import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
+import {
+  draftFromMessages,
+  draftToParts,
+  isEmptyDraft,
+  uploadState,
+  type Chip,
+  type Draft,
+} from "./chat/draft.ts";
+import { MessageBox, type MessageBoxHandle } from "./chat/MessageBox.tsx";
+import { useAttachments } from "./chat/useAttachments.ts";
+import { useSkillNoteStaging } from "./chat/useSkillNoteStaging.ts";
 import {
   ActionBar,
-  editedParts,
   FoldMark,
   foldStartExcerpt,
   MetaLine,
@@ -165,23 +174,166 @@ export function rewindTranscript(
   return messages.slice(0, index + (event.replacedBy === event.messageId ? 1 : 0));
 }
 
+interface EditingMessage {
+  id: string;
+  draft: Draft;
+  kept: UIMessage["parts"];
+}
+
+function EditMessageBox({
+  editing,
+  token,
+  busy,
+  onDraftChange,
+  onSave,
+  onCancel,
+  onOpenNote,
+}: {
+  editing: EditingMessage;
+  token: string | null;
+  busy: boolean;
+  onDraftChange: (draft: Draft) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onOpenNote?: ((id: string) => void) | undefined;
+}) {
+  const editRef = useRef<HTMLDivElement | null>(null);
+  const boxRef = useRef<MessageBoxHandle | null>(null);
+  useEffect(() => {
+    boxRef.current?.focus("end");
+  }, []);
+  const insertChips = useCallback((chips: Chip[]) => {
+    boxRef.current?.insertChips(chips);
+  }, []);
+  const dropTarget = useCallback((target: EventTarget | null) => {
+    const root = editRef.current;
+    return root !== null && target !== null && root.contains(target as Node);
+  }, []);
+  const { fileInput, pickFile, uploadErrors, noteUploadError } = useAttachments({
+    token,
+    busy: false,
+    onSend: () => false,
+    insertChips,
+    dropTarget,
+  });
+  const {
+    notePickerOpen,
+    setNotePickerOpen,
+    skillPickerOpen,
+    setSkillPickerOpen,
+    notePickRef,
+    noteBtnRef,
+    pickNote,
+    stageSkill,
+  } = useSkillNoteStaging({ insertChips });
+  const currentUploadState = uploadState(editing.draft);
+  return (
+    <div
+      className="msg-edit"
+      data-message-edit
+      ref={editRef}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <input
+        ref={fileInput}
+        type="file"
+        hidden
+        multiple
+        onChange={(event) => {
+          for (const file of Array.from(event.target.files ?? [])) void pickFile(file);
+          event.target.value = "";
+        }}
+      />
+      <MessageBox
+        ref={boxRef}
+        initial={editing.draft}
+        onChange={onDraftChange}
+        onFiles={(files) => files.forEach((file) => void pickFile(file))}
+        onOpenNote={onOpenNote}
+        onUploadFailed={noteUploadError}
+        token={token}
+        ariaLabel="Edit message"
+        placeholder="Edit message"
+      />
+      <div className="msg-edit-tools">
+        <button type="button" aria-label="Attach a file" onClick={() => fileInput.current?.click()}>
+          file
+        </button>
+        <button
+          ref={noteBtnRef}
+          type="button"
+          aria-label="Attach a note"
+          onClick={() => setNotePickerOpen((open) => !open)}
+        >
+          note
+        </button>
+        <button type="button" aria-label="Add a skill" onClick={() => setSkillPickerOpen(true)}>
+          skill
+        </button>
+      </div>
+      {uploadErrors.map((message) => (
+        <div key={message} className="error" role="alert">
+          {message}
+        </div>
+      ))}
+      {currentUploadState !== "ready" && (
+        <div className="composer-note" role="status">
+          Upload still running. Save when it finishes.
+        </div>
+      )}
+      <div className="msg-edit-actions">
+        <button type="button" onClick={onCancel}>cancel</button>
+        <button
+          type="button"
+          className="primary"
+          onClick={onSave}
+          disabled={
+            busy ||
+            (isEmptyDraft(editing.draft) && editing.kept.length === 0) ||
+            currentUploadState !== "ready"
+          }
+        >
+          save &amp; resend
+        </button>
+      </div>
+      {notePickerOpen && (
+        <NotePicker
+          pickRef={notePickRef}
+          token={token}
+          onPick={pickNote}
+          onClose={() => setNotePickerOpen(false)}
+        />
+      )}
+      {skillPickerOpen && (
+        <SkillPickerSheet
+          token={token}
+          onClose={() => setSkillPickerOpen(false)}
+          onStage={stageSkill}
+        />
+      )}
+    </div>
+  );
+}
+
 export function ChatView({
   token,
   conversationId,
   title,
   seed,
   followAfter,
-  staged,
-  setStaged,
-  stagedNotes,
-  setStagedNotes,
-  stagedSkills,
-  setStagedSkills,
   noteProjectId,
   onSeeded,
   onSendAccepted,
   onOpenNote,
   onBranched,
+  onRoll,
+  focusSignal,
+  rollDisabled,
   rolling = false,
   onRollingAccepted,
   onFollowStarted,
@@ -195,17 +347,6 @@ export function ChatView({
   // being created — delivered once, on mount.
   seed: UIMessage["parts"] | null;
   followAfter?: string | undefined;
-  // The staged-upload list App owns — carried in so the conversation's
-  // composer renders the same entries the empty state's did.
-  staged: StagedUpload[];
-  setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
-  // Same lift as staged — note chips picked before the first send
-  // carry into the new conversation's composer.
-  stagedNotes: StagedNote[];
-  setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-  // Skill invocations staged before the first send carry the same way.
-  stagedSkills: StagedSkill[];
-  setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
   // The conversation's project — a note-card "New note" binds to it.
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
@@ -214,6 +355,9 @@ export function ChatView({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch opened a new conversation — the host refreshes and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  onRoll?: (() => Promise<string | null>) | undefined;
+  focusSignal?: number | undefined;
+  rollDisabled?: boolean | undefined;
   rolling?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
@@ -229,6 +373,10 @@ export function ChatView({
     compactions: AppCompactionMark[];
   } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [focusOnce, setFocusOnce] = useState(focusSignal ?? 0);
+  useEffect(() => {
+    if (initial !== null && focusOnce !== 0) setFocusOnce(0);
+  }, [initial, focusOnce]);
   useEffect(() => {
     let live = true;
     getMessages(token, conversationId).then(
@@ -269,17 +417,14 @@ export function ChatView({
       initialCompactions={initial.compactions}
       seed={seed}
       followAfter={followAfter}
-      staged={staged}
-      setStaged={setStaged}
-      stagedNotes={stagedNotes}
-      setStagedNotes={setStagedNotes}
-      stagedSkills={stagedSkills}
-      setStagedSkills={setStagedSkills}
       noteProjectId={noteProjectId}
       onSeeded={onSeeded}
       onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
+      onRoll={onRoll}
+      focusSignal={focusOnce}
+      rollDisabled={rollDisabled}
       rolling={rolling}
       onRollingAccepted={onRollingAccepted}
       onFollowStarted={onFollowStarted}
@@ -301,17 +446,14 @@ function Chat({
   initialCompactions,
   seed,
   followAfter,
-  staged,
-  setStaged,
-  stagedNotes,
-  setStagedNotes,
-  stagedSkills,
-  setStagedSkills,
   noteProjectId,
   onSeeded,
   onSendAccepted,
   onOpenNote,
   onBranched,
+  onRoll,
+  focusSignal,
+  rollDisabled,
   rolling = false,
   onRollingAccepted,
   onFollowStarted,
@@ -332,18 +474,15 @@ function Chat({
   initialCompactions: AppCompactionMark[];
   seed: UIMessage["parts"] | null;
   followAfter?: string | undefined;
-  staged: StagedUpload[];
-  setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
-  stagedNotes: StagedNote[];
-  setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-  stagedSkills: StagedSkill[];
-  setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
   noteProjectId?: string | null | undefined;
   onSeeded: () => void;
   onSendAccepted?: (() => void) | undefined;
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  onRoll?: (() => Promise<string | null>) | undefined;
+  focusSignal?: number | undefined;
+  rollDisabled?: boolean | undefined;
   rolling?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
@@ -423,7 +562,7 @@ function Chat({
   // turn. The backup exists only for an edit that fails while the
   // transcript refresh cannot reach the server; in every other failure
   // the durable history reconciles the view.
-  const [editing, setEditing] = useState<{ id: string; draft: string } | null>(
+  const [editing, setEditing] = useState<EditingMessage | null>(
     null,
   );
   const editBackup = useRef<UIMessage[] | null>(null);
@@ -545,7 +684,7 @@ function Chat({
   const refreshTranscript = () => reloadTranscript("merge");
   const [pendingItems, setPendingItems] = useState<AppPendingInput[]>([]);
   const [draftRestore, setDraftRestore] = useState<{
-    parts: UIMessage["parts"];
+    messages: UIMessage["parts"][];
     source?: "pending-edit";
     ids?: string[];
   } | null>(null);
@@ -643,10 +782,12 @@ function Chat({
   const [quote, setQuote] = useState<{
     text: string;
     speaker: QuoteSpeaker | null;
+    messageId: string | null;
     n: number;
   }>({
     text: "",
     speaker: null,
+    messageId: null,
     n: 0,
   });
   const contentRef = useRef<HTMLDivElement>(null);
@@ -837,7 +978,7 @@ function Chat({
 
   const mergeDraftRestore = (parts: UIMessage["parts"], ids: string[]) => {
     setDraftRestore((current) => ({
-      parts: [...(current?.parts ?? []), ...parts],
+      messages: [...(current?.messages ?? []), parts],
       source: "pending-edit",
       ids: [...(current?.ids ?? []), ...ids],
     }));
@@ -961,15 +1102,27 @@ function Chat({
 
   const beginEdit = (m: UIMessage) => {
     if (busy) return;
-    setEditing({ id: m.id, draft: messageText(m) });
+    const editable = m.parts.filter(
+      (part) =>
+        part.type === "text" ||
+        part.type === "data-attachment" ||
+        part.type === "data-note" ||
+        part.type === "data-skill",
+    );
+    setEditing({
+      id: m.id,
+      draft: draftFromMessages([editable]),
+      kept: m.parts.filter((part) => !editable.includes(part)),
+    });
   };
   const cancelEdit = () => setEditing(null);
   const saveEdit = async (m: UIMessage) => {
     if (busy || editing === null || editing.id !== m.id) return;
     const index = messages.findIndex((x) => x.id === m.id);
     if (index === -1) return;
-    const draft = editing.draft;
-    const parts = editedParts(m, draft);
+    if (uploadState(editing.draft) !== "ready") return;
+    if (isEmptyDraft(editing.draft) && editing.kept.length === 0) return;
+    const parts = [...draftToParts(editing.draft), ...editing.kept];
     const tail = messages.length - index - 1;
     // A rewind is destructive by design. Say so when it is about to
     // drop real messages; the branch action is the way to keep them.
@@ -1066,8 +1219,8 @@ function Chat({
         {header}
         <QuoteFab
           root={scrollRef}
-          onQuote={(text, speaker) =>
-            setQuote((q) => ({ text, speaker, n: q.n + 1 }))
+          onQuote={(text, speaker, messageId) =>
+            setQuote((q) => ({ text, speaker, messageId, n: q.n + 1 }))
           }
         />
         {/* The outline is a hover rail — a pointer affordance, so it does
@@ -1116,39 +1269,25 @@ function Chat({
                   <div
                     className={`msg user${prevUser ? " after-user" : ""}${nextUser ? " before-user" : ""}`}
                     data-outline-anchor={m.id}
+                    data-message-id={m.id}
+                    onCopy={copyInlineSelection}
                   >
                     {isEditing ? (
-                      <div className="msg-edit">
-                        <textarea
-                          value={editing.draft}
-                          rows={Math.min(
-                            10,
-                            Math.max(2, editing.draft.split("\n").length),
-                          )}
-                          onChange={(e) =>
-                            setEditing({ id: m.id, draft: e.target.value })
-                          }
-                          aria-label="Edit message"
-                          // autofocus is intended: opening the editor is the user's request
-                          autoFocus
-                        />
-                        <div className="msg-edit-actions">
-                          <button type="button" onClick={cancelEdit}>
-                            cancel
-                          </button>
-                          <button
-                            type="button"
-                            className="primary"
-                            onClick={() => void saveEdit(m)}
-                            disabled={
-                              editing.draft.trim() === "" &&
-                              !m.parts.some((p) => p.type !== "text")
-                            }
-                          >
-                            save &amp; resend
-                          </button>
-                        </div>
-                      </div>
+                      <EditMessageBox
+                        editing={editing}
+                        token={token}
+                        busy={busy}
+                        onDraftChange={(draft) =>
+                          setEditing((current) =>
+                            current !== null && current.id === m.id
+                              ? { ...current, draft }
+                              : current,
+                          )
+                        }
+                        onSave={() => void saveEdit(m)}
+                        onCancel={cancelEdit}
+                        onOpenNote={onOpenNote}
+                      />
                     ) : (
                       <>
                         <UserFold>
@@ -1261,6 +1400,7 @@ function Chat({
                         ? "msg assistant streaming"
                         : "msg assistant"
                     }
+                    data-message-id={m.id}
                   >
                     {header}
                     <MessageParts
@@ -1383,12 +1523,16 @@ function Chat({
           draftScope={conversationId}
           busy={busy}
           liveCtx={liveCtx}
-          staged={staged}
-          setStaged={setStaged}
-          stagedNotes={stagedNotes}
-          setStagedNotes={setStagedNotes}
-          stagedSkills={stagedSkills}
-          setStagedSkills={setStagedSkills}
+          onOpenNote={onOpenNote}
+          onGoToQuote={(messageId) => {
+            const source = scrollRef.current?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+            if (!(source instanceof HTMLElement)) return false;
+            source.scrollIntoView({ block: "center" });
+            source.classList.add("quote-source-flash");
+            setTimeout(() => source.classList.remove("quote-source-flash"), 1200);
+            follow.gesture("up");
+            return true;
+          }}
           quote={quote}
           draftRestore={draftRestore}
           onDraftRestored={() => {
@@ -1403,6 +1547,9 @@ function Chat({
           }}
           stealFocus
           onCompacted={refreshTranscript}
+          onRoll={onRoll}
+          focusSignal={focusSignal ?? 0}
+          rollDisabled={displayed.length === 0 || rollDisabled === true}
           onSend={(parts, whenBusy) => {
             askNotifyPermission();
             return submit({ parts }, whenBusy);
@@ -1420,10 +1567,11 @@ function Chat({
                   (entry) => !takenPendingIds.current.has(entry.id),
                 );
                 if (returned.length === 0) return;
-                mergeDraftRestore(
-                  returned.flatMap((entry) => entry.message.parts as UIMessage["parts"]),
-                  returned.map((entry) => entry.id),
-                );
+                for (const entry of returned)
+                  mergeDraftRestore(
+                    entry.message.parts as UIMessage["parts"],
+                    [entry.id],
+                  );
               })
               .catch((err: unknown) => {
                 if (!alive.current) return;

@@ -95,6 +95,7 @@ export const notePartDataSchema = z.object({
 	rev: z.number().int().positive(),
 	body: z.string(),
 	projectId: z.string().nullable(),
+	inline: z.literal(true).optional(),
 });
 export type NotePartData = z.infer<typeof notePartDataSchema>;
 

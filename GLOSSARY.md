@@ -45,6 +45,7 @@
 - **Not sent:** an app message that was waiting when its turn was stopped or goblin restarted. Goblin never sends it by itself; it waits under the chat until the operator taps it back into the input box or removes it, so no text is lost. For example, a message queued during a deploy shows as Not sent when the chat reopens (design/app.md → Stop gives waiting input back).
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.
 - **Observation:** a merged statement that consolidation builds from facts.
+- **Open question:** a question Goblin asked with the `ask` tool that still waits for the operator. It exists so a question is not lost when the operator opens the chat and does something else: the chat keeps the amber `!` until the question is closed by a button tap, by "No answer needed", or by Goblin once the operator has answered. For example, "When should the daily nudge fire?" with buttons 9:00 and 11:00 stays marked until one is tapped (design/app.md → Questions).
 - **Outbox:** the durable table `memory_outbox`. Retentions wait in it until the service accepts them.
 - **Parked block:** a capability's config kept under `config.parked` while the capability is off. Re-enabling restores it.
 - **Pending input:** an app message sent while a turn runs. It waits in the conversation's inbox (`app_pending_input`), outside history, until the runtime claims it. A **steer** joins the running turn at its next model call; a **follow-up** starts the next turn. Until the claim, the operator can edit or remove it (design/app.md).
@@ -56,13 +57,14 @@
 - **Retention:** saving an exchange to memory. Goblin queues it, then Hindsight extracts from it.
 - **Retired pin:** an older herdr-core version and binary hash that Goblin shipped before the current pin. It is listed in `RETIRED_HC_PINS` in `src/hc-install.ts`. It exists so doctor can tell a binary that the next delegate run will replace from a tampered or corrupt one: right after a release moves the pin from 0.1.21 to a newer version, a box still holding the 0.1.21 binary passes `delegation.hc` instead of failing (#809).
 - **Roll:** a fresh app conversation made when the Rolling chat treats a
-  message as a new subject. For example, after a quiet gap and a new-subject
+  message as a new subject, or when the operator starts one by hand with
+  "New conversation". For example, after a quiet gap and a new-subject
   check, Goblin starts an empty conversation instead of adding the message to
   the old one.
 - **Rolling chat:** the one chat-list entry that routes app messages to the
   current app conversation and starts a fresh one when the quiet-gap rule says
-  to. For example, the second message inside the gap stays in the same
-  conversation.
+  to or the operator asks. For example, the second message inside the gap
+  stays in the same conversation.
 - **RRF:** reciprocal rank fusion. A model-free way to merge ranked lists; also the pinned reranker choice for the memory service.
 - **Screening:** the filter that replaces keys, tokens, and passwords with `[REDACTED:…]` before text reaches memory.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.

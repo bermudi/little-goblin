@@ -2,6 +2,7 @@
 // (MetaLine), fold marks, and the copy/read/rate/edit action bars.
 
 import type { UIMessage } from "ai";
+import { hasInlineParts, proseOf } from "../../../src/inline-parts.ts";
 import { Markdown } from "../markdown.tsx";
 import { Age } from "./messageAge.tsx";
 import { SpeechPlayer, useSpeech } from "../speech.tsx";
@@ -161,6 +162,7 @@ export function unlandedMeta(m: UIMessage): {
 }
 
 export function messageText(m: UIMessage): string {
+	if (hasInlineParts(m.parts)) return proseOf(m.parts);
 	return m.parts
 		.map((p) => (p.type === "text" ? p.text : ""))
 		.join("\n")
@@ -423,23 +425,4 @@ export function UserActions({
 			)}
 		</div>
 	);
-}
-
-// Rewriting a prompt keeps everything that is not text (attachments,
-// note and skill chips): the first text part carries the new words and
-// any additional text parts collapse into it.
-export function editedParts(message: UIMessage, text: string): UIMessage["parts"] {
-	const parts: UIMessage["parts"] = [];
-	let placed = false;
-	for (const part of message.parts) {
-		if (part.type !== "text") {
-			parts.push(part);
-			continue;
-		}
-		if (placed) continue;
-		parts.push({ type: "text", text });
-		placed = true;
-	}
-	if (!placed) parts.unshift({ type: "text", text });
-	return parts;
 }

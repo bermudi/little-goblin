@@ -66,7 +66,8 @@ the provider actually cached; see
 On Codex, Goblin saves function declarations as `additional_tools` input items
 ([`tool-declarations.ts`](src/agent/tool-declarations.ts)). A tool change
 appends a new item and leaves earlier input unchanged; removals are announced
-as text. Switching an existing conversation costs one cold reply (operator,
+as text. After a compaction, the head item holds the tools declared before
+the summary, and later changes still append. Switching an existing conversation costs one cold reply (operator,
 2026-11-26, #959). The Claude CLI defers MCP tools and appends changes itself
 (fake-server capture 2026-11-26); a redefinition reaches the model only on
 its next ToolSearch load. Other routes (openrouter, openai-compatible,

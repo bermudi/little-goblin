@@ -242,9 +242,51 @@ describe("the model view", () => {
 			{ toolsInInput: true },
 			fullHistory,
 		);
-		expect(view[0]).toMatchObject({
+		const systems = view.filter((message) => message.role === "system").map((message) => message.content);
+		expect(systems).toEqual([
+			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([before])}`,
+			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.",
+			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([after])}`,
+		]);
+	});
+
+	test("a Codex tool edit after a compaction appends and keeps the compacted head", async () => {
+		const before = declaration("before");
+		const edited = declaration("before", "edited description");
+		const summary = summaryMessage(
+			{
+				boundarySeq: 2,
+				summary: "folded history",
+				summaryEligible: true,
+				split: null,
+				tokensBefore: 10,
+				model: "m",
+				createdAt: "",
+				tailEvents: null,
+			},
+			"dm:1",
+		);
+		const fullHistory = [
+			{ seq: 1, message: { ...asst("old", "old reply"), parts: [toolStamp({ added: [before], removed: [] }), { type: "text" as const, text: "old reply" }] } },
+			{ seq: 2, message: summary },
+			{ seq: 3, message: user("u3", "fresh question") },
+			{ seq: 4, message: asst("a3", "unchanged reply") },
+		];
+		const unchanged = await build(fullHistory.slice(1), [], null, null, 2, { toolsInInput: true }, fullHistory);
+		const withNext = [...fullHistory, { seq: 5, message: user("u4", "next question") }];
+		const changed = await build(
+			withNext.slice(1),
+			[],
+			null,
+			null,
+			2,
+			{ toolsInInput: true, pendingToolChange: { added: [edited], removed: [] } },
+			withNext,
+		);
+		expect(JSON.stringify(changed.slice(0, unchanged.length))).toBe(JSON.stringify(unchanged));
+		expect(changed.at(-1)).toMatchObject({
 			role: "system",
-			content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([before, after])}`,
+			content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([edited])}`,
 		});
 	});
 

@@ -240,6 +240,7 @@ export function makeStepBuilder(
 				inputModalities: lane.modalities,
 				carries: lane.carries,
 				keepProviderExecuted: lane.keepProviderExecuted,
+				toolsInInput: lane.toolsInInput,
 				...(contextWindow !== null ? { contextWindow } : {}),
 				...(uncapped ? { uncapped } : {}),
 				...("providerOptions" in lane ? { providerOptions: lane.providerOptions } : {}),

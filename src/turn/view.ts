@@ -225,32 +225,33 @@ export async function buildModelView(
 		return change === undefined ? [] : [change];
 	});
 	const firstVisibleChange = visibleStoredChanges[0];
+	const firstVisibleIndex =
+		firstVisibleChange === undefined
+			? storedChanges.length
+			: storedChanges.findIndex(({ change }) => change === firstVisibleChange);
+	const hiddenChanges = storedChanges.slice(0, firstVisibleIndex).map(({ change }) => change);
+	const headChange =
+		hiddenChanges.length === 0 && firstVisibleChange !== undefined ? firstVisibleChange : undefined;
 	let folded = new Map<string, ToolDeclaration>();
 	const unavailable = new Set<string>();
 	let pendingRenderedAtHead = false;
 	if (isToolsInput) {
-		if (firstVisibleChange !== undefined) {
-			const firstIndex = storedChanges.findIndex(({ change }) => change === firstVisibleChange);
-			const changesThroughHead = storedChanges.slice(0, firstIndex + 1).map(({ change }) => change);
-			folded = foldDeclarations(changesThroughHead);
-			for (const change of changesThroughHead) foldUnavailable(change, unavailable);
-			messages.push(toolMarker([...folded.values()]));
-		} else {
-			const historyChanges = storedChanges.map(({ change }) => change);
-			folded = foldDeclarations(historyChanges);
-			for (const change of historyChanges) foldUnavailable(change, unavailable);
-			for (const name of ctx.pendingToolChange?.removed ?? []) folded.delete(name);
-			for (const declaration of ctx.pendingToolChange?.added ?? []) folded.set(declaration.name, declaration);
-			if (folded.size > 0) messages.push(toolMarker([...folded.values()]));
-			pendingRenderedAtHead = ctx.pendingToolChange !== undefined && ctx.pendingToolChange !== null;
+		const headChanges = headChange === undefined ? hiddenChanges : [headChange];
+		folded = foldDeclarations(headChanges);
+		for (const change of headChanges) foldUnavailable(change, unavailable);
+		if (headChanges.length === 0 && ctx.pendingToolChange !== undefined && ctx.pendingToolChange !== null) {
+			for (const name of ctx.pendingToolChange.removed) folded.delete(name);
+			for (const declaration of ctx.pendingToolChange.added) folded.set(declaration.name, declaration);
+			pendingRenderedAtHead = true;
 		}
+		if (folded.size > 0 || headChanges.length > 0) messages.push(toolMarker([...folded.values()]));
 	}
 	const partialId = options.partial?.id ?? null;
 	let foreignReasoningMessages = 0;
 	let foreignReasoningParts = 0;
 	for (const [i, m] of prepared.entries()) {
 		const storedChange = isToolsInput ? changesByMessage.get(m.id) : undefined;
-		if (storedChange !== undefined && storedChange !== firstVisibleChange) {
+		if (storedChange !== undefined && storedChange !== headChange) {
 			messages.push(...toolChangeMessages(storedChange, folded, unavailable));
 		}
 		const entrySeq = seqByIndex[i] ?? null;

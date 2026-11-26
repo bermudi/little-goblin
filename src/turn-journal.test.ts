@@ -8,7 +8,7 @@ import { setLogFile } from "./log.ts";
 import { tmpDb } from "./testkit.ts";
 import { buildRetryGuard } from "./turn/retry-guard.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
-import { openTurnJournal, replayKey } from "./turn-journal.ts";
+import { listRuns, listToolRuns, openTurnJournal, replayKey } from "./turn-journal.ts";
 
 setLogFile(null);
 
@@ -33,6 +33,47 @@ function interruptRun(store: ReturnType<typeof openStore>, runId: string) {
 }
 
 describe("turn journal", () => {
+	test("the tool read keeps a stamped row whatever its start time", () => {
+		const store = openStore(tmpDb("goblin-tj-trajectory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id, "r1");
+		journal.noteToolDispatch(runId, "t6", "probe", {});
+		store.db.run(
+			"UPDATE turn_tool_calls SET began_ms = 10020, model_call_id = 'c-late' WHERE run_id = ? AND tool_call_id = 't6'",
+			[runId],
+		);
+		expect(listToolRuns(store.db, conv.id, 15000, ["c-late"])).toHaveLength(1);
+		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
+		store.close();
+	});
+
+	test("the run read keeps a run that a listed tool belongs to", () => {
+		const store = openStore(tmpDb("goblin-tj-trajectory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		begunRun(journal, conv.id, "r1");
+		store.db.run("UPDATE turn_runs SET started_ms = 10000 WHERE run_id = 'r1'");
+		expect(listRuns(store.db, conv.id, 5000, 5000, ["r1"])).toHaveLength(1);
+		expect(listRuns(store.db, conv.id, 5000, 5000, [])).toHaveLength(0);
+		store.close();
+	});
+
+	test("the tool read keeps the newest rows and returns them oldest first", () => {
+		const store = openStore(tmpDb("goblin-tj-trajectory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id, "r1");
+		for (let index = 0; index <= 2000; index++) {
+			journal.noteToolDispatch(runId, `t${String(index).padStart(5, "0")}`, "probe", {});
+		}
+		const rows = listToolRuns(store.db, conv.id, 0, []);
+		expect(rows).toHaveLength(2000);
+		expect(rows[0]!.toolCallId).toBe("t00001");
+		expect(rows[1999]!.toolCallId).toBe("t02000");
+		store.close();
+	});
+
 	test("lifecycle: begin → planned → dispatched → completed", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

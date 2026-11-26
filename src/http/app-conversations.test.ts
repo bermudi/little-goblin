@@ -2176,6 +2176,46 @@ test("the window endpoint returns tool stamps and overlapping run rows", async (
 });
 
 test.each([
+	{ label: "ahead", delta: 3_600_000 },
+	{ label: "behind", delta: -3_600_000 },
+])("the window read keeps a stamped tool and its run when the call clock moved $label", async ({ label, delta }) => {
+	const id = `window-clock-${label}`;
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call, store } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", id);
+		const conversation = store.get(`app/${id}`)!;
+		store.db.run(
+			"UPDATE model_cache_calls SET started_ms = started_ms + ?, finished_ms = finished_ms + ? WHERE conversation_id = ?",
+			[delta, delta, conversation.id],
+		);
+		const body = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			calls: { callId: string }[];
+			toolRuns: { modelCallId: string | null; runId: string }[];
+			runs: { runId: string }[];
+		};
+		expect(body.toolRuns).toHaveLength(1);
+		expect(body.calls.some((entry) => entry.callId === body.toolRuns[0]!.modelCallId)).toBe(true);
+		expect(body.runs.some((entry) => entry.runId === body.toolRuns[0]!.runId)).toBe(true);
+	} finally {
+		http.stop();
+	}
+});
+
+test.each([
 	{ name: "legacy", final: {}, input: 900, cacheRead: 800 },
 	{
 		name: "explicit null",

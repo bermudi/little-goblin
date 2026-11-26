@@ -790,10 +790,22 @@ export async function handleConversationsRoute(
 			const calls = listCalls(store.db, convId.id);
 			const sinceMs = calls.length === 0 ? 0 : Math.min(...calls.map((call) => call.startedMs));
 			const untilMs = calls.length === 0 ? 0 : Math.max(...calls.map((call) => call.startedMs));
+			const toolRuns = listToolRuns(
+				store.db,
+				convId.id,
+				sinceMs,
+				calls.map((call) => call.callId),
+			);
 			return {
 				calls,
-				toolRuns: listToolRuns(store.db, convId.id, sinceMs),
-				runs: listRuns(store.db, convId.id, sinceMs, untilMs),
+				toolRuns,
+				runs: listRuns(
+					store.db,
+					convId.id,
+					sinceMs,
+					untilMs,
+					toolRuns.map((tool) => tool.runId),
+				),
 				nowMs: now(),
 			};
 		})();

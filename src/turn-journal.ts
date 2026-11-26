@@ -455,16 +455,19 @@ export function listToolRuns(
 	db: Database,
 	conversationId: string,
 	sinceMs: number,
+	callIds: string[],
 	limit = 2000,
 ): ToolRunRow[] {
 	const rows = db
 		.query(
 			`SELECT c.tool_call_id, c.run_id, c.name, c.state, c.began_ms, c.settled_ms, c.model_call_id
 			FROM turn_tool_calls c JOIN turn_runs r ON r.run_id = c.run_id
-			WHERE r.conversation_id = ? AND c.origin_run IS NULL AND c.began_ms IS NOT NULL AND c.began_ms >= ?
-			ORDER BY c.rowid LIMIT ?`,
+			WHERE r.conversation_id = ? AND c.origin_run IS NULL AND c.began_ms IS NOT NULL
+				AND (c.model_call_id IN (SELECT value FROM json_each(?)) OR c.began_ms >= ?)
+			ORDER BY c.rowid DESC LIMIT ?`,
 		)
-		.all(conversationId, sinceMs, limit);
+		.all(conversationId, JSON.stringify(callIds), sinceMs, limit);
+	rows.reverse();
 	return rows.map((raw) => {
 		const row = toolRunRowSchema.parse(raw);
 		return {
@@ -495,14 +498,22 @@ const trajectoryRunRowSchema = z.object({
 	resumed_from: z.string().nullable(),
 });
 
-export function listRuns(db: Database, conversationId: string, sinceMs: number, untilMs: number): RunRow[] {
+export function listRuns(
+	db: Database,
+	conversationId: string,
+	sinceMs: number,
+	untilMs: number,
+	runIds: string[],
+): RunRow[] {
 	const rows = db
 		.query(
 			`SELECT run_id, started_ms, finished_ms, status, resumed_from
-			FROM turn_runs WHERE conversation_id = ? AND started_ms <= ?
-			AND (finished_ms IS NULL OR finished_ms >= ?) ORDER BY started_ms, rowid`,
+			FROM turn_runs WHERE conversation_id = ?
+				AND (run_id IN (SELECT value FROM json_each(?))
+					OR (started_ms <= ? AND (finished_ms IS NULL OR finished_ms >= ?)))
+			ORDER BY started_ms, rowid`,
 		)
-		.all(conversationId, untilMs, sinceMs);
+		.all(conversationId, JSON.stringify(runIds), untilMs, sinceMs);
 	return rows.map((raw) => {
 		const row = trajectoryRunRowSchema.parse(raw);
 		return {

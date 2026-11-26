@@ -793,6 +793,7 @@ export async function handleConversationsRoute(
 				calls,
 				toolRuns: listToolRuns(store.db, convId.id, sinceMs),
 				runs: listRuns(store.db, convId.id, sinceMs, untilMs),
+				nowMs: Date.now(),
 			};
 		})();
 		const body: AppWindowView = {
@@ -820,6 +821,7 @@ export async function handleConversationsRoute(
 			})),
 			toolRuns: trajectory.toolRuns,
 			runs: trajectory.runs,
+			nowMs: trajectory.nowMs,
 		};
 		log.debug("app window served", {
 			conversation: convId.id,

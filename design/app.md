@@ -1046,10 +1046,21 @@ What the first version accepts:
 - **A tool row without a stamp** (written before this change) falls back
   to the last call that finished before it began.
 - **A replayed or skipped tool** has no start time and is not drawn.
+- **Refresh is manual.** The tab reads once per visit and when the
+  operator presses Refresh. It does not follow a running turn by itself.
+  The read carries the whole captured prompt, so following a turn needs a
+  lighter read first. Whether the tab should follow a turn is an open
+  question.
 
 A call or a tool with no end is drawn as running only while its run is
 still open. When the process dies it leaves rows open forever, so in an
 ended run the same rows draw dashed grey as unfinished.
+
+An open run's axis ends at the moment the view was read, not at its last
+event. A running tool has no end yet, so with the shorter axis it shrank
+to a sliver at the right edge while the turn was still going. The server
+sends its clock with the view (`nowMs`), so a client with a wrong clock
+cannot stretch or squeeze the row.
 
 ## Reply ratings (ruling 2026-10-22)
 

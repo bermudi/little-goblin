@@ -469,6 +469,7 @@ export interface AppWindowView {
 	calls: AppWindowCall[];
 	toolRuns: AppWindowToolRun[];
 	runs: AppWindowRun[];
+	nowMs: number;
 }
 
 export interface AppWindowToolRun {

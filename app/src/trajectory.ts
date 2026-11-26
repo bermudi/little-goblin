@@ -32,6 +32,7 @@ export function buildTrajectory(
 	calls: AppWindowCall[],
 	toolRuns: AppWindowToolRun[],
 	runs: AppWindowRun[],
+	nowMs: number,
 ): TrajectoryRow[] {
 	const orderedRuns = [...runs].sort((a, b) => a.startedMs - b.startedMs);
 	const rows: TrajectoryRow[] = orderedRuns.map((run) => ({
@@ -109,7 +110,7 @@ export function buildTrajectory(
 			...row.calls.flatMap((item) => item.tools.map(({ tool }) => tool.beganMs)),
 		].filter((n): n is number => n !== undefined);
 		const ends = [
-			row.run?.finishedMs ?? row.run?.startedMs,
+			row.run === null ? undefined : (row.run.finishedMs ?? nowMs),
 			...row.calls.map((item) => item.call.finishedMs ?? item.call.startedMs),
 			...row.calls.flatMap((item) => item.tools.map(({ tool }) => tool.settledMs ?? tool.beganMs)),
 		].filter((n): n is number => n !== undefined);

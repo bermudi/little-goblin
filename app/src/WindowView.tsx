@@ -433,7 +433,8 @@ export function WindowView({
 		[view],
 	);
 	const rows = useMemo(
-		() => (view === null ? [] : buildTrajectory(view.calls, view.toolRuns, view.runs)),
+		() =>
+			(view === null ? [] : buildTrajectory(view.calls, view.toolRuns, view.runs, view.nowMs)),
 		[view],
 	);
 

@@ -2158,16 +2158,18 @@ test("the window endpoint returns tool stamps and overlapping run rows", async (
 	});
 	try {
 		await createAndChat(call, "use tool", "window-tool");
-		const body = (await (await call("/api/app/conversations/window-tool/window")).json()) as {
-			calls: { callId: string; startedMs: number }[];
-			toolRuns: { modelCallId: string | null; runId: string; toolCallId: string }[];
-			runs: { runId: string; startedMs: number }[];
-		};
-		expect(body.toolRuns).toHaveLength(1);
-		const stamp = body.toolRuns[0]!.modelCallId;
-		expect(stamp).not.toBeNull();
-		expect(body.calls.some((entry) => entry.callId === stamp)).toBe(true);
-		expect(body.runs.some((entry) => entry.runId === body.toolRuns[0]!.runId && entry.startedMs <= body.calls[0]!.startedMs)).toBe(true);
+			const body = (await (await call("/api/app/conversations/window-tool/window")).json()) as {
+				calls: { callId: string; startedMs: number }[];
+				toolRuns: { modelCallId: string | null; runId: string; toolCallId: string }[];
+				runs: { runId: string; startedMs: number }[];
+				nowMs: number;
+			};
+			expect(body.toolRuns).toHaveLength(1);
+			const stamp = body.toolRuns[0]!.modelCallId;
+			expect(stamp).not.toBeNull();
+			expect(body.calls.some((entry) => entry.callId === stamp)).toBe(true);
+			expect(body.runs.some((entry) => entry.runId === body.toolRuns[0]!.runId && entry.startedMs <= body.calls[0]!.startedMs)).toBe(true);
+			expect(body.nowMs).toBeGreaterThanOrEqual(body.runs[0]!.startedMs);
 	} finally {
 		http.stop();
 	}

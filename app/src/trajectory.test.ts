@@ -56,11 +56,14 @@ const tool = (
 });
 
 describe("buildTrajectory", () => {
+	const now = 1000;
+
 	test("stamps tools on their call and leaves the preceding gap empty", () => {
 		const rows = buildTrajectory(
 			[call("a", 10, 20), call("b", 60, 80)],
 			[tool("t", 30, 40, "b")],
 			[run("r1", 0, 100)],
+			now,
 		);
 		expect(rows[0]!.calls[1]!.tools.map((entry) => entry.tool.toolCallId)).toEqual(["t"]);
 		expect(rows[0]!.calls[0]!.tools).toHaveLength(0);
@@ -71,6 +74,7 @@ describe("buildTrajectory", () => {
 			[call("a", 10, 20), call("b", 60, 80)],
 			[tool("t", 30, 40, null)],
 			[run("r1", 0, 100)],
+			now,
 		);
 		expect(rows[0]!.calls[0]!.tools).toHaveLength(1);
 	});
@@ -79,7 +83,7 @@ describe("buildTrajectory", () => {
 		const rows = buildTrajectory([call("before", 5), call("later", 25)], [], [
 			run("r1", 10),
 			run("r2", 20),
-		]);
+		], now);
 		expect(rows).toHaveLength(3);
 		expect(rows[0]!.run).toBeNull();
 		expect(rows[0]!.calls[0]!.call.callId).toBe("before");
@@ -91,6 +95,7 @@ describe("buildTrajectory", () => {
 			[call("fallback-a", 10), call("fallback-b", 20), call("stamped", 50)],
 			[tool("tool", 55, 60, "stamped", "later")],
 			[run("later", 40, 100)],
+			now,
 		);
 		expect(rows).toHaveLength(2);
 		expect(rows[0]!.run).toBeNull();
@@ -103,18 +108,36 @@ describe("buildTrajectory", () => {
 			tool("one", 20, 50, "a"),
 			tool("two", 30, 60, "a"),
 			tool("three", 60, 70, "a"),
-		], [run("r1", 0, 100)]);
+		], [run("r1", 0, 100)], now);
 		expect(rows[0]!.calls[0]!.tools.map((entry) => entry.lane)).toEqual([0, 1, 0]);
 		expect(rows[0]!.lanes).toBe(2);
 	});
 
 	test("running calls produce a positive span", () => {
-		const rows = buildTrajectory([call("a", 10, null)], [], [run("r1", 0, null)]);
+		const rows = buildTrajectory([call("a", 10, null)], [], [run("r1", 0, null)], 50);
 		expect(rows[0]!.finishedMs).toBeGreaterThan(rows[0]!.startedMs);
 	});
 
+	test("an open run ends at the read time, so a running call and its tool reach the right edge", () => {
+		const rows = buildTrajectory(
+			[call("a", 10, 20), call("b", 60, null)],
+			[tool("t", 70, null, "b")],
+			[run("r1", 0, null)],
+			250,
+		);
+		expect(rows[0]!.startedMs).toBe(0);
+		expect(rows[0]!.finishedMs).toBe(250);
+	});
+
+	test("a read time before the last event never shortens a row, and an ended run keeps its end", () => {
+		const open = buildTrajectory([call("a", 10, null)], [], [run("r1", 0, null)], 5);
+		expect(open[0]!.finishedMs).toBe(10);
+		const ended = buildTrajectory([call("a", 10, 20)], [], [run("r1", 0, 100)], 9000);
+		expect(ended[0]!.finishedMs).toBe(100);
+	});
+
 	test("resumed runs keep the predecessor turn number", () => {
-		const rows = buildTrajectory([], [], [run("r1", 0), run("r2", 200, 300, "r1")]);
+		const rows = buildTrajectory([], [], [run("r1", 0), run("r2", 200, 300, "r1")], now);
 		expect(rows.map((row) => [row.turn, row.resumed])).toEqual([
 			[1, false],
 			[1, true],
@@ -122,7 +145,7 @@ describe("buildTrajectory", () => {
 	});
 
 	test("purpose calls are not placed", () => {
-		const rows = buildTrajectory([call("purpose", 1, 2, "review")], [], [run("r1", 0)]);
+		const rows = buildTrajectory([call("purpose", 1, 2, "review")], [], [run("r1", 0)], now);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]!.calls).toHaveLength(0);
 	});

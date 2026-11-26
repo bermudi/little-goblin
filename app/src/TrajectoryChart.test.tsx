@@ -99,7 +99,9 @@ describe("TrajectoryChart", () => {
 				modelCallId: "call-live",
 			},
 		];
-		act(() => root.render(<TrajectoryChart rows={buildTrajectory([call, endedCall, liveCall], tools, runs)} />));
+		act(() =>
+			root.render(<TrajectoryChart rows={buildTrajectory([call, endedCall, liveCall], tools, runs, 320)} />),
+		);
 		expect(container.querySelectorAll('[role="img"]')).toHaveLength(2);
 		expect(container.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
 			"2 model calls, 2 tools",
@@ -111,14 +113,19 @@ describe("TrajectoryChart", () => {
 		expect(unfinishedCall).not.toBeNull();
 		expect(unfinishedCall!.classList.contains("running")).toBe(false);
 		expect(unfinishedCall!.classList.contains("failed")).toBe(false);
-		const unfinishedTool = container.querySelector(".win-traj-tool.unfinished");
+		const unfinishedTool = container.querySelector<HTMLElement>(".win-traj-tool.unfinished");
 		expect(unfinishedTool).not.toBeNull();
 		expect(unfinishedTool!.classList.contains("running")).toBe(false);
 		expect(unfinishedTool!.classList.contains("failed")).toBe(false);
+		expect(unfinishedTool!.title.endsWith("· …")).toBe(true);
 		expect(container.querySelector(".win-traj-call.running")).not.toBeNull();
-		const runningTool = container.querySelector(".win-traj-tool.running");
+		const runningTool = container.querySelector<HTMLElement>(".win-traj-tool.running");
 		expect(runningTool).not.toBeNull();
 		expect(runningTool!.textContent).toBe("probe");
+		expect(parseFloat(runningTool!.style.left)).toBeCloseTo(((220 - 200) / 120) * 100);
+		expect(parseFloat(runningTool!.style.width)).toBeCloseTo(((320 - 220) / 120) * 100);
+		expect(runningTool!.style.width).toMatch(/%$/);
+		expect(runningTool!.title.endsWith("· 0.1s")).toBe(true);
 		act(() => root.unmount());
 		restore();
 	});
@@ -143,7 +150,7 @@ describe("TrajectoryChart", () => {
 			settledMs: 29 + index * 20,
 			modelCallId: null,
 		}));
-		act(() => root.render(<TrajectoryChart rows={buildTrajectory(calls, tools, runs)} />));
+		act(() => root.render(<TrajectoryChart rows={buildTrajectory(calls, tools, runs, 1000)} />));
 		expect([...container.querySelectorAll(".win-traj-call")].map((node) => node.className)).toEqual(
 			relations.map((relation) => `win-traj-call ${relation}`),
 		);

@@ -72,7 +72,6 @@ export function TrajectoryChart({ rows }: { rows: TrajectoryRow[] }): null | Rea
 											<span>{seconds(end - call.startedMs)} · cache {pct}</span>
 										</span>
 										{tools.map(({ tool, lane }) => {
-											const toolEnd = tool.settledMs ?? tool.beganMs;
 											const toolState =
 												tool.state === "failed"
 													? "failed"
@@ -81,6 +80,10 @@ export function TrajectoryChart({ rows }: { rows: TrajectoryRow[] }): null | Rea
 														: row.run !== null && row.run.finishedMs === null
 															? "running"
 															: "unfinished";
+											const toolEnd =
+												tool.settledMs ?? (toolState === "running" ? row.finishedMs : tool.beganMs);
+											const elapsed =
+												tool.settledMs === null && toolState !== "running" ? null : toolEnd - tool.beganMs;
 											return (
 												<span
 													key={tool.toolCallId}
@@ -91,7 +94,7 @@ export function TrajectoryChart({ rows }: { rows: TrajectoryRow[] }): null | Rea
 														top: `${39 + lane * 14}px`,
 														height: "12px",
 													}}
-													title={`${tool.name} · ${tool.state} · ${ts(new Date(tool.beganMs).toISOString())}–${tool.settledMs === null ? "…" : ts(new Date(tool.settledMs).toISOString())} · ${seconds(tool.settledMs === null ? null : tool.settledMs - tool.beganMs)}`}
+													title={`${tool.name} · ${tool.state} · ${ts(new Date(tool.beganMs).toISOString())}–${tool.settledMs === null ? "…" : ts(new Date(tool.settledMs).toISOString())} · ${seconds(elapsed)}`}
 												>
 													<span>{tool.name}</span>
 												</span>

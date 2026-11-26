@@ -116,6 +116,7 @@ describe("WindowView", () => {
 				resumedFrom: null,
 			},
 		],
+		nowMs: 1761100004000,
 	};
 
 	beforeEach(() => {

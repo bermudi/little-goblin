@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import { ts } from "./opsShared.tsx";
 import type {
 	AppWindowCall,
 	AppWindowRun,
@@ -118,6 +119,10 @@ describe("TrajectoryChart", () => {
 		expect(unfinishedTool!.classList.contains("running")).toBe(false);
 		expect(unfinishedTool!.classList.contains("failed")).toBe(false);
 		expect(unfinishedTool!.title.endsWith("· …")).toBe(true);
+		expect(unfinishedCall!.querySelectorAll("span")[1]!.textContent).toMatch(/^…/);
+		expect(
+			container.querySelector(".win-traj-call.running")!.querySelectorAll("span")[1]!.textContent,
+		).toMatch(/^0\.1s/);
 		expect(container.querySelector(".win-traj-call.running")).not.toBeNull();
 		const runningTool = container.querySelector<HTMLElement>(".win-traj-tool.running");
 		expect(runningTool).not.toBeNull();
@@ -126,6 +131,41 @@ describe("TrajectoryChart", () => {
 		expect(parseFloat(runningTool!.style.width)).toBeCloseTo(((320 - 220) / 120) * 100);
 		expect(runningTool!.style.width).toMatch(/%$/);
 		expect(runningTool!.title.endsWith("· 0.1s")).toBe(true);
+		act(() => root.unmount());
+		restore();
+	});
+
+	test("each tool's name, state and duration is text a screen reader can reach", () => {
+		const { container, root, restore } = mount();
+		const settledTool: AppWindowToolRun = {
+			toolCallId: "tool-sr",
+			runId: "r1",
+			name: "probe",
+			state: "completed",
+			beganMs: 221,
+			settledMs: 1221,
+			modelCallId: call.callId,
+		};
+		act(() =>
+			root.render(
+				<TrajectoryChart rows={buildTrajectory([call], [settledTool], [runs[0]!], 1500)} />,
+			),
+		);
+		const lists = container.querySelectorAll("ul.sr-only");
+		expect(lists).toHaveLength(1);
+		expect(container.querySelector('[role="img"]')!.contains(lists[0]!)).toBe(false);
+		expect(lists[0]!.querySelectorAll("li")).toHaveLength(1);
+		expect(lists[0]!.querySelector("li")!.textContent).toBe(
+			`probe · completed · 1.0s · call at ${ts(new Date(call.startedMs).toISOString())}`,
+		);
+		act(() => root.unmount());
+		restore();
+	});
+
+	test("a row without tools has no screen-reader list", () => {
+		const { container, root, restore } = mount();
+		act(() => root.render(<TrajectoryChart rows={buildTrajectory([call], [], [runs[0]!], 1500)} />));
+		expect(container.querySelector("ul.sr-only")).toBeNull();
 		act(() => root.unmount());
 		restore();
 	});

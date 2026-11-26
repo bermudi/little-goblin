@@ -8,6 +8,12 @@ import type { Message } from "../message.ts";
 import { attachmentPart } from "../agent/attachments.ts";
 import { promptText, serializePrompt } from "../agent/claude-code/prompt.ts";
 import { summaryMessage } from "../conversation-events.ts";
+import {
+	ADDITIONAL_TOOLS_PREFIX,
+	TOOLS_PART,
+	type ToolChange,
+	type ToolDeclaration,
+} from "../agent/tool-declarations.ts";
 import { setLogFile } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
 import {
@@ -27,6 +33,15 @@ const asst = (id: string, text: string): Message => ({
 	role: "assistant",
 	parts: [{ type: "text", text }],
 });
+const declaration = (name: string, description = name): ToolDeclaration => ({
+	type: "function",
+	name,
+	description,
+	parameters: { type: "object" },
+	strict: false,
+});
+const toolStamp = (change: ToolChange): Message["parts"][number] =>
+	({ type: TOOLS_PART, data: change }) as Message["parts"][number];
 const entries = (msgs: Message[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
 const recall = (anchorSeq: number, content: string): RecallContext => ({
 	anchorSeq,
@@ -57,9 +72,12 @@ const build = async (
 	current: RecallContext | null = null,
 	partial: Message | null = null,
 	summarySeq: number | null = null,
+	context: Partial<ViewContext> = {},
+	toolHistory?: { seq: number; message: Message }[],
 ): Promise<PromptMessage[]> =>
-	buildModelView(ctx, {
+	buildModelView({ ...ctx, ...context }, {
 		entries: entriesList,
+		...(toolHistory !== undefined ? { toolHistory } : {}),
 		prior,
 		current,
 		partial,
@@ -140,6 +158,89 @@ describe("the model view", () => {
 		]);
 		const view2 = await build(turn2, [recall(1, "prefers quiet")], recall(3, "prefers dark"));
 		expect(JSON.stringify(view2.slice(0, view1.length))).toBe(JSON.stringify(view1));
+	});
+
+	test("Codex adoption declares the full current tool set at the head", async () => {
+		const current = declaration("agent", "current agent tools");
+		const view = await build(
+			entries([user("u1", "question")]),
+			[],
+			null,
+			null,
+			null,
+			{ toolsInInput: true, pendingToolChange: { added: [current], removed: [] } },
+		);
+		expect(view[0]).toMatchObject({
+			role: "system",
+			content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([current])}`,
+			providerOptions: { codex: { inInput: true } },
+		});
+		expect(view.map((message) => message.role)).toEqual(["system", "user"]);
+	});
+
+	test("Codex change notices and additions stay before their stored event", async () => {
+		const oldTool = declaration("old");
+		const newTool = declaration("new");
+		const view = await build(
+			entries([
+				user("u1", "first"),
+				{ ...asst("a1", "answer"), parts: [toolStamp({ added: [oldTool], removed: [] }), { type: "text", text: "answer" }] },
+				user("u2", "second"),
+				{ ...asst("a2", "answer two"), parts: [toolStamp({ added: [newTool], removed: ["old"] }), { type: "text", text: "answer two" }] },
+			]),
+			[],
+			null,
+			null,
+			null,
+			{ toolsInInput: true },
+		);
+		const systems = view.filter((message) => message.role === "system");
+		expect(systems.map((message) => message.content)).toEqual([
+			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([oldTool])}`,
+			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.\nStill unavailable: old.",
+			`${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([newTool])}`,
+			"The following tools are no longer available. Do not call them:\n- old",
+		]);
+		expect(systems.every((message) => message.providerOptions?.codex?.inInput === true)).toBe(true);
+		expect(view.some((message) => JSON.stringify(message).includes(TOOLS_PART))).toBe(false);
+	});
+
+	test("the Codex head fold includes declarations stored before a compaction summary", async () => {
+		const before = declaration("before");
+		const after = declaration("after");
+		const summary = summaryMessage(
+			{
+				boundarySeq: 2,
+				summary: "folded history",
+				summaryEligible: true,
+				split: null,
+				tokensBefore: 10,
+				model: "m",
+				createdAt: "",
+				tailEvents: null,
+			},
+			"dm:1",
+		);
+		const fullHistory = [
+			{ seq: 1, message: { ...asst("old", "old reply"), parts: [toolStamp({ added: [before], removed: [] }), { type: "text" as const, text: "old reply" }] } },
+			{ seq: 2, message: summary },
+			{ seq: 3, message: user("u3", "fresh question") },
+			{ seq: 4, message: { ...asst("new", "new reply"), parts: [toolStamp({ added: [after], removed: [] }), { type: "text" as const, text: "new reply" }] } },
+		];
+		const modelWindow = [fullHistory[1]!, fullHistory[2]!, fullHistory[3]!];
+		const view = await build(
+			modelWindow,
+			[],
+			null,
+			null,
+			2,
+			{ toolsInInput: true },
+			fullHistory,
+		);
+		expect(view[0]).toMatchObject({
+			role: "system",
+			content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([before, after])}`,
+		});
 	});
 
 	test("a history system event renders as a bracketed user note in position", async () => {

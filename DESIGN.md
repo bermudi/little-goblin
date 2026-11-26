@@ -63,6 +63,16 @@ the provider actually cached; see
 [`cache-observation.test.ts`](src/cache-observation.test.ts) and
 [`cache-pruning.test.ts`](src/cache-pruning.test.ts).
 
+On Codex, Goblin saves function declarations as `additional_tools` input items
+([`tool-declarations.ts`](src/agent/tool-declarations.ts)). A tool change
+appends a new item and leaves earlier input unchanged; removals are announced
+as text. Switching an existing conversation costs one cold reply (operator,
+2026-11-26, #959). The Claude CLI defers MCP tools and appends changes itself
+(fake-server capture 2026-11-26); a redefinition reaches the model only on
+its next ToolSearch load. Other routes (openrouter, openai-compatible,
+responses, zai) still resend the full list. A Codex hosted-search setting
+change still rewrites the head.
+
 ## Config
 
 Settings is the routine editing surface; direct edits are for bootstrap and

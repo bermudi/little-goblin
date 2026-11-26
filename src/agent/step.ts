@@ -76,6 +76,7 @@ export function makeStepBuilder(
 			carries: (mediaType: string, position: MediaPosition) =>
 				carriesMedia(p?.kind ?? "", mediaType, position, pipeBase),
 			keepProviderExecuted: p?.kind === "codex",
+			toolsInInput: p?.kind === "codex",
 			...(providerOptions ? { providerOptions } : {}),
 			...(maxRetries !== undefined ? { maxRetries } : {}),
 		};
@@ -267,6 +268,7 @@ export function makeStepBuilder(
 					inputModalities: lane.modalities,
 					carries: lane.carries,
 					keepProviderExecuted: lane.keepProviderExecuted,
+					toolsInInput: lane.toolsInInput,
 					...("providerOptions" in lane ? { providerOptions: lane.providerOptions } : {}),
 					...("maxRetries" in lane ? { maxRetries: lane.maxRetries } : {}),
 				};

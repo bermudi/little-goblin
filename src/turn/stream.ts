@@ -361,6 +361,7 @@ export interface StreamStep {
 	contextWindow?: number;
 	uncapped?: boolean;
 	maxRetries?: number;
+	toolsInInput?: boolean;
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -406,6 +407,22 @@ export async function driveStream<M extends WireMember>(
 ): Promise<StreamOutcome> {
 	const { convId, head, members, live, state } = deps;
 	const sdkTools = toToolSet(deps.tools);
+	if (deps.step.toolsInInput === true) {
+		for (const [name, definition] of Object.entries(sdkTools)) {
+			if (definition.type === "provider") continue;
+			const providerOptions = definition.providerOptions ?? {};
+			sdkTools[name] = {
+				...definition,
+				providerOptions: {
+					...providerOptions,
+					openai: {
+						...(providerOptions.openai ?? {}),
+						omitFromRequestTools: true,
+					},
+				},
+			};
+		}
+	}
 	const modelLabel = stepModelRef(deps.step);
 	const recorder = openAttemptRecorder(deps, modelLabel, (chunk) =>
 		emitChunk(convId, members, live, chunk),
@@ -433,6 +450,7 @@ export async function driveStream<M extends WireMember>(
 		if (arm !== null) throw new PreemptSignal(arm, stepNumber);
 	};
 	const result = streamText({
+		allowSystemInMessages: deps.step.toolsInInput === true,
 		tools: sdkTools,
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,

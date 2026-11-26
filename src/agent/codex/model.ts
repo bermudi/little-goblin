@@ -39,6 +39,10 @@ import {
 } from "./auth.ts";
 import type { AppQuotaWindow } from "../../http/app-wire.ts";
 import { quotaFromHeaders, type CodexQuota } from "./receipts.ts";
+import {
+	ADDITIONAL_TOOLS_PREFIX,
+	toolDeclarationsSchema,
+} from "../tool-declarations.ts";
 
 const BASE_URL = "https://chatgpt.com/backend-api/codex";
 export const RESPONSES_URL = `${BASE_URL}/responses`;
@@ -117,7 +121,57 @@ function codexFetch(
 		}
 		if (opts.subagent !== undefined) headers.set("x-openai-subagent", opts.subagent);
 		if (turn.turnState !== null) headers.set("x-codex-turn-state", turn.turnState);
-		const res = await fetchImpl(input, { ...init, headers });
+		let requestInit = init;
+		if (typeof init?.body === "string") {
+			const body: unknown = JSON.parse(init.body);
+			if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+				const record = body as Record<string, unknown>;
+				if (Array.isArray(record.input)) {
+					let replaced = 0;
+					const mapped = record.input.map((item, index) => {
+						if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
+						const message = item as Record<string, unknown>;
+						if (message.role !== "system" && message.role !== "developer") return item;
+						const text =
+							typeof message.content === "string"
+								? message.content
+								: Array.isArray(message.content)
+									? message.content
+											.map((part) =>
+												typeof part === "object" &&
+												part !== null &&
+												"text" in part &&
+												typeof part.text === "string"
+													? part.text
+													: "",
+											)
+											.join("")
+									: "";
+						if (!text.startsWith(ADDITIONAL_TOOLS_PREFIX)) return item;
+						const raw = text.slice(ADDITIONAL_TOOLS_PREFIX.length);
+						let declarations: unknown;
+						try {
+							declarations = toolDeclarationsSchema.parse(JSON.parse(raw) as unknown);
+						} catch (error) {
+							throw new Error(
+								`invalid additional-tools marker at Codex input item ${index}`,
+								{ cause: error },
+							);
+						}
+						replaced += 1;
+						return { type: "additional_tools", role: "developer", tools: declarations };
+					});
+					if (replaced > 0) {
+						log.debug("codex additional tool items rewritten", { count: replaced });
+						requestInit = {
+							...init,
+							body: JSON.stringify({ ...record, input: mapped }),
+						};
+					}
+				}
+			}
+		}
+		const res = await fetchImpl(input, { ...requestInit, headers });
 		if (turn.turnState === null) {
 			const ts = res.headers.get("x-codex-turn-state");
 			if (ts !== null && ts.length > 0) turn.turnState = ts;
@@ -187,7 +241,24 @@ function hasCipher(meta: { reasoningEncryptedContent?: string | null | undefined
 function scopedPrompt(prompt: LanguageModelV4Prompt, scope: string, drops: Drops): LanguageModelV4Prompt {
 	const out: LanguageModelV4Prompt = [];
 	for (const msg of prompt) {
-		if (msg.role === "system") continue;
+		if (msg.role === "system") {
+			const codexOptions = msg.providerOptions?.codex;
+			if (typeof codexOptions !== "object" || codexOptions === null || !("inInput" in codexOptions) || codexOptions.inInput !== true) {
+				continue;
+			}
+			const { inInput: _inInput, ...restCodex } = codexOptions;
+			const { codex: _codex, ...rest } = msg.providerOptions ?? {};
+			const providerOptions = Object.keys(restCodex).length > 0
+				? { ...rest, codex: restCodex }
+				: rest;
+			const { providerOptions: _providerOptions, ...bare } = msg;
+			out.push(
+				Object.keys(providerOptions).length > 0
+					? { ...bare, providerOptions }
+					: bare,
+			);
+			continue;
+		}
 		const parts: readonly Part[] = msg.content;
 		const mapped = parts.map((part) => {
 			const { options, meta } = scopedOptions(part.providerOptions, scope, drops);
@@ -229,8 +300,13 @@ async function codexParams(
 	const drops: Drops = { reasons: new Set(), parts: 0 };
 	// The backend takes the system prompt as `instructions`, never as an
 	// input item — and wants the field even when empty.
+	const isInInputSystem = (message: LanguageModelV4Message): boolean => {
+		if (message.role !== "system") return false;
+		const codex = message.providerOptions?.codex;
+		return typeof codex === "object" && codex !== null && "inInput" in codex && codex.inInput === true;
+	};
 	const instructions = params.prompt
-		.filter((m) => m.role === "system")
+		.filter((m) => m.role === "system" && !isInInputSystem(m))
 		.map((m) => m.content)
 		.join("\n\n");
 	const prompt = scopedPrompt(params.prompt, scope, drops);

@@ -19,11 +19,34 @@ import { generateModel, scriptedModel, textParts } from "../testkit/fake-model.t
 import { tmpDir } from "../testkit.ts";
 import {
 	cacheRouteFor,
+	callHashes,
 	carriesMedia,
 	observedModel,
 	resolveModel,
 	transportRetry,
 } from "./providers.ts";
+
+test("callHashes ignores Codex input markers and omitted function tools in the head", () => {
+	const base = callHashes(
+		[{ role: "system", content: "stable" }, { role: "user", content: "first" }],
+		[{ type: "provider", name: "web_search" }],
+	);
+	const appended = callHashes(
+		[
+			{ role: "system", content: "stable" },
+			{ role: "system", content: "GOBLIN_ADDITIONAL_TOOLS:[]" },
+			{ role: "system", content: "This is an incremental tools update." },
+			{ role: "user", content: "first" },
+			{ role: "user", content: "second" },
+		],
+		[
+			{ type: "function", name: "echo", providerOptions: { openai: { omitFromRequestTools: true } } },
+			{ type: "provider", name: "web_search" },
+		],
+	);
+	expect(appended.headHash).toBe(base.headHash);
+	expect(appended.requestHash).not.toBe(base.requestHash);
+});
 
 // resolveModel resolves auth through a literal-key fixture — no records,
 // no commands, nothing secret.

@@ -30,6 +30,7 @@ export interface PrefixStep {
 	inputModalities: Set<string> | undefined;
 	carries(mediaType: string, position: MediaPosition): boolean;
 	keepProviderExecuted: boolean;
+	toolsInInput?: boolean;
 }
 
 export function makePrefixSummarizer(input: {
@@ -110,6 +111,19 @@ function makePrefixRequest(
 	}) => void,
 ): PrefixSummarizer {
 	const { conv, step, store, tools } = input;
+	if (step.toolsInInput === true) {
+		for (const [name, definition] of Object.entries(sdkTools)) {
+			if (definition.type === "provider") continue;
+			const providerOptions = definition.providerOptions ?? {};
+			sdkTools[name] = {
+				...definition,
+				providerOptions: {
+					...providerOptions,
+					openai: { ...(providerOptions.openai ?? {}), omitFromRequestTools: true },
+				},
+			};
+		}
+	}
 	const hydratedModelOutputTools = new Set(input.hydratedModelOutputTools ?? []);
 	const view: ViewContext = {
 		convId: conv.id,
@@ -119,6 +133,7 @@ function makePrefixRequest(
 		modalities: step.inputModalities,
 		carries: step.carries,
 		keepProviderExecuted: step.keepProviderExecuted,
+		toolsInInput: step.toolsInInput === true,
 		skillRef: resolveSkillRef,
 	};
 	const prior =
@@ -130,6 +145,9 @@ function makePrefixRequest(
 			input.assertAuthority();
 			const ceiling = input.foldCeiling();
 			const entries = store.modelEntries(conv.id).filter(
+				(entry) => ceiling === null || entry.seq < ceiling,
+			);
+			const toolHistory = store.historyEntries(conv.id).filter(
 				(entry) => ceiling === null || entry.seq < ceiling,
 			);
 			if (hydratedModelOutputTools.size > 0) {
@@ -154,6 +172,7 @@ function makePrefixRequest(
 			}
 			await buildModelView(view, {
 				entries,
+				toolHistory,
 				prior,
 				current: null,
 				partial: null,
@@ -180,6 +199,20 @@ function makePrefixRequest(
 				entries = entries.filter((entry) => entry.seq < cut.seq);
 				partial = { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) };
 			}
+			const fullToolHistory = store.historyEntries(conv.id);
+			let toolHistory = fullToolHistory.filter(
+				(entry) => ceiling === null || entry.seq < ceiling,
+			);
+			if (cut !== undefined) {
+				toolHistory = toolHistory.flatMap((entry) => {
+					if (entry.seq < cut.seq) return [entry];
+					if (entry.seq > cut.seq) return [];
+					const cutEntry = fullToolHistory.find((item) => item.seq === cut.seq);
+					return cutEntry === undefined
+						? []
+						: [{ ...cutEntry, message: { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) } }];
+				});
+			}
 			if (hydratedModelOutputTools.size > 0) {
 				for (const entry of [...entries, ...(partial === null ? [] : [{ message: partial }])]) {
 					for (const part of entry.message.parts) {
@@ -202,6 +235,7 @@ function makePrefixRequest(
 			}
 			const messages = await buildModelView(view, {
 				entries,
+				toolHistory,
 				prior,
 				current: null,
 				partial,
@@ -214,6 +248,7 @@ function makePrefixRequest(
 				...turns.map((turn): PromptMessage => ({ role: turn.role, content: turn.text })),
 			];
 			const result = await generateText({
+				allowSystemInMessages: step.toolsInInput === true,
 				model: step.model,
 				instructions: step.system,
 				tools: sdkTools,

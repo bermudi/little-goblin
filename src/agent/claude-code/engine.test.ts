@@ -259,6 +259,29 @@ describe("driveClaude — wire and outcome parity", () => {
 		}
 	});
 
+	test("a bridged MCP tool description change does not change the wire head hash", async () => {
+		const db = new Database(":memory:");
+		const observation = openCacheObservation(db);
+		const makeTools = (description: string): Tools => ({
+			bridge: defineTool({
+				description,
+				input: z.object({ value: z.string() }),
+				execute: async ({ value }) => value,
+			}),
+		});
+		await run([{ kind: "text", text: "one" }], { tools: makeTools("old description") }, { observation });
+		await run([{ kind: "text", text: "two" }], { tools: makeTools("new description") }, { observation });
+		const hashes = db
+			.query<{ head_hash: string; request_hash: string }, []>(
+				"SELECT head_hash, request_hash FROM model_cache_calls ORDER BY started_ms, rowid",
+			)
+			.all();
+		expect(hashes).toHaveLength(2);
+		expect(hashes[0]!.head_hash).toBe(hashes[1]!.head_hash);
+		expect(hashes[0]!.request_hash).toBe(hashes[1]!.request_hash);
+		db.close();
+	});
+
 	test("uses final message_delta output usage", async () => {
 		const { outcome, members } = await run([
 			{

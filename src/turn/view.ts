@@ -19,6 +19,14 @@ import {
 	skillPartDataSchema,
 	type SkillRef,
 } from "../skill-part.ts";
+import {
+	ADDITIONAL_TOOLS_PREFIX,
+	TOOLS_PART,
+	foldDeclarations,
+	toolChangeSchema,
+	type ToolChange,
+	type ToolDeclaration,
+} from "../agent/tool-declarations.ts";
 
 export interface ViewContext {
 	convId: string;
@@ -28,6 +36,8 @@ export interface ViewContext {
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
 	keepProviderExecuted?: boolean;
+	toolsInInput?: boolean;
+	pendingToolChange?: ToolChange | null;
 	skillRef: (
 		ref: SkillRef,
 		includeBody: boolean,
@@ -177,6 +187,7 @@ export async function buildModelView(
 	ctx: ViewContext,
 	options: {
 		entries: { seq: number; message: Message }[];
+		toolHistory?: { seq: number; message: Message }[];
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: Message | null;
@@ -193,6 +204,16 @@ export async function buildModelView(
 		options.summarySeq,
 	);
 	if (options.partial !== null) view.push(options.partial);
+	const storedChanges = (options.toolHistory ?? options.entries).flatMap(({ message }) =>
+		message.parts.flatMap((part) => {
+			if (part.type !== TOOLS_PART) return [];
+			const parsed = toolChangeSchema.safeParse((part as { data?: unknown }).data);
+			if (!parsed.success) {
+				throw new Error(`malformed ${TOOLS_PART} part in conversation ${ctx.convId}, message ${message.id}`);
+			}
+			return [{ messageId: message.id, change: parsed.data }];
+		}),
+	);
 	const owned = new Set(options.ownedSeqs ?? []);
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
@@ -204,10 +225,41 @@ export async function buildModelView(
 	);
 	options.assertAuthority();
 	const messages: PromptMessage[] = [];
+	const isToolsInput = ctx.toolsInInput === true;
+	const changesByMessage = new Map(storedChanges.map(({ messageId, change }) => [messageId, change]));
+	const visibleStoredChanges = prepared.flatMap((message) => {
+		const change = changesByMessage.get(message.id);
+		return change === undefined ? [] : [change];
+	});
+	const firstVisibleChange = visibleStoredChanges[0];
+	let folded = new Map<string, ToolDeclaration>();
+	const unavailable = new Set<string>();
+	let pendingRenderedAtHead = false;
+	if (isToolsInput) {
+		if (firstVisibleChange !== undefined) {
+			const firstIndex = storedChanges.findIndex(({ change }) => change === firstVisibleChange);
+			const changesThroughHead = storedChanges.slice(0, firstIndex + 1).map(({ change }) => change);
+			folded = foldDeclarations(changesThroughHead);
+			for (const change of changesThroughHead) foldUnavailable(change, unavailable);
+			messages.push(toolMarker([...folded.values()]));
+		} else {
+			const historyChanges = storedChanges.map(({ change }) => change);
+			folded = foldDeclarations(historyChanges);
+			for (const change of historyChanges) foldUnavailable(change, unavailable);
+			for (const name of ctx.pendingToolChange?.removed ?? []) folded.delete(name);
+			for (const declaration of ctx.pendingToolChange?.added ?? []) folded.set(declaration.name, declaration);
+			if (folded.size > 0) messages.push(toolMarker([...folded.values()]));
+			pendingRenderedAtHead = ctx.pendingToolChange !== undefined && ctx.pendingToolChange !== null;
+		}
+	}
 	const partialId = options.partial?.id ?? null;
 	let foreignReasoningMessages = 0;
 	let foreignReasoningParts = 0;
 	for (const [i, m] of prepared.entries()) {
+		const storedChange = isToolsInput ? changesByMessage.get(m.id) : undefined;
+		if (storedChange !== undefined && storedChange !== firstVisibleChange) {
+			messages.push(...toolChangeMessages(storedChange, folded, unavailable));
+		}
 		const entrySeq = seqByIndex[i] ?? null;
 		const includeBody = entrySeq !== null && m.role === "user" && owned.has(entrySeq);
 		const { message: skillMarked, invocations } = skillPartsAsText(
@@ -216,6 +268,7 @@ export async function buildModelView(
 			includeBody,
 		);
 		const rendered = contextPartAsText(ctx, notePartsAsText(ctx, skillMarked));
+		rendered.parts = rendered.parts.filter((part) => part.type !== TOOLS_PART);
 		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
 			ctx,
 			rendered,
@@ -263,6 +316,14 @@ export async function buildModelView(
 			messages.push(...injectedBodies(ctx, invocations));
 		}
 	}
+	if (
+		isToolsInput &&
+		!pendingRenderedAtHead &&
+		ctx.pendingToolChange !== undefined &&
+		ctx.pendingToolChange !== null
+	) {
+		messages.push(...toolChangeMessages(ctx.pendingToolChange, folded, unavailable));
+	}
 	if (foreignReasoningParts > 0) {
 		log.info("foreign reasoning dropped from the model view", {
 			conversation: ctx.convId,
@@ -279,6 +340,50 @@ export async function buildModelView(
 		messages: merged.length,
 	});
 	return merged;
+}
+
+function toolMarker(declarations: ToolDeclaration[]): PromptMessage {
+	return {
+		role: "system",
+		content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify(declarations)}`,
+		providerOptions: { codex: { inInput: true } },
+	};
+}
+
+function toolChangeMessages(
+	change: ToolChange,
+	folded: Map<string, ToolDeclaration>,
+	unavailable: Set<string>,
+): PromptMessage[] {
+	const out: PromptMessage[] = [];
+	foldUnavailable(change, unavailable);
+	const unavailableNames = [...unavailable];
+	const notice =
+		"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.";
+	out.push({
+		role: "system",
+		content:
+			folded.size > 0
+				? `${notice}\nStill unavailable: ${unavailableNames.length > 0 ? unavailableNames.join(", ") : "none"}.`
+				: notice,
+		providerOptions: { codex: { inInput: true } },
+	});
+	if (change.added.length > 0) out.push(toolMarker(change.added));
+	if (unavailableNames.length > 0 && change.removed.length > 0) {
+		out.push({
+			role: "system",
+			content: `The following tools are no longer available. Do not call them:\n${change.removed.filter((name) => !change.added.some((item) => item.name === name)).map((name) => `- ${name}`).join("\n")}`,
+			providerOptions: { codex: { inInput: true } },
+		});
+	}
+	for (const name of change.removed) folded.delete(name);
+	for (const declaration of change.added) folded.set(declaration.name, declaration);
+	return out;
+}
+
+function foldUnavailable(change: ToolChange, unavailable: Set<string>): void {
+	for (const name of change.removed) unavailable.add(name);
+	for (const declaration of change.added) unavailable.delete(declaration.name);
 }
 
 function dropProviderExecuted(ctx: ViewContext, messages: PromptMessage[]): PromptMessage[] {

@@ -295,11 +295,27 @@ export function callHashes(
 	prompt: readonly unknown[],
 	tools: unknown,
 ): { headHash: string; requestHash: string; promptHashes: string[] } {
+	const system = (prompt as { role?: unknown; content?: unknown }[]).filter((message) => {
+		if (message.role !== "system") return false;
+		if (typeof message.content !== "string") return true;
+		return (
+			!message.content.startsWith("GOBLIN_ADDITIONAL_TOOLS:") &&
+			!message.content.startsWith("This is an incremental tools update.") &&
+			!message.content.startsWith("The following tools are no longer available.")
+		);
+	});
+	const visibleTools = Array.isArray(tools)
+		? tools.filter((tool) => {
+				if (typeof tool !== "object" || tool === null) return true;
+				const item = tool as { providerOptions?: { openai?: { omitFromRequestTools?: unknown } } };
+				return item.providerOptions?.openai?.omitFromRequestTools !== true;
+			})
+		: tools;
 	return {
 		headHash: sha256hex(
 			JSON.stringify({
-				system: (prompt as { role?: unknown }[]).filter((m) => m.role === "system"),
-				tools: tools ?? null,
+				system,
+				tools: visibleTools ?? null,
 			}),
 		),
 		requestHash: sha256hex(JSON.stringify(prompt)),

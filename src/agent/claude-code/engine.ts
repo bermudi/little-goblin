@@ -389,13 +389,12 @@ export async function driveClaude<M extends WireMember>(
 	const toolDefs = serializeToolDefs(deps.tools);
 	const hashesFor = (messages: PromptMessage[]) => {
 		const prompt = serializePrompt(messages);
-		return callHashes(
-			[
-				{ role: "system", content: step.system },
-				{ role: "user", content: promptText(prompt) },
-			],
-			toolDefs,
-		);
+		const callPrompt = [
+			{ role: "system", content: step.system },
+			{ role: "user", content: promptText(prompt) },
+		];
+		const hashes = callHashes(callPrompt, toolDefs);
+		return { ...hashes, headHash: callHashes(callPrompt, null).headHash };
 	};
 	const engineState = {
 		sentMessages: deps.messages,

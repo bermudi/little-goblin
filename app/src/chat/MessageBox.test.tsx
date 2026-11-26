@@ -130,6 +130,7 @@ interface MountOpts {
 	onChange?: (draft: Draft) => void;
 	onFiles?: (files: File[]) => void;
 	onUploadFailed?: (message: string) => void;
+	onGoToQuote?: (messageId: string) => boolean;
 }
 const mount = async (opts: MountOpts = {}): Promise<MessageBoxHandle> => {
 	if (root !== null) {
@@ -148,6 +149,7 @@ const mount = async (opts: MountOpts = {}): Promise<MessageBoxHandle> => {
 				onChange={opts.onChange}
 				onFiles={opts.onFiles}
 				onUploadFailed={opts.onUploadFailed}
+				onGoToQuote={opts.onGoToQuote}
 				token="token"
 			/>,
 		);
@@ -209,6 +211,49 @@ const selectChip = (v: EditorView): boolean => {
 };
 
 describe("MessageBox", () => {
+	test("quote chip preview, note editing, source jump, and Backspace", async () => {
+		let goTo = "";
+		const quote = {
+			kind: "quote" as const,
+			id: "quote-1",
+			text: "line one\nline two",
+			speaker: "assistant" as const,
+			messageId: "message-1",
+		};
+		const box = await mount({
+			initial: { items: [{ type: "chip", chip: quote }], shelf: [] },
+			onGoToQuote: (messageId) => { goTo = messageId; return false; },
+		});
+		const chip = container.querySelector(".goblin-chip");
+		expect(chip?.getAttribute("aria-label")).toBe("Quote from Goblin: line one line two");
+		await act(async () => { chip?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event); });
+		expect(container.querySelector('[role="dialog"]')?.textContent).toContain("line one\nline two");
+		expect(container.querySelector("textarea")).toBeNull();
+		const buttons = Array.from(container.querySelectorAll("button"));
+		const addNote = buttons.find((button) => button.textContent === "Add note");
+		await act(async () => { addNote?.click(); });
+		const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+		expect(textarea).not.toBeNull();
+		expect(document.activeElement).toBe(textarea);
+		await act(async () => {
+			const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")?.set;
+			setter?.call(textarea, "note");
+			textarea.dispatchEvent(new win.InputEvent("input", { bubbles: true, inputType: "insertText", data: "note" }) as unknown as Event);
+		});
+		const save = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Save");
+		await act(async () => { save?.click(); });
+		expect(box.getDraft().items).toEqual([{ type: "chip", chip: { ...quote, comment: "note" } }]);
+		expect(container.querySelector(".goblin-chip")?.getAttribute("aria-label")).toBe("Quote from Goblin: note");
+		const go = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Go to message");
+		await act(async () => { go?.click(); });
+		expect(goTo).toBe("message-1");
+		expect(container.textContent).toContain("That message is not on screen.");
+		await edit((view) => {
+			view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)));
+		});
+		await act(async () => { key("Backspace"); });
+		expect(chipCount()).toBe(0);
+	});
 	test("insert at a mid-word caret spaces both sides; at the end of an unfocused box, only after", async () => {
 		const box = await mount();
 		const v = view();

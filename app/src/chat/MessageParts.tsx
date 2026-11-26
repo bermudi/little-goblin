@@ -31,7 +31,7 @@ import type { AttachmentRef } from "../../../src/agent/attachments.ts";
 import { hasInlineParts, inlineChipLabel, isInlinePart } from "../../../src/inline-parts.ts";
 import { fetchAttachmentUrl } from "./attachmentUrl.ts";
 import { ChipDetails } from "./MessageBox.tsx";
-import { parseChip, type Chip } from "./draft.ts";
+import { parseChip, type Chip, type QuoteChip } from "./draft.ts";
 import {
   type Artifact,
   artifactOf,
@@ -39,6 +39,7 @@ import {
 } from "../../../src/agent/tools/artifact-schema.ts";
 
 type ActivityPart = ToolUIPart | DynamicToolUIPart | ReasoningUIPart;
+type SentChip = Exclude<Chip, QuoteChip>;
 // A part that folds into an Activity run: a tool call (ui parts render
 // inline as the interface and never join) or thought text with
 // something in it.
@@ -428,31 +429,37 @@ function NoteChip({
   );
 }
 
-function inlineChip(part: UIMessage["parts"][number]): Chip | null {
+function inlineChip(part: UIMessage["parts"][number]): SentChip | null {
   const value = (part as { data?: unknown }).data;
   if (part.type === "data-attachment") {
     const ref = parseAttachmentRef(value);
-    return ref === null ? null : parseChip({ kind: "file", state: "ready", ref });
+    const chip = ref === null ? null : parseChip({ kind: "file", state: "ready", ref });
+    return chip?.kind === "file" ? chip : null;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const data = value as Record<string, unknown>;
   if (part.type === "data-note" && typeof data.id === "string") {
-    return parseChip({
+    const chip = parseChip({
       kind: "note",
       id: data.id,
       title: typeof data.title === "string" ? data.title : data.id,
     });
+    return chip?.kind === "note" ? chip : null;
   }
   if (part.type === "data-skill") {
-    if (typeof data.name === "string") return parseChip({ kind: "skill", ref: { name: data.name } });
+    if (typeof data.name === "string") {
+      const chip = parseChip({ kind: "skill", ref: { name: data.name } });
+      return chip?.kind === "skill" ? chip : null;
+    }
     if (typeof data.url === "string" && typeof data.path === "string") {
-      return parseChip({ kind: "skill", ref: { url: data.url, path: data.path } });
+      const chip = parseChip({ kind: "skill", ref: { url: data.url, path: data.path } });
+      return chip?.kind === "skill" ? chip : null;
     }
   }
   return null;
 }
 
-function sentChipName(chip: Chip): string {
+function sentChipName(chip: SentChip): string {
   if (chip.kind === "note") return chip.title;
   if (chip.kind === "skill") {
     if ("name" in chip.ref) return chip.ref.name;
@@ -461,7 +468,7 @@ function sentChipName(chip: Chip): string {
   return chip.state === "ready" ? chip.ref.filename : chip.filename;
 }
 
-function sentChipAria(chip: Chip): string {
+function sentChipAria(chip: SentChip): string {
   if (chip.kind === "note") return `Note ${chip.title}`;
   if (chip.kind === "skill") return `Skill ${sentChipName(chip)}`;
   return `File ${sentChipName(chip)}`;
@@ -472,7 +479,7 @@ function SentChip({
   token,
   onOpenNote,
 }: {
-  chip: Chip;
+  chip: SentChip;
   token: string | null;
   onOpenNote?: ((id: string) => void) | undefined;
 }) {
@@ -526,7 +533,7 @@ function SentChip({
   );
 }
 
-function chipLabel(chip: Chip): string {
+function chipLabel(chip: SentChip): string {
   return `[${inlineChipLabel(chip.kind, sentChipName(chip))}]`;
 }
 
@@ -541,7 +548,7 @@ function selectionText(node: Node): string {
   if (element.matches("[data-goblin-chip]")) {
     try {
       const chip = parseChip(JSON.parse(element.getAttribute("data-goblin-chip") ?? ""));
-      return chip === null ? "" : chipLabel(chip);
+      return chip === null || chip.kind === "quote" ? "" : chipLabel(chip);
     } catch {
       return "";
     }

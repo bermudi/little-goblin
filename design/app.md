@@ -211,8 +211,11 @@ too (below).
 
 **Chips sit in the text (ruling 2026-11-25, #942; replaces "text only" of
 2026-10-20).** A file, a note or a skill added to a message is a chip at the
-cursor, cut, pasted and deleted like one character. Quotes stay `>` text;
-there are no typing shortcuts and no live Markdown styling.
+cursor, cut, pasted and deleted like one character. A quote is also a
+chip (ruling 2026-11-26, #954); on send it becomes the #182 text
+(annotation line, `>` block, then its note), so the stored message, the
+model, memory and Telegram see exactly what they saw before. The sent
+bubble shows a normal quote.
 
 - *The box* is one small ProseMirror editor: paragraphs, text and one chip
   node, no marks. ProseMirror is already in the client for notes. A
@@ -273,7 +276,12 @@ statement (design/memory.md → quoted-speech ruling; the annotation
 above a surviving blockquote is the only layout that measured zero
 misattributions). A selection with no single bubble — spanning
 messages, in transcript chrome, a system notice — quotes unattributed,
-as before: the button records the speaker, it never guesses one.
+as before: the button records the speaker, it never guesses one. The
+Quote button appears below the selection, after the mouse is released,
+never over the selected text. It may cover a few words on the line
+below until it is clicked or dismissed, as T3 Code's does (operator,
+2026-11-26, #954; rejected: the right margin, a fixed spot above the
+message box).
 
 **Transcript rendering (ruling 2026-10-21, operator ask: tables blow out
 the column, the column wastes the desktop, machinery tags read as

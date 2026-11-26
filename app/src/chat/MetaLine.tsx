@@ -426,22 +426,3 @@ export function UserActions({
 		</div>
 	);
 }
-
-// Rewriting a prompt keeps everything that is not text (attachments,
-// note and skill chips): the first text part carries the new words and
-// any additional text parts collapse into it.
-export function editedParts(message: UIMessage, text: string): UIMessage["parts"] {
-	const parts: UIMessage["parts"] = [];
-	let placed = false;
-	for (const part of message.parts) {
-		if (part.type !== "text") {
-			parts.push(part);
-			continue;
-		}
-		if (placed) continue;
-		parts.push({ type: "text", text });
-		placed = true;
-	}
-	if (!placed) parts.unshift({ type: "text", text });
-	return parts;
-}

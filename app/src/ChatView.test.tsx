@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { UIMessage } from "ai";
+import { NodeSelection, TextSelection } from "@milkdown/kit/prose/state";
 import { Window } from "happy-dom";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -8,7 +9,7 @@ import type { AppCompactionMark } from "../../src/http/app-wire.ts";
 import { clickConfirm, confirmSheet, confirmText, withLive } from "./testkit.ts";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { placeSentMedia } from "./chat/sentMedia.ts";
-import { editedParts, FoldMark, messageText, unlandedMeta } from "./chat/MetaLine.tsx";
+import { FoldMark, messageText, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
@@ -26,6 +27,106 @@ const toolPart = {
 } as unknown as UIMessage["parts"][number];
 
 describe("MessageParts", () => {
+  test("flagged prose renders its text and chips in order in one paragraph", async () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: "text", text: "compare " },
+          {
+            type: "data-attachment",
+            data: {
+              path: "attachments/a.png",
+              mediaType: "image/png",
+              filename: "a.png",
+              size: 3,
+              inline: true,
+            },
+          },
+          { type: "text", text: " with " },
+          { type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+          { type: "text", text: " please" },
+        ]}
+      />,
+    );
+    const window = new Window();
+    const container = window.document.createElement("div");
+    container.innerHTML = html;
+    const paragraphs = container.querySelectorAll("p");
+    expect(paragraphs).toHaveLength(1);
+    expect([...paragraphs[0]!.querySelectorAll(".goblin-chip")].map((el) => [
+      el.getAttribute("aria-label"),
+      JSON.parse(el.getAttribute("data-goblin-chip") ?? "{}"),
+    ])).toEqual([
+      [
+        "File a.png",
+        {
+          kind: "file",
+          state: "ready",
+          ref: {
+            path: "attachments/a.png",
+            mediaType: "image/png",
+            filename: "a.png",
+            size: 3,
+          },
+        },
+      ],
+      ["Note Budget", { kind: "note", id: "n-1", title: "Budget" }],
+    ]);
+    expect(paragraphs[0]?.textContent).toContain("compare");
+    expect(paragraphs[0]?.textContent).toContain("please");
+    expect(paragraphs[0]?.querySelector(".goblin-chip")).not.toBeNull();
+    await window.happyDOM.close();
+  });
+
+  test("a chip in inline code renders as its label text", () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: "text", text: "use `" },
+          { type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+          { type: "text", text: "` here" },
+        ]}
+      />,
+    );
+    expect(html).toContain("<code>[Budget]</code>");
+    expect(html).not.toContain("<code><span");
+  });
+
+  test("unflagged text, image, note and skill keep the old DOM structure", async () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: "text", text: "look " },
+          {
+            type: "data-attachment",
+            data: {
+              path: "attachments/a.png",
+              mediaType: "image/png",
+              filename: "a.png",
+              size: 3,
+            },
+          },
+          { type: "data-note", data: { id: "n-1", title: "Budget" } },
+          { type: "data-skill", data: { name: "deploy" } },
+        ]}
+      />,
+    );
+    const window = new Window();
+    const container = window.document.createElement("div");
+    container.innerHTML = html;
+    expect([...container.children].map((el) => [el.tagName, el.className])).toEqual([
+      ["P", ""],
+      ["SPAN", "attachment"],
+      ["A", "attachment note-chip"],
+      ["SPAN", "attachment note-chip"],
+    ]);
+    expect(container.querySelector("p")?.textContent).toBe("look");
+    expect(container.querySelector(".attachment button")?.textContent).toBe("a.png");
+    expect(container.querySelector(".note-chip .attachment-name")?.textContent).toBe("Note · Budget");
+    expect(container.lastElementChild?.textContent).toContain("Skill · deploy");
+    await window.happyDOM.close();
+  });
+
   test("sent media appears after its Worked fold and before the answer", () => {
     const media: UIMessage = {
       id: "media",
@@ -333,8 +434,16 @@ function mountDom() {
     install("localStorage", dom.win.localStorage);
     install("Event", dom.win.Event);
     install("CustomEvent", dom.win.CustomEvent);
+    install("Element", (dom.win as unknown as { Element: unknown }).Element);
+    install("HTMLElement", (dom.win as unknown as { HTMLElement: unknown }).HTMLElement);
+    install("MutationObserver", (dom.win as unknown as { MutationObserver: unknown }).MutationObserver);
+    install("Node", (dom.win as unknown as { Node: unknown }).Node);
+    install("File", (dom.win as unknown as { File: unknown }).File);
+    install("FormData", (dom.win as unknown as { FormData: unknown }).FormData);
+    install("DOMParser", (dom.win as unknown as { DOMParser: unknown }).DOMParser);
     install("getComputedStyle", dom.win.getComputedStyle);
     install("requestAnimationFrame", dom.win.requestAnimationFrame.bind(dom.win));
+    install("cancelAnimationFrame", dom.win.cancelAnimationFrame.bind(dom.win));
     Reflect.set(dom.win, "matchMedia", (query: string) => ({
       matches: false,
       media: query,
@@ -362,6 +471,147 @@ function mountDom() {
   });
   return dom;
 }
+
+describe("sent inline chip details", () => {
+  const dom = mountDom();
+  const settle = async (check: () => boolean) => {
+    for (let i = 0; i < 100 && !check(); i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      });
+    }
+  };
+
+  test("click and Enter open the note details; Open note works and Escape restores focus", async () => {
+    const opened: string[] = [];
+    dom.root = createRoot(dom.container);
+    await act(async () => {
+      dom.root?.render(
+        <MessageParts
+          parts={[
+            { type: "text", text: "see " },
+            { type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+          ]}
+          onOpenNote={(id) => opened.push(id)}
+        />,
+      );
+    });
+    const chip = dom.container.querySelector<HTMLElement>(".goblin-chip");
+    expect(chip).not.toBeNull();
+    await act(async () => {
+      chip?.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+    });
+    let dialog = dom.win.document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    await act(async () => {
+      dialog?.querySelector("button")?.dispatchEvent(new dom.win.Event("click", { bubbles: true }));
+    });
+    expect(opened).toEqual(["n-1"]);
+    await act(async () => {
+      chip?.focus();
+      chip?.dispatchEvent(
+        new dom.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }) as unknown as Event,
+      );
+    });
+    dialog = dom.win.document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    await act(async () => {
+      dialog?.dispatchEvent(
+        new dom.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(dom.win.document.querySelector('[role="dialog"]')).toBeNull();
+    expect(dom.win.document.activeElement as unknown).toBe(chip);
+  });
+
+  test("copying a sent selection keeps its chip when pasted into the composer", async () => {
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    const noteMessage: UIMessage = {
+      id: "u-copy",
+      role: "user",
+      parts: [
+        { type: "text", text: "see " },
+        { type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+      ],
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/messages")) {
+        return jsonResponse({ messages: [noteMessage], ratings: [], rateableMessageIds: [] });
+      }
+      if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+      return jsonResponse({
+        model: "prov/model",
+        thinking: "off",
+        favorites: [],
+        catalog: [],
+        thinkingLevels: ["off"],
+      });
+    }) as typeof fetch;
+    const copied: string[] = [];
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (value: string) => { copied.push(value); } },
+    });
+    dom.root = createRoot(dom.container);
+    await act(async () => {
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/copy"
+          title={null}
+          seed={null}
+          onSeeded={() => {}}
+        />,
+      );
+    });
+    await settle(() => dom.container.querySelector(".msg.user p .goblin-chip") !== null);
+    const bubble = dom.container.querySelector<HTMLElement>(".msg.user");
+    const paragraph = bubble?.querySelector("p");
+    expect(bubble).not.toBeNull();
+    expect(paragraph).not.toBeNull();
+    const range = dom.win.document.createRange();
+    range.selectNodeContents(paragraph! as unknown as Parameters<typeof range.selectNodeContents>[0]);
+    const selection = dom.win.document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const DT = (dom.win as unknown as { DataTransfer: typeof DataTransfer }).DataTransfer;
+    const CE = (dom.win as unknown as { ClipboardEvent: typeof ClipboardEvent }).ClipboardEvent;
+    const clipboard = new DT();
+    await act(async () => {
+      bubble!.dispatchEvent(
+        new CE("copy", { bubbles: true, cancelable: true, clipboardData: clipboard }) as unknown as Event,
+      );
+    });
+    expect(clipboard.getData("text/plain")).toBe("see [Budget]");
+    expect(clipboard.getData("text/html")).toContain("data-goblin-chip");
+    const copyButton = dom.container.querySelector<HTMLButtonElement>(
+      ".msg.user .user-actions button[aria-label='Copy message']",
+    );
+    expect(copyButton).not.toBeNull();
+    expect(copyButton?.disabled).toBe(false);
+    await act(async () => {
+      copyButton?.click();
+    });
+    await act(async () => Promise.resolve());
+    expect(copied).toEqual(["see [Budget]"]);
+    const composer = dom.container.querySelector(".composer .message-box");
+    expect(composer).not.toBeNull();
+    await act(async () => {
+      composer!.dispatchEvent(
+        new CE("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }) as unknown as Event,
+      );
+    });
+    const pasted = dom.container.querySelector<HTMLElement>(".composer .goblin-chip");
+    expect(pasted).not.toBeNull();
+    expect(JSON.parse(pasted!.dataset.goblinChip ?? "{}")).toEqual({
+      kind: "note",
+      id: "n-1",
+      title: "Budget",
+    });
+  });
+});
 
 describe("replyStarted (issue #415)", () => {
   const msg = (role: UIMessage["role"], parts: unknown[]) =>
@@ -2848,7 +3098,18 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     const waitingRow = {
       id: "w1",
       mode: "followUp" as const,
-      message: userMsg("m1", "queued text"),
+      message: {
+        id: "m1",
+        role: "user",
+        parts: [
+          { type: "text", text: "queued " },
+          {
+            type: "data-note",
+            data: { id: "note-1", title: "Budget", inline: true },
+          },
+          { type: "text", text: " text" },
+        ],
+      } as unknown as UIMessage,
       createdAt: "2026-01-01T00:00:00.000Z",
       status: "waiting" as const,
     };
@@ -2922,13 +3183,14 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     const notSent = sections[1]!;
     expect(waiting.getAttribute("aria-label")).toBe("Pending input");
     expect(waiting.querySelector("h3")?.textContent).toBe("Pending input");
-    expect(waiting.textContent).toContain("queued text");
+    expect(waiting.textContent).toContain("queued [Budget] text");
     expect(waiting.querySelector(".pending-input-mode")?.textContent).toBe("Queued");
     expect(waiting.querySelector(".pending-input-edit")?.getAttribute("aria-label")).toBe(
       "Edit queued input",
     );
     expect(notSent.getAttribute("aria-label")).toBe("Not sent");
     expect(notSent.querySelector("h3")?.textContent).toBe("Not sent");
+    expect(notSent.textContent).toContain("lost [steer.png] one");
     expect(notSent.querySelector(".pending-input-mode")).toBeNull();
     expect(notSent.querySelector('.pending-input-edit[aria-label="Edit not sent message"]')).not.toBeNull();
     expect(notSent.querySelector('.pending-input-remove[aria-label="Remove not sent message"]')).not.toBeNull();
@@ -2943,7 +3205,7 @@ describe("ChatView stop returns waiting input (issue #941)", () => {
     expect(boxText()).toBe("lost ☒ one");
     expect(
       dom.container.querySelector('section[aria-label="Pending input"]')?.textContent,
-    ).toContain("queued text");
+    ).toContain("queued [Budget] text");
   });
 });
 
@@ -3269,21 +3531,17 @@ describe("ChatView edit and branch", () => {
       });
     }
   };
-  const setText = async (ta: HTMLTextAreaElement, text: string) => {
+  const setText = async (target: HTMLElement, text: string) => {
+    const editor = boxView(target);
+    expect(editor).toBeDefined();
     await act(async () => {
-      ta.focus();
-      Object.getOwnPropertyDescriptor(
-        dom.win.HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(ta, text);
-      ta.dispatchEvent(
-        new dom.win.Event("input", { bubbles: true }) as unknown as Event,
-      );
-      ta.dispatchEvent(
-        new dom.win.KeyboardEvent("keyup", {
-          bubbles: true,
-          key: "e",
-        }) as unknown as Event,
+      editor!.focus();
+      editor!.dispatch(
+        editor!.state.tr.replaceWith(
+          1,
+          editor!.state.doc.content.size - 1,
+          text === "" ? [] : editor!.state.schema.text(text),
+        ),
       );
     });
   };
@@ -3317,8 +3575,8 @@ describe("ChatView edit and branch", () => {
         new dom.win.Event("click", { bubbles: true }) as unknown as Event,
       );
     });
-    const ta = dom.container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit message"]',
+    const ta = dom.container.querySelector<HTMLElement>(
+      '.message-box[aria-label="Edit message"]',
     )!;
     await setText(ta, text);
     const save = [...dom.container.querySelectorAll("button")].find((b) =>
@@ -3330,6 +3588,278 @@ describe("ChatView edit and branch", () => {
       );
     });
   };
+
+  test("edit moves, adds and removes chips while preserving kept parts", async () => {
+    const chatPosts: { editMessageId?: string; message: UIMessage }[] = [];
+    const original: UIMessage = {
+      id: "u-inline-edit",
+      role: "user",
+      parts: [
+        { type: "text", text: "Look " },
+        { type: "data-note", data: { id: "n-old", title: "Budget", inline: true } },
+        { type: "text", text: " at " },
+        {
+          type: "data-attachment",
+          data: {
+            path: "attachments/report.pdf",
+            mediaType: "application/pdf",
+            filename: "report.pdf",
+            size: 3,
+            inline: true,
+          },
+        },
+        { type: "text", text: " please" },
+        { type: "data-context", data: { id: "ctx-1", keep: true } },
+      ],
+    };
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          return jsonResponse({
+            messages: [original],
+            ratings: [],
+            rateableMessageIds: [],
+          });
+        }
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.startsWith("/api/app/notes")) {
+          return jsonResponse({
+            notes: [
+              {
+                id: "n-added",
+                projectId: null,
+                title: "Added",
+                rev: 1,
+                stateRev: 1,
+                pinnedAt: null,
+                archivedAt: null,
+                updatedAt: "2026-01-01T00:00:00Z",
+                preview: "",
+              },
+            ],
+            truncated: false,
+          });
+        }
+        if (url === "/api/app/chat") {
+          const body = JSON.parse(String(init?.body)) as {
+            editMessageId?: string;
+            message: UIMessage;
+          };
+          chatPosts.push(body);
+          return jsonResponse({ submitted: true });
+        }
+        return jsonResponse(configFallback());
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await settle(() => dom.container.querySelector(".msg.user .goblin-chip") !== null);
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>('button[aria-label="Edit message"]')?.click();
+    });
+    const editBox = dom.container.querySelector<HTMLElement>(".msg-edit .message-box");
+    const view = boxView(editBox);
+    expect(editBox).not.toBeNull();
+    expect(view).toBeDefined();
+    expect(editBox?.querySelectorAll(".goblin-chip")).toHaveLength(2);
+    let notePos: number | null = null;
+    view!.state.doc.descendants((node, pos) => {
+      if (node.type.name !== "goblinChip") return;
+      const chip = node.attrs.chip as { kind?: string; id?: string };
+      if (chip.kind === "note" && chip.id === "n-old") notePos = pos;
+    });
+    expect(notePos).not.toBeNull();
+    view!.dispatch(view!.state.tr.setSelection(NodeSelection.create(view!.state.doc, notePos!)));
+    const DT = (dom.win as unknown as { DataTransfer: typeof DataTransfer }).DataTransfer;
+    const CE = (dom.win as unknown as { ClipboardEvent: typeof ClipboardEvent }).ClipboardEvent;
+    const clipboard = new DT();
+    await act(async () => {
+      editBox!.dispatchEvent(
+        new CE("cut", { bubbles: true, cancelable: true, clipboardData: clipboard }) as unknown as Event,
+      );
+    });
+    expect(clipboard.getData("text/html")).toContain("data-goblin-chip");
+    view!.dispatch(view!.state.tr.setSelection(TextSelection.atEnd(view!.state.doc)));
+    await act(async () => {
+      editBox!.dispatchEvent(
+        new CE("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }) as unknown as Event,
+      );
+    });
+    const fileChip = [...dom.container.querySelectorAll<HTMLElement>(".msg-edit .goblin-chip")].find(
+      (chip) => JSON.parse(chip.dataset.goblinChip ?? "{}").kind === "file",
+    );
+    expect(fileChip).not.toBeNull();
+    await act(async () => {
+      fileChip?.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+    });
+    const remove = [...dom.win.document.querySelectorAll('[role="dialog"] button')].find(
+      (button) => button.textContent === "Remove",
+    );
+    expect(remove).not.toBeNull();
+    await act(async () => (remove as unknown as { click(): void } | undefined)?.click());
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>('.msg-edit button[aria-label="Attach a note"]')?.click();
+    });
+    await settle(() => dom.container.querySelector('.note-pick-list [data-value="n-added"]') !== null);
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>('.note-pick-list [data-value="n-added"] button')?.click();
+    });
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>(".msg-edit-actions .primary")?.click();
+    });
+    await settle(() => chatPosts.length > 0);
+    expect(chatPosts).toHaveLength(1);
+    expect(chatPosts[0]?.editMessageId).toBe("u-inline-edit");
+    expect(chatPosts[0]?.message.parts).toEqual([
+      { type: "text", text: "Look  at " },
+      { type: "data-note", data: { id: "n-added", title: "Added", inline: true } },
+      { type: "text", text: " please" },
+      { type: "data-note", data: { id: "n-old", title: "Budget", inline: true } },
+      { type: "data-context", data: { id: "ctx-1", keep: true } },
+    ]);
+  });
+
+  test("edit Save stays blocked during upload and reports its state", async () => {
+    let finishUpload!: (response: Response) => void;
+    const uploadPending = new Promise<Response>((resolve) => {
+      finishUpload = resolve;
+    });
+    let sends = 0;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          return jsonResponse({
+            messages: [userMsg("u-upload", "original")],
+            ratings: [],
+            rateableMessageIds: [],
+          });
+        }
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url === "/api/app/attachments") return uploadPending;
+        if (url === "/api/app/chat") {
+          sends++;
+          return jsonResponse({ submitted: true });
+        }
+        return jsonResponse(configFallback());
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await settle(() => dom.container.querySelector(".msg.user") !== null);
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>('button[aria-label="Edit message"]')?.click();
+    });
+    const input = dom.container.querySelector<HTMLInputElement>('.msg-edit input[type="file"]');
+    expect(input).not.toBeNull();
+    Object.defineProperty(input!, "files", {
+      configurable: true,
+      value: [new dom.win.File(["file"], "new.pdf", { type: "application/pdf" })],
+    });
+    await act(async () => {
+      input!.dispatchEvent(new dom.win.Event("change", { bubbles: true }) as unknown as Event);
+    });
+    await settle(() => dom.container.querySelector(".msg-edit .goblin-chip.uploading") !== null);
+    expect(dom.container.querySelector('[role="status"]')?.textContent).toContain(
+      "Upload still running. Send when it finishes.",
+    );
+    expect(dom.container.querySelector<HTMLButtonElement>(".msg-edit-actions .primary")?.disabled).toBe(true);
+    expect(sends).toBe(0);
+    await act(async () => {
+      finishUpload(
+        jsonResponse({
+          ref: {
+            path: "attachments/new.pdf",
+            mediaType: "application/pdf",
+            filename: "new.pdf",
+            size: 4,
+          },
+        }),
+      );
+      await uploadPending;
+    });
+    await settle(() => dom.container.querySelector('[role="status"]') === null);
+    expect(sends).toBe(0);
+  });
+
+  test("Enter adds a line in the edit box and does not save", async () => {
+    let sends = 0;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          return jsonResponse({
+            messages: [userMsg("u-enter-edit", "line one")],
+            ratings: [],
+            rateableMessageIds: [],
+          });
+        }
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url === "/api/app/chat") {
+          sends++;
+          return jsonResponse({ submitted: true });
+        }
+        return jsonResponse(configFallback());
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await settle(() => dom.container.querySelector(".msg.user") !== null);
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>('button[aria-label="Edit message"]')?.click();
+    });
+    const editBox = dom.container.querySelector<HTMLElement>(".msg-edit .message-box");
+    const view = boxView(editBox);
+    expect(view).toBeDefined();
+    await act(async () => {
+      editBox?.dispatchEvent(
+        new dom.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }) as unknown as Event,
+      );
+    });
+    expect(view?.state.doc.childCount).toBe(2);
+    expect(view?.state.doc.textContent).toBe("line one");
+    expect(sends).toBe(0);
+  });
+
+  test("Escape cancels edit without changing the sent message", async () => {
+    let sends = 0;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          return jsonResponse({
+            messages: [userMsg("u-escape", "original")],
+            ratings: [],
+            rateableMessageIds: [],
+          });
+        }
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url === "/api/app/chat") {
+          sends++;
+          return jsonResponse({ submitted: true });
+        }
+        return jsonResponse(configFallback());
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await settle(() => dom.container.querySelector(".msg.user") !== null);
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>('button[aria-label="Edit message"]')?.click();
+    });
+    const editor = dom.container.querySelector(".msg-edit .message-box")!;
+    await setText(editor as HTMLElement, "changed draft");
+    await act(async () => {
+      editor.dispatchEvent(
+        new dom.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event,
+      );
+    });
+    expect(dom.container.querySelector(".msg-edit")).toBeNull();
+    expect(dom.container.querySelector(".msg.user")?.textContent).toContain("original");
+    expect(dom.container.querySelector(".msg.user")?.textContent).not.toContain("changed draft");
+    expect(sends).toBe(0);
+  });
 
   test("edit opens the bubble editor, confirms the dropped tail, and sends the durable id", async () => {
     const chatPosts: {
@@ -3415,10 +3945,10 @@ describe("ChatView edit and branch", () => {
         new dom.win.Event("click", { bubbles: true }) as unknown as Event,
       );
     });
-    const ta = dom.container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit message"]',
+    const ta = dom.container.querySelector<HTMLElement>(
+      '.message-box[aria-label="Edit message"]',
     )!;
-    expect(ta.value).toBe("hello");
+    expect(ta.textContent).toBe("hello");
     await setText(ta, "hello, edited");
     const save = [...dom.container.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("save & resend"),
@@ -3747,8 +4277,8 @@ describe("ChatView edit and branch", () => {
           new dom.win.Event("click", { bubbles: true }) as unknown as Event,
         );
     });
-    const ta = dom.container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit message"]',
+    const ta = dom.container.querySelector<HTMLElement>(
+      '.message-box[aria-label="Edit message"]',
     )!;
     await setText(ta, "only message, edited");
     const save = [...dom.container.querySelectorAll("button")].find((b) =>
@@ -4051,37 +4581,6 @@ describe("ChatView paged history", () => {
     await mountChat();
     await settle(() => msgTexts().join(" ").includes("only question"));
     expect(dom.container.querySelector(".load-older")).toBeNull();
-  });
-});
-
-describe("editedParts", () => {
-  test("replaces the text and keeps every non-text part", () => {
-    const message: UIMessage = {
-      id: "u1",
-      role: "user",
-      parts: [
-        { type: "text", text: "old" },
-        { type: "data-note", data: { id: "n1" } },
-        { type: "text", text: "second paragraph" },
-      ],
-    };
-    const parts = editedParts(message, "new words");
-    expect(parts).toEqual([
-      { type: "text", text: "new words" },
-      { type: "data-note", data: { id: "n1" } },
-    ]);
-  });
-
-  test("inserts the text when the message carried none", () => {
-    const message = {
-      id: "u1",
-      role: "user",
-      parts: [{ type: "data-note", data: { id: "n1" } }],
-    } as unknown as UIMessage;
-    expect(editedParts(message, "typed")[0]).toEqual({
-      type: "text",
-      text: "typed",
-    });
   });
 });
 
@@ -4695,6 +5194,46 @@ describe("AttachmentChip download failure", () => {
 
 describe("AttachmentChip audio", () => {
   const dom = mountDom();
+
+  test("a repeated inline image keeps one thumbnail below the prose", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      seen.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      return Promise.resolve(
+        new Response(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }), {
+          headers: { "content-type": "image/png" },
+        }),
+      );
+    }) as typeof fetch;
+    const attachment = {
+      type: "data-attachment",
+      data: {
+        path: "attachments/a.png",
+        mediaType: "image/png",
+        filename: "a.png",
+        size: 3,
+        inline: true,
+      },
+    };
+    dom.root = createRoot(dom.container);
+    await act(async () => {
+      dom.root?.render(
+        <MessageParts
+          parts={[
+            { type: "text", text: "see " },
+            attachment,
+            { type: "text", text: " and " },
+            attachment,
+          ] as UIMessage["parts"]}
+          token={null}
+        />,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(dom.container.querySelectorAll("p .goblin-chip")).toHaveLength(2);
+    expect(dom.container.querySelectorAll(".attachment img")).toHaveLength(1);
+    expect(seen).toEqual(["/api/app/attachments/a.png"]);
+  });
 
   test("a stored voice note renders an inline player", async () => {
     const seen: string[] = [];

@@ -16,7 +16,7 @@ import { history, redo, undo } from "@milkdown/kit/prose/history";
 import { inlineChipLabel } from "../../../src/inline-parts.ts";
 import { useConfirm } from "../confirm.tsx";
 import { bytes } from "../opsShared.tsx";
-import { fetchAttachmentUrl } from "./MessageParts.tsx";
+import { fetchAttachmentUrl } from "./attachmentUrl.ts";
 import { canRetry, resolveChip, resolveDraft, retryUpload, subscribe, thumbFor, uploadError } from "./uploads.ts";
 import { chipKey, normalizeDraft, parseChip, sameDraft, type Chip, type Draft, type DraftItem, type FileChip } from "./draft.ts";
 
@@ -398,11 +398,13 @@ export const MessageBox = forwardRef<MessageBoxHandle, MessageBoxProps>(function
 							openPopoverAt(view, sel.from);
 							return true;
 						}
-						onEnterRef.current?.("steer");
+						if (onEnterRef.current === undefined) return false;
+						onEnterRef.current("steer");
 						return true;
 					},
-					"Alt-Enter": () => {
-						onEnterRef.current?.("followUp");
+					"Alt-Enter": (st, dispatch, view) => {
+						if (onEnterRef.current === undefined) return splitBlock(st, dispatch, view);
+						onEnterRef.current("followUp");
 						return true;
 					},
 					"Shift-Enter": splitBlock,
@@ -784,6 +786,7 @@ export function ChipDetails({
 	onOpenNote,
 	onRemove,
 	onRetry,
+	readOnly = false,
 }: {
 	chip: Chip;
 	token: string | null;
@@ -791,6 +794,7 @@ export function ChipDetails({
 	onOpenNote: (id: string) => void;
 	onRemove: () => void;
 	onRetry: () => void;
+	readOnly?: boolean | undefined;
 }) {
 	const [openError, setOpenError] = useState<string | null>(null);
 	const [href, setHref] = useState<string | null>(thumbUrl ?? null);
@@ -891,14 +895,16 @@ export function ChipDetails({
 					Open note
 				</button>
 			)}
-			{retryable && (
+			{!readOnly && retryable && (
 				<button type="button" onClick={onRetry}>
 					Retry
 				</button>
 			)}
-			<button type="button" onClick={onRemove}>
-				Remove
-			</button>
+			{!readOnly && (
+				<button type="button" onClick={onRemove}>
+					Remove
+				</button>
+			)}
 			{openError !== null && <p className="chip-details-error">{openError}</p>}
 		</div>
 	);

@@ -1013,18 +1013,18 @@ describe("app chat", () => {
 				});
 			for (const data of [{ ...ref, inline: false }, { ...ref, inline: "yes" }]) {
 				const bad = await post([{ type: "data-attachment", data }]);
-				expect(bad.status).toBe(400);
+				expect(bad.status).toBe(422);
 			}
 			const badNote = await post([
 				{ type: "text", text: "x" },
 				{ type: "data-note", data: { id: note.id, inline: "yes" } },
 			]);
-			expect(badNote.status).toBe(400);
+			expect(badNote.status).toBe(422);
 			const badSkill = await post([
 				{ type: "text", text: "x" },
 				{ type: "data-skill", data: { name: "deploy", inline: false } },
 			]);
-			expect(badSkill.status).toBe(400);
+			expect(badSkill.status).toBe(422);
 			expect(store.history("app/chat-inline").find((m) => m.id === "m2")).toBeUndefined();
 		} finally {
 			http.stop();

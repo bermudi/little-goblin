@@ -321,7 +321,7 @@ export function Composer({
 		});
 		if (incoming.length > 0) runBox(() => boxRef.current?.insertChips(incoming));
 	};
-	const { send, sendError, sendNote, editedAfterSend } = useSubmit({
+	const { send, sendError, sendNote, clearSendNote, editedAfterSend } = useSubmit({
 		busy,
 		onStop,
 		configSaving,
@@ -330,6 +330,10 @@ export function Composer({
 		setBoxDraft: (next) => runBox(() => boxRef.current?.setDraft(next)),
 		onSend: sendWithModelSettings,
 	});
+	const currentUploadState = uploadState(draft);
+	useEffect(() => {
+		if (sendNote !== null && currentUploadState !== sendNote) clearSendNote();
+	}, [clearSendNote, currentUploadState, sendNote]);
 	const onBoxChange = (next: Draft) => {
 		if (mountSync.current) {
 			mountSync.current = false;
@@ -425,7 +429,9 @@ export function Composer({
 			)}
 			{sendNote !== null && (
 				<div className="composer-note" role="status">
-					{sendNote}
+					{sendNote === "uploading"
+						? "Upload still running. Send when it finishes."
+						: "Retry or remove the failed upload."}
 				</div>
 			)}
 			{recording && (

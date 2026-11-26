@@ -23,14 +23,26 @@ import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
-import { hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
+import { copyInlineSelection, hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
 import { placeSentMedia } from "./chat/sentMedia.ts";
 import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
+import { NotePicker } from "./chat/NotePicker.tsx";
+import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
+import {
+  draftFromMessages,
+  draftToParts,
+  isEmptyDraft,
+  uploadState,
+  type Chip,
+  type Draft,
+} from "./chat/draft.ts";
+import { MessageBox, type MessageBoxHandle } from "./chat/MessageBox.tsx";
+import { useAttachments } from "./chat/useAttachments.ts";
+import { useSkillNoteStaging } from "./chat/useSkillNoteStaging.ts";
 import {
   ActionBar,
-  editedParts,
   FoldMark,
   foldStartExcerpt,
   MetaLine,
@@ -160,6 +172,148 @@ export function rewindTranscript(
   const index = messages.findIndex((message) => message.id === event.messageId);
   if (index === -1) return messages;
   return messages.slice(0, index + (event.replacedBy === event.messageId ? 1 : 0));
+}
+
+interface EditingMessage {
+  id: string;
+  draft: Draft;
+  kept: UIMessage["parts"];
+}
+
+function EditMessageBox({
+  editing,
+  token,
+  busy,
+  onDraftChange,
+  onSave,
+  onCancel,
+  onOpenNote,
+}: {
+  editing: EditingMessage;
+  token: string | null;
+  busy: boolean;
+  onDraftChange: (draft: Draft) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onOpenNote?: ((id: string) => void) | undefined;
+}) {
+  const editRef = useRef<HTMLDivElement | null>(null);
+  const boxRef = useRef<MessageBoxHandle | null>(null);
+  useEffect(() => {
+    boxRef.current?.focus("end");
+  }, []);
+  const insertChips = useCallback((chips: Chip[]) => {
+    boxRef.current?.insertChips(chips);
+  }, []);
+  const dropTarget = useCallback((target: EventTarget | null) => {
+    const root = editRef.current;
+    return root !== null && target !== null && root.contains(target as Node);
+  }, []);
+  const { fileInput, pickFile } = useAttachments({
+    token,
+    busy: false,
+    onSend: () => false,
+    insertChips,
+    dropTarget,
+  });
+  const {
+    notePickerOpen,
+    setNotePickerOpen,
+    skillPickerOpen,
+    setSkillPickerOpen,
+    notePickRef,
+    noteBtnRef,
+    pickNote,
+    stageSkill,
+  } = useSkillNoteStaging({ insertChips });
+  const currentUploadState = uploadState(editing.draft);
+  return (
+    <div
+      className="msg-edit"
+      data-message-edit
+      ref={editRef}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <input
+        ref={fileInput}
+        type="file"
+        hidden
+        multiple
+        onChange={(event) => {
+          for (const file of Array.from(event.target.files ?? [])) void pickFile(file);
+          event.target.value = "";
+        }}
+      />
+      <MessageBox
+        ref={boxRef}
+        initial={editing.draft}
+        onChange={onDraftChange}
+        onFiles={(files) => files.forEach((file) => void pickFile(file))}
+        onOpenNote={onOpenNote}
+        token={token}
+        ariaLabel="Edit message"
+        placeholder="Edit message"
+      />
+      <div className="msg-edit-tools">
+        <button type="button" aria-label="Attach a file" onClick={() => fileInput.current?.click()}>
+          file
+        </button>
+        <button
+          ref={noteBtnRef}
+          type="button"
+          aria-label="Attach a note"
+          onClick={() => setNotePickerOpen((open) => !open)}
+        >
+          note
+        </button>
+        <button type="button" aria-label="Add a skill" onClick={() => setSkillPickerOpen(true)}>
+          skill
+        </button>
+      </div>
+      {currentUploadState !== "ready" && (
+        <div className="composer-note" role="status">
+          {currentUploadState === "uploading"
+            ? "Upload still running. Send when it finishes."
+            : "Retry or remove the failed upload."}
+        </div>
+      )}
+      <div className="msg-edit-actions">
+        <button type="button" onClick={onCancel}>cancel</button>
+        <button
+          type="button"
+          className="primary"
+          onClick={onSave}
+          disabled={
+            busy ||
+            (isEmptyDraft(editing.draft) && editing.kept.length === 0) ||
+            currentUploadState !== "ready"
+          }
+        >
+          save &amp; resend
+        </button>
+      </div>
+      {notePickerOpen && (
+        <NotePicker
+          pickRef={notePickRef}
+          token={token}
+          onPick={pickNote}
+          onClose={() => setNotePickerOpen(false)}
+        />
+      )}
+      {skillPickerOpen && (
+        <SkillPickerSheet
+          token={token}
+          onClose={() => setSkillPickerOpen(false)}
+          onStage={stageSkill}
+        />
+      )}
+    </div>
+  );
 }
 
 export function ChatView({
@@ -385,7 +539,7 @@ function Chat({
   // turn. The backup exists only for an edit that fails while the
   // transcript refresh cannot reach the server; in every other failure
   // the durable history reconciles the view.
-  const [editing, setEditing] = useState<{ id: string; draft: string } | null>(
+  const [editing, setEditing] = useState<EditingMessage | null>(
     null,
   );
   const editBackup = useRef<UIMessage[] | null>(null);
@@ -923,15 +1077,27 @@ function Chat({
 
   const beginEdit = (m: UIMessage) => {
     if (busy) return;
-    setEditing({ id: m.id, draft: messageText(m) });
+    const editable = m.parts.filter(
+      (part) =>
+        part.type === "text" ||
+        part.type === "data-attachment" ||
+        part.type === "data-note" ||
+        part.type === "data-skill",
+    );
+    setEditing({
+      id: m.id,
+      draft: draftFromMessages([editable]),
+      kept: m.parts.filter((part) => !editable.includes(part)),
+    });
   };
   const cancelEdit = () => setEditing(null);
   const saveEdit = async (m: UIMessage) => {
     if (busy || editing === null || editing.id !== m.id) return;
     const index = messages.findIndex((x) => x.id === m.id);
     if (index === -1) return;
-    const draft = editing.draft;
-    const parts = editedParts(m, draft);
+    if (uploadState(editing.draft) !== "ready") return;
+    if (isEmptyDraft(editing.draft) && editing.kept.length === 0) return;
+    const parts = [...draftToParts(editing.draft), ...editing.kept];
     const tail = messages.length - index - 1;
     // A rewind is destructive by design. Say so when it is about to
     // drop real messages; the branch action is the way to keep them.
@@ -1078,39 +1244,24 @@ function Chat({
                   <div
                     className={`msg user${prevUser ? " after-user" : ""}${nextUser ? " before-user" : ""}`}
                     data-outline-anchor={m.id}
+                    onCopy={copyInlineSelection}
                   >
                     {isEditing ? (
-                      <div className="msg-edit">
-                        <textarea
-                          value={editing.draft}
-                          rows={Math.min(
-                            10,
-                            Math.max(2, editing.draft.split("\n").length),
-                          )}
-                          onChange={(e) =>
-                            setEditing({ id: m.id, draft: e.target.value })
-                          }
-                          aria-label="Edit message"
-                          // autofocus is intended: opening the editor is the user's request
-                          autoFocus
-                        />
-                        <div className="msg-edit-actions">
-                          <button type="button" onClick={cancelEdit}>
-                            cancel
-                          </button>
-                          <button
-                            type="button"
-                            className="primary"
-                            onClick={() => void saveEdit(m)}
-                            disabled={
-                              editing.draft.trim() === "" &&
-                              !m.parts.some((p) => p.type !== "text")
-                            }
-                          >
-                            save &amp; resend
-                          </button>
-                        </div>
-                      </div>
+                      <EditMessageBox
+                        editing={editing}
+                        token={token}
+                        busy={busy}
+                        onDraftChange={(draft) =>
+                          setEditing((current) =>
+                            current !== null && current.id === m.id
+                              ? { ...current, draft }
+                              : current,
+                          )
+                        }
+                        onSave={() => void saveEdit(m)}
+                        onCancel={cancelEdit}
+                        onOpenNote={onOpenNote}
+                      />
                     ) : (
                       <>
                         <UserFold>

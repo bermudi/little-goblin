@@ -445,6 +445,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			"Upload still running. Send when it finishes.",
 		);
 		await act(async () => uploads[0]?.settle.ok(refFor("attachments/test")));
+		expect(container.querySelector('[role="status"]')).toBeNull();
 		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
 		await submit();
 		expect(sent).toEqual([[
@@ -724,6 +725,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await act(async () => {
 			(container.querySelector('[role="dialog"] button:last-of-type') as HTMLButtonElement | null)?.click();
 		});
+		expect(container.querySelector('[role="status"]')).toBeNull();
 		await submit();
 		expect(sent).toHaveLength(1);
 		expect(sent[0]).toEqual([

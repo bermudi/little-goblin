@@ -3608,10 +3608,13 @@ describe("app projects surface", () => {
 		});
 		// The live transcript labels the just-sent chip before any
 		// history reload — and the chip still navigates.
-		const chips = container.querySelectorAll(".note-chip");
+		const chips = container.querySelectorAll(".msg.user .goblin-chip");
 		expect(chips).toHaveLength(1);
-		expect(chips[0]!.textContent).toContain("Note · Shopping");
-		await click(chips[0]!.querySelector("button.attachment-name"));
+		expect(chips[0]!.getAttribute("aria-label")).toBe("Note Shopping");
+		await click(chips[0]);
+		const details = container.querySelector('[role="dialog"] button');
+		expect(details).not.toBeNull();
+		await click(details);
 		expect(win.location.pathname).toBe("/app/n/n-shopping");
 	});
 

@@ -1894,26 +1894,39 @@ h6.md-h {
 		opacity: 1;
 	}
 }
-/* The inline rewind editor: the bubble's own textarea, sized to the text
-   and never wider than the message it replaces. */
-.msg-edit textarea {
-	display: block;
+.msg-edit .message-box-host {
 	width: min(70ch, 100%);
-	min-height: 2.5rem;
-	max-height: 30vh;
-	resize: vertical;
-	font: inherit;
-	font-size: 15px;
-	line-height: 1.6;
-	color: var(--app-fg);
-	background: var(--app-bg);
 	border: 1px solid color-mix(in oklab, var(--app-fg) 18%, transparent);
 	border-radius: 10px;
 	padding: 0.45rem 0.6rem;
-	outline: none;
+	background: var(--app-bg);
 }
-.msg-edit textarea:focus {
+.msg-edit .message-box {
+	min-height: 2.5rem;
+	max-height: 30vh;
+	padding: 0;
+	font-size: 15px;
+	line-height: 1.6;
+}
+.msg-edit .message-box-host:focus-within {
 	border-color: color-mix(in oklab, var(--app-fg) 30%, transparent);
+}
+.msg-edit-tools {
+	display: flex;
+	gap: 0.35rem;
+	margin-top: 0.35rem;
+}
+.msg-edit-tools button {
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	background: transparent;
+	border: 0;
+	padding: 0.15rem 0.35rem;
+	border-radius: 6px;
+}
+.msg-edit-tools button:hover {
+	color: var(--app-fg);
+	background: var(--app-hover);
 }
 .msg-edit-actions {
 	display: flex;

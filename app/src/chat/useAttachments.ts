@@ -9,11 +9,13 @@ export function useAttachments({
 	busy,
 	onSend,
 	insertChips,
+	dropTarget,
 }: {
 	token: string | null;
 	busy: boolean;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	insertChips: (chips: Chip[]) => void;
+	dropTarget?: ((target: EventTarget | null) => boolean) | undefined;
 }) {
 	const fileInput = useRef<HTMLInputElement>(null);
 	// The mic's failure mode is silent by browser default (a denied
@@ -146,7 +148,17 @@ export function useAttachments({
 			if (isFile(e)) e.preventDefault();
 		};
 		const drop = (e: DragEvent) => {
-			if (!isFile(e)) return;
+			const node = e.target instanceof Node ? e.target : null;
+			const element = node instanceof Element ? node : node?.parentElement;
+			if (
+				!isFile(e) ||
+				(dropTarget === undefined &&
+					element !== null &&
+					element !== undefined &&
+					element.closest("[data-message-edit]") !== null) ||
+				(dropTarget !== undefined && !dropTarget(e.target))
+			)
+				return;
 			e.preventDefault();
 			for (const f of Array.from(e.dataTransfer?.files ?? [])) pickFile(f);
 		};
@@ -156,7 +168,7 @@ export function useAttachments({
 			window.removeEventListener("dragover", over);
 			window.removeEventListener("drop", drop);
 		};
-	}, [pickFile]);
+	}, [dropTarget, pickFile]);
 
 	return {
 		fileInput,

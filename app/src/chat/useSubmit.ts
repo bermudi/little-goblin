@@ -1,4 +1,4 @@
-import { useRef, useState, type RefObject } from "react";
+import { useCallback, useRef, useState, type RefObject } from "react";
 import type { UIMessage } from "ai";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
 import { draftToParts, emptyDraft, unsentRemainder, uploadState, type Draft } from "./draft.ts";
@@ -26,7 +26,8 @@ export function useSubmit({
 }) {
 	const sendingRef = useRef(false);
 	const [sendError, setSendError] = useState<string | null>(null);
-	const [sendNote, setSendNote] = useState<string | null>(null);
+	const [sendNote, setSendNote] = useState<"uploading" | "failed" | null>(null);
+	const clearSendNote = useCallback(() => setSendNote(null), []);
 	const editedAfterSend = useRef(false);
 
 	const send = (whenBusy: "steer" | "followUp" = "steer") => {
@@ -40,11 +41,11 @@ export function useSubmit({
 		const draft = box.getDraft();
 		const uploads = uploadState(draft);
 		if (uploads === "uploading") {
-			setSendNote("Upload still running. Send when it finishes.");
+			setSendNote("uploading");
 			return;
 		}
 		if (uploads === "failed") {
-			setSendNote("Retry or remove the failed upload.");
+			setSendNote("failed");
 			return;
 		}
 		const parts = draftToParts(draft);
@@ -72,5 +73,5 @@ export function useSubmit({
 			});
 	};
 
-	return { send, sendError, sendNote, editedAfterSend };
+	return { send, sendError, sendNote, clearSendNote, editedAfterSend };
 }

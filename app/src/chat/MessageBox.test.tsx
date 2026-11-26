@@ -395,6 +395,19 @@ describe("MessageBox", () => {
 		expect(docText()).toBe("hi\n");
 	});
 
+	test("without an Enter handler, Enter and Alt-Enter add lines", async () => {
+		await mount();
+		await edit((v) => v.dispatch(v.state.tr.insertText("hi")));
+		await act(async () => {
+			key("Enter");
+		});
+		expect(docText()).toBe("hi\n");
+		await act(async () => {
+			key("Enter", { altKey: true });
+		});
+		expect(docText()).toBe("hi\n\n");
+	});
+
 	test("the popover opens on Enter over a selected chip, and Remove deletes the chip", async () => {
 		const box = await mount();
 		await act(async () => {

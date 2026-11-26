@@ -1393,6 +1393,22 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	});
 
+	test("an archived subagent stays off the Archive page and its count", async () => {
+		seedConversation();
+		conversations[0]!.archivedAt = "2026-11-25T00:00:00Z";
+		conversations.push({
+			...conversations[0]!,
+			id: "app/child",
+			title: "child chat",
+			parentId: "app/fixture",
+		});
+		await mount();
+		expect(container.querySelector(".rail-archived .count")?.textContent).toBe("1");
+		await click(container.querySelector(".rail-archived"));
+		expect(container.querySelector(".archive-table a[href='/app/c/fixture']")).not.toBeNull();
+		expect(container.querySelector(".archive-table a[href='/app/c/child']")).toBeNull();
+	});
+
 	test("Back to Settings closes thread sources and Forward does not reopen them", async () => {
 		seedConversation();
 		await mount();

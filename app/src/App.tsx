@@ -789,7 +789,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
 	const archived = unbound
-		.filter((c) => c.archivedAt !== null)
+		.filter((c) => c.archivedAt !== null && c.parentId == null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 
 	const currentProject =

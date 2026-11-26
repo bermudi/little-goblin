@@ -45,6 +45,16 @@ describe("turn journal", () => {
 		);
 		expect(listToolRuns(store.db, conv.id, 15000, ["c-late"])).toHaveLength(1);
 		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
+		store.db.run(
+			"UPDATE turn_tool_calls SET began_ms = 16000 WHERE run_id = ? AND tool_call_id = 't6'",
+			[runId],
+		);
+		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
+		store.db.run(
+			"UPDATE turn_tool_calls SET model_call_id = NULL WHERE run_id = ? AND tool_call_id = 't6'",
+			[runId],
+		);
+		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(1);
 		store.close();
 	});
 

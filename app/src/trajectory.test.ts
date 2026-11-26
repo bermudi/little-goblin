@@ -79,6 +79,11 @@ describe("buildTrajectory", () => {
 		expect(rows[0]!.calls[0]!.tools).toHaveLength(1);
 	});
 
+	test("a stamped tool whose call is not listed does not join another call by time", () => {
+		const rows = buildTrajectory([call("b", 60, 70)], [tool("t", 75, 80, "a")], [run("r1", 0, 100)], now);
+		expect(rows[0]!.calls[0]!.tools).toHaveLength(0);
+	});
+
 	test("calls anchor to the last started run or a first fallback row", () => {
 		const rows = buildTrajectory([call("before", 5), call("later", 25)], [], [
 			run("r1", 10),

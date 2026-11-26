@@ -2215,6 +2215,69 @@ test.each([
 	}
 });
 
+test("the window read leaves out a stamped tool whose call fell off the list when the call clock moved behind", async () => {
+	const id = "window-clock-list";
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call, store } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", id);
+		const conversation = store.get(`app/${id}`)!;
+		const turnCalls = store.db
+			.query(
+				"SELECT call_id FROM model_cache_calls WHERE conversation_id = ? AND purpose IS NULL ORDER BY started_ms, rowid",
+			)
+			.all(conversation.id) as { call_id: string }[];
+		expect(turnCalls).toHaveLength(2);
+		const first = turnCalls[0]!.call_id;
+		const second = turnCalls[1]!.call_id;
+		store.db.run(
+			"UPDATE model_cache_calls SET started_ms = started_ms - 3600000, finished_ms = finished_ms - 3600000 WHERE conversation_id = ?",
+			[conversation.id],
+		);
+		const kept = 200;
+		const existing = (
+			store.db
+				.query("SELECT COUNT(*) AS count FROM model_cache_calls WHERE conversation_id = ?")
+				.get(conversation.id) as { count: number }
+		).count;
+		const later = store.db.query(
+			`INSERT INTO model_cache_calls (call_id, conversation_id, purpose, route_key, model, started_ms,
+				finished_ms, head_hash, request_hash, settings_hash, prompt_hashes, status, input_tokens,
+				cache_read, cache_write, output_tokens, idle_ms, prefix_relation, shared_messages, cache_ttl_ms)
+			SELECT ?, conversation_id, purpose, route_key, model, ?, ?, head_hash, request_hash, settings_hash,
+				prompt_hashes, status, input_tokens, cache_read, cache_write, output_tokens, idle_ms,
+				prefix_relation, shared_messages, cache_ttl_ms
+			FROM model_cache_calls WHERE call_id = ?`,
+		);
+		for (let index = 0; index < kept - existing + 1; index++) {
+			later.run(`later-${index}`, Date.now() + index, Date.now() + index + 10, second);
+		}
+		const body = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			calls: { callId: string }[];
+			toolRuns: { modelCallId: string | null }[];
+		};
+		expect(body.calls).toHaveLength(kept);
+		expect(body.calls.map((entry) => entry.callId)).toContain(second);
+		expect(body.calls.map((entry) => entry.callId)).not.toContain(first);
+		expect(body.toolRuns).toHaveLength(0);
+	} finally {
+		http.stop();
+	}
+});
+
 test.each([
 	{ name: "legacy", final: {}, input: 900, cacheRead: 800 },
 	{

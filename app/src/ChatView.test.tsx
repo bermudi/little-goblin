@@ -5146,30 +5146,43 @@ describe("quoteSpeaker (happy-dom)", () => {
 describe("QuoteFab source id (happy-dom)", () => {
   const dom = mountDom();
   test("onQuote receives the selected bubble's message id", async () => {
+    const transcript = document.createElement("div");
+    const fabHost = document.createElement("div");
+    dom.container.append(transcript, fabHost);
     const bubble = document.createElement("div");
     bubble.className = "msg assistant";
     bubble.setAttribute("data-message-id", "reply-7");
     const text = document.createTextNode("selected words");
     bubble.appendChild(text);
-    dom.container.appendChild(bubble);
+    transcript.appendChild(bubble);
     const range = document.createRange();
     range.selectNodeContents(text);
-    Object.defineProperty(range, "getClientRects", { value: () => [{ left: 10, right: 90, top: 10, bottom: 30, width: 80, height: 20 }] });
+    const rangePrototype = dom.win.Range.prototype;
+    const originalGetClientRects = Object.getOwnPropertyDescriptor(rangePrototype, "getClientRects");
+    Object.defineProperty(rangePrototype, "getClientRects", {
+      configurable: true,
+      value: () => [{ left: 10, right: 90, top: 10, bottom: 30, width: 80, height: 20 }],
+    });
     document.getSelection()?.removeAllRanges();
     document.getSelection()?.addRange(range);
     const calls: unknown[][] = [];
-    const ref = { current: dom.container };
-    await act(async () => {
-      dom.root = createRoot(dom.container);
-      dom.root.render(<QuoteFab root={ref} onQuote={(...args) => calls.push(args)} />);
-    });
-    await act(async () => {
-      document.dispatchEvent(new Event("selectionchange"));
-    });
-    const button = dom.container.querySelector(".quote-fab") as HTMLButtonElement | null;
-    expect(button).not.toBeNull();
-    await act(async () => { button?.click(); });
-    expect(calls[0]?.[2]).toBe("reply-7");
+    const ref = { current: transcript };
+    try {
+      await act(async () => {
+        dom.root = createRoot(fabHost);
+        dom.root.render(<QuoteFab root={ref} onQuote={(...args) => calls.push(args)} />);
+      });
+      await act(async () => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      const button = fabHost.querySelector(".quote-fab") as HTMLButtonElement | null;
+      expect(button).not.toBeNull();
+      await act(async () => { button?.click(); });
+      expect(calls[0]?.[2]).toBe("reply-7");
+    } finally {
+      if (originalGetClientRects === undefined) delete (rangePrototype as unknown as { getClientRects?: unknown }).getClientRects;
+      else Object.defineProperty(rangePrototype, "getClientRects", originalGetClientRects);
+    }
   });
 });
 

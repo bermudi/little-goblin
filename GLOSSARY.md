@@ -56,13 +56,14 @@
 - **Retention:** saving an exchange to memory. Goblin queues it, then Hindsight extracts from it.
 - **Retired pin:** an older herdr-core version and binary hash that Goblin shipped before the current pin. It is listed in `RETIRED_HC_PINS` in `src/hc-install.ts`. It exists so doctor can tell a binary that the next delegate run will replace from a tampered or corrupt one: right after a release moves the pin from 0.1.21 to a newer version, a box still holding the 0.1.21 binary passes `delegation.hc` instead of failing (#809).
 - **Roll:** a fresh app conversation made when the Rolling chat treats a
-  message as a new subject. For example, after a quiet gap and a new-subject
+  message as a new subject, or when the operator starts one by hand with
+  "New conversation". For example, after a quiet gap and a new-subject
   check, Goblin starts an empty conversation instead of adding the message to
   the old one.
 - **Rolling chat:** the one chat-list entry that routes app messages to the
   current app conversation and starts a fresh one when the quiet-gap rule says
-  to. For example, the second message inside the gap stays in the same
-  conversation.
+  to or the operator asks. For example, the second message inside the gap
+  stays in the same conversation.
 - **RRF:** reciprocal rank fusion. A model-free way to merge ranked lists; also the pinned reranker choice for the memory service.
 - **Screening:** the filter that replaces keys, tokens, and passwords with `[REDACTED:…]` before text reaches memory.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.

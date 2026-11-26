@@ -3345,17 +3345,18 @@ button.pathchip:hover svg {
 	padding-left: 12px;
 	color: var(--app-fg-muted);
 }
-/* The manual lever — a quiet footer action under a hairline, not a
-   form button floating in the panel. */
+.ctx-actions {
+	display: flex;
+	gap: 0.25rem;
+	margin-top: 0.1rem;
+	border-top: 1px solid var(--app-divider);
+}
 .ctx-act {
-	width: 100%;
 	font-size: 12px;
 	text-align: left;
 	padding: 0.45rem 0.5rem;
-	margin-top: 0.1rem;
 	border-radius: 6px;
 	border: none;
-	border-top: 1px solid var(--app-divider);
 	color: var(--app-fg);
 }
 .ctx-act:hover:not(:disabled) {

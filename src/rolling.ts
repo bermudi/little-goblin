@@ -38,7 +38,8 @@ export type RollDecidedBy =
 	| "fire" // a scheduled program landing in the DM
 	| "first" // no current conversation exists yet
 	| "check" // the follow-up check judged the burst
-	| "fallback"; // the check couldn't run — join current, answer the message
+	| "fallback" // the check couldn't run — join current, answer the message
+	| "manual";
 
 export interface RollResult {
 	conv: Conversation;
@@ -117,6 +118,27 @@ function laneRoll(
 	};
 	log.info(lane.logs.rolled, { ...lane.logs.rolledFields, ...fields });
 	return { conv, rolled: true, decidedBy, ...(probability !== undefined ? { probability } : {}) };
+}
+
+export type ManualRoll =
+	| { kind: "rolled"; conv: Conversation }
+	| { kind: "busy"; conv: Conversation }
+	| { kind: "empty"; conv: Conversation };
+
+export function rollLaneNow(
+	deps: Pick<RollDeps, "store" | "runtime">,
+	lane: RollLane,
+): ManualRoll {
+	const current = lane.current();
+	if (current === null) return { kind: "rolled", conv: laneRoll(lane, null, "manual", null).conv };
+	if (deps.runtime.busy(current.id)) return { kind: "busy", conv: current };
+	if (
+		deps.store.lastEntry(current.id, "user") === null &&
+		deps.store.lastEntry(current.id, "assistant") === null
+	) {
+		return { kind: "empty", conv: current };
+	}
+	return { kind: "rolled", conv: laneRoll(lane, current, "manual", null).conv };
 }
 
 function laneContinued(

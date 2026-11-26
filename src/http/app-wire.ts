@@ -12,6 +12,11 @@ export interface AppConversationList {
 	rolling: { chain: AppConversationListItem[] };
 }
 
+export interface AppRollResponse {
+	conversationId: string;
+	rolled: boolean;
+}
+
 export interface AppConversationListItem extends AppConversationSummary {
 	busy: boolean;
 }

@@ -20,7 +20,8 @@ longer than "where you asked", the thinking is the bug.
 **Protocol.** Keep a shared storage and stream shape so a parallel
 translation layer cannot drift. Stop means stop server-side work, not just
 disconnect the browser. Manual compaction belongs in the gauge rather than
-a chat command grammar (2026-10-16).
+a chat command grammar (2026-10-16), and so does starting a new
+conversation by hand (2026-11-26, #957): the app has no `/new` command.
 
 **The context gauge measures occupancy, not cost.** Counting all billed
 steps once showed 223k tokens in a 37k window. Only the last call measures
@@ -447,6 +448,20 @@ stays where its trigger is, so a later roll cannot run it twice. A source
 moved to a project is no longer a roll, so its later wakes stay with it
 (#938). Mail and program approval notices stay beside their card, because
 they start no turn. Ordinary app chats keep their own wakes.
+
+**Starting a new conversation by hand (2026-11-26, #957).** `/new` and
+`/back` are Telegram commands; the app's send path parses none. The Rolling
+chat's context gauge offers "New conversation" beside "Compact now" on the
+popover's last row, and only on that page. It starts a new roll at once,
+after the latest roll, also while an earlier roll is open; the quiet gap and
+the new-subject check do not apply. It is off while a turn runs in the
+conversation on screen, and the server refuses it while a turn runs in the
+latest roll. It starts nothing when the latest roll is still empty. The
+operator lands in the new roll with the composer focused. The draft of the
+conversation that was on screen moves to the new roll; a draft in another
+roll stays there. The earlier roll keeps its history, its pending input and
+its settings. The new roll takes the app's model settings, like any roll,
+and wakes follow the rule above.
 
 **Client.** The PWA keeps all ordinary chat rows and adds a
 Rolling chat row at the top of the chat list, with its own loop icon and no

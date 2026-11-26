@@ -1014,7 +1014,14 @@ The view has two tabs. **Window** is the capture and its raw parts.
 model call, colored by prefix relation, and under it a thin bar per tool.
 Width is time and empty space is waiting. The Model calls table lives in
 this tab. Until a prompt is captured, the view opens on this tab, so the
-calls stay reachable while the first turn runs.
+calls stay reachable while the first turn runs. Tools that overlap in time
+sit on separate lines, so two tools that run at the same time are both
+visible.
+
+Each row is one picture for assistive technology: it names the turn and
+the counts. The tools are also written as hidden text beside the picture,
+so a screen reader can read each tool's name, state, duration and the
+call that asked for it.
 
 **Stamp.** When a tool is dispatched, the journal writes on the tool row
 the id of the model call that asked for it (`model_call_id` on
@@ -1037,15 +1044,23 @@ both engines ([`runtime.test.ts`](../src/runtime.test.ts)).
 What the first version accepts:
 
 - **Which row a call sits in** is still placed by the run's start and end
-  times. A tool never leaves its call.
+  times. A call that began after every run ended goes to the "No run" row.
+  A tool never leaves its call.
 - **The time before the first tool starts** is plain. The journal does not
   say what a wait was, so the view cannot say "waiting on you".
 - **One row per run.** A resumed turn is its own row, numbered with its
   predecessor's turn. Calls that match no run share one row, "No run",
   placed by the start of its first call.
 - **A tool row without a stamp** (written before this change) falls back
-  to the last call that finished before it began.
+  to the last call of its run that finished before it began. A tool that
+  finds none is not drawn.
 - **A replayed or skipped tool** has no start time and is not drawn.
+- **The read trusts the stamp first.** The view lists the newest 200
+  model calls. A tool row stamped to a listed call is read whatever its
+  start time says, and the run of every listed tool row is read with it.
+  The time bound applies only to rows without a stamp. More than 2000
+  tool rows can qualify. The newest are kept, and the view does not say
+  so.
 - **Refresh is manual.** The tab reads once per visit and when the
   operator presses Refresh. It does not follow a running turn by itself.
   The read carries the whole captured prompt, so following a turn needs a
@@ -1054,7 +1069,8 @@ What the first version accepts:
 
 A call or a tool with no end is drawn as running only while its run is
 still open. When the process dies it leaves rows open forever, so in an
-ended run the same rows draw dashed grey as unfinished.
+ended run the same rows draw dashed grey as unfinished. An unfinished
+call shows no duration, because none was recorded.
 
 An open run's axis ends at the moment the view was read, not at its last
 event. A running tool has no end yet, so with the shorter axis it shrank

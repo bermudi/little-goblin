@@ -34,8 +34,7 @@ In a roll that has messages, open the context gauge
 toggle). The popover's last row reads "Compact now", then "New
 conversation". "New conversation" starts a fresh roll at once: the
 transcript shows "— new conversation —" with "↑ Previous conversation",
-and the text typed but not sent comes along. On a desktop width the
-composer has focus; on phone widths the app never takes focus, so the
-keyboard stays closed. The action is off while a turn runs and in an
-empty roll, and an ordinary chat does not offer it. The log line is
-`app lane rolled` with `decidedBy: "manual"`.
+the text typed but not sent comes along, and the composer has focus on
+every width. The action is off while a turn runs in the conversation on
+screen or in the latest roll, and in an empty roll. An ordinary chat does
+not offer it. The log line is `app lane rolled` with `decidedBy: "manual"`.

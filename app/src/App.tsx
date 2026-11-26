@@ -218,6 +218,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		conversationId: string;
 		messageId: string;
 	} | null>(null);
+	const [rollFocus, setRollFocus] = useState(0);
 	const [sourcesOpen, setSourcesOpen] = useState(false);
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
@@ -447,6 +448,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			setRollingRouted(null);
 		}
 	}, [rollingRouted, rollingChain]);
+	useEffect(() => {
+		if (rollFocus !== 0) setRollFocus(0);
+	}, [rollingId, rollFocus]);
 
 	// A /app/c/<id> load selects that conversation once the list
 	// arrives.
@@ -890,6 +894,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				setRollingViewing(null);
 				setRollingRouted(result.conversationId);
 				setRollingFollow(null);
+				setRollFocus((n) => n + 1);
 			}
 			await acted("conversations");
 			return null;
@@ -1723,6 +1728,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							noteProjectId={null}
 							rolling
 							onRoll={rollChat}
+							focusSignal={rollFocus}
+							rollDisabled={rollingCurrent?.busy === true}
 							onSeeded={() => {}}
 							onSendAccepted={() => void acted("conversations")}
 							onRollingAccepted={(id, _rolled, messageId) => {

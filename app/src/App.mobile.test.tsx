@@ -766,6 +766,49 @@ describe("mobile: chats screen and navigation", () => {
 		expect((win.document.activeElement as unknown) === (editor as unknown)).toBe(true);
 	});
 
+	test("New conversation leaves the composer focused on a phone width, once", async () => {
+		await rollByHand();
+		expect(draftText()).toBe("typed before the roll");
+		const editor = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (editor as unknown)).toBe(true);
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => container.textContent?.includes("Back to latest") === true, "earlier roll");
+		const earlier = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (earlier as unknown)).toBe(false);
+		await click(buttonText("button", "Back to latest"));
+		await waitFor(() => draftText() === "typed before the roll", "back in the new roll");
+		const again = container.querySelector('.message-box[aria-label="Message draft"]');
+		expect((win.document.activeElement as unknown) === (again as unknown)).toBe(false);
+	});
+
+	test("New conversation is off while the latest roll works and an earlier roll is open", async () => {
+		rollingChain = [{ ...roll("latest"), busy: true }, roll("earlier")];
+		rollingHistories.set("app/latest", [{
+			id: "latest-message",
+			role: "user",
+			parts: [{ type: "text", text: "latest message" }],
+		} as AppMessageList["messages"][number]]);
+		rollingHistories.set("app/earlier", [{
+			id: "earlier-message",
+			role: "user",
+			parts: [{ type: "text", text: "earlier message" }],
+		} as AppMessageList["messages"][number]]);
+		contextTurns = 1;
+		await openRolling();
+		await click(buttonText("button", "↑ Previous conversation"));
+		await waitFor(() => container.textContent?.includes("Back to latest") === true, "earlier roll");
+		act(() => (container.querySelector(".ctx-gauge > .ctx-btn") as HTMLButtonElement).click());
+		expect(
+			[...container.querySelectorAll(".ctx-act")].map((button) => [
+				button.textContent,
+				(button as HTMLButtonElement).disabled,
+			]),
+		).toEqual([
+			["Compact now", false],
+			["New conversation", true],
+		]);
+	});
+
 	test("New conversation refused keeps the conversation and the draft", async () => {
 		rollingChain = [roll("current")];
 		rollingHistories.set("app/current", [{

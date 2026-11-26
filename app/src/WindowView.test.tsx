@@ -318,13 +318,16 @@ describe("WindowView", () => {
 		});
 		await act(async () => {});
 		const text = container.textContent ?? "";
-		expect(text).toContain("No model call yet");
-		expect(container.textContent).not.toContain("No captured prompt yet.");
-		expect(container.textContent).toContain("Model calls");
+		expect(text).not.toContain("No model call yet");
+		expect(text).toContain("No captured prompt yet — the window is saved when a turn ends");
+		expect(text).toContain("Model calls");
 		expect(container.querySelectorAll(".win-table tbody tr")).toHaveLength(1);
 		expectNoModelCallsFold();
+		expect(container.textContent).not.toContain("No captured prompt yet.");
 		await h.click(button("Window"));
-		expect(container.textContent).toContain("No captured prompt yet.");
+		expect(container.querySelector('[data-slot="tabs-panel"]')?.textContent).toContain(
+			"No captured prompt yet.",
+		);
 		expect(container.querySelectorAll("details.win-fold")).toHaveLength(0);
 	});
 

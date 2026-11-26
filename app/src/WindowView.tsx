@@ -490,7 +490,11 @@ export function WindowView({
 			</div>
 			<p className="lead">
 				{view.capturedAt === null ? (
-					"No model call yet — the window appears after this conversation's first turn."
+					view.calls.length === 0 ? (
+						"No model call yet — the window appears after this conversation's first turn."
+					) : (
+						"No captured prompt yet — the window is saved when a turn ends."
+					)
 				) : (
 					<>
 						Captured {ts(view.capturedAt)} · {view.capturedModel} · {view.steps} step

@@ -1158,6 +1158,13 @@ What the first version accepts:
   to the last call of its run that finished before it began. A tool that
   finds none is not drawn.
 - **A replayed or skipped tool** has no start time and is not drawn.
+- **A very short bar is a thin line.** A bar is as wide as its time, down
+  to 2 px. The space around a label sits on the label, not on the bar, so
+  it cannot make the bar wider. With that space on the bar, no bar drew
+  under 0.7rem: a fast tool looked slow, and two short calls close
+  together overlapped. The operator chose the true width over that
+  minimum (2026-11-26). A bar under 0.7rem is then hard to point at for
+  its tooltip.
 - **The read trusts the stamp first.** The view lists the newest 200
   model calls. A tool row stamped to a listed call is read whatever its
   start time says, and the run of every listed tool row is read with it.

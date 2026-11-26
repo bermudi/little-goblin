@@ -7867,18 +7867,21 @@ button.link:hover {
 	justify-content: center;
 	min-width: 2px;
 	overflow: hidden;
-	padding: 0 0.35rem;
 	border-radius: 4px;
 	font: 10px var(--font-mono);
 	white-space: nowrap;
 	container-type: inline-size;
 }
-@container (max-width: 6.5rem) {
+.win-traj-call > span,
+.win-traj-tool > span {
+	padding: 0 0.35rem;
+}
+@container (max-width: 7.2rem) {
 	.win-traj-call > span {
 		display: none;
 	}
 }
-@container (max-width: 4rem) {
+@container (max-width: 4.7rem) {
 	.win-traj-tool > span {
 		display: none;
 	}

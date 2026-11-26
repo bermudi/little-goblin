@@ -17,6 +17,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
+import { boxView } from "./chat/MessageBox.tsx";
 import { LIST_ENTRY, clickConfirm, confirmSheet, confirmText, goblinFeedResponse } from "./testkit.ts";
 
 const json = (body: unknown, status = 200) =>
@@ -443,17 +444,33 @@ describe("mobile: chats screen and navigation", () => {
 		await settle();
 	};
 	const typeDraft = async (value: string) => {
-		const el = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]');
+		const el = container.querySelector<HTMLElement>('.message-box[aria-label="Message draft"]');
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el!.focus();
-			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(el, value);
-			el!.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el!.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			const editor = boxView(el);
+			expect(editor).toBeDefined();
+			editor!.focus();
+			editor!.dispatch(
+				editor!.state.tr.replaceWith(
+					1,
+					editor!.state.doc.content.size - 1,
+					value === "" ? [] : editor!.state.schema.text(value),
+				),
 			);
 		});
 		await settle();
+	};
+	const draftText = () => {
+		const editor = boxView(container.querySelector(".message-box"));
+		if (editor === undefined) return "";
+		let text = "";
+		editor.state.doc.forEach((paragraph, index) => {
+			if (index > 0) text += "\n";
+			paragraph.forEach((node) => {
+				if (node.isText) text += node.text ?? "";
+			});
+		});
+		return text;
 	};
 	// The leave ask is a sheet in the app chrome — answering is a click
 	// on its buttons, like the operator.
@@ -634,7 +651,7 @@ describe("mobile: chats screen and navigation", () => {
 
 	test("T3: empty-chain send routes through rolling and loads the new conversation", async () => {
 		await openRolling();
-		expect(container.querySelector('textarea[aria-label="Message draft"]')).toBeTruthy();
+		expect(container.querySelector('.message-box[aria-label="Message draft"]')).toBeTruthy();
 		holdRollingList = true;
 		let sawEarlier = false;
 		const observer = new win.MutationObserver(() => {
@@ -642,7 +659,7 @@ describe("mobile: chats screen and navigation", () => {
 		});
 		observer.observe(win.document.body, { childList: true, subtree: true, characterData: true });
 		await typeDraft("first rolling message");
-		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("first rolling message");
+		expect(draftText()).toBe("first rolling message");
 		await click(container.querySelector('button[aria-label="Send"]'));
 		expect(rollingRequests).toHaveLength(1);
 		await waitFor(() => rollingListResolvers.length > 0, "held list refresh");
@@ -791,7 +808,7 @@ describe("mobile: chats screen and navigation", () => {
 		await typeDraft("keep empty draft");
 		await click(container.querySelector('button[aria-label="Send"]'));
 		await waitFor(() => container.querySelector(".chat .error") !== null, "empty send error");
-		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("keep empty draft");
+		expect(draftText()).toBe("keep empty draft");
 
 		rollingChain = [roll("current")];
 		rollingHistories.set("app/current", []);
@@ -805,7 +822,7 @@ describe("mobile: chats screen and navigation", () => {
 		await typeDraft("keep open draft");
 		await click(container.querySelector('button[aria-label="Send"]'));
 		await waitFor(() => container.querySelector(".chat .error") !== null, "open send error");
-		expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message draft"]')?.value).toBe("keep open draft");
+		expect(draftText()).toBe("keep open draft");
 	});
 
 	test("touch hold opens row actions without opening the chat; mouse hold does not", async () => {

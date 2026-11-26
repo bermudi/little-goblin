@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import type { AppConversationSummary } from "../../src/conversation-read.ts";
 import { App } from "./App.tsx";
+import { boxView } from "./chat/MessageBox.tsx";
 import { LIST_ENTRY, openDesktopPage } from "./testkit.ts";
 
 const conv = (
@@ -292,17 +293,18 @@ describe("app live feed", () => {
 		await waitFor(() => rowErrorText().includes("Couldn't archive"), "the row error");
 	};
 	const send = async (text: string) => {
-		const box = container.querySelector<HTMLTextAreaElement>("form.composer textarea")!;
+		const box = container.querySelector<HTMLElement>("form.composer .message-box")!;
 		await act(async () => {
-			box.focus();
-			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
-				box,
-				text,
-			);
-			box.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			box.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "o" }) as unknown as Event,
-			);
+			const editor = boxView(box);
+			editor?.focus();
+			if (editor !== undefined)
+				editor.dispatch(
+					editor.state.tr.replaceWith(
+						1,
+						editor.state.doc.content.size - 1,
+						text === "" ? [] : editor.state.schema.text(text),
+					),
+				);
 		});
 		await act(async () => {
 			container.querySelector("form.composer")!.dispatchEvent(

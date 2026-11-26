@@ -12,6 +12,7 @@ import type { ModelSettings } from "../conversation-settings.ts";
 import { hasUsableSkill } from "../agent/skills.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
+import { hasInlineParts, proseOf } from "../inline-parts.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
 import type { TurnDone } from "../turn/sink.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
@@ -79,15 +80,24 @@ const chatBody = z
 								continue;
 							}
 							if (p.type === NOTE_PART) {
-								const id =
+								const data =
 									typeof p.data === "object" && p.data !== null
-										? (p.data as { id?: unknown }).id
-										: undefined;
+										? (p.data as { id?: unknown; inline?: unknown })
+										: null;
+								const id = data?.id;
 								if (typeof id !== "string" || id === "") {
 									ctx.addIssue({
 										code: "custom",
 										path: [i, "data", "id"],
 										message: "a note attachment carries only the note id",
+									});
+									continue;
+								}
+								if (data !== null && data.inline !== undefined && data.inline !== true) {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "data", "inline"],
+										message: "inline, when set, is true",
 									});
 								}
 								continue;
@@ -429,10 +439,13 @@ export async function handleChatRoute(
 
 		for (const part of message.parts) {
 			if (part.type !== NOTE_PART) continue;
-			const id = (part.data as { id: string }).id;
-			const note = deps.notes.get(id);
+			const incoming = part.data as { id: string; inline?: true };
+			const note = deps.notes.get(incoming.id);
 			if (note === null) {
-				return Response.json({ error: `no such note: ${id}` }, { status: 422, headers: NO_STORE });
+				return Response.json(
+					{ error: `no such note: ${incoming.id}` },
+					{ status: 422, headers: NO_STORE },
+				);
 			}
 			if (note.archivedAt !== null) {
 				return Response.json(
@@ -446,6 +459,7 @@ export async function handleChatRoute(
 				rev: note.rev,
 				body: note.body,
 				projectId: note.projectId,
+				...(incoming.inline === true ? { inline: true } : {}),
 			};
 			log.info("note attached", {
 				...logTarget,
@@ -550,10 +564,13 @@ export async function handleChatRoute(
 		if (conv === null) throw new Error(`rolling route did not resolve a conversation`);
 
 		if (deps.titleFor !== undefined && conv.title === null) {
-			const firstText = message.parts
-				.map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
-				.join("\n")
-				.trim();
+			const parts = message.parts as Message["parts"];
+			const firstText = hasInlineParts(parts)
+				? proseOf(parts)
+				: (parts
+						.map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
+						.join("\n")
+						.trim());
 			if (firstText !== "") {
 				const cfg = deps.configRef.current;
 				const model = store.readAppSettings(convId, {

@@ -7,6 +7,7 @@ import { System1Client, System1Error, FALLBACK_MODEL, type System1Question } fro
 import {
 	FRESH_BELOW,
 	isRollingChat,
+	projectRollText,
 	rollingChatId,
 	routeDm,
 	routeDmMessage,
@@ -440,5 +441,74 @@ describe("routeDmMessage", () => {
 		expect(state.next).toHaveLength(2_000);
 		expect(state.gapMinutes).toBeGreaterThanOrEqual(59);
 		store.close();
+	});
+});
+
+describe("projectRollText with inline chips", () => {
+	test("a flagged message reads as the prose with labels, transcripts after (S5)", () => {
+		const parts = [
+			{ type: "text", text: "look at " },
+			{
+				type: "data-attachment",
+				data: {
+					path: "/workspace/attachments/a.png",
+					mediaType: "image/png",
+					filename: "a.png",
+					size: 9,
+					inline: true,
+				},
+			},
+			{ type: "text", text: " and " },
+			{ type: "data-note", data: { id: "note-1", title: "Budget", inline: true } },
+			{ type: "text", text: " please" },
+		] as unknown as Message["parts"];
+		expect(projectRollText(parts)).toBe("look at [a.png] and [Budget] please");
+	});
+
+	test("an inline voice note keeps its transcript; unflagged attachments keep today's lines (S5)", () => {
+		const parts = [
+			{ type: "text", text: "hear " },
+			{
+				type: "data-attachment",
+				data: {
+					path: "/workspace/attachments/note.ogg",
+					mediaType: "audio/ogg",
+					filename: "note.ogg",
+					size: 3,
+					speech: true,
+					transcript: "spoken words",
+					inline: true,
+				},
+			},
+			{ type: "text", text: " and a loose one" },
+			{
+				type: "data-attachment",
+				data: {
+					path: "/workspace/attachments/b.png",
+					mediaType: "image/png",
+					filename: "b.png",
+					size: 8,
+				},
+			},
+		] as unknown as Message["parts"];
+		expect(projectRollText(parts)).toBe(
+			"hear [note.ogg] and a loose one\n[voice: spoken words]\n[photo]",
+		);
+	});
+
+	test("an unflagged message reads exactly as today (S5)", () => {
+		const parts = [
+			{ type: "text", text: "see" },
+			{
+				type: "data-attachment",
+				data: {
+					path: "/workspace/attachments/b.png",
+					mediaType: "image/png",
+					filename: "b.png",
+					size: 8,
+				},
+			},
+		] as unknown as Message["parts"];
+		expect(projectRollText(parts)).toBe("see\n[photo]");
 	});
 });

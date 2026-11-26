@@ -100,6 +100,20 @@ describe("outlineTitle", () => {
 		expect(outlineTitle(msg("a", "user", "first question\nsecond line"))).toBe("first question");
 	});
 
+	test("inline chip labels remain in the outline title at their text position", () => {
+		expect(
+			outlineTitle({
+				id: "inline",
+				role: "user",
+				parts: [
+					{ type: "text", text: "look at " },
+					{ type: "data-note", data: { id: "n-1", title: "Budget", inline: true } },
+					{ type: "text", text: " please" },
+				],
+			} as UIMessage),
+		).toBe("look at [Budget] please");
+	});
+
 	test("media-only sends fall back to the staged chip kind", () => {
 		const file = { type: "file", mediaType: "image/png" } as unknown as UIMessage["parts"][number];
 		const note = { type: "data-note", data: {} } as unknown as UIMessage["parts"][number];

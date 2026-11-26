@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { emptyDraft, textDraft, type Draft } from "./chat/draft.ts";
 
 const win = new Window();
 const storage = win.localStorage;
@@ -23,17 +24,53 @@ afterEach(() => {
 
 const KEY = "goblin.composer-draft.v1:app%2Fc-1";
 
+const chipDraft: Draft = {
+	items: [
+		{ type: "text", text: "look at " },
+		{
+			type: "chip",
+			chip: {
+				kind: "file",
+				state: "ready",
+				ref: {
+					path: "attachments/a.png",
+					mediaType: "image/png",
+					filename: "a.png",
+					size: 10,
+					transcript: "spoken",
+					speech: true,
+				},
+			},
+		},
+		{ type: "text", text: " and " },
+		{ type: "chip", chip: { kind: "note", id: "n-1", title: "Budget" } },
+		{ type: "chip", chip: { kind: "skill", ref: { name: "deploy" } } },
+	],
+	shelf: [
+		{ kind: "file", state: "ready", ref: { path: "attachments/a.png", mediaType: "image/png", filename: "a.png", size: 10, transcript: "spoken", speech: true } },
+	],
+};
+
 describe("composerDraft", () => {
-	test("a draft round-trips the real localStorage, per scope", () => {
-		saveComposerDraft("app/c-1", "half-typed message");
-		expect(loadComposerDraft("app/c-1")).toBe("half-typed message");
+	test("a draft with chips and shelf round-trips the real localStorage, per scope", () => {
+		saveComposerDraft("app/c-1", chipDraft);
+		expect(loadComposerDraft("app/c-1")).toEqual(chipDraft);
 		expect(loadComposerDraft("app/c-2")).toBeNull();
+		expect(storage.getItem(KEY)).toContain("\"version\":2");
+	});
+
+	test("a version 1 text record loads as that text", () => {
+		storage.setItem(KEY, JSON.stringify({ version: 1, scope: "app/c-1", text: "half-typed message" }));
+		expect(loadComposerDraft("app/c-1")).toEqual(textDraft("half-typed message"));
 	});
 
 	test("empty text removes the record — a sent draft leaves no residue", () => {
-		saveComposerDraft("new", "draft");
-		saveComposerDraft("new", "");
+		saveComposerDraft("new", textDraft("draft"));
+		saveComposerDraft("new", textDraft(""));
 		expect(loadComposerDraft("new")).toBeNull();
+		expect(storage.getItem("goblin.composer-draft.v1:new")).toBeNull();
+		saveComposerDraft("new", chipDraft);
+		saveComposerDraft("new", emptyDraft());
 		expect(storage.getItem("goblin.composer-draft.v1:new")).toBeNull();
 	});
 
@@ -45,7 +82,7 @@ describe("composerDraft", () => {
 		// A JSON.parse error message can quote the stored text — the
 		// sentinel must never reach the thrown diagnostic.
 		const SENTINEL = "PRIVATE-DRAFT-xyz";
-		const malformed = `{"version":1,"scope":"app/c-1","text":"${SENTINEL}`;
+		const malformed = `{"version":2,"scope":"app/c-1","draft":${SENTINEL}`;
 		storage.setItem(KEY, malformed);
 		const attempt = (): string => {
 			try {
@@ -60,11 +97,15 @@ describe("composerDraft", () => {
 		expect(storage.getItem(KEY)).toBe(malformed);
 
 		// Unknown keys — a strict-shape failure must not echo them.
-		storage.setItem(KEY, JSON.stringify({ version: 1, scope: "app/c-1", [SENTINEL]: "x" }));
+		storage.setItem(KEY, JSON.stringify({ version: 2, scope: "app/c-1", draft: emptyDraft(), [SENTINEL]: "x" }));
+		expect(attempt()).toMatch(/record shape/);
+		storage.setItem(KEY, JSON.stringify({ version: 2, scope: "app/c-1", draft: { items: [], shelf: [] }, extra: "y" }));
 		expect(attempt()).toMatch(/record shape/);
 
 		// A record under another composer's scope never reads as this
 		// one's draft.
+		storage.setItem(KEY, JSON.stringify({ version: 2, scope: "elsewhere", draft: emptyDraft() }));
+		expect(attempt()).toMatch(/different composer/);
 		storage.setItem(KEY, JSON.stringify({ version: 1, scope: "elsewhere", text: "x" }));
 		expect(attempt()).toMatch(/different composer/);
 	});
@@ -82,7 +123,7 @@ describe("composerDraft", () => {
 			},
 		});
 		expect(() => loadComposerDraft("new")).toThrow(/localStorage read failed: quota boom/);
-		expect(() => saveComposerDraft("new", "x")).toThrow(/localStorage write failed: quota boom/);
-		expect(() => saveComposerDraft("new", "")).toThrow(/localStorage delete failed: quota boom/);
+		expect(() => saveComposerDraft("new", textDraft("x"))).toThrow(/localStorage write failed: quota boom/);
+		expect(() => saveComposerDraft("new", textDraft(""))).toThrow(/localStorage delete failed: quota boom/);
 	});
 });

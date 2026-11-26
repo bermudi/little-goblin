@@ -12,16 +12,19 @@
 // language — a background shift and 1px border, never a shadow.
 
 import type { UIMessage } from "ai";
+import { hasInlineParts, proseOf } from "../../src/inline-parts.ts";
 import { type KeyboardEvent, type RefObject, useEffect, useMemo, useState } from "react";
 import { AT_END_PX, type ScrollDirection } from "./chat/useTranscriptFollow.ts";
 
 // The outline entry for one operator message: the first line of text, or
 // the staged chip kind when the send carried media only.
 export function outlineTitle(m: UIMessage): string {
-	const text = m.parts
-		.map((p) => (p.type === "text" ? p.text : ""))
-		.join("\n")
-		.trim();
+	const text = hasInlineParts(m.parts)
+		? proseOf(m.parts)
+		: (m.parts
+				.map((p) => (p.type === "text" ? p.text : ""))
+				.join("\n")
+				.trim() as string);
 	if (text !== "") return (text.split("\n")[0] ?? text).trim();
 	if (m.parts.some((p) => p.type === "file")) return "attachment";
 	if (m.parts.some((p) => p.type === "data-note")) return "note";

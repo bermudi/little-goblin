@@ -815,6 +815,50 @@ describe("app chat", () => {
 		expect(finish[0]).toMatchObject({ conversation: "app/chat-01", outcome: "completed" });
 	});
 
+	test("a flagged first message titles from the prose with labels; unflagged stays as today (S5)", async () => {
+		const titled: string[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			titleFor: async (text) => {
+				titled.push(text);
+				return "Titled";
+			},
+		});
+		try {
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array([1])], { type: "image/png" }), "a.png");
+			const up = await call("/api/app/attachments", { method: "POST", body: form });
+			const { ref } = (await up.json()) as { ref: Record<string, unknown> };
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-titled" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-titled",
+					message: {
+						id: "m1",
+						role: "user",
+						parts: [
+							{ type: "text", text: "look at " },
+							{ type: "data-attachment", data: { ...ref, inline: true } },
+							{ type: "text", text: " please" },
+						],
+					},
+				}),
+			});
+			await res.text();
+			await waitUntil(() => titled.length === 1, "titleFor called");
+			expect(titled).toEqual(["look at [a.png] please"]);
+			await waitUntil(() => store.get("app/chat-titled")?.title !== null, "title lands");
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a preset title keeps titleFor out of the first turn", async () => {
 		let calls = 0;
 		const { http, call, store } = setup({
@@ -890,7 +934,104 @@ describe("app chat", () => {
 		}
 	});
 
-	test("retry re-runs the newest user message without duplicating it", async () => {
+	test("interleaved flagged parts store in order, expanded and transcribed, flags kept (S4)", async () => {
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			transcribe: async () => "spoken words here",
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-inline" }),
+			});
+			const noteRes = await call("/api/app/notes", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ title: "Budget", body: "the real body" }),
+			});
+			const note = (await noteRes.json()) as { id: string; rev: number };
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array([1, 2, 3])], { type: "audio/ogg" }), "note.ogg");
+			const up = await call("/api/app/attachments", { method: "POST", body: form });
+			const { ref } = (await up.json()) as { ref: Record<string, unknown> };
+
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-inline",
+					message: {
+						id: "m1",
+						role: "user",
+						parts: [
+							{ type: "text", text: "look at " },
+							{ type: "data-attachment", data: { ...ref, speech: true, inline: true } },
+							{ type: "text", text: " and " },
+							{ type: "data-note", data: { id: note.id, title: "Budget", inline: true } },
+							{ type: "text", text: " please" },
+						],
+					},
+				}),
+			});
+			expect(res.status).toBe(202);
+			const stored = store.history("app/chat-inline")[0]!;
+			expect(stored.parts.slice(0, 5).map((p) => p.type)).toEqual([
+				"text",
+				"data-attachment",
+				"text",
+				"data-note",
+				"text",
+			]);
+			const attachment = stored.parts[1] as {
+				data: { transcript?: string; inline?: true; speech?: boolean };
+			};
+			expect(attachment.data).toMatchObject({
+				transcript: "spoken words here",
+				speech: true,
+				inline: true,
+			});
+			const notePart = stored.parts[3] as {
+				data: { id?: string; title?: string; rev?: number; body?: string; inline?: true };
+			};
+			expect(notePart.data).toMatchObject({
+				id: note.id,
+				title: "Budget",
+				rev: note.rev,
+				body: "the real body",
+				inline: true,
+			});
+
+			const post = (parts: unknown[]) =>
+				call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						conversationId: "app/chat-inline",
+						message: { id: "m2", role: "user", parts },
+					}),
+				});
+			for (const data of [{ ...ref, inline: false }, { ...ref, inline: "yes" }]) {
+				const bad = await post([{ type: "data-attachment", data }]);
+				expect(bad.status).toBe(422);
+			}
+			const badNote = await post([
+				{ type: "text", text: "x" },
+				{ type: "data-note", data: { id: note.id, inline: "yes" } },
+			]);
+			expect(badNote.status).toBe(422);
+			const badSkill = await post([
+				{ type: "text", text: "x" },
+				{ type: "data-skill", data: { name: "deploy", inline: false } },
+			]);
+			expect(badSkill.status).toBe(422);
+			expect(store.history("app/chat-inline").find((m) => m.id === "m2")).toBeUndefined();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("the first turn auto-titles an unnamed conversation", async () => {
 		const model = sdkScript();
 		model.script(
 			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },

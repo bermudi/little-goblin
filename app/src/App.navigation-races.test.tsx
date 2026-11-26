@@ -15,6 +15,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
+import { boxView } from "./chat/MessageBox.tsx";
 import {
 	clickConfirm,
 	confirmSheet,
@@ -375,14 +376,24 @@ describe("navigation races: late completions", () => {
 	};
 	const typeInto = async (el: Element, value: string, proto: object) => {
 		await act(async () => {
-			// Focus + keyup too — React's text-input fallback needs it in
-			// this environment (the create-dialog test's ruling).
-			(el as HTMLElement).focus();
-			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
-			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
-			);
+			const editor = boxView(el);
+			if (editor !== undefined) {
+				editor.focus();
+				editor.dispatch(
+					editor.state.tr.replaceWith(
+						1,
+						editor.state.doc.content.size - 1,
+						value === "" ? [] : editor.state.schema.text(value),
+					),
+				);
+			} else {
+				(el as HTMLElement).focus();
+				Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+				el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+				el.dispatchEvent(
+					new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+				);
+			}
 		});
 		await settle();
 	};
@@ -538,7 +549,7 @@ describe("navigation races: late completions", () => {
 		await mount();
 		const gate = hold();
 		convCreateHold = gate.promise;
-		const composer = () => container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+		const composer = () => container.querySelector<HTMLElement>(".composer .message-box")!;
 		await typeInto(composer(), "Alpha message", win.HTMLTextAreaElement.prototype);
 		await act(async () => {
 			composer().dispatchEvent(
@@ -550,10 +561,10 @@ describe("navigation races: late completions", () => {
 		await typeInto(composer(), "Beta draft", win.HTMLTextAreaElement.prototype);
 		gate.resolve();
 		await settle();
-		expect(composer().value).toBe("Beta draft");
+		expect(boxView(composer())?.state.doc.textContent).toBe("Beta draft");
 		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
 		await openProject("Alpha");
-		expect(composer().value).toBe("Alpha message");
+		expect(boxView(composer())?.state.doc.textContent).toBe("Alpha message");
 	});
 
 	test("restoration preserves edits typed in the originating composer after its send", async () => {
@@ -562,7 +573,7 @@ describe("navigation races: late completions", () => {
 		await mount();
 		const gate = hold();
 		convCreateHold = gate.promise;
-		const composer = () => container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+		const composer = () => container.querySelector<HTMLElement>(".composer .message-box")!;
 		await typeInto(composer(), "sent message", win.HTMLTextAreaElement.prototype);
 		await act(async () => {
 			composer().dispatchEvent(
@@ -574,7 +585,7 @@ describe("navigation races: late completions", () => {
 		await typeInto(composer(), "newer draft", win.HTMLTextAreaElement.prototype);
 		gate.resolve();
 		await settle();
-		expect(composer().value).toBe("newer draft");
+		expect(boxView(composer())?.state.doc.textContent).toBe("newer draft");
 	});
 
 	test("a fenced note chat removes its row without staging the note in a composer", async () => {
@@ -627,7 +638,7 @@ describe("navigation races: late completions", () => {
 		await mount();
 		const gate = hold();
 		convCreateHold = gate.promise;
-		const composer = () => container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+		const composer = () => container.querySelector<HTMLElement>(".composer .message-box")!;
 		await typeInto(composer(), "hi", win.HTMLTextAreaElement.prototype);
 		await act(async () => {
 			composer().dispatchEvent(

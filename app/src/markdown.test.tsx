@@ -12,6 +12,22 @@ describe("Markdown", () => {
 		expect(html).toContain("first para\nsecond line");
 	});
 
+	test("inline chip tokens render in markdown text and as labels in code", () => {
+		const chip = <span data-chip="0">Budget</span>;
+		const token = "\uE0000\uE001";
+		const html = renderToStaticMarkup(
+			<Markdown
+				text={`before **${token}** after and \`${token}\`\n\n\`\`\`\n${token} ${"\uE0009\uE001"}\n\`\`\``}
+				chips={[chip]}
+				chipLabels={["[Budget]"]}
+			/>,
+		);
+		expect(html).toContain(`<strong><span data-chip="0">Budget</span></strong>`);
+		expect(html).toContain("<code>[Budget]</code>");
+		expect(html).toContain("[Budget] ");
+		expect(html).not.toContain("9");
+	});
+
 	test("headings, hr, and blockquotes render as their own blocks", () => {
 		const html = renderToStaticMarkup(
 			<Markdown text={"# Title\n\n> a quote\n> still quoted\n\n---\n\ntail"} />,

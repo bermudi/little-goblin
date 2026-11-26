@@ -1,11 +1,4 @@
-import {
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	type Dispatch,
-	type SetStateAction,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import {
@@ -18,16 +11,23 @@ import {
 	toggleFavorite,
 } from "../api.ts";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
+import {
+	draftFromMessages,
+	draftText,
+	emptyDraft,
+	isEmptyDraft,
+	uploadState,
+	type Chip,
+	type Draft,
+} from "./draft.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
 import { SkillPickerSheet } from "../SkillPickerSheet.tsx";
-import { bytes } from "../opsShared.tsx";
-import { FileIcon, parseAttachmentRef } from "./MessageParts.tsx";
 import { ContextGauge } from "./ContextGauge.tsx";
 import { NotePicker } from "./NotePicker.tsx";
-import { appendQuote, type QuoteSpeaker } from "./QuoteFab.tsx";
-import { stagedKey, type StagedNote, type StagedSkill, type StagedUpload } from "./staged.ts";
+import { quoteBlock, type QuoteSpeaker } from "./QuoteFab.tsx";
+import { MessageBox, type MessageBoxHandle } from "./MessageBox.tsx";
 import { useAttachments } from "./useAttachments.ts";
-import { skillRefEquals, useSkillNoteStaging } from "./useSkillNoteStaging.ts";
+import { useSkillNoteStaging } from "./useSkillNoteStaging.ts";
 import { useSubmit } from "./useSubmit.ts";
 import { useKeyboard } from "./useKeyboard.ts";
 import { usePhoneWidth } from "../usePhoneWidth.ts";
@@ -49,17 +49,12 @@ export function Composer({
 	draftScope,
 	busy,
 	liveCtx,
-	staged,
-	setStaged,
-	stagedNotes,
-	setStagedNotes,
-	stagedSkills,
-	setStagedSkills,
 	stagedMemory,
 	onStagedMemoryToggle,
 	onSend,
 	onStop,
 	onCompacted,
+	onOpenNote,
 	quote,
 	focusSignal,
 	stealFocus,
@@ -75,12 +70,6 @@ export function Composer({
 	// The in-flight turn's window occupancy, streamed over the chat
 	// wire — the gauge's numbers while a turn runs.
 	liveCtx?: AppLiveContext | null;
-	staged: StagedUpload[];
-	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
-	stagedNotes: StagedNote[];
-	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-	stagedSkills: StagedSkill[];
-	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	// The not-yet-created conversation's memory choice — the conversation-
 	// less composers (new chat, project page) can't GET a flag that
 	// doesn't exist yet. `locked` means the destination already forces
@@ -97,6 +86,7 @@ export function Composer({
 	// A manual compact landed a pointer — the host re-reads history so
 	// the transcript's fold marks update.
 	onCompacted?: () => void;
+	onOpenNote?: ((id: string) => void) | undefined;
 	// A select-to-quote request — `n` bumps per click, so even repeated
 	// text appends again. The speaker lands as the quote's annotation
 	// line; null quotes stay unattributed.
@@ -109,7 +99,7 @@ export function Composer({
 	// whenever a turn settles (operator ask, 2026-11-07). One-way — the
 	// conversation-less composers keep their explicit focusSignal only.
 	stealFocus?: boolean;
-	draftRestore?: { parts: UIMessage["parts"]; source?: "pending-edit" } | null;
+	draftRestore?: { messages: UIMessage["parts"][]; source?: "pending-edit" } | null;
 	onDraftRestored?: () => void;
 }) {
 	const phoneWidth = usePhoneWidth();
@@ -122,15 +112,17 @@ export function Composer({
 	// prose that fails the record shape has no reader, and freezing it
 	// would brick crash recovery over bytes nothing can parse.
 	let draftLoadFailure: string | null = null;
-	const [draft, setDraft] = useState(() => {
+	const [draft, setDraft] = useState<Draft>(() => {
 		try {
-			return loadComposerDraft(draftScope) ?? "";
+			return loadComposerDraft(draftScope) ?? emptyDraft();
 		} catch (e) {
 			draftLoadFailure = `A saved draft couldn't be read (${e instanceof Error ? e.message : String(e)}) — typing here replaces it.`;
-			return "";
+			return emptyDraft();
 		}
 	});
 	const [draftError, setDraftError] = useState<string | null>(draftLoadFailure);
+	const draftRef = useRef(draft);
+	draftRef.current = draft;
 	// The mount run writes nothing: on restore it would rewrite the
 	// value it just loaded, and after a corrupt load it would delete
 	// the unreadable record before the operator ever sees why.
@@ -302,142 +294,108 @@ export function Composer({
 				: undefined,
 		);
 
-	const { send, sendError, editedAfterSend, dropEntry } = useSubmit({
+	const boxRef = useRef<MessageBoxHandle | null>(null);
+	const programmatic = useRef(false);
+	const mountSync = useRef(true);
+	const runBox = (fn: () => void) => {
+		programmatic.current = true;
+		try {
+			fn();
+		} finally {
+			programmatic.current = false;
+		}
+	};
+	const insertChips = (chips: Chip[]) => {
+		const existing = boxRef.current?.getDraft();
+		const incoming = chips.filter((chip) => {
+			if (chip.kind !== "file" || chip.state !== "ready" || existing === undefined) return true;
+			return (
+				!existing.items.some(
+					(item) =>
+						item.type === "chip" &&
+						item.chip.kind === "file" &&
+						item.chip.state === "ready" &&
+						item.chip.ref.path === chip.ref.path,
+				) && !existing.shelf.some((file) => file.state === "ready" && file.ref.path === chip.ref.path)
+			);
+		});
+		if (incoming.length > 0) runBox(() => boxRef.current?.insertChips(incoming));
+	};
+	const {
+		fileInput,
+		micError,
+		micSupported,
+		recording,
+		recSec,
+		startRecording,
+		stopRecording,
+		pickFile,
+		uploadErrors,
+		noteUploadError,
+		clearUploadErrors,
+	} = useAttachments({
+		token,
+		busy: busy || (conversationId === undefined && configSaving),
+		onSend: sendWithModelSettings,
+		insertChips,
+	});
+	const { send, sendError, sendNote, clearSendNote, editedAfterSend } = useSubmit({
 		busy,
 		onStop,
 		configSaving,
 		draftScope,
-		draft,
-		setDraft,
-		staged,
-		setStaged,
-		stagedNotes,
-		setStagedNotes,
-		stagedSkills,
-		setStagedSkills,
+		boxRef,
+		setBoxDraft: (next) => runBox(() => boxRef.current?.setDraft(next)),
 		onSend: sendWithModelSettings,
+		onSent: clearUploadErrors,
 	});
+	const currentUploadState = uploadState(draft);
+	useEffect(() => {
+		if (sendNote !== null && currentUploadState !== sendNote) clearSendNote();
+	}, [clearSendNote, currentUploadState, sendNote]);
+	const onBoxChange = (next: Draft) => {
+		if (mountSync.current) {
+			mountSync.current = false;
+			return;
+		}
+		if (!programmatic.current) editedAfterSend.current = true;
+		setDraft(next);
+	};
 	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
-		useSkillNoteStaging({ setStagedNotes, setStagedSkills });
-	const textareaRef = useRef<HTMLTextAreaElement>(null);
+		useSkillNoteStaging({ insertChips });
 	const latestDraftRestoreBindings = useRef({
 		editedAfterSend,
-		setDraft,
-		setStaged,
-		setStagedNotes,
-		setStagedSkills,
 		onDraftRestored,
-		textareaRef,
 	});
 	latestDraftRestoreBindings.current = {
 		editedAfterSend,
-		setDraft,
-		setStaged,
-		setStagedNotes,
-		setStagedSkills,
 		onDraftRestored,
-		textareaRef,
 	};
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
-		setDraft((d) => appendQuote(d, quote.text, quote.speaker ?? undefined));
-		const ta = textareaRef.current;
-		if (ta !== null) {
-			ta.focus();
-			// The new draft isn't in the DOM yet — park the cursor at its
-			// end on the next frame.
-			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
-		}
-	}, [quote, setDraft, editedAfterSend, textareaRef]);
+		const quoted = quoteBlock(quote.text, quote.speaker ?? undefined);
+		const head = draftText(draftRef.current).trimEnd();
+		runBox(() => boxRef.current?.appendText(head === "" ? `${quoted}\n\n` : `\n\n${quoted}\n\n`));
+		boxRef.current?.focus("end");
+	}, [quote, editedAfterSend]);
 	// The parent scopes this payload to its originating composer. Pending
 	// edits always restore, ahead of any newer draft; cancelled-send restores
 	// keep the edit guard so they never replace newer operator text.
 	useEffect(() => {
 		if (draftRestore == null) return;
-		const {
-			editedAfterSend,
-			setDraft,
-			setStaged,
-			setStagedNotes,
-			setStagedSkills,
-			onDraftRestored,
-			textareaRef,
-		} = latestDraftRestoreBindings.current;
-		const text = draftRestore.parts
-			.filter((p) => p.type === "text")
-			.map((p) => p.text)
-			.join("\n\n");
+		const { editedAfterSend, onDraftRestored } = latestDraftRestoreBindings.current;
+		const incoming = draftFromMessages(draftRestore.messages);
 		if (draftRestore.source === "pending-edit") {
-			setDraft((current) => (current === "" ? text : `${text}\n\n${current}`));
+			runBox(() => boxRef.current?.prepend(incoming));
 		} else if (!editedAfterSend.current) {
-			setDraft(text);
+			runBox(() => boxRef.current?.setDraft(incoming));
 		}
-		const uploads: StagedUpload[] = [];
-		const notes: StagedNote[] = [];
-		const skills: StagedSkill[] = [];
-		for (const p of draftRestore.parts) {
-			if (p.type === "data-attachment") {
-				const data = parseAttachmentRef(p.data);
-				if (data === null) continue; // malformed persisted blob — never restaged
-				uploads.push({
-					key: stagedKey(),
-					ref: data,
-					...(data.speech === true ? { speech: true } : {}),
-				});
-			} else if (p.type === "data-note") {
-				const data = p.data as { id: string; title: string };
-				notes.push({ key: stagedKey(), id: data.id, title: data.title });
-			} else if (p.type === "data-skill") {
-				// The ref rides verbatim for the resend — the chip's display
-				// name derives like SkillChip's: the catalog name, or the
-				// staged <digest>/<name>/SKILL.md layout's parent directory.
-				const data = p.data as StagedSkill["ref"];
-				skills.push({
-					key: stagedKey(),
-					name:
-						"name" in data ? data.name : (data.path.split("/").filter(Boolean).at(-2) ?? "unknown"),
-					ref: data,
-				});
-			}
-		}
-		if (uploads.length > 0)
-			setStaged((prev) => [
-				...prev,
-				...uploads.filter((u) => !prev.some((e) => e.ref.path === u.ref.path)),
-			]);
-		if (notes.length > 0)
-			setStagedNotes((prev) => [...prev, ...notes.filter((n) => !prev.some((e) => e.id === n.id))]);
-		if (skills.length > 0)
-			// Dedup against the growing merged list, not just prev — a
-			// repeat inside the payload is the same duplicate as a staged
-			// one.
-			setStagedSkills((prev) => {
-				const merged = [...prev];
-				let changed = false;
-				for (const s of skills)
-					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) {
-						merged.push(s);
-						changed = true;
-					}
-				return changed ? merged : prev;
-			});
 		onDraftRestored?.();
-		const ta = textareaRef.current;
-		if (ta !== null) {
-			ta.focus();
-			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
-		}
+		boxRef.current?.focus("end");
 	}, [draftRestore]);
-	const { fileInput, micError, micSupported, recording, recSec, startRecording, stopRecording, pickFile } =
-		useAttachments({
-			token,
-			busy: busy || (conversationId === undefined && configSaving),
-			onSend: sendWithModelSettings,
-			setStaged,
-		});
 	useKeyboard({
-		textareaRef,
+		focusRef: boxRef,
 		focusSignal,
 		stealFocus,
 		busy,
@@ -449,18 +407,6 @@ export function Composer({
 			onSubmit={(e) => {
 				e.preventDefault();
 				send();
-			}}
-			// A paste carrying files stages them like the picker did; a
-			// text-only clipboard falls through to the textarea's own paste.
-			// Read items, not files — WebKit leaves files empty on image
-			// paste and only populates items.
-			onPaste={(e) => {
-				const files = Array.from(e.clipboardData?.items ?? []).flatMap((i) =>
-					i.kind === "file" ? (i.getAsFile() ?? []) : [],
-				);
-				if (files.length === 0) return;
-				e.preventDefault();
-				for (const f of files) void pickFile(f);
 			}}
 		>
 			<input
@@ -493,75 +439,17 @@ export function Composer({
 					Microphone {micError} — check the browser's permission for this page.
 				</div>
 			)}
-			{(staged.length > 0 || stagedNotes.length > 0 || stagedSkills.length > 0) && (
-				<div className="composer-attachments">
-					{staged.map((e, i) => (
-						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
-							{e.thumb !== undefined ? (
-								<img className="attachment-thumb" src={e.thumb} alt="" />
-							) : (
-								<FileIcon />
-							)}
-							<span className="attachment-name">
-								{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
-								{e.ref.filename}
-							</span>
-							<span className="attachment-size">{bytes(e.ref.size)}</span>
-							<button
-								type="button"
-								aria-label="Remove"
-								title="Remove"
-								onClick={() => {
-									dropEntry(e);
-									setStaged((p) => p.filter((_, j) => j !== i));
-								}}
-							>
-								×
-							</button>
-						</span>
-					))}
-					{stagedNotes.map((n) => (
-						<span key={n.key} className="attachment note-chip">
-							<FileIcon />
-							<span className="attachment-name">Note · {n.title}</span>
-							<button
-								type="button"
-								aria-label="Remove"
-								title="Remove"
-								onClick={() => setStagedNotes((p) => p.filter((e) => e.key !== n.key))}
-							>
-								×
-							</button>
-						</span>
-					))}
-					{stagedSkills.map((s) => (
-						<span
-							key={s.key}
-							className="attachment note-chip"
-							title={
-								"url" in s.ref
-									? `Temp skill from ${s.ref.url} — the fetched copy rides the next turn`
-									: `Skill ${s.name} — its SKILL.md rides the next turn`
-							}
-						>
-							<span aria-hidden="true">⚡</span>
-							<span className="attachment-name">
-								{"url" in s.ref ? "Temp skill · " : "Skill · "}
-								{s.name}
-							</span>
-							<button
-								type="button"
-								aria-label="Remove"
-								title="Remove"
-								onClick={() => setStagedSkills((p) => p.filter((e) => e.key !== s.key))}
-							>
-								×
-							</button>
-						</span>
-					))}
+			{uploadErrors.map((message) => (
+				<div key={message} className="error" role="alert">
+					{message}
+				</div>
+			))}
+			{sendNote !== null && (
+				<div className="composer-note" role="status">
+					Upload still running. Send when it finishes.
 				</div>
 			)}
-			{recording ? (
+			{recording && (
 				<div className="rec-row">
 					<span className="rec-dot" />
 					<span className="rec-time">
@@ -572,27 +460,21 @@ export function Composer({
 						cancel
 					</button>
 				</div>
-			) : (
-				<textarea
-					ref={textareaRef}
-					value={draft}
-					rows={1}
-					placeholder="Message goblin"
-					aria-label="Message draft"
-					onChange={(e) => {
-						editedAfterSend.current = true;
-						setDraft(e.target.value);
-					}}
-					onKeyDown={(e) => {
-						// isComposing: Enter that confirms an IME candidate is
-						// not a send.
-						if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-							e.preventDefault();
-							send(e.altKey ? "followUp" : "steer");
-						}
-					}}
-				/>
 			)}
+			<MessageBox
+				ref={boxRef}
+				initial={draft}
+				onChange={onBoxChange}
+				onEnter={(mode) => send(mode)}
+				onFiles={(files) => {
+					for (const f of files) pickFile(f);
+				}}
+				onOpenNote={onOpenNote}
+				onUploadFailed={noteUploadError}
+				token={token}
+				ariaLabel="Message draft"
+				placeholder="Message goblin"
+			/>
 			<div className="composer-bar">
 				{phoneWidth ? (
 					<Menu
@@ -903,8 +785,7 @@ export function Composer({
 					model={cfg?.model}
 					onCompacted={onCompacted}
 				/>
-				{busy && onStop !== undefined && draft.trim() === "" &&
-				staged.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0 ? (
+				{busy && onStop !== undefined && isEmptyDraft(draft) ? (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
 					<button type="button" className="stop-btn" aria-label="Stop" onClick={onStop}>
@@ -920,14 +801,7 @@ export function Composer({
 						className="queue-btn"
 						aria-label="Queue as follow-up"
 						title="Queue as follow-up (Alt+Enter)"
-						disabled={
-							configSaving ||
-							recording ||
-							(draft.trim() === "" &&
-								staged.every((e) => e.failed === true || e.uploading === true) &&
-								stagedNotes.length === 0 &&
-								stagedSkills.length === 0)
-						}
+						disabled={configSaving || recording || isEmptyDraft(draft) || uploadState(draft) !== "ready"}
 						onClick={() => send("followUp")}
 					>
 						Queue
@@ -942,10 +816,8 @@ export function Composer({
 						(busy && onStop === undefined) ||
 						configSaving ||
 						recording ||
-						(draft.trim() === "" &&
-							staged.every((e) => e.failed === true || e.uploading === true) &&
-							stagedNotes.length === 0 &&
-							stagedSkills.length === 0)
+						isEmptyDraft(draft) ||
+						uploadState(draft) !== "ready"
 					}
 				>
 					<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">

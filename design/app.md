@@ -205,8 +205,41 @@ beforeunload prompts exist precisely because those edits have no such
 persistence. Storage always holds the latest local draft, so a restore
 can never land over newer text; the one-shot restore rulings stand
 unchanged beside it. An unreadable record stays in place behind an
-error line until the first write replaces it. Text only — staged
-chips are uploads, not prose.
+error line until the first write replaces it. The draft holds its chips
+too (below).
+
+**Chips sit in the text (ruling 2026-11-25, #942; replaces "text only" of
+2026-10-20).** A file, a note or a skill added to a message is a chip at the
+cursor, cut, pasted and deleted like one character. Quotes stay `>` text;
+there are no typing shortcuts and no live Markdown styling.
+
+- *The box* is one small ProseMirror editor: paragraphs, text and one chip
+  node, no marks. ProseMirror is already in the client for notes. A
+  textarea cannot hold a chip; markers inside a textarea were rejected
+  because an edit can break a marker in half.
+- *The draft owns its chips.* They stay with their own chat and survive a
+  reload. Rejected: the old lists shared by every composer, where a file
+  staged in one chat went out with the next one.
+- *A failed upload is an error, not a chip* (operator, 2026-11-26). Its
+  chip and thumbnail go, and an error line above the box names the file
+  and the reason. An upload cut off by a reload fails the same way: the
+  bytes are gone, so the line says to attach the file again. A send waits
+  for running uploads.
+- *Images keep a thumbnail above the text.* Deleting an image's chip leaves
+  the thumbnail, and the image still goes with the message. Removing the
+  thumbnail asks first if the text still mentions the image.
+- *Stored shape:* the same part as before with `inline: true` in its data,
+  at its place between text parts. A part without the flag means what it
+  always meant, so old messages keep their bytes for the model and their
+  look in the transcript.
+- *Model view:* only for a flagged message, one text part with a label at
+  each chip's place (`[image 1: a.png]`), then each item once, files behind
+  the same label (`src/inline-parts.ts`). Part order alone was rejected:
+  the Claude prompt adapter sends images ahead of the text.
+- *Plain readings* (title, search, memory, copy) show a chip as its name in
+  brackets.
+- *A message given back* (Stop, Not sent, a cancelled send) puts its chips
+  back in their places.
 
 **The thread view's composer steals focus when it can (ruling
 2026-11-07, operator ask).** It claims keyboard focus at the moments
@@ -715,8 +748,9 @@ fresh turn in the same chat, and the same assistant lane answers. A tail the
 edit will drop is confirmed client-side first — `branch` is the
 non-destructive path, so the prompt names it. Nothing keeps the old tail:
 that is the point, and it is why the write is one transaction. Rendering is
-the bubble's own inline textarea; non-text parts (attachments, note and
-skill chips) ride into the replacement, only text is rewritten.
+the message box inside the bubble, so chips can be moved, added and removed
+(ruling 2026-11-25, #942; replaces "only text is rewritten"). Parts that the
+box cannot show ride into the replacement unchanged.
 
 Retry is an edit with the same text: the same rewind, so the reply it
 replaces is deleted, not kept above the new one (operator, 2026-11-21).
@@ -1364,13 +1398,11 @@ manual-only included, description + body size) and a from-link field.
 A link runs the fetch pipeline server-side
 (`POST /api/app/skills/preview`) and renders a preview card — name,
 description, body size, source repo, System One injection verdict —
-where yes stages the chip and no drops it; nothing is fetched into a
-send the card didn't approve. The staged chip rides the composer's
-existing staged-chip rows; send appends the `data-skill` part
-(ruling: design/skills.md → Skill invocation), and the transcript
-renders it as a chip on the user message, like attachments and notes.
-Drafts stay text-only — staged skills are references, not prose
-(Composer drafts, above). The listing endpoint's response gains the
+where yes inserts the chip and no drops it; nothing is fetched into a
+send the card didn't approve. The chip lands at the cursor and its
+`data-skill` part (ruling: design/skills.md → Skill invocation) is stored
+at that place; the transcript renders it there, like files and notes
+(Chips sit in the text, above). The listing endpoint's response gains the
 picker's catalog view; the operator Skills page is unchanged.
 
 **Picker presentation (ruling 2026-11-16).** A picker takes one of two

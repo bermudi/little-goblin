@@ -1,12 +1,21 @@
 import { expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { streamText, stepCountIs, tool } from "ai";
 import { z } from "zod";
+import {
+	ADDITIONAL_TOOLS_PREFIX,
+	INCREMENTAL_TOOLS_NOTICE,
+} from "../tool-declarations.ts";
 import type { FetchLike } from "./auth.ts";
 import { resolveCodexAuthFile } from "./auth.ts";
 import { codexModel } from "./model.ts";
 
 const LIVE = process.env.GOBLIN_CODEX_LIVE === "1";
-const PREFIX = "GOBLIN_ADDITIONAL_TOOLS:";
+const CACHE_FILLER_SENTENCE =
+	"The public cache test repeats this plain sentence to make a long, stable prompt prefix. ";
+const CACHE_FILLER = CACHE_FILLER_SENTENCE.repeat(
+	Math.ceil(6000 / CACHE_FILLER_SENTENCE.length),
+).slice(0, 6000);
 
 interface Seen {
 	bodies: Record<string, unknown>[];
@@ -46,17 +55,23 @@ test(
 	async () => {
 		if (!LIVE) return;
 		const auth = resolveCodexAuthFile(undefined).path;
+		const sessionId = randomUUID();
 		const one = observingFetch();
 		const initialDeclaration = declaration("old_probe", "Return the word old.");
+		const initialSystemMessage = {
+			role: "system" as const,
+			content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([initialDeclaration])}`,
+			providerOptions: { codex: { inInput: true } },
+		};
+		const initialUserMessage = {
+			role: "user" as const,
+			content: `${CACHE_FILLER}\nReply with the single word ready.`,
+		};
 		const first = streamText({
-			model: codexModel("gpt-6-luna", auth, one.fetch, {}),
+			model: codexModel("gpt-6-luna", auth, one.fetch, { sessionId }),
 			messages: [
-				{
-					role: "system",
-					content: `${PREFIX}${JSON.stringify([initialDeclaration])}`,
-					providerOptions: { codex: { inInput: true } },
-				},
-				{ role: "user", content: "Reply with the single word ready." },
+				initialSystemMessage,
+				initialUserMessage,
 			],
 			tools: {
 				old_probe: tool({
@@ -70,35 +85,34 @@ test(
 			maxRetries: 0,
 		});
 		expect((await first.text).length).toBeGreaterThan(0);
-		expect(inputOf(one.seen.bodies[0]).some((item) => item.type === "additional_tools")).toBe(true);
+		const firstInput = inputOf(one.seen.bodies[0]);
+		expect(firstInput.some((item) => item.type === "additional_tools")).toBe(true);
 		const previous = (await first.steps).flatMap((step) => step.response.messages);
 
 		const updatedDeclaration = declaration("old_probe", "Return the word updated.");
 		const addedDeclaration = declaration("new_probe", "Return the word newly-added.");
-		const notice =
-			"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.";
 		const two = observingFetch();
 		let calledNewTool = false;
 		const second = streamText({
-			model: codexModel("gpt-6-luna", auth, two.fetch, {}),
+			model: codexModel("gpt-6-luna", auth, two.fetch, { sessionId }),
 			messages: [
-				{
-					role: "system",
-					content: `${PREFIX}${JSON.stringify([initialDeclaration])}`,
-					providerOptions: { codex: { inInput: true } },
-				},
+				initialSystemMessage,
+				initialUserMessage,
 				...previous,
 				{
+					role: "user",
+					content: "Call new_probe exactly once, then answer with its result.",
+				},
+				{
 					role: "system",
-					content: notice,
+					content: INCREMENTAL_TOOLS_NOTICE,
 					providerOptions: { codex: { inInput: true } },
 				},
 				{
 					role: "system",
-					content: `${PREFIX}${JSON.stringify([updatedDeclaration, addedDeclaration])}`,
+					content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([updatedDeclaration, addedDeclaration])}`,
 					providerOptions: { codex: { inInput: true } },
 				},
-				{ role: "user", content: "Call new_probe exactly once, then answer with its result." },
 			],
 			tools: {
 				old_probe: tool({
@@ -124,6 +138,7 @@ test(
 		expect(await second.text).toContain("newly-added");
 		expect(calledNewTool).toBe(true);
 		const input = inputOf(two.seen.bodies[0]);
+		expect(JSON.stringify(input.slice(0, firstInput.length))).toBe(JSON.stringify(firstInput));
 		expect(input.some((item) => item.type === "additional_tools")).toBe(true);
 		const usage = (await second.steps)[0]?.usage;
 		expect(usage?.inputTokenDetails.cacheReadTokens ?? 0).toBeGreaterThan(0);

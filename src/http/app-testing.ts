@@ -4,8 +4,11 @@ import { openCacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import { channelOf } from "../conversation-address.ts";
 import { openNotes } from "../notes.ts";
 import { makePosts } from "../posts.ts";
+import { makeAsks } from "../asks.ts";
+import { askTool } from "../agent/tools/ask.ts";
 import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
@@ -48,6 +51,7 @@ export function setup(
 		scriptedModel?: ScriptedModel;
 		makeTools?: TurnToolMaker;
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
+		ask?: { now: () => Date };
 	} = {},
 ) {
 	const home = useHome("goblin-app-");
@@ -55,6 +59,10 @@ export function setup(
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const posts = makePosts(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
+	const asks = makeAsks(
+		store.db,
+		opts.ask?.now ?? (() => new Date("2026-11-22T08:00:00.000Z")),
+	);
 	const turnJournal = openTurnJournal(store.db);
 	// The context-window rows ride the same db — prod wires them
 	// unconditionally (src/index.ts), so the rig does too.
@@ -90,7 +98,10 @@ export function setup(
 	});
 	runtime.mount({ makeTools: (conv, deliverVoice, recording, deliverFile) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
-			return opts.makeTools?.(conv, deliverVoice, recording, deliverFile) ?? {};
+			const tools = opts.makeTools?.(conv, deliverVoice, recording, deliverFile) ?? {};
+			return opts.ask !== undefined && channelOf(conv.id) === "app" && conv.agentType === null
+				? { ...tools, ask: askTool({ asks, conversationId: conv.id }) }
+				: tools;
 		} });
 	const auth: Pick<AuthStore, "resolve"> = {
 		resolve: (name) =>
@@ -125,6 +136,7 @@ export function setup(
 		projects,
 		notes,
 		posts,
+		asks,
 		auth,
 		configRef,
 		...(opts.gate !== undefined ? { gate: opts.gate } : {}),
@@ -169,6 +181,7 @@ export function setup(
 		projects,
 		notes,
 		posts,
+		asks,
 		configRef,
 		configWrites,
 		call,

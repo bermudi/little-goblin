@@ -2,6 +2,7 @@ import { z } from "zod";
 import { describeMailDecision } from "../mail-approval.ts";
 import { refusalText } from "../program-approval.ts";
 import { APP_ACTOR } from "../targets.ts";
+import { log } from "../log.ts";
 import { programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE, parsedJson } from "./app-shared.ts";
 import type { AppApprovalDecisionResponse, AppApprovalsResponse } from "./app-wire.ts";
@@ -14,6 +15,8 @@ const programDecisionBody = z.object({
 const mailDecisionBody = z.object({
 	action: z.enum(["send", "cancel"]),
 });
+
+const askCloseBody = z.object({ by: z.enum(["tap", "dismiss"]) }).strict();
 
 function approvalUnavailable(): Response {
 	return Response.json(
@@ -78,6 +81,42 @@ export async function handleApprovalsRoute(
 		const body = approvalsBody(deps);
 		if (body === null) return approvalUnavailable();
 		return versionedJson(body);
+	}
+
+	const askCloseMatch = path.match(/^\/api\/app\/asks\/([^/]+)\/close$/);
+	if (askCloseMatch !== null) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.asks === undefined) {
+			return Response.json({ error: "asks are not configured" }, { status: 503, headers: NO_STORE });
+		}
+		const idText = askCloseMatch[1]!;
+		if (!/^\d+$/.test(idText) || !Number.isSafeInteger(Number(idText)) || Number(idText) < 1) {
+			return Response.json({ error: "bad id" }, { status: 400, headers: NO_STORE });
+		}
+		const mediaType = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+		if (mediaType !== "application/json") {
+			return Response.json({ error: "expected application/json" }, { status: 415, headers: NO_STORE });
+		}
+		let input: unknown;
+		try {
+			input = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = askCloseBody.safeParse(input);
+		if (!parsed.success) return Response.json({ error: "bad body" }, { status: 400, headers: NO_STORE });
+		const id = Number(idText);
+		const outcome = deps.asks.close(id, parsed.data.by);
+		if (outcome === "missing") {
+			return Response.json({ error: "question not found" }, { status: 404, headers: NO_STORE });
+		}
+		if (outcome === "out-of-scope") {
+			return Response.json({ error: "question is outside this chat" }, { status: 404, headers: NO_STORE });
+		}
+		log.info("ask closed from app card", { ask: id, by: parsed.data.by, outcome });
+		return Response.json({ ok: true, closed: outcome === "closed" }, { headers: NO_STORE });
 	}
 
 	const programApprovalMatch = path.match(/^\/api\/app\/approvals\/program\/(\d+)$/);

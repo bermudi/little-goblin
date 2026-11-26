@@ -954,6 +954,45 @@ correct marks. Accepted limits: a finished subagent of an unpinned project
 chat has no row, because its parent has none; another device can show a new
 reply for a moment before the open one marks it read.
 
+### Questions (rulings 2026-11-24 and 2026-11-26, #930)
+
+A chat whose last reply asked the operator something looked like any other
+new reply, and opening it cleared the mark. Goblin now asks with the `ask`
+tool, and an [open question](../GLOSSARY.md#open-question) marks its chat
+as [needs you](../GLOSSARY.md#needs-you) until it is closed.
+
+- **The model decides.** Code shows, keeps and closes questions. When a
+  question is worth asking this way is Goblin's call, tuned by the operator
+  through memory or AGENTS.md. The tool description says what the tool
+  does, not when to use it, as for `post`.
+- **The tool.** `ask` has three actions. `open {question, options?}` adds a
+  question to this chat, with up to four buttons. `list` shows the open
+  questions of this chat; in a [roll](../GLOSSARY.md#roll), those of every
+  roll. `close {id}` closes one from the same set. App turns only, never a
+  subagent, never a guest.
+- **The card.** The question shows in the transcript where it was asked,
+  outside the Worked fold. A button sends `[ask] <question> → <label>` as
+  the operator's message, then closes the question. "No answer needed"
+  closes it without a message. Buttons are off while a reply runs; "No
+  answer needed" is not. A closed card says "Closed".
+- **Closing.** A question stays open until a tap, "No answer needed", or
+  Goblin's `close`. A message about something else does not close it. In
+  the Rolling chat a plain send goes to the newest roll, so a question
+  asked in an older roll is closed from the newest one.
+- **The mark.** Each open question is a Needs you item, `Asks: <question>`,
+  that opens its chat. Archiving hides it; unarchiving brings it back.
+  Deleting the chat deletes it. Editing or retrying drops the questions that
+  the dropped replies asked.
+- **Not chosen:** marking `ui` buttons and forms (Goblin rarely uses them,
+  and three of four sets were menus where nothing waits); marking replies
+  that end in `?` (half are offers such as "Want me to…?"); the operator's
+  next message closing every question (in the Rolling chat it is often
+  about something else); the AI SDK's client tool without `execute`, which
+  holds the call open until the answer. `ui` buttons stay as they were.
+- **Accepted limit:** a question asked by a reply that never landed (a
+  crash mid-turn) marks its chat with no card to answer it. Goblin can
+  still close it.
+
 ### Live state (ruling 2026-11-23, #918)
 
 App lists went stale. A chat started on another device never appeared, a

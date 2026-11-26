@@ -305,6 +305,18 @@ export function decideMailApproval(
 	});
 }
 
+export function closeAsk(
+	token: string | null,
+	id: number,
+	by: "tap" | "dismiss",
+): Promise<{ ok: true; closed: boolean }> {
+	return request(token, `/api/app/asks/${id}/close`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ by }),
+	});
+}
+
 export function listProjects(token: string | null): Promise<AppProjectList> {
 	return request(token, "/api/app/projects");
 }

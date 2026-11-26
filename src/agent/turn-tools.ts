@@ -43,6 +43,7 @@ import { promptHasProject } from "./prompt.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { Posts } from "../posts.ts";
+import type { Asks } from "../asks.ts";
 import type { GitHub } from "../github.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
@@ -80,6 +81,7 @@ export interface TurnToolsDeps {
 	t3: T3;
 	watches: Watches;
 	posts: Pick<Posts, "add">;
+	asks: Pick<Asks, "open" | "listOpen" | "close">;
 	github: GitHub;
 	agents: AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
@@ -153,6 +155,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				now: deps.now,
 			},
 			post: { posts: deps.posts, conversationId: conv.id },
+			ask: channel === "app" && conv.agentType === null
+				? { asks: deps.asks, conversationId: conv.id }
+				: undefined,
 			cwd: workdir,
 			bashDescriptionCwd,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),

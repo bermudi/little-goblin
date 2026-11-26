@@ -82,6 +82,7 @@ const NEEDS_KINDS = new Set([
 	"mail-approval",
 	"skill-proposal",
 	"delegation-input",
+	"ask",
 ]);
 
 export function buildHome(

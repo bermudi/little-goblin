@@ -43,11 +43,27 @@ export function proposedSkills(
 }
 
 export function attentionBody(
-	deps: Pick<AppChannelDeps, "approvals" | "operator">,
+	deps: Pick<AppChannelDeps, "approvals" | "operator" | "asks">,
 	proposed = proposedSkills(deps),
 ): AppAttentionResponse {
 	const items: AppAttentionItem[] = [];
 	const unavailable: string[] = [];
+
+	if (deps.asks === undefined) {
+		unavailable.push("asks");
+	} else {
+		for (const ask of deps.asks.openForAttention()) {
+			items.push({
+				id: `ask:${ask.id}`,
+				kind: "ask",
+				title: `Asks: ${ask.question}`,
+				detail: ask.options.length ? ask.options.join(" / ") : "Waiting for your answer",
+				createdAt: ask.createdAt,
+				conversationId: ask.conversationId,
+				target: { kind: "conversation", conversationId: ask.conversationId },
+			});
+		}
+	}
 
 	if (deps.approvals === undefined) {
 		unavailable.push("approvals");

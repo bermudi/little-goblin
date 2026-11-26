@@ -556,7 +556,8 @@ export interface AppAttentionItem {
 		| "memory-outage"
 		| "memory-recall"
 		| "skill-proposal"
-		| "delegation-input";
+		| "delegation-input"
+		| "ask";
 	title: string;
 	detail: string;
 	createdAt: string | null;

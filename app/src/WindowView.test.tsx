@@ -233,6 +233,13 @@ describe("WindowView", () => {
 		expect(text).toContain("500 of the history are tool calls and results");
 	});
 
+	test("adds the first-call item to the trajectory legend", async () => {
+		const h = mount();
+		await act(async () => {});
+		await h.click(button("Trajectory"));
+		expect(container.querySelector(".win-traj-legend")?.textContent).toContain("first call");
+	});
+
 	test("leads with used / limit and says when compaction happens", async () => {
 		mount();
 		await act(async () => {});

@@ -640,6 +640,7 @@ export function WindowView({
 									<span><i className="win-traj-swatch same" />same prefix</span>
 									<span><i className="win-traj-swatch append" />append</span>
 									<span><i className="win-traj-swatch rewrite" />rewrite · cache lost</span>
+									<span><i className="win-traj-swatch first" />first call</span>
 									<span>
 										Width is time. A block is a model call. A thin bar under it is a tool that
 										call asked for. Empty space is waiting.

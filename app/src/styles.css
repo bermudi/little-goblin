@@ -7679,6 +7679,9 @@ button.link:hover {
 	background: color-mix(in oklab, var(--app-warning) 85%, var(--app-bg));
 	outline: 1px solid var(--app-warning);
 }
+.win-traj-swatch.first {
+	background: color-mix(in oklab, var(--app-fg-subtle) 35%, var(--app-bg));
+}
 @media (max-width: 40rem) {
 	.win-break-bar {
 		display: none;

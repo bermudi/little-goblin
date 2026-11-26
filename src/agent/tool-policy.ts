@@ -76,6 +76,7 @@ export const TOOL_NAMES = [
 	"sandbox",
 	"desktop",
 	"ui",
+	"ask",
 	"script",
 ] as const;
 
@@ -109,6 +110,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	sandbox: P({ scriptable: true }),
 	desktop: P({ guestChannel: false }),
 	ui: P({}),
+	ask: P({ guestChannel: false }),
 	script: P({ writesFiles: true, composes: true }),
 };
 

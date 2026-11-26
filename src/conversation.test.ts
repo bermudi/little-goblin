@@ -24,6 +24,7 @@ import { openRatings } from "./reply-ratings.ts";
 import { tmpDb } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
+import { makeAsks } from "./asks.ts";
 
 const msg = (text: string): Message => ({
 	id: "m1",
@@ -203,6 +204,37 @@ describe("conversation store", () => {
 		expect(reopened.bumpEpoch(third.id, third.epoch + 1)).toBe(5);
 		expect(reopened.bumpEpoch(third.id, 0)).toBe(6);
 		reopened.close();
+	});
+
+	test("deleting a conversation removes its asks in the same transaction", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const conversation = store.resolve(appAddress("delete-asks"), "/w");
+		const asks = makeAsks(store.db, () => new Date("2026-11-22T08:00:00.000Z"));
+		const result = asks.open({ conversationId: conversation.id, question: "Delete me?" });
+		if ("error" in result) throw new Error(result.error);
+		store.deleteConversation(conversation.id);
+		expect(store.db.query<{ id: number }, [number]>("SELECT id FROM asks WHERE id = ?").get(result.id)).toBeNull();
+		store.close();
+	});
+
+	test("editing a user message removes only asks created after the surviving transcript", async () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const conversation = store.resolve(appAddress("edit-asks"), "/w");
+		const asks = makeAsks(store.db, () => new Date());
+		store.append(conversation.id, [{ id: "u1", role: "user", parts: [{ type: "text", text: "first" }] }]);
+		const old = asks.open({ conversationId: conversation.id, question: "Keep?" });
+		await Bun.sleep(2);
+		store.append(conversation.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "first answer" }] }]);
+		await Bun.sleep(2);
+		store.append(conversation.id, [{ id: "u2", role: "user", parts: [{ type: "text", text: "second" }] }]);
+		const tail = asks.open({ conversationId: conversation.id, question: "Drop?" });
+		if ("error" in old || "error" in tail) throw new Error("failed to seed test asks");
+		await Bun.sleep(2);
+		store.append(conversation.id, [{ id: "a2", role: "assistant", parts: [{ type: "text", text: "second answer" }] }]);
+		store.editUserMessage(conversation.id, "u2", { id: "u2b", role: "user", parts: [{ type: "text", text: "edited" }] });
+		expect(store.db.query("SELECT id FROM asks WHERE id = ?").get(old.id)).not.toBeNull();
+		expect(store.db.query("SELECT id FROM asks WHERE id = ?").get(tail.id)).toBeNull();
+		store.close();
 	});
 
 	test("history degrades a corrupt row to a placeholder instead of failing", () => {
@@ -1249,6 +1281,7 @@ describe("editUserMessage (rewind)", () => {
 			contexts: 1,
 			projections: 1,
 			ratings: 1,
+			asks: 0,
 		});
 		expect(store.historyDetail(c.id).map((e) => [e.seq, e.message.id, e.anchorSeq])).toEqual([
 			[1, "q1", null],

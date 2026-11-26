@@ -341,6 +341,7 @@ export async function handleChatRoute(
 				contexts: rewound.contexts,
 				projections: rewound.projections,
 				ratings: rewound.ratings,
+				asks: rewound.asks,
 			});
 			const sink = appConversationSink(convId, media, notifyUnwatched);
 			try {
@@ -496,6 +497,7 @@ export async function handleChatRoute(
 				contexts: edited.contexts,
 				projections: edited.projections,
 				ratings: edited.ratings,
+				asks: edited.asks,
 			});
 			const sink = appConversationSink(convId, media, notifyUnwatched);
 			try {

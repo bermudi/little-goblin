@@ -1031,21 +1031,46 @@ describe("app chat", () => {
 		}
 	});
 
-	test("the first turn auto-titles an unnamed conversation", async () => {
+	test("retry retains earlier asks and removes asks from the retried exchange", async () => {
 		const model = sdkScript();
 		model.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "ask", input: { action: "open", question: "Older question?" } }],
+			},
 			{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "ask", input: { action: "open", question: "Question being retried?" } }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
 			{ kind: "reply", parts: [{ type: "text", text: "retried reply" }] },
 		);
-		const { http, call, store, runtime } = setup({
+		const { http, call, store, runtime, asks } = setup({
 			token: APP_TOKEN_NAME,
 			scriptedModel: model,
 		});
 		try {
 			await createAndChat(call);
+			await waitUntil(() => model.calls() === 2 && !runtime.busy("app/chat-01"), "first ask settles");
+			const earlierAsk = asks.listOpen("app/chat-01").find((ask) => ask.question === "Older question?");
+			expect(earlierAsk).toBeDefined();
+			await Bun.sleep(2);
+			const second = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
+				}),
+			});
+			expect(second.status).toBe(202);
+			await waitUntil(() => model.calls() === 4 && !runtime.busy("app/chat-01"), "second ask settles");
+			const tailAsk = asks.listOpen("app/chat-01").find((ask) => ask.question === "Question being retried?");
+			expect(tailAsk).toBeDefined();
 			const events: { type: string; messageId?: string; replacedBy?: string }[] = [];
 			const unsubscribe = runtime.subscribeConversation("app/chat-01", (event) => events.push(event));
-			const originalAssistantId = store.history("app/chat-01")[1]!.id;
+			const originalAssistantId = store.history("app/chat-01").at(-1)!.id;
 			const res = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -1053,18 +1078,18 @@ describe("app chat", () => {
 			});
 			expect(res.status).toBe(202);
 			expect(await res.json()).toEqual({ submitted: true });
-			expect(events[0]).toEqual({ type: "rewound", messageId: "m1", replacedBy: "m1" });
+			expect(events[0]).toEqual({ type: "rewound", messageId: "m2", replacedBy: "m2" });
 			await waitUntil(
-				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
+				() => model.calls() === 5 && !runtime.busy("app/chat-01"),
 				"retry settles",
 			);
 			const history = store.history("app/chat-01");
-			expect(history.map((message) => message.role)).toEqual(["user", "assistant"]);
-			expect(history[0]!.id).toBe("m1");
-			expect(history[1]!.parts).toContainEqual(
+			expect(store.db.query("SELECT id FROM asks WHERE id = ?").get(earlierAsk!.id)).not.toBeNull();
+			expect(store.db.query("SELECT id FROM asks WHERE id = ?").get(tailAsk!.id)).toBeNull();
+			expect(history.at(-1)!.parts).toContainEqual(
 				expect.objectContaining({ type: "text", text: "retried reply" }),
 			);
-			expect(history[1]!.id).not.toBe(originalAssistantId);
+			expect(history.at(-1)!.id).not.toBe(originalAssistantId);
 			unsubscribe();
 		} finally {
 			http.stop();

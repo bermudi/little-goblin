@@ -83,6 +83,7 @@ export interface TurnRun {
 export interface TurnToolCall {
 	runId: string;
 	toolCallId: string;
+	modelCallId: string | null;
 	name: string;
 	args: unknown;
 	argsHash: string;
@@ -241,6 +242,7 @@ const callRowSchema = z.object({
 	result: z.string().nullable(),
 	error: z.string().nullable(),
 	began_ms: z.number().nullable(),
+	model_call_id: z.string().nullable(),
 	settled_ms: z.number().nullable(),
 	resolution_note: z.string().nullable(),
 	resolved_ms: z.number().nullable(),
@@ -413,6 +415,7 @@ function decodeCall(raw: unknown): TurnToolCall {
 	return {
 		runId: r.run_id,
 		toolCallId: r.tool_call_id,
+		modelCallId: r.model_call_id,
 		name: r.name,
 		args: tryParseJson(boundedArgsText(r.args)),
 		argsHash: r.args_hash,
@@ -428,6 +431,90 @@ function decodeCall(raw: unknown): TurnToolCall {
 	};
 }
 
+export interface ToolRunRow {
+	toolCallId: string;
+	runId: string;
+	name: string;
+	state: string;
+	beganMs: number;
+	settledMs: number | null;
+	modelCallId: string | null;
+}
+
+const toolRunRowSchema = z.object({
+	tool_call_id: z.string(),
+	run_id: z.string(),
+	name: z.string(),
+	state: z.string(),
+	began_ms: z.number(),
+	settled_ms: z.number().nullable(),
+	model_call_id: z.string().nullable(),
+});
+
+export function listToolRuns(
+	db: Database,
+	conversationId: string,
+	sinceMs: number,
+	limit = 2000,
+): ToolRunRow[] {
+	const rows = db
+		.query(
+			`SELECT c.tool_call_id, c.run_id, c.name, c.state, c.began_ms, c.settled_ms, c.model_call_id
+			FROM turn_tool_calls c JOIN turn_runs r ON r.run_id = c.run_id
+			WHERE r.conversation_id = ? AND c.origin_run IS NULL AND c.began_ms IS NOT NULL AND c.began_ms >= ?
+			ORDER BY c.rowid LIMIT ?`,
+		)
+		.all(conversationId, sinceMs, limit);
+	return rows.map((raw) => {
+		const row = toolRunRowSchema.parse(raw);
+		return {
+			toolCallId: row.tool_call_id,
+			runId: row.run_id,
+			name: row.name,
+			state: row.state,
+			beganMs: row.began_ms,
+			settledMs: row.settled_ms,
+			modelCallId: row.model_call_id,
+		};
+	});
+}
+
+export interface RunRow {
+	runId: string;
+	startedMs: number;
+	finishedMs: number | null;
+	status: string;
+	resumedFrom: string | null;
+}
+
+const trajectoryRunRowSchema = z.object({
+	run_id: z.string(),
+	started_ms: z.number(),
+	finished_ms: z.number().nullable(),
+	status: z.string(),
+	resumed_from: z.string().nullable(),
+});
+
+export function listRuns(db: Database, conversationId: string, sinceMs: number, untilMs: number): RunRow[] {
+	const rows = db
+		.query(
+			`SELECT run_id, started_ms, finished_ms, status, resumed_from
+			FROM turn_runs WHERE conversation_id = ? AND started_ms <= ?
+			AND (finished_ms IS NULL OR finished_ms >= ?) ORDER BY started_ms, rowid`,
+		)
+		.all(conversationId, untilMs, sinceMs);
+	return rows.map((raw) => {
+		const row = trajectoryRunRowSchema.parse(raw);
+		return {
+			runId: row.run_id,
+			startedMs: row.started_ms,
+			finishedMs: row.finished_ms,
+			status: row.status,
+			resumedFrom: row.resumed_from,
+		};
+	});
+}
+
 const RUN_SELECT = `SELECT r.*,
 	(SELECT COUNT(*) FROM turn_tool_calls c WHERE c.run_id = r.run_id AND c.state = 'planned') AS calls_planned,
 	(SELECT COUNT(*) FROM turn_tool_calls c WHERE c.run_id = r.run_id AND c.state = 'dispatched') AS calls_dispatched,
@@ -437,6 +524,7 @@ const RUN_SELECT = `SELECT r.*,
 	FROM turn_runs r`;
 
 export interface OpenTurnJournalOpts {
+	modelCallId?: (conversationId: string) => string | null;
 	/** design/runtime-turn.md → Unlanded-turn progress: called inside the
 	 *  open transaction that reclassifies a 'running' row to
 	 *  'interrupted', with the decoded row and its calls — the hook
@@ -562,6 +650,9 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	if (!callCols.has("origin_run")) {
 		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN origin_run TEXT");
 	}
+	if (!callCols.has("model_call_id")) {
+		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN model_call_id TEXT");
+	}
 
 	const qBegin = db.query(`INSERT INTO turn_runs (
 		run_id, conversation_id, epoch, anchor_seq, steer_mark,
@@ -585,11 +676,12 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 			name = excluded.name, args = excluded.args, args_hash = excluded.args_hash
 		WHERE turn_tool_calls.name = ''`);
 	const qDispatch = db.query(
-		`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, began_ms)
-		VALUES (?, ?, ?, ?, ?, 'dispatched', ?)
+		`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, began_ms, model_call_id)
+		VALUES (?, ?, ?, ?, ?, 'dispatched', ?, ?)
 		ON CONFLICT(run_id, tool_call_id) DO UPDATE SET
 			state = 'dispatched', began_ms = excluded.began_ms,
-			name = excluded.name, args = excluded.args, args_hash = excluded.args_hash
+			name = excluded.name, args = excluded.args, args_hash = excluded.args_hash,
+			model_call_id = excluded.model_call_id
 		WHERE turn_tool_calls.state = 'planned'
 			OR (turn_tool_calls.state = 'dispatched' AND turn_tool_calls.name = '')`,
 	);
@@ -613,6 +705,9 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	);
 	const qRunStatus = db.query<{ status: string }, [string]>(
 		"SELECT status FROM turn_runs WHERE run_id = ?",
+	);
+	const qRunConversation = db.query<{ conversation_id: string }, [string]>(
+		"SELECT conversation_id FROM turn_runs WHERE run_id = ?",
 	);
 	const qGet = db.query(`${RUN_SELECT} WHERE r.run_id = ?`);
 	const qSuccessor = db.query<{ run_id: string }, [string]>(
@@ -770,14 +865,14 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	const qInherit = db.query(
 		`INSERT OR IGNORE INTO turn_tool_calls
 			(run_id, tool_call_id, name, args, args_hash, state, replayed, result, error,
-			 began_ms, settled_ms, resolution_note, resolved_ms, retry_from_known, origin_run)
+			 began_ms, settled_ms, resolution_note, resolved_ms, retry_from_known, origin_run, model_call_id)
 		 SELECT ?,
 			COALESCE(origin_run, ?) || ':' ||
 				CASE WHEN origin_run IS NULL THEN tool_call_id
 					ELSE SUBSTR(tool_call_id, LENGTH(origin_run) + 2) END,
 			name, args, args_hash, state, replayed, result, error,
 			began_ms, settled_ms, resolution_note, resolved_ms, retry_from_known,
-			COALESCE(origin_run, ?)
+			COALESCE(origin_run, ?), model_call_id
 		 FROM turn_tool_calls WHERE run_id = ? AND state != 'dispatched'`,
 	);
 
@@ -822,6 +917,18 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		},
 		noteToolDispatch(runId, callId, name, args) {
 			const canonical = stableStringify(args);
+			let modelCallId: string | null = null;
+			try {
+				const run = qRunConversation.get(runId);
+				if (run !== null && opts.modelCallId !== undefined) {
+					modelCallId = opts.modelCallId(run.conversation_id);
+				}
+			} catch (error) {
+				log.warn("tool stamp lookup failed", {
+					run: runId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			qDispatch.run(
 				runId,
 				callId,
@@ -829,6 +936,7 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 				boundedArgsText(canonical),
 				sha256hex(canonical),
 				Date.now(),
+				modelCallId,
 			);
 		},
 		noteToolResult(runId, callId, result, opts) {

@@ -75,6 +75,48 @@ describe("turn journal", () => {
 		store.close();
 	});
 
+	test("dispatch stamps the emitting model call", () => {
+		const store = openStore(tmpDb("goblin-tj-stamp-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db, { modelCallId: () => "call-x" });
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolDispatch(runId, "call-tool", "probe", {});
+		expect(journal.callsFor(runId)[0]).toMatchObject({
+			modelCallId: "call-x",
+			state: "dispatched",
+			beganMs: expect.any(Number),
+		});
+		store.close();
+	});
+
+	test("dispatch without a stamp callback records null", () => {
+		const store = openStore(tmpDb("goblin-tj-stamp-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolDispatch(runId, "call-tool", "probe", {});
+		expect(journal.callsFor(runId)[0]!.modelCallId).toBeNull();
+		store.close();
+	});
+
+	test("dispatch survives a failing stamp callback", () => {
+		const store = openStore(tmpDb("goblin-tj-stamp-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db, {
+			modelCallId: () => {
+				throw new Error("offline");
+			},
+		});
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolDispatch(runId, "call-tool", "probe", {});
+		expect(journal.callsFor(runId)[0]).toMatchObject({
+			modelCallId: null,
+			state: "dispatched",
+			beganMs: expect.any(Number),
+		});
+		store.close();
+	});
+
 	test("dispatch and results never regress a settled row", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -453,7 +495,7 @@ describe("turn journal", () => {
 	test("inheritCalls carries settled history to the successor, never 'dispatched'", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const journal = openTurnJournal(store.db);
+		const journal = openTurnJournal(store.db, { modelCallId: () => "call-x" });
 		const src = begunRun(journal, conv.id, "run-src");
 		journal.noteToolInput(src, "done", "probe", { q: 1 });
 		journal.noteToolDispatch(src, "done", "probe", { q: 1 });
@@ -476,6 +518,7 @@ describe("turn journal", () => {
 			"run-src:plan",
 		]);
 		expect(calls.find((c) => c.toolCallId === "run-src:done")!.result).toBe('{"out":"landed"}');
+		expect(calls.find((c) => c.toolCallId === "run-src:done")!.modelCallId).toBe("call-x");
 		expect(calls.find((c) => c.toolCallId === "run-src:amb")!.state).toBe("resolved-skip");
 		journal.inheritCalls(src, next);
 		expect(journal.callsFor(next)).toHaveLength(3);

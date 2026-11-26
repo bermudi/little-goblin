@@ -15,7 +15,8 @@ import { defineTool, type Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
-import { openCacheObservation } from "./cache-observation.ts";
+import { listCalls, newestTurnCall, openCacheObservation } from "./cache-observation.ts";
+import { observedModel } from "./agent/providers.ts";
 import type { Config } from "./config-schema.ts";
 import { openNotes } from "./notes.ts";
 import { noteTool } from "./agent/tools/note.ts";
@@ -5215,6 +5216,80 @@ test("invalid durable app settings report admission error exactly once without s
 });
 
 describe("turn journal", () => {
+	for (const [make, callCount, emitting] of [
+		[sdkScript, 3, [0, 0, 1]],
+		[claudeScript, 4, [0, 1, 2]],
+	] as const) {
+		test(`${engineName(make)}: dispatch stamp names the emitting call, whatever the clock does`, async () => {
+			for (const offset of [0, 5000, -5000]) {
+				const store = openStore(tmpDb("goblin-rt-stamp-"));
+				const observation = openCacheObservation(store.db, { now: () => Date.now() + offset });
+				const journal = openTurnJournal(store.db, {
+					modelCallId: (id) => newestTurnCall(store.db, id),
+				});
+				const script = make === sdkScript ? sdkScript() : claudeScript({ observation });
+				script.script(
+					{
+						kind: "reply",
+						parts: [
+							{ type: "tool-call", toolName: "slow", input: {}, toolCallId: "a" },
+							{ type: "tool-call", toolName: "fast", input: {}, toolCallId: "b" },
+						],
+					},
+					{ kind: "reply", parts: [{ type: "tool-call", toolName: "slow", input: {}, toolCallId: "c" }] },
+					{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+				);
+				const runtimeRig = rig({
+					script,
+					store,
+					deps: { turnJournal: journal },
+					buildStep: (conv) => {
+						const step = script.step();
+						return "model" in step
+							? {
+									...step,
+									model: observedModel(step.model, { conversation: conv.id, observation }),
+								}
+							: step;
+					},
+					tools: {
+						slow: defineTool({
+							description: "slow",
+							input: z.object({}),
+							execute: async () => {
+								await Bun.sleep(40);
+								return "done";
+							},
+						}),
+						fast: defineTool({
+							description: "fast",
+							input: z.object({}),
+							execute: async () => {
+								await Bun.sleep(20);
+								return "done";
+							},
+						}),
+					},
+				});
+				try {
+					const sink = submit(runtimeRig, "go");
+					expect(await sink.done).toEqual({ kind: "completed" });
+					await drain(runtimeRig);
+					const runId = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").get()!.run_id;
+					const calls = listCalls(store.db, runtimeRig.conv.id).sort((a, b) => a.startedMs - b.startedMs);
+					const stamps = [...journal.callsFor(runId)]
+						.sort((x, y) => (x.beganMs ?? 0) - (y.beganMs ?? 0))
+						.map((entry) => entry.modelCallId);
+					expect(calls.length).toBe(callCount);
+					expect(stamps).toEqual(emitting.map((index) => calls[index]!.callId));
+				} finally {
+					await runtimeRig.runtime.shutdown();
+					store.close();
+				}
+			}
+		});
+	}
+
 	test("a completed tool loop leaves a completed run with settled call rows", async () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

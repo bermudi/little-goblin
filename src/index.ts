@@ -19,7 +19,7 @@ import { openAppPush } from "./app-push.ts";
 import { appendAuthRecord, loadAuth } from "./auth.ts";
 import { wireDelivery } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
-import { openCacheObservation } from "./cache-observation.ts";
+import { newestTurnCall, openCacheObservation } from "./cache-observation.ts";
 import { createIdleCompactor } from "./idle-compaction.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import { sweepScreenshotFrames } from "./frame-stubs.ts";
@@ -182,6 +182,7 @@ async function boot() {
 	// transcript even though the process never got to say so.
 	const turnJournal = openTurnJournal(store.db, {
 		onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
+		modelCallId: (conversationId) => newestTurnCall(store.db, conversationId),
 	});
 	const wakeStore = openWakeStore(store.db);
 	// Inert without a hand-edited cachePruning block.

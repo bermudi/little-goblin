@@ -6,6 +6,7 @@ import { buildRetryGuard, classifyRetry, type GuardEntry } from "./retry-guard.t
 function call(over: Partial<TurnToolCall> & { toolCallId: string }): TurnToolCall {
 	return {
 		runId: "r",
+		modelCallId: null,
 		name: "probe",
 		args: { q: 1 },
 		argsHash: "h1",

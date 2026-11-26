@@ -1013,7 +1013,8 @@ The view has two tabs. **Window** is the capture and its raw parts.
 **Trajectory** draws each run as one row on its own time axis: a block per
 model call, colored by prefix relation, and under it a thin bar per tool.
 Width is time and empty space is waiting. The Model calls table lives in
-this tab.
+this tab. Until a prompt is captured, the view opens on this tab, so the
+calls stay reachable while the first turn runs.
 
 **Stamp.** When a tool is dispatched, the journal writes on the tool row
 the id of the model call that asked for it (`model_call_id` on
@@ -1022,12 +1023,16 @@ pointer: nothing is added to the call record. At dispatch, the newest turn
 call for the conversation is the one that emitted the tool, because the
 next call cannot start before the tool's result is back. Only the turn's
 own calls are recorded with a null purpose, so the lookup skips title,
-vision, review and compaction calls. The lookup never fails a dispatch: on
-error the row is written without a stamp.
+vision, review and compaction calls. The lookup runs at every dispatch,
+so it reads through an index on conversation and purpose. Without that
+index SQLite sorted every call of the conversation each time: 2.2 ms per
+dispatch at 20,000 calls. With it, 12 µs. The lookup never fails a
+dispatch: on error the row is written without a stamp.
 
 Matching by time alone was rejected. Both stores read the wall clock and
 share no id. On a scripted turn with the call clock shifted 5 s either way,
-a time rule put every tool on the wrong call; the stamp stayed right.
+a time rule put every tool on the wrong call. The stamp stayed right, on
+both engines ([`runtime.test.ts`](../src/runtime.test.ts)).
 
 What the first version accepts:
 
@@ -1036,13 +1041,15 @@ What the first version accepts:
 - **The time before the first tool starts** is plain. The journal does not
   say what a wait was, so the view cannot say "waiting on you".
 - **One row per run.** A resumed turn is its own row, numbered with its
-  predecessor's turn.
+  predecessor's turn. Calls that match no run share one row, "No run",
+  placed by the start of its first call.
 - **A tool row without a stamp** (written before this change) falls back
   to the last call that finished before it began.
 - **A replayed or skipped tool** has no start time and is not drawn.
 
-Not verified by a run: the Claude Code engine. By code it closes a call at
-the end of each step, as the AI SDK engine does.
+A call or a tool with no end is drawn as running only while its run is
+still open. When the process dies it leaves rows open forever, so in an
+ended run the same rows draw dashed grey as unfinished.
 
 ## Reply ratings (ruling 2026-10-22)
 

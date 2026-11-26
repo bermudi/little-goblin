@@ -77,7 +77,7 @@ export function buildTrajectory(
 	const toolGroups = new Map<TrajectoryCall, AppWindowToolRun[]>();
 	for (const tool of toolRuns) {
 		let match = placed.find((item) => item.call.callId === tool.modelCallId);
-		if (match === undefined) {
+		if (match === undefined && tool.modelCallId === null) {
 			match = [...placed]
 				.reverse()
 				.find(

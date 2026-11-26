@@ -463,7 +463,8 @@ export function listToolRuns(
 			`SELECT c.tool_call_id, c.run_id, c.name, c.state, c.began_ms, c.settled_ms, c.model_call_id
 			FROM turn_tool_calls c JOIN turn_runs r ON r.run_id = c.run_id
 			WHERE r.conversation_id = ? AND c.origin_run IS NULL AND c.began_ms IS NOT NULL
-				AND (c.model_call_id IN (SELECT value FROM json_each(?)) OR c.began_ms >= ?)
+				AND (c.model_call_id IN (SELECT value FROM json_each(?))
+					OR (c.model_call_id IS NULL AND c.began_ms >= ?))
 			ORDER BY c.rowid DESC LIMIT ?`,
 		)
 		.all(conversationId, JSON.stringify(callIds), sinceMs, limit);

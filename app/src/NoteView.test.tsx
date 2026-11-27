@@ -4,10 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { Editor } from "@milkdown/kit/core";
 import { replaceAll } from "@milkdown/kit/utils";
-import { NoteView, NotesIndex } from "./NoteView.tsx";
+import { NoteView } from "./NoteView.tsx";
+import { LiveStore } from "./live.ts";
+import { NotesIndex } from "./NotesIndex.tsx";
 import { rawNoteDraft, writeNoteDraft } from "./noteDraft.ts";
 import type { AppNote, AppNoteSummary } from "../../src/http/app-wire.ts";
-import { withLive } from "./testkit.ts";
+import { emitLiveVersions, goblinFeedResponse, goblinLive, withLive } from "./testkit.ts";
 
 describe("main branch regressions", () => {
 	const note: AppNote = {
@@ -694,6 +696,10 @@ describe("quiet harbor regressions", () => {
 				["Node", win.Node],
 				["HTMLElement", win.HTMLElement],
 				["HTMLFieldSetElement", win.HTMLFieldSetElement],
+				["HTMLTextAreaElement", win.HTMLTextAreaElement],
+				["HTMLSelectElement", win.HTMLSelectElement],
+				["HTMLInputElement", win.HTMLInputElement],
+				["HTMLButtonElement", win.HTMLButtonElement],
 				["HTMLUnknownElement", win.HTMLUnknownElement],
 				["requestAnimationFrame", win.requestAnimationFrame],
 				["cancelAnimationFrame", win.cancelAnimationFrame],
@@ -752,7 +758,7 @@ describe("quiet harbor regressions", () => {
 			});
 			// The list's own fetch is debounced — a rendered row is the
 			// loaded marker, not the filters that paint immediately.
-			await waitFor(() => container.querySelector(".dt-row") !== null, "a rendered note row");
+			await waitFor(() => container.querySelector(".note-list-title") !== null, "a rendered note row");
 		};
 
 		test("a capped list says so — active and archived carry their own notice", async () => {
@@ -764,17 +770,52 @@ describe("quiet harbor regressions", () => {
 				},
 			};
 			await mount(<NotesIndex token={null} projects={[]} onOpen={() => {}} />);
-			expect(container.textContent).toContain(
-				"Showing the first 1 matching notes — narrow the search or pick a project",
-			);
-			expect(container.textContent).toContain(
-				"Showing the first 1 archived notes — narrow the search or pick a project",
-			);
-			// The collapsed shelf flags it in the count too.
-			expect(container.querySelector("summary")?.textContent).toBe("Archived notes (1+)");
+			expect(container.textContent).toContain("Showing the first 1 matching notes");
+			expect(container.textContent).not.toContain("gone");
+			const status = container.querySelector<HTMLSelectElement>('select[aria-label="Filter notes by status"]')!;
+			await act(async () => {
+				status.value = "archived";
+				status.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			await waitFor(() => container.querySelector(".note-list-title")?.textContent === "gone", "an archived note row");
+			expect(container.textContent).toContain("Showing the first 1 matching notes");
 		});
 
-		test("a complete list carries no notice and a plain archived count", async () => {
+		test("a successful reload clears an earlier list error", async () => {
+			let failList = true;
+			const stubbed = globalThis.fetch;
+			globalThis.fetch = ((input: RequestInfo | URL) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				const feed = goblinFeedResponse(url);
+				if (feed !== null) return Promise.resolve(feed);
+				if (failList && url.startsWith("/api/app/notes")) {
+					return Promise.resolve(jsonResponse({ error: "list down" }, 500));
+				}
+				return stubbed(input);
+			}) as typeof fetch;
+			const store = new LiveStore(null);
+			root = createRoot(container);
+			await act(async () => {
+				root?.render(withLive(<NotesIndex token={null} projects={[]} onOpen={() => {}} />, store));
+			});
+			await waitFor(() => container.querySelector('[role="alert"]') !== null, "the list error");
+			expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't list notes");
+
+			failList = false;
+			goblinLive.feed = null;
+			const stop = store.start();
+			try {
+				await waitFor(() => goblinLive.feed !== null, "the live feed");
+				await act(async () => emitLiveVersions({ notes: "n-reload" }));
+				await waitFor(() => container.querySelector(".note-list-title") !== null, "a reloaded note row");
+				expect(container.querySelector('[role="alert"]')).toBeNull();
+			} finally {
+				stop();
+			}
+		});
+
+		test("a complete list carries no truncation notice", async () => {
 			listBodies = {
 				active: { notes: [SUMMARY], truncated: false },
 				archived: {
@@ -784,7 +825,7 @@ describe("quiet harbor regressions", () => {
 			};
 			await mount(<NotesIndex token={null} projects={[]} onOpen={() => {}} />);
 			expect(container.textContent).not.toContain("Showing the first");
-			expect(container.querySelector("summary")?.textContent).toBe("Archived notes (1)");
+			expect(container.textContent).not.toContain("gone");
 		});
 	});
 });

@@ -33,6 +33,7 @@ import type {
 	AppFavoritesResponse,
 	AppMessageList,
 	AppNote,
+	AppNoteBatch,
 	AppNoteList,
 	AppNoteRewriteRequest,
 	AppNoteRewriteResponse,
@@ -365,14 +366,23 @@ export class NoteConflictError extends ApiError {
 
 export function listNotes(
 	token: string | null,
-	filter: { project?: string; q?: string; archived?: boolean } = {},
+	filter: { project?: string; owner?: string; q?: string; archived?: boolean } = {},
 ): Promise<AppNoteList> {
 	const params = new URLSearchParams();
 	if (filter.project !== undefined && filter.project !== "") params.set("project", filter.project);
+	if (filter.owner !== undefined) params.set("owner", filter.owner);
 	if (filter.q !== undefined && filter.q !== "") params.set("q", filter.q);
 	if (filter.archived === true) params.set("archived", "1");
 	const q = params.toString();
 	return request(token, `/api/app/notes${q === "" ? "" : `?${q}`}`);
+}
+
+export function batchNotes(token: string | null, body: AppNoteBatch): Promise<{ ok: true }> {
+	return request(token, "/api/app/notes/batch", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
 }
 
 export function createNote(

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { setLogLevel } from "../log.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { NOTE_BODY_MAX } from "../notes.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
+import type { AppNote, AppNoteBatch, AppNoteList } from "./app-wire.ts";
 
 describe("app notes", () => {
 	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
@@ -23,6 +25,46 @@ describe("app notes", () => {
 		});
 	const create = (call: ReturnType<typeof setup>["call"], body: unknown) =>
 		postJson(call, "/api/app/notes", body);
+
+	test("batch management moves, archives, restores and deletes only the reviewed selection", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const seed = async (title: string) => (await (await create(call, { title })).json()) as AppNote;
+			const first = await seed("reading list");
+			const second = await seed("packing list");
+			expect(first.botId).toBe(LITTLE_GOBLIN_NOTE_OWNER);
+			const readList = async (query: string) =>
+				((await (await call(`/api/app/notes?${query}`)).json()) as AppNoteList).notes;
+			const batch = (selection: AppNoteBatch["selection"], change: AppNoteBatch["change"]) =>
+				postJson(call, "/api/app/notes/batch", { selection, change });
+			const active = await readList("owner=little-goblin");
+			const selected = active.map(({ id, stateRev }) => ({ id, stateRev }));
+			expect((await batch(selected, { action: "move", owner: { botId: null } })).status).toBe(200);
+			expect((await readList("owner=global&q=reading")).map((note) => note.id)).toEqual([first.id]);
+			expect(await readList("owner=little-goblin")).toEqual([]);
+
+			expect((await batch(selected, { action: "archive" })).status).toBe(409);
+			const shared = await readList("owner=global");
+			expect(shared).toHaveLength(2);
+			const sharedRevs = shared.map(({ id, stateRev }) => ({ id, stateRev }));
+			expect((await batch(sharedRevs, { action: "delete" })).status).toBe(422);
+			expect((await batch(sharedRevs, { action: "archive" })).status).toBe(200);
+			expect(await readList("owner=global")).toEqual([]);
+
+			const archived = await readList("owner=global&archived=1");
+			const restored = archived.find((note) => note.id === second.id)!;
+			expect((await batch([restored], { action: "restore" })).status).toBe(200);
+			const staleDelete = [...archived].sort((a) => a.id === first.id ? -1 : 1);
+			expect((await batch(staleDelete, { action: "delete" })).status).toBe(409);
+			const stillArchived = await readList("owner=global&archived=1");
+			expect(stillArchived.map((note) => note.id)).toEqual([first.id]);
+			expect((await batch(stillArchived, { action: "delete" })).status).toBe(200);
+			expect((await call(`/api/app/notes/${first.id}`)).status).toBe(404);
+			expect((await readList("owner=global")).map((note) => note.id)).toEqual([second.id]);
+		} finally {
+			http.stop();
+		}
+	});
 
 	test("create, get with etag, list with project/q/archived filters", async () => {
 		const { http, call, projects } = setup({ token: APP_TOKEN_NAME });

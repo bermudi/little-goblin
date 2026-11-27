@@ -92,10 +92,24 @@ and exactly what the model reads; the rich editor is limited to what GFM
 expresses, so no tri-format sync can drift. Embedded uploads (images/files
 inside a note) are out of v1.
 
-**Scope** (operator ruling): a note belongs to a project or is loose, and —
-unlike a conversation — may move between projects (or out to loose): it
-carries no prompt cache, and frozen notes indexes show it until their next
-boundary. Any note attaches to any app chat.
+**Ownership** (operator, 2026-11-27, #982). Little Goblin owns existing
+loose notes and new notes made outside projects. Global notes become shared
+by an explicit move and every bot can read and edit them. Notes owned by a
+bot are available in that bot's chats. Existing project notes keep their
+project until it retires, then follow its successor bot or Little Goblin.
+While projects exist, their existing chat and attachment rules still apply.
+Settings → Notes has one searchable list with owner and archive filters.
+Move, archive, restore, and delete work on the selection. A changed
+selection refuses the whole operation. Only archived notes can be deleted,
+after confirmation.
+
+**Edit history and chat pins** (operator, 2026-11-27, #982, pending).
+Each edit records the diff and who made it. Bots record what they changed
+and why. The operator can supply a reason and keeps autosave. Each chat
+can pin notes it can access. A new roll clears pins and compaction keeps
+them. On its next turn, the model receives a short notice for new pins and
+changes at the tail of the conversation. It reads bodies and diffs on
+demand. The Notes button shows changes in the app.
 
 **Editor: Milkdown** — chosen over Tiptap for being markdown-native (remark
 parse/serialize), so `body_md` stays the only format. The editor saves only

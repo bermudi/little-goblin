@@ -6,6 +6,7 @@ import type { Message } from "../message.ts";
 import type { AppConversationSummary } from "../conversation-read.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
+import type { NoteBatchAction, NoteSelection } from "../note-owner.ts";
 
 export interface AppConversationList {
 	conversations: AppConversationListItem[];
@@ -57,6 +58,7 @@ export interface AppProjectList {
 }
 
 export interface AppNote {
+	botId?: string | null;
 	id: string;
 	projectId: string | null;
 	title: string;
@@ -71,6 +73,7 @@ export interface AppNote {
 }
 
 export interface AppNoteSummary {
+	botId?: string | null;
 	id: string;
 	projectId: string | null;
 	title: string;
@@ -84,6 +87,10 @@ export interface AppNoteSummary {
 export interface AppNoteList {
 	notes: AppNoteSummary[];
 	truncated: boolean;
+}
+export interface AppNoteBatch {
+	selection: NoteSelection[];
+	change: NoteBatchAction;
 }
 
 export interface AppNoteVersionMeta {

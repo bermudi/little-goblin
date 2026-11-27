@@ -5,12 +5,10 @@ import {
 	useImperativeHandle,
 	useRef,
 	useState,
-	type CSSProperties,
 	type RefObject,
 } from "react";
 import type {
 	AppNote,
-	AppNoteSummary,
 	AppNoteVersion,
 	AppNoteVersionMeta,
 	AppProject,
@@ -18,12 +16,10 @@ import type {
 import {
 	ApiError,
 	NoteConflictError,
-	createNote,
 	deleteNote,
 	getNote,
 	getNoteVersion,
 	listNoteVersions,
-	listNotes,
 	patchNote,
 	restoreNoteVersion,
 } from "./api.ts";
@@ -34,220 +30,6 @@ import { relTime } from "./memoryShared.tsx";
 import { discardNoteDraft, loadNoteDraft, rawNoteDraft, type NoteDraft } from "./noteDraft.ts";
 
 const Editor = lazy(() => import("./NoteEditor.tsx"));
-
-// ---------- /app/notes ----------
-
-// name | project | preview | updated | pinned — same shape as the project
-// page's notes table, plus the project column.
-const NOTES_COLS = {
-	"--dt-cols": "minmax(9rem, 1.3fr) minmax(7rem, 0.8fr) minmax(10rem, 2.6fr) 6.5rem 5rem",
-} as CSSProperties;
-
-const flatPreview = (text: string): string => text.replace(/\s+/g, " ").trim();
-
-// Pinned first; the server's order (newest edit first) holds inside each group.
-const pinnedFirst = (notes: AppNoteSummary[]): AppNoteSummary[] => [
-	...notes.filter((n) => n.pinnedAt !== null),
-	...notes.filter((n) => n.pinnedAt === null),
-];
-
-function NotesTable({
-	notes,
-	projectName,
-	onOpen,
-}: {
-	notes: AppNoteSummary[];
-	projectName: (id: string | null) => string | null;
-	onOpen: (id: string) => void;
-}) {
-	return (
-		<div className="dtable notes-table" style={NOTES_COLS}>
-			<div className="dt-head" aria-hidden="true">
-				<span>Note</span>
-				<span>Project</span>
-				<span>Preview</span>
-				<span>Updated</span>
-				<span />
-			</div>
-			{pinnedFirst(notes).map((n) => (
-				<button key={n.id} type="button" className="dt-row" onClick={() => onOpen(n.id)}>
-					<span className="dt-cell dt-main">{n.title}</span>
-					<span className="dt-cell" data-label="Project">
-						{projectName(n.projectId) ?? "No project"}
-					</span>
-					<span className="dt-cell">{flatPreview(n.preview)}</span>
-					<span className="dt-cell" data-label="Updated">
-						{relTime(n.updatedAt)}
-					</span>
-					<span className="dt-cell dt-status">
-						{n.pinnedAt !== null && <span className="pill">pinned</span>}
-					</span>
-				</button>
-			))}
-		</div>
-	);
-}
-
-export function NotesIndex({
-	token,
-	projects,
-	onOpen,
-	onChanged,
-}: {
-	token: string | null;
-	projects: AppProject[];
-	onOpen: (id: string) => void;
-	onChanged?: () => void;
-}) {
-	const [query, setQuery] = useState("");
-	const [filter, setFilter] = useState<string>("all");
-	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
-	const [archived, setArchived] = useState<AppNoteSummary[] | null>(null);
-	// Each list carries the wire's own hit-the-bound bit — a capped
-	// shelf must say so, not read as complete.
-	const [truncated, setTruncated] = useState({ active: false, archived: false });
-	const [error, setError] = useState<string | null>(null);
-	const [creating, setCreating] = useState(false);
-	const creatingRef = useRef(false);
-	const seq = useRef(0);
-	const mounted = useRef(true);
-	const createSeq = useRef(0);
-	useEffect(() => {
-		mounted.current = true;
-		return () => {
-			mounted.current = false;
-			createSeq.current += 1;
-			seq.current += 1;
-		};
-	}, []);
-
-	const projectName = (id: string | null): string | null =>
-		id === null ? null : (projects.find((p) => p.id === id)?.name ?? "project");
-
-	const notesVersion = useLiveVersion("notes");
-	useEffect(() => {
-		const run = () => {
-			const n = ++seq.current;
-			const scope =
-				filter === "all"
-					? { project: "all" }
-					: filter === "loose"
-						? { project: "loose" }
-						: { project: filter };
-			void Promise.all([
-				listNotes(token, { ...scope, q: query }),
-				listNotes(token, { ...scope, q: query, archived: true }),
-			]).then(
-				([active, gone]) => {
-					if (n !== seq.current) return;
-					setNotes(active.notes);
-					setArchived(gone.notes);
-					setTruncated({ active: active.truncated, archived: gone.truncated });
-					setError(null);
-				},
-				(err) => {
-					if (n !== seq.current) return;
-					setError(`Couldn't list notes: ${err instanceof Error ? err.message : String(err)}`);
-				},
-			);
-		};
-		const t = setTimeout(run, 200);
-		return () => clearTimeout(t);
-	}, [query, filter, token, notesVersion]);
-
-	const newNote = () => {
-		if (creatingRef.current) return;
-		creatingRef.current = true;
-		const req = ++createSeq.current;
-		setCreating(true);
-		void createNote(token, {
-			title: "Untitled note",
-			...(filter !== "all" && filter !== "loose" ? { projectId: filter } : {}),
-		}).then(
-			(n) => {
-				onChanged?.();
-				if (!mounted.current || req !== createSeq.current) return;
-				creatingRef.current = false;
-				setCreating(false);
-				onOpen(n.id);
-			},
-			(err) => {
-				if (!mounted.current || req !== createSeq.current) return;
-				creatingRef.current = false;
-				setCreating(false);
-				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
-			},
-		);
-	};
-
-	return (
-		<div className="ops">
-			<div className="proj-sec-head">
-				<h2 className="ops-h2">Notes</h2>
-				<button type="button" className="addbtn proj-btn" disabled={creating} onClick={newNote}>
-					New note
-				</button>
-			</div>
-			<div className="note-filters">
-				<input
-					type="search"
-					placeholder="Search notes"
-					aria-label="Search notes"
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-				/>
-				<select
-					value={filter}
-					onChange={(e) => setFilter(e.target.value)}
-					aria-label="Filter notes by project"
-				>
-					<option value="all">All projects</option>
-					<option value="loose">No project</option>
-					{projects.map((p) => (
-						<option key={p.id} value={p.id}>
-							{p.name}
-						</option>
-					))}
-				</select>
-			</div>
-			{error !== null && (
-				<p className="error" role="alert">
-					{error}
-				</p>
-			)}
-			{notes === null ? (
-				<p className="loading">…</p>
-			) : notes.length === 0 ? (
-				<p className="empty">{query === "" ? "No notes yet." : "No matches."}</p>
-			) : (
-				<NotesTable notes={notes} projectName={projectName} onOpen={onOpen} />
-			)}
-			{notes !== null && notes.length > 0 && truncated.active && (
-				<p className="empty" role="status">
-					Showing the first {notes.length} matching notes — narrow the search or pick a project to
-					find the rest.
-				</p>
-			)}
-			{archived !== null && archived.length > 0 && (
-				<details className="tuning">
-					<summary>
-						Archived notes ({archived.length}
-						{truncated.archived ? "+" : ""})
-					</summary>
-					{truncated.archived && (
-						<p className="empty" role="status">
-							Showing the first {archived.length} archived notes — narrow the search or pick a
-							project to find the rest.
-						</p>
-					)}
-					<div className="inner">
-						<NotesTable notes={archived} projectName={projectName} onOpen={onOpen} />
-					</div>
-				</details>
-			)}
-		</div>
-	);
-}
 
 // ---------- /app/n/<id> ----------
 
@@ -934,16 +716,17 @@ export function NoteView({
 			</div>
 			<div className="row note-flags">
 				<label className="note-proj">
-					<span>Project</span>
+					<span>Owner</span>
 					<select
-						value={note.projectId ?? ""}
+						value={note.projectId ?? (note.botId === null ? "global" : "")}
 						disabled={busy || rewriteBusy || chatBusy}
-						aria-label="Assign to project"
+						aria-label="Note owner"
 						onChange={(e) =>
 							flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
 						}
 					>
-						<option value="">None (loose)</option>
+						<option value="">Little Goblin</option>
+						{note.projectId === null && note.botId === null && <option value="global" disabled>Global</option>}
 						{projects.map((p) => (
 							<option key={p.id} value={p.id}>
 								{p.name}

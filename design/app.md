@@ -99,7 +99,10 @@ network response wins, errors included; only a rejection or a stall
 serves the cached `/app/index.html`. Data is never cached — `/api/` sits
 outside the worker's `/app/` scope. Accepted residual: on a bad link a
 cached older shell can open against a newer backend until the next
-successful navigation updates the worker.
+successful navigation updates the worker. A page already controlled by a
+worker reloads when a replacement worker takes control after a deploy;
+the first worker to control a page does not cause that reload. This keeps
+an online SPA from running an old client against the new backend.
 
 **App-native Web Push (ruling 2026-10-22, operator ask: closed-app app
 turns must ring without Telegram).** Enablement is explicit per browser on

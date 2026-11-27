@@ -191,6 +191,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 							title: input.title,
 							...(input.body !== undefined ? { body: input.body } : {}),
 							projectId,
+							conversation: deps.conversation,
 						});
 						return { note: noteView(note, deps.projects), created: true };
 					}

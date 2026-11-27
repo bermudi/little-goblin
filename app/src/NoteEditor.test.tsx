@@ -31,7 +31,7 @@ const note: AppNote = {
 };
 
 interface PatchCall {
-	body: { body?: string; title?: string; source?: string };
+	body: { body?: string; title?: string; source?: string; reason?: string };
 	init: RequestInit;
 }
 const patches: PatchCall[] = [];
@@ -307,6 +307,15 @@ async function edit(ref: { current: NoteEditorHandle | null }, md: string): Prom
 	await act(async () => ref.current?.editor()?.action(replaceAll(md)));
 }
 
+async function typeReason(field: HTMLInputElement, value: string): Promise<void> {
+	await act(async () => {
+		field.focus();
+		Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(field, value);
+		field.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+		field.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true }) as unknown as Event);
+	});
+}
+
 // A real PM TextSelection dispatched through the view — the same
 // shape keyboard and mouse selections produce through selectionUpdated.
 async function select(
@@ -393,6 +402,34 @@ async function openFlow(
 }
 
 describe("NoteEditor save loop", () => {
+	test("autosave waits for a reason to be finished and preserves a newer reason during the ack", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		const field = container.querySelector<HTMLInputElement>(".note-edit-reason")!;
+		holdPatch();
+		await edit(ref, "corrected text");
+		await typeReason(field, "Fix ty");
+		await notice();
+		expect(patches).toHaveLength(0);
+		await typeReason(field, "Fix typo");
+		await act(async () => field.blur());
+		await tick(DELAY + 25);
+		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo"]);
+
+		await typeReason(field, "Add a detail");
+		await act(async () => field.blur());
+		await act(async () => releasePatch());
+		expect(field.value).toBe("Add a detail");
+		await edit(ref, "corrected text with detail");
+		await notice();
+		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo", "Add a detail"]);
+		expect(field.value).toBe("");
+		await edit(ref, "another edit");
+		await notice();
+		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo", "Add a detail", undefined]);
+	});
+
 	test("mounting a body Milkdown normalizes autosaves nothing", async () => {
 		root = createRoot(container);
 		await mount();

@@ -27,6 +27,15 @@ const listSchema = z.object({
 });
 const READ_CHARS = 64_000;
 const LIST_LIMIT = 200;
+
+function diffPageBoundary(text: string, offset: number): number {
+	if (offset >= text.length) return text.length;
+	const previous = text.charCodeAt(offset - 1);
+	const next = text.charCodeAt(offset);
+	const splitPair = previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+	return splitPair ? offset - 1 : offset;
+}
+
 const readSchema = z.object({
 	action: z.literal("read"),
 	id: z.string().min(1),
@@ -277,14 +286,19 @@ export const noteTool = (deps: NoteToolDeps) =>
 						const length = Math.max(edit.body.before.length, edit.body.after.length);
 						if (offset > length) return { error: `offset exceeds diff length (${length} chars)` };
 						const end = offset + READ_CHARS / 2;
+						const { before, after } = edit.body;
+						const beforeOffset = diffPageBoundary(before, offset);
+						const afterOffset = diffPageBoundary(after, offset);
 						return {
 							...edit,
 							body: {
 								offset: edit.body.offset,
-								before: edit.body.before.slice(offset, end),
-								after: edit.body.after.slice(offset, end),
+								before: before.slice(beforeOffset, diffPageBoundary(before, end)),
+								after: after.slice(afterOffset, diffPageBoundary(after, end)),
 							},
 							pageOffset: offset,
+							beforeOffset,
+							afterOffset,
 							nextOffset: end < length ? end : null,
 						};
 					}

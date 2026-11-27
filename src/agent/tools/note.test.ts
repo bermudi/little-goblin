@@ -55,6 +55,32 @@ describe("note tool input schema", () => {
 });
 
 describe("note tool actions", () => {
+	test("diff pages keep both sides Unicode-safe even when surrogate pairs are staggered", async () => {
+		const { deps } = setup();
+		const tool = noteTool({ ...deps, editHistory: true });
+		const before = "a" + "😀".repeat(20_000);
+		const after = "😎".repeat(20_001);
+		const note = deps.notes.create({ title: "Emoji", body: before });
+		deps.notes.write(note.id, { body: after }, "app");
+		const query = { action: "diff", id: note.id, rev: 2 };
+		type DiffPage = {
+			body: { before: string; after: string };
+			beforeOffset: number;
+			afterOffset: number;
+			nextOffset: number | null;
+		};
+		const first = await exec(tool, query) as DiffPage;
+		expect(first.body.before).toBe(before.slice(0, 31_999));
+		expect(first.body.after).toBe(after.slice(0, 32_000));
+		expect(first.nextOffset).toBe(32_000);
+		const second = await exec(tool, { ...query, offset: first.nextOffset }) as DiffPage;
+		expect(second.beforeOffset).toBe(31_999);
+		expect(second.afterOffset).toBe(32_000);
+		expect(first.body.before + second.body.before).toBe(before);
+		expect(first.body.after + second.body.after).toBe(after);
+		expect(second.nextOffset).toBeNull();
+	});
+
 	test("bot edit history requires a message and returns attribution and diffs on demand", async () => {
 		const { deps } = setup();
 		const tool = noteTool({ ...deps, editHistory: true });

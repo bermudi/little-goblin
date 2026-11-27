@@ -170,6 +170,7 @@ const NoteEditor = forwardRef<
 	const savingRef = useRef(false);
 	const [reason, setReason] = useState({ text: "" });
 	const reasonRef = useRef(reason);
+	const reasonEditingRef = useRef(false);
 	// A save requested while one is in flight — runs on settle with
 	// merged options (a forced resolve keeps force + title).
 	const pendingRef = useRef<{
@@ -370,7 +371,10 @@ const NoteEditor = forwardRef<
 	}
 
 	function schedule(): void {
-		if (unmountedRef.current || conflictRef.current !== null || rewriteActiveRef.current) return;
+		if (
+			unmountedRef.current || conflictRef.current !== null ||
+			rewriteActiveRef.current || reasonEditingRef.current
+		) return;
 		clearTimer();
 		timerRef.current = setTimeout(() => void save(revRef.current), saveDelayMs ?? DEBOUNCE_MS);
 	}
@@ -381,8 +385,8 @@ const NoteEditor = forwardRef<
 		if (!unmountedRef.current) setReason(next);
 	}
 
-	function reasonPatch(current: { text: string }) {
-		const reason = current.text.trim();
+	function reasonPatch(current: { text: string } | null) {
+		const reason = current?.text.trim() ?? "";
 		return reason === "" ? {} : { reason };
 	}
 
@@ -439,7 +443,7 @@ const NoteEditor = forwardRef<
 		markStatus("saving");
 		const flight = (async () => {
 			try {
-				const submittedReason = reasonRef.current;
+				const submittedReason = reasonEditingRef.current ? null : reasonRef.current;
 				const patch = {
 					body: md,
 					...(opts.title !== undefined ? { title: opts.title } : {}),
@@ -451,7 +455,7 @@ const NoteEditor = forwardRef<
 						opts.keepalive === true &&
 						utf8.encode(JSON.stringify(patch)).length <= KEEPALIVE_BODY_MAX,
 				});
-				if (submittedReason.text !== "" && data.rev > expectedRev && reasonRef.current === submittedReason) {
+				if (submittedReason?.text && data.rev > expectedRev && reasonRef.current === submittedReason) {
 					changeReason("");
 				}
 				baselineRef.current = md;
@@ -540,7 +544,10 @@ const NoteEditor = forwardRef<
 				if (conflictRef.current === null && !hardFailRef.current) {
 					if (pending !== null) {
 						// A queued title dispatches even on a clean body.
-						if (pending.force === true || pending.title !== undefined || dirtyNow) {
+						if (
+							pending.force === true || pending.title !== undefined ||
+							(dirtyNow && (pending.keepalive || !reasonEditingRef.current))
+						) {
 							void save(revRef.current, pending);
 						}
 					} else if (dirtyNow) {
@@ -871,14 +878,14 @@ const NoteEditor = forwardRef<
 		setApplying(true);
 		try {
 			const expectedRev = revRef.current;
-			const submittedReason = reasonRef.current;
+			const submittedReason = reasonEditingRef.current ? null : reasonRef.current;
 			const { data } = await patchNote(
 				token,
 				noteId,
 				{ body: nextBody, source: "rewrite", ...reasonPatch(submittedReason) },
 				{ ifMatch: expectedRev },
 			);
-			if (submittedReason.text !== "" && data.rev > expectedRev && reasonRef.current === submittedReason) {
+			if (submittedReason?.text && data.rev > expectedRev && reasonRef.current === submittedReason) {
 				changeReason("");
 			}
 			if (unmountedRef.current) return;
@@ -1445,7 +1452,21 @@ const NoteEditor = forwardRef<
 					placeholder="Reason for next edit (optional)"
 					maxLength={NOTE_EDIT_MESSAGE_MAX}
 					value={reason.text}
-					onChange={(e) => changeReason(e.target.value)}
+					onChange={(e) => {
+						reasonEditingRef.current = true;
+						clearTimer();
+						changeReason(e.target.value);
+					}}
+					onBlur={() => {
+						if (!reasonEditingRef.current) return;
+						reasonEditingRef.current = false;
+						if (dirtyRef.current && !hardFailRef.current) schedule();
+					}}
+					onKeyDown={(e) => {
+						if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+						e.preventDefault();
+						e.currentTarget.blur();
+					}}
 				/>
 				<div className={`note-save-status ${status}`} role="status">
 					{label}

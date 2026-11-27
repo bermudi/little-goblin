@@ -38,8 +38,9 @@ sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select title, bot_id, archive
 
 A Global row has a null `bot_id`. Little Goblin's rows use `little-goblin`.
 
-On a note, fill **Reason for next edit (optional)**, change its title or
-body, and wait for Saved. Edit it again with the reason field empty.
+On a note, fill **Reason for next edit (optional)** and leave the field or
+press Enter to finish the reason. Change its title or body and wait for Saved.
+Edit it again with the reason field empty.
 Open **Versions** and check that Edit history shows two distinct Operator
 revisions and that only the first edit shows the reason you entered. Open
 both diffs to check the changed text. Restore a snapshot and verify that

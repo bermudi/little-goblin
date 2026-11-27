@@ -54,7 +54,7 @@ test("the activity page pages through older posts and keeps finished work in tim
 		],
 	} as unknown as Parameters<typeof ActivityView>[0]["data"];
 	root = createRoot(container);
-	await act(async () => root?.render(<ActivityView token={null} data={data} onOpenConversation={() => {}} onOpenPage={() => {}} />));
+	await act(async () => root?.render(<ActivityView token={null} data={data} conversations={[]} rollingConversationIds={[]} onOpenConversation={() => {}} onOpenPage={() => {}} />));
 	const labels = () => [...container.querySelectorAll(".goblin-panel-row strong")].map((el) => el.textContent);
 	const older = () => [...container.querySelectorAll("button")].find((el) => el.textContent === "Show older");
 	expect(labels()).toEqual(["still-going", "Post 6", "Post 5", "Post 4"]);
@@ -83,7 +83,7 @@ test("the activity page keeps posts that leave the live poll and fills a gap the
 			attention: [], attentionError: false, programs: [], loadError: false, working: 0, reload() {},
 			activity: { busy: [], otherBusy: 0, posts }, delegations: [],
 		} as unknown as Parameters<typeof ActivityView>[0]["data"];
-		return <ActivityView token={null} data={data} onOpenConversation={() => {}} onOpenPage={() => {}} />;
+		return <ActivityView token={null} data={data} conversations={[]} rollingConversationIds={[]} onOpenConversation={() => {}} onOpenPage={() => {}} />;
 	};
 	const labels = () => [...container.querySelectorAll(".goblin-panel-row strong")].map((el) => el.textContent);
 	const arrive = async (...ids: number[]) => {

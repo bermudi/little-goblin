@@ -365,7 +365,7 @@ describe("app live feed", () => {
 		);
 	});
 
-	test("C2: a child chat appears while the parent's turn still runs", async () => {
+	test("C2: a child stays out of the list while its parent turn still runs", async () => {
 		parentRunning = true;
 		await mount();
 		await emit({ conversations: "v1" });
@@ -383,9 +383,8 @@ describe("app live feed", () => {
 			]),
 		);
 		await announce("/api/app/conversations", "conversations");
-		await waitFor(() => container.querySelector(".home-kids button") !== null, "the folded child count");
-		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
-		await waitFor(() => rowText().includes("child worker"), "the expanded child row");
+		expect(container.querySelector(".home-kids")).toBeNull();
+		expect(rowText()).not.toContain("child worker");
 		expect(container.querySelector('button[aria-label="Stop"]')).not.toBeNull();
 	});
 

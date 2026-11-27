@@ -1149,15 +1149,11 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')).toBeNull();
 	});
 
-	test("the hold sheet hides Move for child chats", async () => {
+	test("a child chat has no row on the chats screen", async () => {
 		conversations[0]!.parentId = "app/second";
 		await mount();
-		await hold(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!, "touch");
-		expect(
-			[...container.querySelectorAll(".row-sheet-action")].some((button) =>
-				button.textContent?.includes("Move to project"),
-			),
-		).toBe(false);
+		expect(container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"]')).not.toBeNull();
+		expect(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')).toBeNull();
 	});
 
 	test("a row can open its action sheet again after Rename remounts its link", async () => {

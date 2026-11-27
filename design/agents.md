@@ -64,9 +64,10 @@ model catalog**.
   notice that wakes the parent through the existing notice path. The
   result arrives fenced: it is the child's claim, which goblin checks
   before it reports.
-- **Visibility.** The app lists the child under its parent, and the
-  operator can open it and read every step. Telegram does not show
-  children. Neither Telegram nor app push rings for a child turn: the
+- **Visibility.** The app's Goblin panel shows the child under its parent
+  chat, never in the chat list; the operator can open it and read every step.
+  A child is titled from its task's first line at spawn (#961); Goblin-given
+  names wait for #959. Telegram does not show children. Neither Telegram nor app push rings for a child turn: the
   child is the parent's concern, and only the settlement notice reaches
   the parent (operator, 2026-11-24, #933).
 

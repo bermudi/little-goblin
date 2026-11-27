@@ -484,6 +484,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 			const child = store.resolveAgentChild(
 				input.parent,
 				input.type.name,
+				input.task,
 				{
 					model,
 					// The config default (config-schema preferences) is what a

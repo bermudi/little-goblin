@@ -69,6 +69,7 @@ describe("conversation read marks", () => {
 		const child = store.resolveAgentChild(
 			parent,
 			"test",
+			"task",
 			{ model: "zai/m", thinking: "medium" },
 			new Date().toISOString(),
 		);

@@ -154,6 +154,7 @@ export interface ConversationStore extends ConversationReads {
 	resolveAgentChild(
 		parent: Conversation,
 		agentType: string,
+		task: string,
 		defaults: ModelSettings,
 		createdAt: string,
 	): Conversation;
@@ -203,6 +204,8 @@ export interface ConversationStore extends ConversationReads {
 	recordDelivery(id: string, messageId: number, seq: number): void;
 	deleteRefusal(id: string): string | null;
 	deleteConversation(id: string): void;
+	deleteConversationTree(id: string): string[];
+	subagentIds(id: string): string[];
 	close(): void;
 }
 
@@ -412,11 +415,18 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => initializeSettings(id, defaults))();
 		},
 
-		resolveAgentChild(parent, agentType, defaults, createdAt) {
+		resolveAgentChild(parent, agentType, task, defaults, createdAt) {
 			return db.transaction(() => {
 				const appId = `agent-${randomUUID()}`;
 				const id = formatAddress({ kind: "app", appId, chatId: 0, threadId: 0 });
-				qInsertAgentConv.run(id, paths.workspace(), createdAt, parent.id, agentType);
+				const titleLine = task.split(/\r?\n/).map((line) => line.trim()).find((line) => line !== "");
+				const normalizedTitle = titleLine?.replace(/\s+/g, " ");
+				const title = normalizedTitle === undefined
+					? null
+					: [...normalizedTitle].length > 60
+					? `${[...normalizedTitle].slice(0, 59).join("")}…`
+					: normalizedTitle;
+				qInsertAgentConv.run(id, title, paths.workspace(), createdAt, parent.id, agentType);
 				initializeSettings(id, defaults);
 				const created = qGet.get(id);
 				if (!created) throw new Error(`agent child ${id} insert failed`);

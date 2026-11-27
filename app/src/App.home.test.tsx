@@ -418,24 +418,17 @@ describe("home screen", () => {
 		});
 	}
 
-	test("T21: subagents fold under a chat with work; the fold opens to their links", async () => {
+	test("T21: subagents stay out of the chat list while their parent shows work", async () => {
 		conversations = [
 			conv("one"),
 			conv("child1", { parentId: "app/one", busy: true }),
 			conv("child2", { parentId: "app/one" }),
 		];
 		await open("/app/");
-		const fold = () => container.querySelector(".home-kids .kidtoggle");
-		expect(fold()?.textContent).toContain("2 subagents");
-		expect(fold()?.getAttribute("aria-expanded")).toBe("false");
 		expect(markOf("one")).toBe("working");
-		await click(".home-kids .kidtoggle");
-		expect(fold()?.getAttribute("aria-expanded")).toBe("true");
-		expect(markOf("child1")).toBe("working");
-		expect(markOf("child2")).toBeNull();
-		await click('.home-kid-list a[href="/app/c/child1"]');
-		expect(win.location.pathname).toBe("/app/c/child1");
-		expect(fold()?.getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelector(".home-kids")).toBeNull();
+		expect(container.querySelector('a[href="/app/c/child1"]')).toBeNull();
+		expect(container.querySelector('a[href="/app/c/child2"]')).toBeNull();
 	});
 
 	test("T23: the face is in the desktop chat header and closes and opens the panel", async () => {

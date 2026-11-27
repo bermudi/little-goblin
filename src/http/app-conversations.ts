@@ -1231,14 +1231,22 @@ export async function handleConversationsRoute(
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "DELETE") {
-			const refusal = store.deleteRefusal(convId.id);
+			const subagents = store.subagentIds(convId.id);
+			const refusal = [convId.id, ...subagents]
+				.map((id) => store.deleteRefusal(id))
+				.find((text) => text !== null) ?? null;
 			if (refusal !== null) {
 				log.warn("app conversation delete refused", { conversation: convId.id, refusal });
 				return Response.json({ error: refusal }, { status: 409, headers: NO_STORE });
 			}
+			for (const subagent of subagents) {
+				deps.agents?.stop(subagent);
+				runtime.stop(subagent);
+			}
 			const { stopped } = runtime.stop(convId.id);
+			let deleted: string[];
 			try {
-				store.deleteConversation(convId.id);
+				deleted = store.deleteConversationTree(convId.id);
 			} catch (err) {
 				if (!(err instanceof DeleteRefused)) throw err;
 				log.warn("app conversation delete refused after fence", {
@@ -1251,6 +1259,7 @@ export async function handleConversationsRoute(
 			log.info("app conversation deleted", {
 				conversation: convId.id,
 				turnFenced: stopped,
+				subagents: deleted.length - 1,
 			});
 			return Response.json({ ok: true }, { headers: NO_STORE });
 		}

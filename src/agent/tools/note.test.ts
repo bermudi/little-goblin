@@ -55,6 +55,26 @@ describe("note tool input schema", () => {
 });
 
 describe("note tool actions", () => {
+	test("bot edit history requires a message and returns attribution and diffs on demand", async () => {
+		const { deps } = setup();
+		const tool = noteTool({ ...deps, editHistory: true });
+		const shared = deps.notes.create({ title: "Reading" });
+		deps.notes.batch([shared], { action: "move", owner: { botId: null } });
+		const append = { action: "append", id: shared.id, text: "A new book" };
+		expect(await exec(tool, { ...append, what: "Added a book" })).toMatchObject({ error: expect.stringContaining("reason") });
+		expect(deps.notes.get(shared.id)?.rev).toBe(1);
+		expect(await exec(tool, { ...append, what: "Added a book", reason: "The operator asked" })).toMatchObject({ note: { rev: 2 } });
+		const history = await exec(tool, { action: "history", id: shared.id });
+		expect(history).toMatchObject({ edits: [
+			{ rev: 2, what: "Added a book", reason: "The operator asked", author: { botId: "little-goblin" } },
+			{ rev: 1, author: "operator" },
+		] });
+		expect(JSON.stringify(history)).not.toContain("A new book");
+		expect(await exec(tool, { action: "history", id: shared.id, before: 2 })).toMatchObject({ edits: [{ rev: 1 }] });
+		expect(await exec(tool, { action: "diff", id: shared.id, rev: 2 })).toMatchObject({
+			body: { offset: 0, before: "", after: "A new book" },
+		});
+	});
 	test("create/read/append round-trip through the store", async () => {
 		const { tool, deps } = setup();
 		const created = (await exec(tool, {

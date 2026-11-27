@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { setLogLevel } from "../log.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { NOTE_BODY_MAX } from "../notes.ts";
+import type { NoteEdit, NoteEditPage } from "../note-edit.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 import type { AppNote, AppNoteBatch, AppNoteList } from "./app-wire.ts";
 
@@ -25,6 +26,39 @@ describe("app notes", () => {
 		});
 	const create = (call: ReturnType<typeof setup>["call"], body: unknown) =>
 		postJson(call, "/api/app/notes", body);
+
+	test("edit history records every content autosave while restore versions stay grouped", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const note = (await (await create(call, { title: "Reading", body: "a😀z" })).json()) as AppNote;
+			const path = `/api/app/notes/${note.id}`;
+			const change = (rev: number, patch: unknown) => patchJson(call, path, patch, { "if-match": `"${rev}"` });
+			expect((await change(1, { body: "a😁z", reason: " Corrected reaction " })).status).toBe(200);
+			expect((await change(2, { title: "Reading list" })).status).toBe(200);
+			expect((await change(2, { title: "Stale" })).status).toBe(409);
+			expect((await change(3, { title: "Reading list", reason: "No change" })).status).toBe(200);
+			expect((await patchJson(call, path, { pinned: true })).status).toBe(200);
+			const edits = (await (await call(`${path}/edits`)).json()) as NoteEditPage;
+			expect(edits.edits.map(({ rev, author, reason }) => [rev, author, reason])).toEqual([
+				[3, "operator", null], [2, "operator", "Corrected reaction"], [1, "operator", null],
+			]);
+			expect(edits.edits[1]).not.toHaveProperty("body");
+			const edit = (await (await call(`${path}/edits/2`)).json()) as NoteEdit;
+			expect(edit.body).toEqual({ offset: 1, before: "😀", after: "😁" });
+			expect(edit.title).toBeNull();
+			expect(await (await call(`${path}/versions`)).json()).toMatchObject({ versions: [{ rev: 1 }] });
+			const restore = await call(`${path}/versions/1/restore`, { method: "POST", headers: { "if-match": '"3"' } });
+			expect(restore.status).toBe(200);
+			expect(await (await call(`${path}/edits/4`)).json()).toMatchObject({
+				author: "operator", what: "Restored revision 1", body: { before: "😁", after: "😀" },
+			});
+			expect((await patchJson(call, path, { archived: true })).status).toBe(200);
+			expect((await call(path, { method: "DELETE" })).status).toBe(200);
+			expect((await call(`${path}/edits/4`)).status).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
 
 	test("batch management moves, archives, restores and deletes only the reviewed selection", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });

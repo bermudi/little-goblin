@@ -103,10 +103,17 @@ Move, archive, restore, and delete work on the selection. A changed
 selection refuses the whole operation. Only archived notes can be deleted,
 after confirmation.
 
-**Edit history and chat pins** (operator, 2026-11-27, #982, pending).
-Each edit records the diff and who made it. Bots record what they changed
-and why. The operator can supply a reason and keeps autosave. Each chat
-can pin notes it can access. A new roll clears pins and compaction keeps
+**Edit history** (operator, 2026-11-27, #982). Each new content revision
+records its exact changed text and author. Bots record what they changed
+and why. The operator can supply a reason for their next edit and keeps
+autosave. The Versions panel shows edit history and restore snapshots.
+The `note` tool lists history and reads individual diffs on demand. Existing
+conversations on providers that resend the whole tool list keep their earlier
+tool declaration until a prompt rebuild. Their edits still record the author
+and diff.
+
+**Chat pins** (operator, 2026-11-27, #982, pending). Each chat can pin
+notes it can access. A new roll clears pins and compaction keeps
 them. On its next turn, the model receives a short notice for new pins and
 changes at the tail of the conversation. It reads bodies and diffs on
 demand. The Notes button shows changes in the app.

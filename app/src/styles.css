@@ -6797,6 +6797,32 @@ button.note-card-append:hover {
 .note-versions li small {
 	color: var(--app-fg-subtle);
 }
+.note-edits {
+	border-bottom: 1px solid var(--app-border);
+	margin-bottom: 0.5rem;
+	padding-bottom: 0.5rem;
+}
+.note-edits li {
+	display: grid;
+	gap: 0.15rem;
+	overflow-wrap: anywhere;
+}
+.note-edits .row {
+	flex-wrap: wrap;
+}
+.note-edit-why {
+	color: var(--app-fg-muted);
+}
+.note-edit-diff dl {
+	margin: 0.25rem 0 0.5rem;
+}
+.note-edit-diff dd {
+	margin: 0 0 0.35rem;
+}
+.note-edit-diff pre {
+	max-height: 10rem;
+	overflow: auto;
+}
 button.link {
 	font-size: inherit;
 	color: var(--app-accent);
@@ -7075,6 +7101,7 @@ button.link:hover {
 }
 .note-editor-foot {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	justify-content: space-between;
 	gap: 0.5rem;
@@ -7082,6 +7109,11 @@ button.link:hover {
 	padding: 0.35rem 0.6rem 0.35rem 0.75rem;
 }
 .note-editor-foot .ghost-inline {
+	font-size: 12px;
+}
+.note-edit-reason {
+	flex: 1 1 13rem;
+	min-width: 0;
 	font-size: 12px;
 }
 .note-rewrite {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineTool } from "../../tool.ts";
+import { NOTE_EDIT_MESSAGE_MAX } from "../../note-edit.ts";
 import {
 	NOTE_BODY_MAX,
 	NoteConflictError,
@@ -16,6 +17,7 @@ export interface NoteToolDeps {
 	projects: Pick<ProjectStore, "get">;
 	conversation: string;
 	projectId: string | null;
+	editHistory?: boolean;
 }
 
 const listSchema = z.object({
@@ -72,27 +74,73 @@ const actionSchema = z.discriminatedUnion("action", [
 	rangeSchema,
 ]);
 
-export const noteInputSchema = z
-	.object({
-		action: z.enum(["list", "read", "create", "append", "replace", "replace_range"]),
-		query: z.string().optional(),
-		scope: z.enum(["here", "all"]).optional(),
-		id: z.string().optional(),
-		offset: z.number().int().min(0).optional(),
-		title: z.string().optional(),
-		body: z.string().optional(),
-		where: z.enum(["here", "loose"]).optional(),
-		text: z.string().optional(),
-		rev: z.number().int().positive().optional(),
-		edits: rangeSchema.shape.edits.optional(),
-	})
-	.superRefine((value, ctx) => {
-		const result = actionSchema.safeParse(value);
+const legacyActions = ["list", "read", "create", "append", "replace", "replace_range"] as const;
+const legacyInput = z.object({
+	action: z.enum(legacyActions),
+	query: z.string().optional(),
+	scope: z.enum(["here", "all"]).optional(),
+	id: z.string().optional(),
+	offset: z.number().int().min(0).optional(),
+	title: z.string().optional(),
+	body: z.string().optional(),
+	where: z.enum(["here", "loose"]).optional(),
+	text: z.string().optional(),
+	rev: z.number().int().positive().optional(),
+	edits: rangeSchema.shape.edits.optional(),
+});
+
+const editMessageShape = {
+	what: z.string().trim().min(1).max(NOTE_EDIT_MESSAGE_MAX),
+	reason: z.string().trim().min(1).max(NOTE_EDIT_MESSAGE_MAX),
+};
+const editHistorySchema = z.discriminatedUnion("action", [
+	listSchema,
+	readSchema,
+	createSchema.extend(editMessageShape),
+	appendSchema.extend(editMessageShape),
+	replaceSchema.extend(editMessageShape),
+	rangeSchema.extend(editMessageShape),
+	z.object({
+		action: z.literal("history"),
+		id: readSchema.shape.id,
+		before: replaceSchema.shape.rev.optional(),
+	}),
+	z.object({
+		action: z.literal("diff"),
+		id: readSchema.shape.id,
+		rev: replaceSchema.shape.rev,
+		offset: readSchema.shape.offset,
+	}),
+]);
+
+function validateAction(schema: typeof actionSchema | typeof editHistorySchema) {
+	return (value: unknown, ctx: z.RefinementCtx) => {
+		const result = schema.safeParse(value);
 		if (!result.success)
 			for (const issue of result.error.issues) {
 				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
 			}
-	});
+	};
+}
+
+export const noteInputSchema = legacyInput.superRefine(validateAction(actionSchema));
+const noteHistoryInputSchema = legacyInput
+	.extend({
+		action: z.enum([...legacyActions, "history", "diff"]),
+		before: replaceSchema.shape.rev.optional().describe("List edits with revisions below this value"),
+		what: editMessageShape.what.optional().describe("Required on edits. Summarize what changed"),
+		reason: editMessageShape.reason.optional().describe("Required on edits. Explain why"),
+	})
+	.superRefine(validateAction(editHistorySchema));
+
+export const NOTE_HISTORY_SOURCE = "note-edit-history";
+export const NOTE_HISTORY_DESCRIPTION = " For every write, provide `what` changed and the `reason` for it. Use history with id to see authors and messages; use its before cursor for earlier edits. Use diff with id and rev to read changed text, paging with nextOffset.";
+
+export function noteHistoryAvailable(snapshot: { sources: string[] } | null, kind?: string): boolean {
+	return snapshot === null ||
+		snapshot.sources.includes(NOTE_HISTORY_SOURCE) ||
+		kind === "codex" || kind === "claude-code";
+}
 
 function actionable(err: unknown): { error: string; rev?: number } | null {
 	if (err instanceof NoteConflictError) {
@@ -124,10 +172,11 @@ function noteView(n: Note, projects: Pick<ProjectStore, "get">): Record<string, 
 export const noteTool = (deps: NoteToolDeps) =>
 	defineTool({
 		description:
-			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
-		input: noteInputSchema,
+			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only. `where`/scope \"here\" means this conversation's project (loose notes when unbound)." +
+			(deps.editHistory ? NOTE_HISTORY_DESCRIPTION : ""),
+		input: deps.editHistory ? noteHistoryInputSchema : noteInputSchema,
 		execute: async (raw) => {
-			const parsed = actionSchema.safeParse(raw);
+			const parsed = (deps.editHistory ? editHistorySchema : actionSchema).safeParse(raw);
 			if (!parsed.success) {
 				const issue = parsed.error.issues[0];
 				const where =
@@ -137,6 +186,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 				};
 			}
 			const input = parsed.data;
+			const message = "what" in input ? { what: input.what, reason: input.reason } : {};
 			try {
 				switch (input.action) {
 					case "list": {
@@ -187,15 +237,14 @@ export const noteTool = (deps: NoteToolDeps) =>
 					}
 					case "create": {
 						const projectId = input.where === "loose" ? null : deps.projectId;
-						const note = deps.notes.create({
-							title: input.title,
-							...(input.body !== undefined ? { body: input.body } : {}),
-							projectId,
-						});
+						const note = deps.notes.create(
+							{ title: input.title, body: input.body, projectId, ...message },
+							"agent",
+						);
 						return { note: noteView(note, deps.projects), created: true };
 					}
 					case "append": {
-						const note = deps.notes.append(input.id, input.text, "agent", deps.conversation);
+						const note = deps.notes.append(input.id, input.text, "agent", deps.conversation, message);
 						return { note: noteView(note, deps.projects) };
 					}
 					case "replace": {
@@ -207,6 +256,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 							},
 							"agent",
 							{
+								...message,
 								conversation: deps.conversation,
 								expectedRev: input.rev,
 							},
@@ -214,8 +264,29 @@ export const noteTool = (deps: NoteToolDeps) =>
 						return { note: noteView(note, deps.projects) };
 					}
 					case "replace_range": {
-						const note = deps.notes.replaceRanges(input.id, input.edits, deps.conversation);
+						const note = deps.notes.replaceRanges(input.id, input.edits, deps.conversation, message);
 						return { note: noteView(note, deps.projects) };
+					}
+					case "history":
+						return deps.notes.listEdits(input.id, input.before);
+					case "diff": {
+						const edit = deps.notes.getEdit(input.id, input.rev);
+						if (edit === null) return { error: `no recorded edit at rev ${input.rev}` };
+						if (edit.body === null) return edit;
+						const offset = input.offset ?? 0;
+						const length = Math.max(edit.body.before.length, edit.body.after.length);
+						if (offset > length) return { error: `offset exceeds diff length (${length} chars)` };
+						const end = offset + READ_CHARS / 2;
+						return {
+							...edit,
+							body: {
+								offset: edit.body.offset,
+								before: edit.body.before.slice(offset, end),
+								after: edit.body.after.slice(offset, end),
+							},
+							pageOffset: offset,
+							nextOffset: end < length ? end : null,
+						};
 					}
 				}
 			} catch (err) {

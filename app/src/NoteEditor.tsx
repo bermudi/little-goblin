@@ -13,6 +13,7 @@ import { Plugin } from "@milkdown/kit/prose/state";
 import { $prose, getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { AppNote } from "../../src/http/app-wire.ts";
+import { NOTE_EDIT_MESSAGE_MAX } from "../../src/note-edit.ts";
 import { ApiError, NoteConflictError, patchNote, rewriteNote } from "./api.ts";
 import NoteToolbar from "./NoteToolbar.tsx";
 import {
@@ -167,6 +168,8 @@ const NoteEditor = forwardRef<
 	const dirtyRef = useRef(false);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const savingRef = useRef(false);
+	const [reason, setReason] = useState({ text: "" });
+	const reasonRef = useRef(reason);
 	// A save requested while one is in flight — runs on settle with
 	// merged options (a forced resolve keeps force + title).
 	const pendingRef = useRef<{
@@ -372,6 +375,17 @@ const NoteEditor = forwardRef<
 		timerRef.current = setTimeout(() => void save(revRef.current), saveDelayMs ?? DEBOUNCE_MS);
 	}
 
+	function changeReason(text: string): void {
+		const next = { text };
+		reasonRef.current = next;
+		if (!unmountedRef.current) setReason(next);
+	}
+
+	function reasonPatch(current: { text: string }) {
+		const reason = current.text.trim();
+		return reason === "" ? {} : { reason };
+	}
+
 	async function save(
 		expectedRev: number,
 		opts: {
@@ -425,9 +439,11 @@ const NoteEditor = forwardRef<
 		markStatus("saving");
 		const flight = (async () => {
 			try {
+				const submittedReason = reasonRef.current;
 				const patch = {
 					body: md,
 					...(opts.title !== undefined ? { title: opts.title } : {}),
+					...reasonPatch(submittedReason),
 				};
 				const { data } = await patchNote(token, noteId, patch, {
 					ifMatch: expectedRev,
@@ -435,6 +451,9 @@ const NoteEditor = forwardRef<
 						opts.keepalive === true &&
 						utf8.encode(JSON.stringify(patch)).length <= KEEPALIVE_BODY_MAX,
 				});
+				if (submittedReason.text !== "" && data.rev > expectedRev && reasonRef.current === submittedReason) {
+					changeReason("");
+				}
 				baselineRef.current = md;
 				// A write that landed before a newer remote was observed
 				// must not roll title or serverBody back over it.
@@ -851,12 +870,17 @@ const NoteEditor = forwardRef<
 		setRewrite({ ...r, phase: "applying", error: null });
 		setApplying(true);
 		try {
+			const expectedRev = revRef.current;
+			const submittedReason = reasonRef.current;
 			const { data } = await patchNote(
 				token,
 				noteId,
-				{ body: nextBody, source: "rewrite" },
-				{ ifMatch: revRef.current },
+				{ body: nextBody, source: "rewrite", ...reasonPatch(submittedReason) },
+				{ ifMatch: expectedRev },
 			);
+			if (submittedReason.text !== "" && data.rev > expectedRev && reasonRef.current === submittedReason) {
+				changeReason("");
+			}
 			if (unmountedRef.current) return;
 			setApplying(false);
 			// Re-read after the await — a focus conflict can have landed.
@@ -1414,6 +1438,15 @@ const NoteEditor = forwardRef<
 				>
 					Rewrite selection
 				</button>
+				<input
+					type="text"
+					className="note-edit-reason"
+					aria-label="Reason for next edit (optional)"
+					placeholder="Reason for next edit (optional)"
+					maxLength={NOTE_EDIT_MESSAGE_MAX}
+					value={reason.text}
+					onChange={(e) => changeReason(e.target.value)}
+				/>
 				<div className={`note-save-status ${status}`} role="status">
 					{label}
 				</div>

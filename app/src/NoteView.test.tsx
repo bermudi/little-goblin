@@ -418,6 +418,8 @@ describe("quiet harbor regressions", () => {
 						}),
 					);
 				}
+				if (url === `/api/app/notes/${note.id}/edits`)
+					return Promise.resolve(jsonResponse({ edits: [], before: null }));
 				if (url === `/api/app/notes/${note.id}/versions`)
 					return Promise.resolve(
 						jsonResponse({

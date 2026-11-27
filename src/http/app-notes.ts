@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { log } from "../log.ts";
+import { NOTE_EDIT_MESSAGE_MAX } from "../note-edit.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER, type NoteOwner } from "../note-owner.ts";
 import {
 	NOTE_BODY_MAX,
@@ -35,6 +36,7 @@ const notePatchBody = z
 		pinned: z.boolean().optional(),
 		archived: z.boolean().optional(),
 		source: z.enum(["app", "rewrite"]).optional(),
+		reason: z.string().trim().max(NOTE_EDIT_MESSAGE_MAX).optional(),
 	})
 	.strict()
 	.refine(
@@ -328,6 +330,33 @@ export async function handleNotesRoute(
 		}
 	}
 
+	const noteEditsMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/edits(?:\/(\d+))?$/);
+	if (noteEditsMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const [, id, revision] = noteEditsMatch;
+		const before = url.searchParams.get("before");
+		const parsed = z.coerce.number().int().positive().optional().safeParse(revision ?? before ?? undefined);
+		if (!parsed.success) {
+			return Response.json({ error: "invalid note revision" }, { status: 422, headers: NO_STORE });
+		}
+		if (revision !== undefined) {
+			const edit = deps.notes.getEdit(id!, parsed.data!);
+			if (edit === null) {
+				return Response.json({ error: "no recorded edit" }, { status: 404, headers: NO_STORE });
+			}
+			return Response.json(edit, { headers: NO_STORE });
+		}
+		try {
+			return Response.json(deps.notes.listEdits(id!, parsed.data), { headers: NO_STORE });
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
+			throw err;
+		}
+	}
+
 	const noteVersionMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/versions\/(\d+)$/);
 	if (noteVersionMatch) {
 		if (req.method !== "GET") {
@@ -461,6 +490,7 @@ export async function handleNotesRoute(
 		try {
 			const updated = deps.notes.patch(noteId, parsed.data, parsed.data.source ?? "app", {
 				expectedRev,
+				reason: parsed.data.reason,
 			});
 			return noteResponse(updated);
 		} catch (err) {

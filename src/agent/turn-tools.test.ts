@@ -8,6 +8,7 @@ import type { Conversation } from "../conversation-read.ts";
 import type { JSONObject, Message } from "../message.ts";
 import { declarationsOf, TOOLS_PART } from "./tool-declarations.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import { NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
 import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
 import type { GitHub } from "../github.ts";
@@ -86,11 +87,11 @@ describe("hosted web_search mount", () => {
 			search: [{ kind: "ddg" }],
 		}) as unknown as Config;
 
-	const rigTools = (config: Config, conv: Conversation) =>
+	const rigTools = (config: Config, conv: Conversation, snapshot: ReturnType<ConversationStore["promptSnapshot"]> = null) =>
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: { promptSnapshot: () => null } as unknown as ConversationStore,
+			store: { promptSnapshot: () => snapshot } as unknown as ConversationStore,
 			projects: { get: () => ({ dir: tmpDir("goblin-turn-tools-project-") }) } as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -114,6 +115,25 @@ describe("hosted web_search mount", () => {
 
 	const conv = (model: string) =>
 		({ id: "dm:1", model, projectId: null, persona: "operator", agentType: null }) as unknown as Conversation;
+
+	test("note edit history keeps the legacy declaration on frozen full-tool requests", () => {
+		const existing = { text: "frozen", sources: ["SOUL.md"] };
+		const config = cfgFor("off");
+		const nonAppendRoute = conv("zai/glm-5.3");
+		const codex = conv("codex/gpt-6.1-sol");
+		const declaration = (conversation: Conversation, snapshot: typeof existing | null) =>
+			declarationsOf(rigTools(config, conversation, snapshot)(conversation))
+				.find((tool) => tool.name === "note");
+		const legacy = declarationsOf({ note: noteTool({
+			notes: {} as NoteStore, projects: { get: () => null }, conversation: "dm:1", projectId: null,
+		}) })[0];
+		expect(declaration(nonAppendRoute, existing)).toEqual(legacy);
+		const current = declaration(nonAppendRoute, null);
+		expect(current).toBeDefined();
+		expect(current).not.toEqual(legacy);
+		expect(declaration(nonAppendRoute, { ...existing, sources: [NOTE_HISTORY_SOURCE] })).toEqual(current);
+		expect(declaration(codex, existing)).toEqual(current);
+	});
 
 	test("codex+live/cached mounts web_search, search absent; off and non-codex keep local search", () => {
 		for (const mode of ["live", "cached"] as const) {

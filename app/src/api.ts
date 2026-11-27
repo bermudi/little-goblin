@@ -54,6 +54,7 @@ import type {
 	AppTtsResponse,
 	AppWindowView,
 } from "../../src/http/app-wire.ts";
+import type { NoteEdit, NoteEditPage } from "../../src/note-edit.ts";
 import type {
 	AttachmentsResponse,
 	ConfigPostBody,
@@ -414,6 +415,7 @@ export async function patchNote(
 		archived?: boolean;
 		// 'rewrite' marks the accepted proposal so the version names it.
 		source?: "app" | "rewrite";
+		reason?: string;
 	},
 	// keepalive: the pagehide flush — best effort that the request
 	// outlives the page, never a guarantee. Browsers cap keepalive
@@ -487,6 +489,14 @@ export function deleteNote(token: string | null, id: string): Promise<{ ok: true
 
 export function listNoteVersions(token: string | null, id: string): Promise<AppNoteVersionList> {
 	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions`);
+}
+
+export function listNoteEdits(token: string | null, id: string, before?: number): Promise<NoteEditPage> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/edits${before === undefined ? "" : `?before=${before}`}`);
+}
+
+export function getNoteEdit(token: string | null, id: string, rev: number): Promise<NoteEdit> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/edits/${rev}`);
 }
 
 export function getNoteVersion(

@@ -40,6 +40,7 @@ import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
 import { promptHasProject } from "./prompt.ts";
+import { noteHistoryAvailable } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { Posts } from "../posts.ts";
@@ -129,6 +130,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, context) => {
 		const snapshot = store.promptSnapshot(conv.id);
+		const provider = conv.model === null ? undefined : configRef.current.providers[splitModelRef(conv.model).provider];
 		const toolProjectId =
 			snapshot === null || promptHasProject(snapshot) ? conv.projectId : null;
 		const { mail, desktops, agents } = deps;
@@ -243,7 +245,10 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
 			},
 			// Guests are excluded by the filter below, never by dep absence.
-			note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
+			note: {
+				notes, projects, conversation: conv.id, projectId: conv.projectId,
+				editHistory: noteHistoryAvailable(snapshot, provider?.kind),
+			},
 			// Threads are process-global; a model change drops them on the next call.
 			vision: visionDepsFor(conv),
 			// Live-read like vision — mounts generate_image; Telegram

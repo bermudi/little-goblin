@@ -3,7 +3,10 @@ import { registerAppServiceWorker } from "./pwa.ts";
 
 type Listener = () => void;
 
-function serviceWorkerDouble(controller: object | null) {
+function serviceWorkerDouble(
+  controller: object | null,
+  registration?: ServiceWorkerRegistration,
+) {
   const listeners = new Map<string, Listener[]>();
   const registrations: unknown[] = [];
   const serviceWorker = {
@@ -13,7 +16,7 @@ function serviceWorkerDouble(controller: object | null) {
     },
     register(scriptURL: string, options: unknown) {
       registrations.push([scriptURL, options]);
-      return Promise.resolve({});
+      return Promise.resolve(registration ?? {});
     },
   } as unknown as ServiceWorkerContainer;
   return {
@@ -29,7 +32,7 @@ describe("app service worker registration", () => {
   test("a replacement worker reloads a controlled page once", async () => {
     const worker = serviceWorkerDouble({});
     let reloads = 0;
-    registerAppServiceWorker(worker.serviceWorker, () => {
+    const stop = registerAppServiceWorker(worker.serviceWorker, () => {
       reloads += 1;
     });
     expect(worker.registrations).toEqual([
@@ -39,12 +42,13 @@ describe("app service worker registration", () => {
     worker.fire("controllerchange");
     worker.fire("controllerchange");
     expect(reloads).toBe(1);
+    stop();
   });
 
   test("the first worker to control the page does not reload it", async () => {
     const worker = serviceWorkerDouble(null);
     let reloads = 0;
-    registerAppServiceWorker(worker.serviceWorker, () => {
+    const stop = registerAppServiceWorker(worker.serviceWorker, () => {
       reloads += 1;
     });
     await Promise.resolve();
@@ -52,5 +56,23 @@ describe("app service worker registration", () => {
     expect(reloads).toBe(0);
     worker.fire("controllerchange");
     expect(reloads).toBe(1);
+    stop();
+  });
+
+  test("asks the browser for worker updates on an interval", async () => {
+    let updates = 0;
+    const registration = {
+      update() {
+        updates += 1;
+        return Promise.resolve();
+      },
+    } as unknown as ServiceWorkerRegistration;
+    const worker = serviceWorkerDouble({}, registration);
+    const stop = registerAppServiceWorker(worker.serviceWorker, () => {}, 1);
+    for (let i = 0; i < 20 && updates === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    stop();
+    expect(updates).toBeGreaterThan(0);
   });
 });

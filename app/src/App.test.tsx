@@ -2606,6 +2606,7 @@ describe("app projects surface", () => {
 			"Range",
 			"Node",
 			"HTMLElement",
+			"HTMLButtonElement",
 			"HTMLFieldSetElement",
 			"HTMLInputElement",
 			"HTMLTextAreaElement",
@@ -5368,7 +5369,7 @@ describe("app projects surface", () => {
 		expect(startAlert()).toBeNull();
 		await settleSlow();
 		await click(
-			[...container.querySelectorAll("button.dt-row")].find((b) =>
+			[...container.querySelectorAll("button.note-list-title")].find((b) =>
 				b.textContent?.startsWith("Shopping"),
 			),
 		);

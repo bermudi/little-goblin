@@ -60,7 +60,8 @@ import {
 } from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
-import { NotesIndex, NoteView } from "./NoteView.tsx";
+import { NoteView } from "./NoteView.tsx";
+import { NotesIndex } from "./NotesIndex.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import {
@@ -1476,6 +1477,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							settingsDirty.current = d;
 						}}
 						leaveRef={settingsLeave}
+						onOpenNotes={() => void openNotesIndex()}
 					/>
 				)}
 				{(page === "status" || page === "memory" || page === "skills" || page === "log") && (
@@ -1535,6 +1537,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						token={token}
 						projects={projectList}
 						onOpen={openNote}
+						onSettings={() => void openPage("settings")}
 						onChanged={() => void acted("notes")}
 					/>
 				)}

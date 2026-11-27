@@ -8,6 +8,8 @@ Goblin calls the `post` tool; the post shows in the Goblin panel's Activity tab 
 
 Desktop: the Goblin panel is the right column beside any chat page, Activity tab first. Phone: tap Goblin's avatar in the chats bar or a chat's header to open the panel as a sheet.
 
+Above the panel tabs, the shoulders follow the thin solid gray ring. It has no fill, and both ear tips and the hair remain intact. Clicking the portrait opens the profile, which shows the same art above its tabs.
+
 ## Driving it with agent-browser
 
 The fake model turns `[post <text>]` in the last user message into one `post` tool call with that text, untouched (spaces and line breaks included, so the tool's own trimming and length checks are reachable), then replies with the usual echo.

@@ -70,7 +70,7 @@ export function GoblinProfileHeader({ page, working, onPage }: {
 	const pages = ["status", "memory", "skills", "log"] as const;
 	return (
 		<div className="goblin-profile-header">
-			<GoblinAvatar size="md" working={working > 0} />
+			<GoblinAvatar size="md" working={working > 0} portrait />
 			<strong>Little Goblin</strong>
 			<span>{goblinStatusText(working)}</span>
 			<nav aria-label="Little Goblin's profile">
@@ -489,7 +489,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 					aria-label="Little Goblin's profile"
 					onClick={props.onOpenProfile}
 				>
-					<GoblinAvatar size="lg" working={data.working > 0} />
+					<GoblinAvatar size="lg" working={data.working > 0} portrait />
 				</button>
 				<strong>Little Goblin</strong>
 				<span>{goblinStatusText(data.working)}</span>

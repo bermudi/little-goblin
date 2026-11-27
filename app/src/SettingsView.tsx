@@ -105,10 +105,12 @@ export function SettingsView({
 	token,
 	onDirtyChange,
 	leaveRef,
+	onOpenNotes,
 }: {
 	token: string | null;
 	onDirtyChange?: (dirty: boolean) => void;
 	leaveRef?: RefObject<((answer: LeaveAnswer) => void) | null>;
+	onOpenNotes?: () => void;
 }) {
 	const [kinds, setKinds] = useState<SettingsCtx["kinds"] | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
@@ -682,6 +684,13 @@ export function SettingsView({
 	);
 
 	const restartHints = status?.restartHints ?? [];
+	const entries = onOpenNotes === undefined
+		? SECTIONS
+		: [...SECTIONS, { key: "notes" as const, label: "Notes", sub: "Move, archive, and restore notes" }];
+	const openSection = (key: Section | "notes") => {
+		if (key === "notes") onOpenNotes?.();
+		else setSection(key);
+	};
 
 	return (
 		<div className={`ops settings${section === null ? " at-index" : ""}`}>
@@ -689,12 +698,12 @@ export function SettingsView({
 				<h2 className="ops-h2 settings-h2">
 					Settings {departureDirty && <span className="dirty-pill">unsaved</span>}
 				</h2>
-				{SECTIONS.map((s) => (
+				{entries.map((s) => (
 					<button
 						key={s.key}
 						type="button"
 						className={eff === s.key ? "snav on" : "snav"}
-						onClick={() => setSection(s.key)}
+						onClick={() => openSection(s.key)}
 					>
 						<span className="ilabel">
 							{s.label}
@@ -709,8 +718,8 @@ export function SettingsView({
 						Settings {departureDirty && <span className="dirty-pill">unsaved</span>}
 					</h2>
 					<div className="card">
-						{SECTIONS.map((s) => (
-							<button key={s.key} type="button" className="idx" onClick={() => setSection(s.key)}>
+						{entries.map((s) => (
+							<button key={s.key} type="button" className="idx" onClick={() => openSection(s.key)}>
 								<span className="ilabel">
 									{s.label}
 									<small>{s.sub}</small>

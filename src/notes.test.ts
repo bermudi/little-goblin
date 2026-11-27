@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setLogFile } from "./log.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER } from "./note-owner.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import {
 	ensureNotesSchema,
@@ -406,7 +407,7 @@ describe("the state_rev ordering token", () => {
 		expect(ok.body).toBe("one");
 	});
 
-	test("a store that predates the column migrates existing rows to 1 — idempotently", () => {
+	test("an old database gains the state revision and Little Goblin owner idempotently", () => {
 		const home = useHome();
 		mkdirSync(join(home, "state"), { recursive: true });
 		const db = new Database(join(home, "state", "goblin.sqlite"));
@@ -432,12 +433,13 @@ describe("the state_rev ordering token", () => {
 			// A second pass must not re-alter or clobber the value.
 			ensureNotesSchema(db);
 			const row = db
-				.query<{ rev: number; state_rev: number }, []>(
-					"SELECT rev, state_rev FROM notes WHERE id = 'n-old'",
+				.query<{ rev: number; state_rev: number; bot_id: string }, []>(
+					"SELECT rev, state_rev, bot_id FROM notes WHERE id = 'n-old'",
 				)
 				.get()!;
 			expect(row.rev).toBe(3);
 			expect(row.state_rev).toBe(1);
+			expect(row.bot_id).toBe(LITTLE_GOBLIN_NOTE_OWNER);
 		} finally {
 			db.close();
 		}

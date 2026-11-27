@@ -6534,6 +6534,121 @@ button.note-card-append:hover {
 .notes-table {
 	margin-bottom: 0.6rem;
 }
+@media (max-width: 560px) {
+	.notes-manager .note-filters input[type="search"] {
+		flex-basis: 100%;
+		max-width: none;
+	}
+	.notes-manager .note-filters select {
+		flex: 1 1 0;
+	}
+}
+.notes-table table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
+	font-size: 12.5px;
+}
+.notes-table :is(th, td) {
+	text-align: left;
+	padding: 0.55rem 0.65rem;
+}
+.notes-table th {
+	background: var(--app-hover);
+	font-weight: 500;
+}
+.notes-table th:first-child {
+	width: 2.75rem;
+}
+.notes-table th:nth-child(3) {
+	width: clamp(6rem, 24%, 12rem);
+}
+.notes-table th:last-child {
+	width: 6rem;
+}
+.notes-table td {
+	border-top: 1px solid var(--app-divider);
+	overflow-wrap: anywhere;
+}
+.notes-table :is(td:first-child, th:first-child) {
+	text-align: center;
+}
+.notes-table tr[data-selected] td {
+	background: var(--app-active);
+}
+.note-list-title {
+	text-align: left;
+	font-weight: 600;
+}
+.note-list-title:hover {
+	text-decoration: underline;
+}
+.notes-table td small {
+	display: block;
+	text-overflow: ellipsis;
+	overflow: hidden;
+	white-space: nowrap;
+	color: var(--app-fg-muted);
+}
+.notes-table td .pill {
+	margin-left: 0.35rem;
+}
+.note-select {
+	display: inline-grid;
+	vertical-align: middle;
+	place-items: center;
+	width: 1.15rem;
+	height: 1.15rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 4px;
+}
+.note-select:is([data-checked], [data-indeterminate]) {
+	background: var(--app-fg);
+	color: var(--app-bg);
+}
+.note-select:focus-visible, .note-list-title:focus-visible {
+	outline: 2px solid var(--app-focus);
+	outline-offset: 2px;
+}
+.note-batch {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem;
+	padding: 0.4rem 0.6rem;
+	margin-bottom: 0.6rem;
+	background: var(--app-active);
+	border-radius: 8px;
+	font-size: 12.5px;
+}
+.note-batch > strong {
+	margin-right: auto;
+}
+.note-batch-dialog {
+	position: fixed;
+	inset: 0;
+	margin: auto;
+	height: fit-content;
+	max-width: min(26rem, calc(100% - 2rem));
+	width: 100%;
+	padding: 1rem;
+	background: var(--app-bg);
+	color: var(--app-fg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 12px;
+}
+.note-batch-dialog h2 {
+	font-size: 16px;
+	margin: 0 0 0.75rem;
+}
+.note-batch-dialog p {
+	margin: 0 0 0.75rem;
+}
+@container (max-width: 440px) {
+	.notes-table .note-updated {
+		display: none;
+	}
+}
 
 /* /app/n/<id> */
 .notepage {
@@ -8668,8 +8783,17 @@ button.link:hover {
 }
 .goblin-avatar img {
 	display: block;
-	width: 100%;
 	height: 100%;
+}
+.goblin-avatar[data-portrait] img {
+	position: absolute;
+	top: 0;
+	left: 50%;
+	width: auto;
+	transform: translateX(-50%);
+}
+.goblin-avatar:not([data-portrait]) img {
+	width: 100%;
 	object-fit: cover;
 	border-radius: 50%;
 	image-rendering: pixelated;

@@ -7,6 +7,12 @@ import { z } from "zod";
 import type { ConversationStore } from "./conversation.ts";
 import { flatLine, toFtsQuery } from "./conversation-events.ts";
 import { log } from "./log.ts";
+import {
+	LITTLE_GOBLIN_NOTE_OWNER,
+	type NoteBatchAction,
+	type NoteOwner,
+	type NoteSelection,
+} from "./note-owner.ts";
 import type { ProjectStore } from "./projects.ts";
 
 export type NoteSource = "app" | "agent" | "rewrite" | "append" | "restore";
@@ -30,6 +36,7 @@ export interface Note {
 	// null = loose. No prompt cache — frozen indexes show the stale
 	// scope until their next build.
 	projectId: string | null;
+	botId: string | null;
 	title: string;
 	body: string;
 	// `rev` orders content only (the If-Match etag); `stateRev` orders
@@ -47,6 +54,7 @@ export interface Note {
 export interface NoteSummary {
 	id: string;
 	projectId: string | null;
+	botId: string | null;
 	title: string;
 	rev: number;
 	stateRev: number;
@@ -129,6 +137,8 @@ const VERSION_CAP = 100;
 const LIST_PREVIEW_SOURCE_CHARS = 4096;
 const LIST_DEFAULT_LIMIT = 200;
 
+export class NoteSelectionError extends Error {}
+
 export interface NoteStore {
 	create(input: {
 		title: string;
@@ -138,6 +148,8 @@ export interface NoteStore {
 	get(id: string): Note | null;
 	list(filter?: {
 		project?: string | "loose" | "all" | undefined;
+		owner?: NoteOwner | undefined;
+		includeGlobal?: boolean | undefined;
 		q?: string | undefined;
 		archived?: boolean | undefined;
 		limit?: number | undefined;
@@ -183,6 +195,7 @@ export interface NoteStore {
 	getVersion(id: string, rev: number): NoteVersion | null;
 	// Archived only.
 	delete(id: string): void;
+	batch(selection: NoteSelection[], action: NoteBatchAction): void;
 	index(projectId: string, cap?: number): { id: string; title: string }[];
 }
 
@@ -201,7 +214,8 @@ export function ensureNotesSchema(db: Database): void {
 			archived_at TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			state_rev INTEGER NOT NULL DEFAULT 1
+			state_rev INTEGER NOT NULL DEFAULT 1,
+			bot_id TEXT DEFAULT '${LITTLE_GOBLIN_NOTE_OWNER}'
 		)`);
 	// Existing rows initialize to 1 — strictly below anything minted
 	// after the upgrade.
@@ -212,6 +226,9 @@ export function ensureNotesSchema(db: Database): void {
 			.every((c) => c.name !== "state_rev")
 	) {
 		db.run("ALTER TABLE notes ADD COLUMN state_rev INTEGER NOT NULL DEFAULT 1");
+	}
+	if (db.query("SELECT 1 FROM pragma_table_info('notes') WHERE name = 'bot_id'").get() === null) {
+		db.run(`ALTER TABLE notes ADD COLUMN bot_id TEXT DEFAULT '${LITTLE_GOBLIN_NOTE_OWNER}'`);
 	}
 	// Full pre-write copies — `source` names the write that superseded
 	// this state.
@@ -253,6 +270,7 @@ export function ensureNotesSchema(db: Database): void {
 interface NoteRow {
 	id: string;
 	project_id: string | null;
+	bot_id: string | null;
 	title: string;
 	body_md: string;
 	rev: number;
@@ -268,6 +286,7 @@ type NoteListRow = Pick<
 	NoteRow,
 	| "id"
 	| "project_id"
+	| "bot_id"
 	| "title"
 	| "rev"
 	| "state_rev"
@@ -290,6 +309,7 @@ function toNote(r: NoteRow): Note {
 	return {
 		id: r.id,
 		projectId: r.project_id,
+		botId: r.bot_id,
 		title: r.title,
 		body: r.body_md,
 		rev: r.rev,
@@ -443,13 +463,19 @@ export function openNotes(
 		return db.transaction(() => applyWrite(id, next, source, opts))();
 	}
 
-	function applyMove(id: string, projectId: string | null): void {
+	function applyMove(id: string, owner: NoteOwner): void {
+		const projectId = "projectId" in owner ? owner.projectId : null;
+		const botId = "botId" in owner ? owner.botId : LITTLE_GOBLIN_NOTE_OWNER;
+		db.run(
+			"UPDATE notes SET project_id = ?, bot_id = ?, state_rev = state_rev + 1 WHERE id = ?",
+			[projectId, botId, id],
+		);
+		log.info("note moved", { note: id, project: projectId, bot: botId });
+	}
+
+	function moveToProject(id: string, projectId: string | null): void {
 		checkProjectId(projectId);
-		db.run("UPDATE notes SET project_id = ?, state_rev = state_rev + 1 WHERE id = ?", [
-			projectId,
-			id,
-		]);
-		log.info("note moved", { note: id, project: projectId });
+		applyMove(id, projectId === null ? { botId: LITTLE_GOBLIN_NOTE_OWNER } : { projectId });
 	}
 
 	function applyPin(id: string, pinned: boolean): void {
@@ -488,6 +514,18 @@ export function openNotes(
 		return mustGet(id);
 	}
 
+	function applyDelete(id: string): void {
+		db.run("DELETE FROM note_versions WHERE note_id = ?", [id]);
+		db.run("DELETE FROM notes WHERE id = ?", [id]);
+		log.info("note deleted", { note: id });
+	}
+
+	function requireArchived(note: Note): void {
+		if (note.archivedAt === null) {
+			throw new NoteInputError("only an archived note can be deleted — archive it first");
+		}
+	}
+
 	return {
 		create,
 		get,
@@ -507,10 +545,24 @@ export function openNotes(
 					params.push(match);
 				}
 			}
-			if (filter.project !== undefined && filter.project !== "all") {
+			if (filter.owner !== undefined) {
+				if ("projectId" in filter.owner) {
+					clauses.push("n.project_id = ?");
+					params.push(filter.owner.projectId);
+				} else if (filter.owner.botId === null) {
+					clauses.push("n.project_id IS NULL AND n.bot_id IS NULL");
+				} else {
+					clauses.push("n.project_id IS NULL AND n.bot_id = ?");
+					params.push(filter.owner.botId);
+				}
+			} else if (filter.project !== undefined && filter.project !== "all") {
 				if (filter.project === "loose") clauses.push("n.project_id IS NULL");
 				else {
-					clauses.push("n.project_id = ?");
+					clauses.push(
+						filter.includeGlobal
+							? "(n.project_id = ? OR (n.project_id IS NULL AND n.bot_id IS NULL))"
+							: "n.project_id = ?",
+					);
 					params.push(filter.project);
 				}
 			}
@@ -520,7 +572,7 @@ export function openNotes(
 			params.push(filter.limit ?? LIST_DEFAULT_LIMIT);
 			const rows = db
 				.query<NoteListRow, (string | number)[]>(
-					`SELECT n.id, n.project_id, n.title, n.rev, n.state_rev, n.pinned_at,
+					`SELECT n.id, n.project_id, n.bot_id, n.title, n.rev, n.state_rev, n.pinned_at,
 						n.archived_at, n.updated_at,
 						substr(n.body_md, 1, ${LIST_PREVIEW_SOURCE_CHARS}) AS body_md
 					 FROM notes n ${join}
@@ -532,6 +584,7 @@ export function openNotes(
 			return rows.map((r) => ({
 				id: r.id,
 				projectId: r.project_id,
+				botId: r.bot_id,
 				title: r.title,
 				rev: r.rev,
 				stateRev: r.state_rev,
@@ -545,7 +598,7 @@ export function openNotes(
 		patch(id, next, source, opts = {}) {
 			return db.transaction(() => {
 				mustGet(id);
-				if (next.projectId !== undefined) applyMove(id, next.projectId);
+				if (next.projectId !== undefined) moveToProject(id, next.projectId);
 				if (next.pinned !== undefined) applyPin(id, next.pinned);
 				if (next.title !== undefined || next.body !== undefined) {
 					applyWrite(id, next, source, opts);
@@ -613,7 +666,7 @@ export function openNotes(
 		},
 		move(id, projectId) {
 			mustGet(id);
-			applyMove(id, projectId);
+		moveToProject(id, projectId);
 			return mustGet(id);
 		},
 		listVersions(id) {
@@ -632,17 +685,39 @@ export function openNotes(
 			return row === null ? null : { ...toVersionMeta(row), title: row.title, body: row.body_md };
 		},
 		delete(id) {
-			const note = mustGet(id);
-			if (note.archivedAt === null) {
-				throw new NoteInputError("only an archived note can be deleted — archive it first");
-			}
 			db.transaction(() => {
-				// foreign_keys ON makes the CASCADE redundant — a
-				// pragma-off reopen must not leak rows.
-				db.run("DELETE FROM note_versions WHERE note_id = ?", [id]);
-				db.run("DELETE FROM notes WHERE id = ?", [id]);
+			requireArchived(mustGet(id));
+			applyDelete(id);
 			})();
-			log.info("note deleted", { note: id });
+	},
+	batch(selection, batch) {
+		db.transaction(() => {
+			if (batch.action === "move" && "projectId" in batch.owner) {
+				checkProjectId(batch.owner.projectId);
+			}
+			for (const { id, stateRev } of selection) {
+				const note = get(id);
+				if (note === null || note.stateRev !== stateRev) {
+					log.info("note batch selection changed", { note: id, expected: stateRev, action: batch.action });
+					throw new NoteSelectionError("A selected note changed. Review the list and select it again.");
+				}
+				if (batch.action === "delete") requireArchived(note);
+			}
+			for (const { id } of selection) {
+				switch (batch.action) {
+					case "move":
+						applyMove(id, batch.owner);
+						break;
+					case "archive":
+					case "restore":
+						applyArchive(id, batch.action === "archive");
+						break;
+					case "delete":
+						applyDelete(id);
+						break;
+				}
+			}
+		})();
 		},
 		index(projectId, cap = 50) {
 			return qIndex.all(projectId, cap);

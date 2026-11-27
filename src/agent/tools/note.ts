@@ -116,6 +116,7 @@ function noteView(n: Note, projects: Pick<ProjectStore, "get">): Record<string, 
 		title: n.title,
 		rev: n.rev,
 		project: n.projectId === null ? null : (projects.get(n.projectId)?.name ?? n.projectId),
+		...(n.projectId === null && n.botId === null ? { owner: "Global" } : {}),
 		updated: n.updatedAt,
 	};
 }
@@ -142,6 +143,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 						const project = input.scope === "all" ? "all" : (deps.projectId ?? "loose");
 						const rows = deps.notes.list({
 							project,
+							includeGlobal: true,
 							...(input.query !== undefined ? { q: input.query } : {}),
 							limit: LIST_LIMIT + 1,
 						});
@@ -157,6 +159,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 									s.projectId === null
 										? null
 										: (deps.projects.get(s.projectId)?.name ?? s.projectId),
+								...(s.projectId === null && s.botId === null ? { owner: "Global" } : {}),
 								updated: s.updatedAt,
 								preview: s.preview,
 							})),

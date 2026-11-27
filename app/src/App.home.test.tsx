@@ -440,6 +440,19 @@ describe("home screen", () => {
 		expect(container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("false");
 	});
 
+	test("T-D2: a project chat folds the side chats, and the next side chat opens them", async () => {
+		conversations = [conv("side"), conv("other"), conv("work", { projectId: "project" })];
+		await open("/app/c/side");
+		const expanded = () => container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded");
+		expect(expanded()).toBe("true");
+		await goTo("/app/c/work");
+		expect(win.location.pathname).toBe("/app/c/work");
+		expect(expanded()).toBe("false");
+		expect(container.querySelector(".side-chat")).toBeNull();
+		await goTo("/app/c/other");
+		expect(expanded()).toBe("true");
+	});
+
 	test("T23: the face is in the desktop chat header and closes and opens the panel", async () => {
 		conversations = [conv("one")];
 		await open("/app/c/one");

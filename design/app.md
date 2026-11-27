@@ -970,9 +970,10 @@ is now the home screen, and the avatar means only the agent.
   then newest; then pinned chats; then the rest, newest first.
   - **Open and fold.** A chevron on the row opens and folds the side chats by
     hand, so a phone can reach them (lead's pick, 2026-11-27). Opening
-    Little Goblin's main chat or a side chat opens the row. A fold by hand
-    stays until the operator goes to another chat. The device remembers the
-    last state.
+    Little Goblin's main chat or a side chat opens the row. Opening a project
+    chat or a project page folds it, since side chats show only inside
+    Little Goblin. A fold by hand stays until the operator goes to another
+    chat. The device remembers the last state.
   - **Folded row.** The row carries the most urgent mark of its rolls and
     side chats. Its line names the side chat: "New reply in …" or
     "Working in …", or the question that waits.

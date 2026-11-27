@@ -2,8 +2,8 @@
 
 ## How to get to it
 
-The app opens in it, at the newest roll. "Rolling chat" is also the first row
-of the list, above Active. Its mark is that of any of its rolls, and it opens
+The app opens in it, at the newest roll. The app calls it Little Goblin: it is
+the first row of the list, above its side chats and Active. Its mark is that of any of its rolls, and it opens
 the roll that has the mark ([home.md](home.md)).
 
 ## Driving it

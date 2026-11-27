@@ -25,7 +25,7 @@ Both open in the Rolling chat.
 A chat from the other browser:
 
 ```sh
-B click 'button[aria-label="New chat"]'
+B click 'button[aria-label="New side chat"]'
 B fill '[aria-label="Message draft"]' 'made on the other device'
 B click 'button[aria-label="Send"]'
 A wait --text 'made on the other device'
@@ -60,7 +60,7 @@ A wait --text 'Research the launch date'
 Busy state. The fake model streams `[slow]` for 16 seconds:
 
 ```sh
-B click 'button[aria-label="New chat"]'
+B click 'button[aria-label="New side chat"]'
 B fill '[aria-label="Message draft"]' '[slow] count for me'
 B click 'button[aria-label="Send"]'
 A wait --text 'Working · 1 job'
@@ -99,6 +99,6 @@ rg -c 'skill catalog problem cleared' "$HOME_DIR/state/goblin.log"    # 1
 ## Gotchas
 
 "Nothing running." gives way to the newest posts once a post exists; then wait for "Idle" under Goblin's name.
-The Rolling chat's row reads "Always here" only until it has a message. Use `a[href="/app/rolling"]`. On a phone the page also holds a hidden copy of the sidebar, so use `.chatlist-screen a[href="/app/rolling"]`.
+The Little Goblin row reads "Always here" only until it has a message. Use `a[href="/app/rolling"]`. On a phone the page also holds a hidden copy of the sidebar, so use `.chatlist-screen a[href="/app/rolling"]`.
 
 `set offline on` tells the page that it is offline. A server that dies without notice is a different path: stop the server process and start it again on the same port and home.

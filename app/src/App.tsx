@@ -591,11 +591,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		sideChatsOpen,
 	}, activeProjects, projectsOpen);
 	const inGoblin = page === "rolling" || home.list.openInGoblin;
+	const inProject = currentFolderId !== null;
 	useEffect(() => {
-		if (!inGoblin) return;
-		setSideChatsOpenState(true);
-		saveSideChatsOpen(true);
-	}, [inGoblin, railCurrent]);
+		if (!inGoblin && !inProject) return;
+		setSideChatsOpenState(inGoblin);
+		saveSideChatsOpen(inGoblin);
+	}, [inGoblin, inProject, railCurrent, currentFolderId]);
 	const desktopFlipRef = useFlip(home.orderSignature);
 	const phoneFlipRef = useFlip(home.orderSignature);
 

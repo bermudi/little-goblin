@@ -2,11 +2,11 @@
 
 ## Sub-features
 
-The start page, a mark on each chat (needs you, new reply, working), the Active section, subagent folds, and Goblin's face.
+The start page, a mark on each chat (needs you, new reply, working), side chats under Little Goblin, the Active section, subagent folds, and Goblin's face.
 
 ## How to get to it (user POV)
 
-Open the app: it shows the Rolling chat. On a desktop the list is the left column; on a phone press Back once.
+Open the app: it shows Little Goblin's main chat (the Rolling chat). On a desktop the list is the left column; on a phone press Back once.
 
 ## Driving it with agent-browser
 
@@ -16,7 +16,7 @@ rows() { ab eval 'JSON.stringify([...document.querySelectorAll(".rail-body .conv
 ab set viewport 1280 800; ab open "$URL"
 ab get url                                              # ends in /app/rolling
 for t in alpha beta; do
-  ab click 'button[aria-label="New chat"]'
+  ab click 'button[aria-label="New side chat"]'
   ab fill '[aria-label="Message draft"]' "$t"; ab click 'button[aria-label="Send"]'
   ab wait --text "verify-reply: $t"
 done
@@ -28,7 +28,7 @@ Working, then a new reply. `[slow]` streams for 16 s, so leave the chat while it
 ```sh
 ab fill '[aria-label="Message draft"]' '[slow] gamma'; ab click 'button[aria-label="Send"]'
 ab wait 600; ab click '.rail-body a[href="/app/rolling"]'
-rows                    # the chat is in Active, "working | Working / ..."
+rows                    # the side chat under Little Goblin, "working | Working / ..."
 ab wait 17000; rows     # "new | New reply / ..."
 ```
 
@@ -42,7 +42,7 @@ sqlite3 "$DB" "insert into mail_outbox (to_json, subject, body, target, status, 
   ('[\"shop@example.com\"]', 'Order the light', 'x', '$ID', 'pending', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 day')),
   ('[\"bank@example.com\"]', 'Ask about the fee', 'x', 'dm:1', 'pending', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 day'))"
 ab wait 1500; rows
-ab eval 'document.querySelector(".goblin-panel-toggle").getAttribute("aria-label")'   # Goblin, 2 need you
+ab eval 'document.querySelector(".goblin-panel-toggle").getAttribute("aria-label")'   # Little Goblin, 2 need you
 sqlite3 "$DB" "update mail_outbox set status = 'discarded'"                           # both rows lose the mark
 ```
 
@@ -50,11 +50,13 @@ A subagent: send `[agent find a hotel]` in `alpha`, then open the child and send
 
 Questions: send `[ask When should the nudge fire?|9:00|11:00]` in an ordinary chat. The question card appears outside Worked and the chat gets the amber `!` with `Asks: When should the nudge fire?`. Tap a choice to send the `[ask]` answer and close it; reopen another question and choose **No answer needed** to close without a message. Finally send `[ask-close <id>]` in the newest roll to close a question asked in an older roll.
 
-An older roll: make a second roll ([rolling.md](rolling.md)), open an ordinary chat, then set the first roll's `read_seq` to 0. The Rolling chat row gets the dot and opens that roll.
+An older roll: make a second roll ([rolling.md](rolling.md)), open an ordinary chat, then set the first roll's `read_seq` to 0. The Little Goblin row gets the dot and opens that roll.
 
 Project chat: give a chat a `project_id` and `read_seq = 0`. Its row in Active ends with "in <project>", also when its last line is long.
 
-Phone: `ab set viewport 390 844`. A fresh `$URL` shows the Rolling chat, Back shows the list, and a reload there stays on the list.
+Phone: `ab set viewport 390 844`. A fresh `$URL` shows Little Goblin's main chat, Back shows the list, and a reload there stays on the list.
+
+Side chats: every chat outside a project shows under the Little Goblin row as a `.side-chat` row. The `Side chats` chevron (`button[aria-label="Side chats"]`, `aria-expanded`) folds and opens them; on a phone it is the only way to reach them from the list. Opening Little Goblin's main chat or a side chat opens them; opening a project chat or project page folds them. While folded, the Little Goblin row carries the most urgent side-chat mark, with a line such as `New reply in alpha` or `Working in gamma`.
 
 Lost line: see [live.md](live.md). The marks turn grey.
 

@@ -3,19 +3,10 @@
 // the checkpoint; the watcher never writes program state. Outbox
 // draft expiry is the approval gate's job.
 
-import { HistoryExpiredError, type MailHit, type ThreadContext } from "./mail.ts";
+import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
 import { every } from "./timing.ts";
-
-/** The watcher's poll surface: history intersect + baseline + thread
- *  context. mail-gws.ts's GwsMailReader in production, a fake at the
- *  edge in tests — structural, not nominal. */
-export interface MailPoller {
-	poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
-	profileHistoryId(): Promise<string>;
-	threadFor(replyToId: string): Promise<ThreadContext | null>;
-}
 
 export interface MailWatcherDeps {
 	programs: ProgramsStore;
@@ -157,7 +148,7 @@ async function check(
 		let hits: MailHit[];
 		let historyId: string;
 		try {
-			({ hits, historyId } = await gmail.poll(filter, program.mailHistoryId));
+			({ hits, historyId } = await gmail.matches(await gmail.history(program.mailHistoryId), filter, program.mailHistoryId));
 		} catch (err) {
 			if (!(err instanceof HistoryExpiredError)) throw err;
 			// Google forgot the cursor — re-baseline like a new filter.

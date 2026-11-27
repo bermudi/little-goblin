@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import type { Message } from "./message.ts";
-import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
+import { HistoryExpiredError, type MailHistory, type MailHit, type MailPoller } from "./mail.ts";
 import { BoundaryError } from "./boundary-error.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
@@ -75,6 +75,7 @@ interface Harness {
 	profiles: number;
 	/** What the fake runtime does: true → submit throws, no turn lands. */
 	failSubmit: boolean;
+	historyImpl: (start: string) => Promise<MailHistory>;
 	pollImpl: (filter: string, cursor: string) => Promise<{ hits: MailHit[]; historyId: string }>;
 	reader: MailPoller | null;
 	/** The real entry point over the fake runtime — the seam index.ts binds. */
@@ -94,6 +95,7 @@ function harness(): Harness {
 		polls: [],
 		profiles: 0,
 		failSubmit: false,
+		historyImpl: async () => ({ records: [], historyId: "1" }),
 		pollImpl: async () => ({ hits: [], historyId: "1" }),
 		reader: null,
 		// Replaced at the end of harness() once firingDeps exists.
@@ -102,7 +104,8 @@ function harness(): Harness {
 		},
 	};
 	h.reader = {
-		poll: async (filter: string, cursor: string) => {
+		history: async (start: string) => h.historyImpl(start),
+		matches: async (_page, filter: string, cursor: string) => {
 			h.polls.push({ filter, cursor });
 			return h.pollImpl(filter, cursor);
 		},
@@ -303,7 +306,7 @@ describe("mail watcher", () => {
 			const p = mailProgram(h);
 			if (expired) {
 				h.programs.setMailHistory(p.id, "old", 0);
-				h.pollImpl = async () => {
+				h.historyImpl = async () => {
 					throw new HistoryExpiredError();
 				};
 			}
@@ -333,7 +336,7 @@ describe("mail watcher", () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "old", 0);
-		h.pollImpl = async () => {
+		h.historyImpl = async () => {
 			throw new HistoryExpiredError();
 		};
 		h.reader!.profileHistoryId = async () => {
@@ -418,7 +421,7 @@ describe("mail watcher", () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "1", 0);
-		h.pollImpl = async () => {
+		h.historyImpl = async () => {
 			throw new HistoryExpiredError();
 		};
 		const w = start(h);

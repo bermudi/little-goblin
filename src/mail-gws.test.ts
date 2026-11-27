@@ -7,91 +7,11 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { log, setLogFile, setLogWriter } from "./log.ts";
 import { HistoryExpiredError, type MailHit } from "./mail.ts";
 import { GwsApiError, makeGwsReader, type GwsRunner } from "./mail-gws.ts";
+import { envelope, fakeGws, msgGet } from "./testkit/fake-gws.ts";
 
-interface Call {
-	args: string[];
-}
-
-function headers(
-	from = "a@x.com",
-	subject = "s",
-	date = "d",
-): Array<{ name: string; value: string }> {
-	return [
-		{ name: "From", value: from },
-		{ name: "Subject", value: subject },
-		{ name: "Date", value: date },
-	];
-}
-
-function msgGet(id: string, thread = "t"): unknown {
-	return {
-		id,
-		threadId: thread,
-		snippet: `snip-${id}`,
-		payload: { headers: headers(`a-${id}@x.com`, `sub-${id}`, "today") },
-	};
-}
-
-// Routes on (resource, method) with queued responses; defaults: empty
-// history at head "200", empty list, generic metadata get.
-function fakeGws(routes: {
-	history?: (params: Record<string, unknown>, call: number) => unknown;
-	list?: (params: Record<string, unknown>, call: number) => unknown;
-	get?: (params: Record<string, unknown>, call: number) => unknown;
-	profile?: (params: Record<string, unknown>, call: number) => unknown;
-	fail?: { code: number; stdout: string; stderr: string };
-}): { run: GwsRunner; calls: Call[] } {
-	const calls: Call[] = [];
-	let n = 0;
-	const run: GwsRunner = async (args) => {
-		calls.push({ args: [...args] });
-		n++;
-		if (routes.fail) return { ...routes.fail };
-		const pi = args.indexOf("--params");
-		const params = pi === -1 ? {} : (JSON.parse(args[pi + 1]!) as Record<string, unknown>);
-		const [resource, method] = [args[2], args[3]];
-		if (resource === "history" && method === "list") {
-			return {
-				code: 0,
-				stdout: JSON.stringify(routes.history?.(params, n) ?? { historyId: "200" }),
-				stderr: "",
-			};
-		}
-		if (resource === "messages" && method === "list") {
-			return {
-				code: 0,
-				stdout: JSON.stringify(routes.list?.(params, n) ?? { messages: [] }),
-				stderr: "",
-			};
-		}
-		if (resource === "messages" && method === "get") {
-			return {
-				code: 0,
-				stdout: JSON.stringify(routes.get?.(params, n) ?? msgGet(String(params.id ?? "m"))),
-				stderr: "",
-			};
-		}
-		if (resource === "getProfile") {
-			return {
-				code: 0,
-				stdout: JSON.stringify(routes.profile?.(params, n) ?? { historyId: "999" }),
-				stderr: "",
-			};
-		}
-		throw new Error(`unexpected gws argv: ${args.join(" ")}`);
-	};
-	return { run, calls };
-}
-
-/** The envelope each call used: resource/method + parsed --params. */
-function envelope(c: Call): { resource: string; method: string; params: Record<string, unknown> } {
-	const pi = c.args.indexOf("--params");
-	return {
-		resource: c.args[2]!,
-		method: c.args[3]!,
-		params: pi === -1 ? {} : (JSON.parse(c.args[pi + 1]!) as Record<string, unknown>),
-	};
+async function poll(run: GwsRunner, filter: string, cursor: string) {
+	const reader = makeGwsReader(run);
+	return reader.matches(await reader.history(cursor), filter, cursor);
 }
 
 describe("gws mail reader", () => {
@@ -122,15 +42,15 @@ describe("gws mail reader", () => {
 			throw new Error(`unexpected gws route: ${args.join(" ")}`);
 		};
 		const skipped = makeGwsReader(makeRunner((id) => id === "m1" ? 404 : null));
-		const out = await skipped.poll("from:test", "100");
+		const out = await poll(makeRunner((id) => id === "m1" ? 404 : null), "from:test", "100");
 		expect(out.hits.map((hit) => hit.id)).toEqual(["m2"]);
 		expect(out.historyId).toBe("120");
 
 		const fatal = makeGwsReader(makeRunner((id) => id === "m1" ? 403 : null));
-		expect((await fatal.poll("from:test", "100")).hits.map((hit) => hit.id)).toEqual(["m2"]);
+		expect((await poll(makeRunner((id) => id === "m1" ? 403 : null), "from:test", "100")).hits.map((hit) => hit.id)).toEqual(["m2"]);
 
 		const transient = makeGwsReader(makeRunner((id) => id === "m1" ? 503 : null));
-		await expect(transient.poll("from:test", "100")).rejects.toMatchObject({
+		await expect(poll(makeRunner((id) => id === "m1" ? 503 : null), "from:test", "100")).rejects.toMatchObject({
 			boundary: "gws", kind: "transient",
 		});
 	});
@@ -167,8 +87,7 @@ describe("gws mail reader", () => {
 				return { messages: [{ id: "old-noise" }, { id: "new-match" }] };
 			},
 		});
-		const reader = makeGwsReader(run);
-		const { hits, historyId } = await reader.poll("from:bank", "100");
+		const { hits, historyId } = await poll(run, "from:bank", "100");
 		// new-other arrived but doesn't match; old-noise matches but isn't new.
 		expect(hits.map((h) => h.id)).toEqual(["new-match"]);
 		// new-other is an arrival the search does not show — lag or noise,
@@ -187,7 +106,7 @@ describe("gws mail reader", () => {
 		expect(envelope(calls[0]!).params.userId).toBe("me");
 	});
 
-	test("poll reads every history page before advancing the cursor", async () => {
+	test("history reads every page and returns its records with the head", async () => {
 		const seen: unknown[] = [];
 		const { run } = fakeGws({
 			history: (p) => {
@@ -201,10 +120,94 @@ describe("gws mail reader", () => {
 			},
 			list: () => ({ messages: [{ id: "late" }] }),
 		});
-		const out = await makeGwsReader(run).poll("from:bank", "100");
+		const out = await makeGwsReader(run).history("100");
 		expect(seen).toEqual(["", "more"]);
-		expect(out.hits.map((h) => h.id)).toEqual(["late"]);
-		expect(out.historyId).toBe("150");
+		expect(out).toEqual({ records: [{ id: "120", ids: ["late"] }], historyId: "150" });
+	});
+
+	test("matches offers each cursor only the records after it", async () => {
+		const { run, calls } = fakeGws({
+			history: () => ({
+				history: ["105:m0", "110:m1", "111:m2"].map((entry) => {
+					const [id, message] = entry.split(":");
+					return { id, messagesAdded: [{ message: { id: message } }] };
+				}),
+				historyId: "120",
+			}),
+			list: () => ({ messages: [{ id: "m2" }, { id: "m1" }, { id: "m0" }] }),
+		});
+		const reader = makeGwsReader(run);
+		const page = await reader.history("100");
+		const first = await reader.matches(page, "from:bank", "100");
+		const second = await reader.matches(page, "from:bank", "110");
+		expect(first.hits.map((h) => h.id)).toEqual(["m0", "m1", "m2"]);
+		expect(first.historyId).toBe("120");
+		expect(second.hits.map((h) => h.id)).toEqual(["m2"]);
+		expect(second.historyId).toBe("120");
+		expect(calls.map((c) => c.args.slice(0, 4))).toEqual([
+			["gmail", "users", "history", "list"],
+			["gmail", "users", "messages", "list"],
+			["gmail", "users", "messages", "get"],
+			["gmail", "users", "messages", "get"],
+			["gmail", "users", "messages", "get"],
+			["gmail", "users", "messages", "list"],
+			["gmail", "users", "messages", "get"],
+		]);
+	});
+
+	test("a cursor at or past the last record gets the head with no list call", async () => {
+		const { run, calls } = fakeGws({
+			history: () => ({
+				history: ["105:m0", "110:m1"].map((entry) => {
+					const [id, message] = entry.split(":");
+					return { id, messagesAdded: [{ message: { id: message } }] };
+				}),
+				historyId: "120",
+			}),
+			list: () => ({ messages: [] }),
+		});
+		const reader = makeGwsReader(run);
+		const page = await reader.history("100");
+		expect(await reader.matches(page, "from:bank", "110")).toEqual({ hits: [], historyId: "120" });
+		expect(await reader.matches(page, "from:bank", "120")).toEqual({ hits: [], historyId: "120" });
+		expect(calls.some((c) => c.args[2] === "messages" && c.args[3] === "list")).toBe(false);
+	});
+
+	test("history ids sort and compare exactly beyond what Number holds", async () => {
+		const { run } = fakeGws({
+			history: () => ({
+				history: ["9007199254740995:m2", "9007199254740993:m1"].map((entry) => {
+					const [id, message] = entry.split(":");
+					return { id, messagesAdded: [{ message: { id: message } }] };
+				}),
+				historyId: "9007199254740999",
+			}),
+			list: () => ({ messages: [{ id: "m2" }, { id: "m1" }] }),
+		});
+		const reader = makeGwsReader(run);
+		const page = await reader.history("9007199254740992");
+		const first = await reader.matches(page, "from:bank", "9007199254740992");
+		const second = await reader.matches(page, "from:bank", "9007199254740993");
+		expect(first.hits.map((h) => h.id)).toEqual(["m1", "m2"]);
+		expect(first.historyId).toBe("9007199254740999");
+		expect(second.hits.map((h) => h.id)).toEqual(["m2"]);
+	});
+
+	test("a non-numeric history id is provider drift and fails loud", async () => {
+		const record: GwsRunner = async () => ({
+			code: 0,
+			stdout: JSON.stringify({ history: [{ id: "zz", messagesAdded: [{ message: { id: "m" } }] }], historyId: "200" }),
+			stderr: "",
+		});
+		const page: GwsRunner = async () => ({
+			code: 0, stdout: JSON.stringify({ historyId: "12a" }), stderr: "",
+		});
+		const profile: GwsRunner = async () => ({
+			code: 0, stdout: JSON.stringify({ historyId: "x" }), stderr: "",
+		});
+		await expect(makeGwsReader(record).history("100")).rejects.toThrow(/poll\.history returned an unexpected shape/);
+		await expect(makeGwsReader(page).history("100")).rejects.toThrow(/poll\.history returned an unexpected shape/);
+		await expect(makeGwsReader(profile).profileHistoryId()).rejects.toThrow(/profile\.get returned an unexpected shape/);
 	});
 
 	test("poll sorts records ascending and batches whole records at the cap", async () => {
@@ -221,11 +224,10 @@ describe("gws mail reader", () => {
 			}),
 			list: () => ({ messages: [...ids].reverse().map((id) => ({ id })) }),
 		});
-		const reader = makeGwsReader(run);
-		const first = await reader.poll("from:bank", "100");
+		const first = await poll(run, "from:bank", "100");
 		expect(first.hits.map((h) => h.id)).toEqual(ids.slice(0, 10));
 		expect(first.historyId).toBe("110");
-		const second = await reader.poll("from:bank", first.historyId);
+		const second = await poll(run, "from:bank", first.historyId);
 		expect(second.hits.map((h) => h.id)).toEqual(ids.slice(10));
 		expect(second.historyId).toBe("200");
 	});
@@ -246,7 +248,7 @@ describe("gws mail reader", () => {
 		});
 		let out: { hits: MailHit[]; historyId: string };
 		try {
-			out = await makeGwsReader(run).poll("from:bank", "100");
+			out = await poll(run, "from:bank", "100");
 		} finally {
 			setLogFile(null);
 			setLogWriter(null);
@@ -286,7 +288,7 @@ describe("gws mail reader", () => {
 		});
 		let out: { hits: MailHit[]; historyId: string };
 		try {
-			out = await makeGwsReader(run).poll("from:bank", "100");
+			out = await poll(run, "from:bank", "100");
 		} finally {
 			setLogFile(null);
 			setLogWriter(null);
@@ -306,7 +308,7 @@ describe("gws mail reader", () => {
 
 	test("poll with no arrivals advances the checkpoint without a list call", async () => {
 		const { run, calls } = fakeGws({ history: () => ({ historyId: "130" }) });
-		const out = await makeGwsReader(run).poll("from:bank", "120");
+		const out = await poll(run, "from:bank", "120");
 		expect(out).toEqual({ hits: [], historyId: "130" });
 		expect(calls.map((c) => c.args[3])).toEqual(["list"]);
 	});
@@ -329,7 +331,7 @@ describe("gws mail reader", () => {
 		});
 		let out: { hits: MailHit[]; historyId: string };
 		try {
-			out = await makeGwsReader(run).poll("from:bank", "100");
+			out = await poll(run, "from:bank", "100");
 		} finally {
 			setLogFile(null);
 			setLogWriter(null);
@@ -356,10 +358,9 @@ describe("gws mail reader", () => {
 			}),
 			list: () => (++listCall === 1 ? { messages: [] } : { messages: [{ id: "m" }] }),
 		});
-		const reader = makeGwsReader(run);
-		const first = await reader.poll("from:bank", "100");
+		const first = await poll(run, "from:bank", "100");
 		expect(first).toEqual({ hits: [], historyId: "100" });
-		const second = await reader.poll("from:bank", first.historyId);
+		const second = await poll(run, "from:bank", first.historyId);
 		expect(second.hits.map((h) => h.id)).toEqual(["m"]);
 		expect(second.historyId).toBe("155");
 	});
@@ -376,13 +377,12 @@ describe("gws mail reader", () => {
 			// The search confirms m1 only — m2 is unconfirmed.
 			list: () => ({ messages: [{ id: "m1" }] }),
 		});
-		const reader = makeGwsReader(run);
-		const first = await reader.poll("from:bank", "100");
+		const first = await poll(run, "from:bank", "100");
 		expect(first.hits.map((h) => h.id)).toEqual(["m1"]);
 		// Held at the fired record's boundary, not the head: m2's record
 		// re-arrives, m1's cannot.
 		expect(first.historyId).toBe("110");
-		const second = await reader.poll("from:bank", first.historyId);
+		const second = await poll(run, "from:bank", first.historyId);
 		// The API returns records after 110 — m1 cannot re-arrive; m2 is
 		// offered again and still unconfirmed, so the hold stands.
 		expect(second.hits).toEqual([]);
@@ -403,7 +403,7 @@ describe("gws mail reader", () => {
 			}),
 			list: () => ({ messages: [] }),
 		});
-		const out = await makeGwsReader(run).poll("from:bank", "100");
+		const out = await poll(run, "from:bank", "100");
 		expect(out).toEqual({ hits: [], historyId: "250" });
 	});
 
@@ -421,7 +421,7 @@ describe("gws mail reader", () => {
 			}),
 			list: () => ({ messages: [] }),
 		});
-		const out = await makeGwsReader(run).poll("from:bank", "100");
+		const out = await poll(run, "from:bank", "100");
 		expect(out).toEqual({ hits: [], historyId: "190" });
 	});
 
@@ -435,7 +435,7 @@ describe("gws mail reader", () => {
 				stderr: "error[api]: ...",
 			},
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toBeInstanceOf(
+		await expect(makeGwsReader(run).history("1")).rejects.toBeInstanceOf(
 			HistoryExpiredError,
 		);
 	});
@@ -451,7 +451,7 @@ describe("gws mail reader", () => {
 				stderr: "gws: connection reset while fetching (last status 404 in a log line)",
 			},
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.not.toBeInstanceOf(
+		await expect(makeGwsReader(run).history("1")).rejects.not.toBeInstanceOf(
 			HistoryExpiredError,
 		);
 		await expect(makeGwsReader(run).threadFor("m1")).rejects.toBeInstanceOf(Error);
@@ -465,7 +465,7 @@ describe("gws mail reader", () => {
 				stderr: "error[auth]: Access denied. Run `gws auth login`.",
 			},
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toThrow(
+		await expect(makeGwsReader(run).history("1")).rejects.toThrow(
 			"poll.history failed — HTTP 401",
 		);
 	});
@@ -474,7 +474,7 @@ describe("gws mail reader", () => {
 		const { run } = fakeGws({
 			history: () => ({ history: [], historyId: "150", nextPageToken: "loop" }),
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "100")).rejects.toThrow(
+		await expect(makeGwsReader(run).history("100")).rejects.toThrow(
 			"repeated or exceeded 100 pages",
 		);
 	});
@@ -507,7 +507,7 @@ describe("gws mail reader", () => {
 			stdout: JSON.stringify({ history: [] }),
 			stderr: "",
 		});
-		await expect(makeGwsReader(noHistoryId).poll("from:x", "1")).rejects.toThrow(
+		await expect(makeGwsReader(noHistoryId).history("1")).rejects.toThrow(
 			"poll.history returned an unexpected shape",
 		);
 	});

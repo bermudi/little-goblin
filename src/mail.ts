@@ -49,10 +49,22 @@ export interface GmailSenderDeps {
 	oauthBase?: string;
 }
 
+export interface MailHistory {
+	records: Array<{ id: string; ids: string[] }>;
+	historyId: string;
+}
+
+export function compareHistoryIds(a: string, b: string): number {
+	const x = BigInt(a);
+	const y = BigInt(b);
+	return x < y ? -1 : x > y ? 1 : 0;
+}
+
 /** The watcher's poll surface: history intersect + baseline + thread
  *  context. mail-gws.ts's gws reader in production, a fake at the
  *  edge in tests — structural, not nominal. */
 export interface MailPoller {
+	history(startHistoryId: string): Promise<MailHistory>;
 	/** New matches since startHistoryId: history.list intersected with
 	 *  the filter's list, oldest first, batched at whole history records
 	 *  up to the per-tick cap. historyId in the result is the new
@@ -61,7 +73,7 @@ export interface MailPoller {
 	 *  and an arrival the filter's search cannot confirm yet holds the
 	 *  checkpoint below the head within a grace window (search-index
 	 *  lag) instead of being skipped. */
-	poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
+	matches(history: MailHistory, filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
 	/** Current mailbox history id — the no-fire baseline for a new filter. */
 	profileHistoryId(): Promise<string>;
 	/** Thread context for a reply target, or null when it doesn't exist. */

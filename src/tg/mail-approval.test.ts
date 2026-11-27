@@ -89,7 +89,8 @@ function fakeReader(
 ): MailPoller & { threaded: string[] } {
 	const threaded: string[] = [];
 	return {
-		poll: async () => ({ hits: [], historyId: "1" }),
+		history: async () => ({ records: [], historyId: "1" }),
+		matches: async () => ({ hits: [], historyId: "1" }),
 		profileHistoryId: async () => "1",
 		threaded,
 		threadFor: async (id: string) => {

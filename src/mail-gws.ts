@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import { BoundaryError, type BoundaryKind } from "./boundary-error.ts";
-import { decodeRfc2047, HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
+import { compareHistoryIds, decodeRfc2047, HistoryExpiredError, type MailHistory, type MailHit, type MailPoller } from "./mail.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 import { str } from "./agent/tools/web.ts";
@@ -67,9 +67,11 @@ const historyMessageSchema = z
 	})
 	.passthrough();
 
+const historyIdSchema = z.string().regex(/^\d+$/);
+
 const historyRecordSchema = z
 	.object({
-		id: z.string(),
+		id: historyIdSchema,
 		messagesAdded: z.array(historyMessageSchema).optional(),
 	})
 	.passthrough();
@@ -77,7 +79,7 @@ const historyRecordSchema = z
 const historyPageSchema = z
 	.object({
 		history: z.array(historyRecordSchema).optional(),
-		historyId: z.string(),
+		historyId: historyIdSchema,
 		nextPageToken: z.string().optional(),
 	})
 	.passthrough();
@@ -110,7 +112,7 @@ const messageGetSchema = z
 
 const profileSchema = z
 	.object({
-		historyId: z.string(),
+		historyId: historyIdSchema,
 	})
 	.passthrough();
 
@@ -267,11 +269,8 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		};
 	}
 
-	async function poll(
-		filter: string,
-		startHistoryId: string,
-	): Promise<{ hits: MailHit[]; historyId: string }> {
-		const records: Array<{ id: string; ids: string[] }> = [];
+	async function history(startHistoryId: string): Promise<MailHistory> {
+		const records: MailHistory["records"] = [];
 		let latest = "";
 		let pageToken = "";
 		const seenTokens = new Set<string>();
@@ -299,7 +298,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 						"json",
 					],
 					"poll.history",
-					{ filter },
+					{ startHistoryId },
 				);
 			} catch (err) {
 				// Expired ids 404 — the only 404 here that means "re-baseline";
@@ -329,14 +328,19 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			}
 			if (pageToken !== "") seenTokens.add(pageToken);
 		} while (pageToken !== "");
-		log.info("mail poll history pages loaded", {
-			filter,
-			pages: seenTokens.size + 1,
-			records: records.length,
-		});
-		records.sort((a, b) => Number(a.id) - Number(b.id));
+		log.info("mail poll history pages loaded", { pages: seenTokens.size + 1, records: records.length });
+		records.sort((a, b) => compareHistoryIds(a.id, b.id));
+		return { records, historyId: latest };
+	}
+
+	async function matches(
+		history: MailHistory,
+		filter: string,
+		startHistoryId: string,
+	): Promise<{ hits: MailHit[]; historyId: string }> {
+		const records = history.records.filter((rec) => compareHistoryIds(rec.id, startHistoryId) > 0);
 		const added = new Set(records.flatMap((r) => r.ids));
-		if (added.size === 0) return { hits: [], historyId: latest };
+		if (added.size === 0) return { hits: [], historyId: history.historyId };
 		// history.list takes no query — intersect the mailbox-wide
 		// arrivals with the filter's own recent matches (newest first),
 		// then present oldest first.
@@ -446,7 +450,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		let prev = "";
 		let held = "";
 		for (const [i, rec] of records.entries()) {
-			if (Number(rec.id) <= Number(lastIncluded)) {
+			if (lastIncluded !== "" && compareHistoryIds(rec.id, lastIncluded) <= 0) {
 				prev = rec.id;
 				continue;
 			}
@@ -467,11 +471,11 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		if (held !== "") {
 			log.info(
 				"mail poll checkpoint held — arrivals the filter list does not show yet may still be indexing",
-				{ filter, boundary: held, head: latest },
+				{ filter, boundary: held, head: history.historyId },
 			);
 			return { hits, historyId: held };
 		}
-		return { hits, historyId: latest };
+		return { hits, historyId: history.historyId };
 	}
 
 	async function profileHistoryId(): Promise<string> {
@@ -529,5 +533,5 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		return { threadId, messageId };
 	}
 
-	return { poll, profileHistoryId, threadFor };
+	return { history, matches, profileHistoryId, threadFor };
 }

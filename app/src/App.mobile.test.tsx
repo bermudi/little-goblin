@@ -319,6 +319,9 @@ describe("mobile: chats screen and navigation", () => {
 						tools: [],
 						messages: [],
 						calls: [],
+						toolRuns: [],
+						runs: [],
+						nowMs: Date.parse("2026-10-22T10:00:00.000Z"),
 					}),
 				);
 			if (url === "/api/app/status")

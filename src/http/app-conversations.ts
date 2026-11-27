@@ -7,7 +7,8 @@ import { codexContextWindow } from "../agent/codex/models.ts";
 import { agentTypeUncapped } from "../agent-types.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
-import { listCalls } from "../cache-observation.ts";
+import { countCalls, listCalls } from "../cache-observation.ts";
+import { countToolRuns, listRuns, listToolRuns } from "../turn-journal.ts";
 import { ConfigValidationError, parseConfig } from "../config.ts";
 import { splitModelRef } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
@@ -299,6 +300,7 @@ export async function handleConversationsRoute(
 	req: Request,
 	url: URL,
 	deps: AppChannelDeps,
+	now: () => number = Date.now,
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
@@ -784,6 +786,27 @@ export async function handleConversationsRoute(
 			);
 		}
 		const stored = deps.windowCapture.read(convId.id);
+		const trajectory = store.db.transaction(() => {
+			const calls = listCalls(store.db, convId.id);
+			const sinceMs = calls.length === 0 ? 0 : Math.min(...calls.map((call) => call.startedMs));
+			const untilMs = calls.length === 0 ? 0 : Math.max(...calls.map((call) => call.startedMs));
+			const callIds = calls.map((call) => call.callId);
+			const toolRuns = listToolRuns(store.db, convId.id, sinceMs, callIds);
+			return {
+				calls,
+				toolRuns,
+				callCount: countCalls(store.db, convId.id),
+				toolRunCount: countToolRuns(store.db, convId.id, sinceMs, callIds),
+				runs: listRuns(
+					store.db,
+					convId.id,
+					sinceMs,
+					untilMs,
+					toolRuns.map((tool) => tool.runId),
+				),
+				nowMs: now(),
+			};
+		})();
 		const body: AppWindowView = {
 			model: row.model ?? deps.configRef.current.model,
 			capturedAt: stored === null ? null : new Date(stored.capturedMs).toISOString(),
@@ -793,7 +816,7 @@ export async function handleConversationsRoute(
 			system: stored?.capture.system ?? null,
 			tools: stored?.capture.tools ?? null,
 			messages: stored?.capture.messages ?? null,
-			calls: listCalls(store.db, convId.id).map((c) => ({
+			calls: trajectory.calls.map((c) => ({
 				callId: c.callId,
 				purpose: c.purpose,
 				model: c.model,
@@ -807,11 +830,17 @@ export async function handleConversationsRoute(
 				prefixRelation: c.prefixRelation,
 				sharedMessages: c.sharedMessages,
 			})),
+			toolRuns: trajectory.toolRuns,
+			runs: trajectory.runs,
+			callCount: trajectory.callCount,
+			toolRunCount: trajectory.toolRunCount,
+			nowMs: trajectory.nowMs,
 		};
 		log.debug("app window served", {
 			conversation: convId.id,
 			captured: stored !== null,
 			calls: body.calls.length,
+			toolRuns: body.toolRuns.length,
 			messages: body.messages?.length ?? 0,
 		});
 		return Response.json(body, { headers: NO_STORE });

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { openCacheObservation, type CacheCallInput } from "./cache-observation.ts";
+import {
+	NEWEST_TURN_CALL_SQL,
+	countCalls,
+	listCalls,
+	newestTurnCall,
+	openCacheObservation,
+	type CacheCallInput,
+} from "./cache-observation.ts";
 import type { Usage } from "./message.ts";
 import { tmpDb } from "./testkit.ts";
 
@@ -44,6 +51,43 @@ function clock(start = 1_000): { now: () => number; set: (ms: number) => void } 
 	let t = start;
 	return { now: () => t, set: (ms) => (t = ms) };
 }
+
+test("newestTurnCall follows insertion order and skips purpose calls", () => {
+	const db = new Database(tmpDb("goblin-cache-newest-"));
+	const time = clock(5000);
+	const observation = openCacheObservation(db, { now: time.now });
+	expect(newestTurnCall(db, "conv-1")).toBeNull();
+	observation.begin(input({ callId: "older" }));
+	time.set(1000);
+	observation.begin(input({ callId: "newest" }));
+	observation.begin(input({ callId: "purpose-later", purpose: "review" }));
+	expect(newestTurnCall(db, "conv-1")).toBe("newest");
+	db.close();
+});
+
+test("countCalls counts every call of one conversation", () => {
+	const db = new Database(tmpDb("goblin-cache-count-"));
+	const observation = openCacheObservation(db, clock());
+	observation.begin(input({ callId: "first-a", conversationId: "first" }));
+	observation.begin(input({ callId: "first-b", conversationId: "first" }));
+	observation.begin(input({ callId: "other", conversationId: "other" }));
+	expect(countCalls(db, "first")).toBe(2);
+	expect(countCalls(db, "first")).toBe(listCalls(db, "first", 100).length);
+	db.close();
+});
+
+test("newestTurnCall seeks through an index instead of sorting the conversation", () => {
+	const db = new Database(":memory:");
+	openCacheObservation(db);
+	const plan = db
+		.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${NEWEST_TURN_CALL_SQL}`)
+		.all()
+		.map((row) => row.detail)
+		.join(" | ");
+	expect(plan).toContain("USING INDEX model_cache_calls_turn");
+	expect(plan).not.toContain("TEMP B-TREE");
+	db.close();
+});
 
 type Row = {
 	call_id: string;

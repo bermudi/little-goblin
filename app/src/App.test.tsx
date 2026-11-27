@@ -1093,6 +1093,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 						tools: [],
 						messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
 						calls: [],
+						toolRuns: [],
+						runs: [],
+						nowMs: Date.parse("2026-10-22T10:00:00.000Z"),
 					}),
 				);
 			if (url === "/api/app/settings" && init?.method === "POST") {
@@ -1437,7 +1440,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await settle();
 		expect(win.location.pathname).toBe("/app/c/fixture/window");
 		expect(container.querySelector(".ops")?.textContent).toContain("You are goblin.");
-		expect(container.querySelector(".ops")?.textContent).toContain("Model calls 0");
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Trajectory"),
+		);
+		expect(container.querySelector('[data-slot="tabs-panel"]')?.textContent).toContain("Model calls");
 
 		await traverse("back");
 		await settle();

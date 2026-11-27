@@ -1116,6 +1116,86 @@ conversation must not inherit the deleted one's capture. See
 [`window-capture.test.ts`](../src/window-capture.test.ts) and
 [`WindowView.test.tsx`](../app/src/WindowView.test.tsx).
 
+### Trajectory tab (ruling 2026-11-25, operator, #951)
+
+The view has two tabs. **Window** is the capture and its raw parts.
+**Trajectory** draws each run as one row on its own time axis: a block per
+model call, colored by prefix relation, and under it a thin bar per tool.
+Width is time and empty space is waiting. The Model calls table lives in
+this tab. The number tiles sit above the tabs, while "What takes the space"
+belongs to Window and spans its width, so the chart starts right under the
+tiles. Until a prompt is captured, the view opens on this tab, so the calls
+stay reachable while the first turn runs. Tools that overlap in time sit on
+separate lines, so two tools that run at the same time are both visible.
+
+Each row is one picture for assistive technology: it names the turn and
+the counts. The tools are also written as hidden text beside the picture,
+so a screen reader can read each tool's name, state, duration and the
+call that asked for it.
+
+**Stamp.** When a tool is dispatched, the journal writes on the tool row
+the id of the model call that asked for it (`model_call_id` on
+`turn_tool_calls`, [`turn-journal.ts`](../src/turn-journal.ts)). It is a
+pointer: nothing is added to the call record. At dispatch, the newest turn
+call for the conversation is the one that emitted the tool, because the
+next call cannot start before the tool's result is back. Only the turn's
+own calls are recorded with a null purpose, so the lookup skips title,
+vision, review and compaction calls. The lookup runs at every dispatch,
+so it reads through an index on conversation and purpose. Without that
+index SQLite sorted every call of the conversation each time: 2.2 ms per
+dispatch at 20,000 calls. With it, 12 µs. The lookup never fails a
+dispatch: on error the row is written without a stamp.
+
+Matching by time alone was rejected. Both stores read the wall clock and
+share no id. On a scripted turn with the call clock shifted 5 s either way,
+a time rule put every tool on the wrong call. The stamp stayed right, on
+both engines ([`runtime.test.ts`](../src/runtime.test.ts)).
+
+What the first version accepts:
+
+- **Which row a call sits in** is still placed by the run's start and end
+  times. A call that began after every run ended goes to the "No run" row.
+  A tool never leaves its call.
+- **The time before the first tool starts** is plain. The journal does not
+  say what a wait was, so the view cannot say "waiting on you".
+- **One row per run.** A resumed turn is its own row, numbered with its
+  predecessor's turn. Calls that match no run share one row, "No run",
+  placed by the start of its first call.
+- **A tool row without a stamp** (written before this change) falls back
+  to the last call of its run that finished before it began. A tool that
+  finds none is not drawn.
+- **A replayed or skipped tool** has no start time and is not drawn.
+- **A very short bar is a thin line.** A bar is as wide as its time, down
+  to 2 px. The space around a label sits on the label, not on the bar, so
+  it cannot make the bar wider. With that space on the bar, no bar drew
+  under 0.7rem: a fast tool looked slow, and two short calls close
+  together overlapped. The operator chose the true width over that
+  minimum (2026-11-26). A bar under 0.7rem is then hard to point at for
+  its tooltip.
+- **The read trusts the stamp first.** The view lists the newest 200
+  model calls. A tool row stamped to a listed call is read whatever its
+  start time says, and the run of every listed tool row is read with it.
+  The time bound applies only to rows without a stamp. More than 2000
+  tool rows can qualify. The newest are kept. When a list is cut, the tab
+  says so in one line above the chart: how many of how many it shows. The
+  operator chose that note over a silent cut (2026-11-26).
+- **Refresh is manual.** The tab reads once per visit and when the
+  operator presses Refresh. It does not follow a running turn by itself.
+  The read carries the whole captured prompt, so following a turn needs a
+  lighter read first. Whether the tab should follow a turn is an open
+  question.
+
+A call or a tool with no end is drawn as running only while its run is
+still open. When the process dies it leaves rows open forever, so in an
+ended run the same rows draw dashed grey as unfinished. An unfinished
+call shows no duration, because none was recorded.
+
+An open run's axis ends at the moment the view was read, not at its last
+event. A running tool has no end yet, so with the shorter axis it shrank
+to a sliver at the right edge while the turn was still going. The server
+sends its clock with the view (`nowMs`), so a client with a wrong clock
+cannot stretch or squeeze the row.
+
 ## Reply ratings (ruling 2026-10-22)
 
 Assistant action bars carry record-only **helpful** / **bad** votes. The

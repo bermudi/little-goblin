@@ -3,6 +3,7 @@ import { createClaudeEngine, isClaudeStep, type ClaudeEngine, type ClaudeStep } 
 import type { ClaudeQuery } from "../agent/claude-code/translate.ts";
 import { createToolBridge, type ToolBridge } from "../agent/claude-code/tools.ts";
 import type { AuthStore } from "../auth.ts";
+import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { configSchema } from "../config-schema.ts";
 import { tmpDir } from "../testkit.ts";
@@ -82,7 +83,9 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 	return steps;
 }
 
-export function claudeScript(opts: { label?: string; system?: string } = {}): ScriptedModel {
+export function claudeScript(
+	opts: { label?: string; system?: string; observation?: CacheObservation } = {},
+): ScriptedModel {
 	const fake = fakeClaude();
 	// One fake CLI query per entry. A query runs until a call without a tool
 	// call (or a fail) ends it; `open` holds a query whose tool loop has not
@@ -105,6 +108,7 @@ export function claudeScript(opts: { label?: string; system?: string } = {}): Sc
 	const engineConfig: ClaudeEngineConfig = {
 		query,
 		auth,
+		observation: opts.observation,
 		configRef: {
 			current: configSchema.parse({
 				providers: { claude: { kind: "claude-code", auth: "claude-code" } },

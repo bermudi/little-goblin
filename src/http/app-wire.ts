@@ -472,6 +472,29 @@ export interface AppWindowView {
 	 *  typed loose: a stub is deliberately not a DataContent. */
 	messages: unknown[] | null;
 	calls: AppWindowCall[];
+	toolRuns: AppWindowToolRun[];
+	runs: AppWindowRun[];
+	callCount: number;
+	toolRunCount: number;
+	nowMs: number;
+}
+
+export interface AppWindowToolRun {
+	toolCallId: string;
+	runId: string;
+	name: string;
+	state: string;
+	beganMs: number;
+	settledMs: number | null;
+	modelCallId: string | null;
+}
+
+export interface AppWindowRun {
+	runId: string;
+	startedMs: number;
+	finishedMs: number | null;
+	status: string;
+	resumedFrom: string | null;
 }
 
 export interface AppProgramCandidate {

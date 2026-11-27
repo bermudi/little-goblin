@@ -1,12 +1,14 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { z } from "zod";
 import {
 	_primeModelsDevForTest,
 	_primeOpenRouterCatalog,
 	_resetModelsDevForTest,
 } from "../agent/models-dev.ts";
 import { openStore } from "../conversation.ts";
+import { defineTool } from "../tool.ts";
 import { appAddress } from "../conversation-address.ts";
 
 import { deferred, sleep, waitUntil } from "../testkit.ts";
@@ -2116,10 +2118,14 @@ test("the context window view serves the captured prompt and the call lineage", 
 			capturedAt: string | null;
 			messages: unknown[] | null;
 			calls: unknown[];
+			toolRuns: unknown[];
+			runs: unknown[];
 		};
 		expect(empty.capturedAt).toBeNull();
 		expect(empty.messages).toBeNull();
 		expect(empty.calls).toEqual([]);
+		expect(empty.toolRuns).toEqual([]);
+		expect(empty.runs).toEqual([]);
 
 		// A real turn: the runtime recorded its final step's prompt, and
 		// the observation logged the call.
@@ -2167,6 +2173,234 @@ test("the context window view serves the captured prompt and the call lineage", 
 		expect(body.calls[0]!.inputTokens).toBeGreaterThan(0);
 	} finally {
 		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
+test("the window endpoint returns tool stamps and overlapping run rows", async () => {
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", "window-tool");
+			const body = (await (await call("/api/app/conversations/window-tool/window")).json()) as {
+				calls: { callId: string; startedMs: number }[];
+				toolRuns: { modelCallId: string | null; runId: string; toolCallId: string }[];
+				runs: { runId: string; startedMs: number }[];
+				nowMs: number;
+			};
+			expect(body.toolRuns).toHaveLength(1);
+			const stamp = body.toolRuns[0]!.modelCallId;
+			expect(stamp).not.toBeNull();
+			expect(body.calls.some((entry) => entry.callId === stamp)).toBe(true);
+			expect(body.runs.some((entry) => entry.runId === body.toolRuns[0]!.runId && entry.startedMs <= body.calls[0]!.startedMs)).toBe(true);
+			expect(body.nowMs).toBeGreaterThanOrEqual(body.runs[0]!.startedMs);
+	} finally {
+		http.stop();
+	}
+});
+
+test.each([
+	{ label: "ahead", delta: 3_600_000 },
+	{ label: "behind", delta: -3_600_000 },
+])("the window read keeps a stamped tool and its run when the call clock moved $label", async ({ label, delta }) => {
+	const id = `window-clock-${label}`;
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call, store } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", id);
+		const conversation = store.get(`app/${id}`)!;
+		store.db.run(
+			"UPDATE model_cache_calls SET started_ms = started_ms + ?, finished_ms = finished_ms + ? WHERE conversation_id = ?",
+			[delta, delta, conversation.id],
+		);
+		const body = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			calls: { callId: string }[];
+			toolRuns: { modelCallId: string | null; runId: string }[];
+			runs: { runId: string }[];
+		};
+		expect(body.toolRuns).toHaveLength(1);
+		expect(body.calls.some((entry) => entry.callId === body.toolRuns[0]!.modelCallId)).toBe(true);
+		expect(body.runs.some((entry) => entry.runId === body.toolRuns[0]!.runId)).toBe(true);
+	} finally {
+		http.stop();
+	}
+});
+
+test("the window read leaves out a stamped tool whose call fell off the list when the call clock moved behind", async () => {
+	const id = "window-clock-list";
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call, store } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", id);
+		const conversation = store.get(`app/${id}`)!;
+		const turnCalls = store.db
+			.query(
+				"SELECT call_id FROM model_cache_calls WHERE conversation_id = ? AND purpose IS NULL ORDER BY started_ms, rowid",
+			)
+			.all(conversation.id) as { call_id: string }[];
+		expect(turnCalls).toHaveLength(2);
+		const first = turnCalls[0]!.call_id;
+		const second = turnCalls[1]!.call_id;
+		store.db.run(
+			"UPDATE model_cache_calls SET started_ms = started_ms - 3600000, finished_ms = finished_ms - 3600000 WHERE conversation_id = ?",
+			[conversation.id],
+		);
+		const kept = 200;
+		const existing = (
+			store.db
+				.query("SELECT COUNT(*) AS count FROM model_cache_calls WHERE conversation_id = ?")
+				.get(conversation.id) as { count: number }
+		).count;
+		const later = store.db.query(
+			`INSERT INTO model_cache_calls (call_id, conversation_id, purpose, route_key, model, started_ms,
+				finished_ms, head_hash, request_hash, settings_hash, prompt_hashes, status, input_tokens,
+				cache_read, cache_write, output_tokens, idle_ms, prefix_relation, shared_messages, cache_ttl_ms)
+			SELECT ?, conversation_id, purpose, route_key, model, ?, ?, head_hash, request_hash, settings_hash,
+				prompt_hashes, status, input_tokens, cache_read, cache_write, output_tokens, idle_ms,
+				prefix_relation, shared_messages, cache_ttl_ms
+			FROM model_cache_calls WHERE call_id = ?`,
+		);
+		for (let index = 0; index < kept - existing + 1; index++) {
+			later.run(`later-${index}`, Date.now() + index, Date.now() + index + 10, second);
+		}
+		const body = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			calls: { callId: string }[];
+			toolRuns: { modelCallId: string | null }[];
+		};
+		expect(body.calls).toHaveLength(kept);
+		expect(body.calls.map((entry) => entry.callId)).toContain(second);
+		expect(body.calls.map((entry) => entry.callId)).not.toContain(first);
+		expect(body.toolRuns).toHaveLength(0);
+	} finally {
+		http.stop();
+	}
+});
+
+test("the window read sends how many model calls and tool rows exist", async () => {
+	const id = "window-trajectory-counts";
+	const model = sdkScript();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "tool-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+	);
+	const { http, call, store } = setup({
+		scriptedModel: model,
+		makeTools: () => ({
+			probe: defineTool({
+				description: "test probe",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}),
+	});
+	try {
+		await createAndChat(call, "use tool", id);
+		const conversation = store.get(`app/${id}`)!;
+		const turnCalls = store.db
+			.query(
+				"SELECT call_id, started_ms FROM model_cache_calls WHERE conversation_id = ? AND purpose IS NULL ORDER BY started_ms, rowid",
+			)
+			.all(conversation.id) as { call_id: string; started_ms: number }[];
+		expect(turnCalls).toHaveLength(2);
+		const second = turnCalls[1]!.call_id;
+		const initial = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			callCount: number;
+			toolRunCount: number;
+		};
+		expect(initial.callCount).toBe(2);
+		expect(initial.toolRunCount).toBe(1);
+		const later = store.db.query(
+			`INSERT INTO model_cache_calls (call_id, conversation_id, purpose, route_key, model, started_ms,
+				finished_ms, head_hash, request_hash, settings_hash, prompt_hashes, status, input_tokens,
+				cache_read, cache_write, output_tokens, idle_ms, prefix_relation, shared_messages, cache_ttl_ms)
+			SELECT ?, conversation_id, purpose, route_key, model, ?, ?, head_hash, request_hash, settings_hash,
+				prompt_hashes, status, input_tokens, cache_read, cache_write, output_tokens, idle_ms,
+				prefix_relation, shared_messages, cache_ttl_ms
+			FROM model_cache_calls WHERE call_id = ?`,
+		);
+		for (let index = 0; index < 199; index++) {
+			const startedMs = turnCalls[0]!.started_ms - 199 + index;
+			later.run(`later-${index}`, startedMs, startedMs + 10, second);
+		}
+		const tool = store.db
+			.query(
+				"SELECT run_id, tool_call_id, name, args, args_hash, state, began_ms FROM turn_tool_calls WHERE tool_call_id = 'tool-1'",
+			)
+			.get() as {
+			run_id: string;
+			tool_call_id: string;
+			name: string;
+			args: string;
+			args_hash: string;
+			state: string;
+			began_ms: number | null;
+		};
+		const copyTool = store.db.query(
+			`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, began_ms, model_call_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		);
+		for (let index = 0; index < 2000; index++) {
+			copyTool.run(
+				tool.run_id,
+				`tool-copy-${index}`,
+				tool.name,
+				tool.args,
+				tool.args_hash,
+				tool.state,
+				tool.began_ms,
+				second,
+			);
+		}
+		const body = (await (await call(`/api/app/conversations/${id}/window`)).json()) as {
+			calls: unknown[];
+			callCount: number;
+			toolRuns: unknown[];
+			toolRunCount: number;
+		};
+		expect(body.calls).toHaveLength(200);
+		expect(body.callCount).toBe(201);
+		expect(body.toolRuns).toHaveLength(2000);
+		expect(body.toolRunCount).toBe(2001);
+	} finally {
 		http.stop();
 	}
 });

@@ -90,3 +90,51 @@ describe("touch conversation actions", () => {
 		);
 	});
 });
+
+describe("trajectory row time label", () => {
+	test("desktop label track fits a 16-character time at 10px mono", () => {
+		const rule = /(?:^|\n)\.win-traj-row \{([^}]*)\}/.exec(css)?.[1] ?? "";
+		const track = /grid-template-columns:\s*([0-9.]+)rem/.exec(rule)?.[1];
+		expect(track).toBeDefined();
+		expect(Number(track) * 16).toBeGreaterThanOrEqual(16 * 10 * 0.6);
+	});
+});
+
+describe("trajectory bar width", () => {
+	const bar = /(?:^|\n)\.win-traj-call,\n\.win-traj-tool \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	const label =
+		/(?:^|\n)\.win-traj-call > span,\n\.win-traj-tool > span \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	const dropsAt = (kind: string) =>
+		Number(
+			new RegExp(
+				`@container \\(max-width: ([\\d.]+)rem\\) \\{\\s*\\.win-traj-${kind} > span \\{\\s*display: none;`,
+			).exec(css)?.[1],
+		);
+
+	test("the bar has no padding, so a short bar is only as wide as its time", () => {
+		expect(bar).not.toBe("");
+		expect(bar).not.toMatch(/padding/);
+		expect(bar).toMatch(/min-width:\s*2px/);
+	});
+
+	test("the label carries the space around the text", () => {
+		expect(label).toMatch(/padding:\s*0 0\.35rem/);
+	});
+
+	test("a label drops out at the same bar width as before the space moved", () => {
+		expect(label).not.toBe("");
+		const space = 2 * Number(/padding:\s*0 ([\d.]+)rem/.exec(label)?.[1]);
+		expect(dropsAt("call") - space).toBeCloseTo(6.5);
+		expect(dropsAt("tool") - space).toBeCloseTo(4);
+	});
+});
+
+describe("space table width", () => {
+	test("the table has no width cap and gives the bars the rest of the line on a wide screen", () => {
+		const rule = /(?:^|\n)\.win-break \{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(rule).not.toContain("max-width");
+		expect(css).toMatch(
+			/@media \(min-width: 60rem\) \{[\s\S]*?\.win-break tr > :last-child \{\s*width: 100%;/,
+		);
+	});
+});

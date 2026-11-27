@@ -10,6 +10,7 @@ import {
 function call(state: ToolCallState, over: Partial<TurnToolCall> = {}): TurnToolCall {
 	return {
 		runId: "run-1",
+		modelCallId: null,
 		toolCallId: `c-${over.name ?? "probe"}`,
 		name: "probe",
 		args: {},

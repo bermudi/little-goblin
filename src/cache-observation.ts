@@ -35,6 +35,14 @@ export interface CacheCallObservation {
 	fail(): void;
 }
 
+export const NEWEST_TURN_CALL_SQL =
+	"SELECT call_id FROM model_cache_calls WHERE conversation_id = ? AND purpose IS NULL ORDER BY rowid DESC LIMIT 1";
+
+export function newestTurnCall(db: Database, conversationId: string): string | null {
+	const row = db.query<{ call_id: string }, [string]>(NEWEST_TURN_CALL_SQL).get(conversationId);
+	return row?.call_id ?? null;
+}
+
 export interface IdleCacheCall {
 	callId: string;
 	routeKey: string;
@@ -153,6 +161,9 @@ export function openCacheObservation(
 	ensureCacheTtlColumn(db);
 	db.run(
 		"CREATE INDEX IF NOT EXISTS model_cache_calls_lineage ON model_cache_calls(conversation_id, route_key, purpose, started_ms DESC)",
+	);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS model_cache_calls_turn ON model_cache_calls(conversation_id, purpose)",
 	);
 	const qInsert = db.query(
 		`INSERT INTO model_cache_calls (
@@ -432,4 +443,14 @@ export function listCalls(db: Database, conversationId: string, limit = 200): Ca
 			sharedMessages: row.shared_messages,
 		};
 	});
+}
+
+const callCountSchema = z.object({ count: z.number() });
+
+export function countCalls(db: Database, conversationId: string): number {
+	db.run(MODEL_CACHE_CALLS_DDL);
+	const row = db
+		.query("SELECT COUNT(*) AS count FROM model_cache_calls WHERE conversation_id = ?")
+		.get(conversationId);
+	return callCountSchema.parse(row).count;
 }

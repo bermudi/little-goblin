@@ -8,7 +8,13 @@ import { setLogFile } from "./log.ts";
 import { tmpDb } from "./testkit.ts";
 import { buildRetryGuard } from "./turn/retry-guard.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
-import { openTurnJournal, replayKey } from "./turn-journal.ts";
+import {
+	countToolRuns,
+	listRuns,
+	listToolRuns,
+	openTurnJournal,
+	replayKey,
+} from "./turn-journal.ts";
 
 setLogFile(null);
 
@@ -33,6 +39,65 @@ function interruptRun(store: ReturnType<typeof openStore>, runId: string) {
 }
 
 describe("turn journal", () => {
+	test("the tool read keeps a stamped row whatever its start time", () => {
+		const store = openStore(tmpDb("goblin-tj-trajectory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id, "r1");
+		journal.noteToolDispatch(runId, "t6", "probe", {});
+		store.db.run(
+			"UPDATE turn_tool_calls SET began_ms = 10020, model_call_id = 'c-late' WHERE run_id = ? AND tool_call_id = 't6'",
+			[runId],
+		);
+		expect(countToolRuns(store.db, conv.id, 15000, ["c-late"])).toBe(1);
+		expect(listToolRuns(store.db, conv.id, 15000, ["c-late"])).toHaveLength(1);
+		expect(countToolRuns(store.db, conv.id, 15000, [])).toBe(0);
+		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
+		store.db.run(
+			"UPDATE turn_tool_calls SET began_ms = 16000 WHERE run_id = ? AND tool_call_id = 't6'",
+			[runId],
+		);
+		expect(countToolRuns(store.db, conv.id, 15000, [])).toBe(0);
+		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(0);
+		store.db.run(
+			"UPDATE turn_tool_calls SET model_call_id = NULL WHERE run_id = ? AND tool_call_id = 't6'",
+			[runId],
+		);
+		expect(countToolRuns(store.db, conv.id, 15000, [])).toBe(1);
+		expect(listToolRuns(store.db, conv.id, 15000, [])).toHaveLength(1);
+		store.close();
+	});
+
+	test("the run read keeps a run that a listed tool belongs to", () => {
+		const store = openStore(tmpDb("goblin-tj-trajectory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		begunRun(journal, conv.id, "r1");
+		store.db.run("UPDATE turn_runs SET started_ms = 10000 WHERE run_id = 'r1'");
+		expect(listRuns(store.db, conv.id, 5000, 5000, ["r1"])).toHaveLength(1);
+		expect(listRuns(store.db, conv.id, 5000, 5000, [])).toHaveLength(0);
+		store.close();
+	});
+
+	test("the tool read keeps the newest rows and returns them oldest first", () => {
+		const store = openStore(tmpDb("goblin-tj-trajectory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id, "r1");
+		for (let index = 0; index <= 2000; index++) {
+			journal.noteToolDispatch(runId, `t${String(index).padStart(5, "0")}`, "probe", {});
+		}
+		const rows = listToolRuns(store.db, conv.id, 0, []);
+		expect(rows).toHaveLength(2000);
+		expect(countToolRuns(store.db, conv.id, 0, [])).toBe(2001);
+		expect(countToolRuns(store.db, conv.id, 0, [])).toBe(
+			listToolRuns(store.db, conv.id, 0, [], 100000).length,
+		);
+		expect(rows[0]!.toolCallId).toBe("t00001");
+		expect(rows[1999]!.toolCallId).toBe("t02000");
+		store.close();
+	});
+
 	test("lifecycle: begin → planned → dispatched → completed", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -72,6 +137,48 @@ describe("turn journal", () => {
 		expect(pending.state).toBe("planned");
 		expect(pending.beganMs).toBeNull();
 		expect(pending.settledMs).toBeNull();
+		store.close();
+	});
+
+	test("dispatch stamps the emitting model call", () => {
+		const store = openStore(tmpDb("goblin-tj-stamp-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db, { modelCallId: () => "call-x" });
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolDispatch(runId, "call-tool", "probe", {});
+		expect(journal.callsFor(runId)[0]).toMatchObject({
+			modelCallId: "call-x",
+			state: "dispatched",
+			beganMs: expect.any(Number),
+		});
+		store.close();
+	});
+
+	test("dispatch without a stamp callback records null", () => {
+		const store = openStore(tmpDb("goblin-tj-stamp-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolDispatch(runId, "call-tool", "probe", {});
+		expect(journal.callsFor(runId)[0]!.modelCallId).toBeNull();
+		store.close();
+	});
+
+	test("dispatch survives a failing stamp callback", () => {
+		const store = openStore(tmpDb("goblin-tj-stamp-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db, {
+			modelCallId: () => {
+				throw new Error("offline");
+			},
+		});
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolDispatch(runId, "call-tool", "probe", {});
+		expect(journal.callsFor(runId)[0]).toMatchObject({
+			modelCallId: null,
+			state: "dispatched",
+			beganMs: expect.any(Number),
+		});
 		store.close();
 	});
 
@@ -453,7 +560,7 @@ describe("turn journal", () => {
 	test("inheritCalls carries settled history to the successor, never 'dispatched'", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const journal = openTurnJournal(store.db);
+		const journal = openTurnJournal(store.db, { modelCallId: () => "call-x" });
 		const src = begunRun(journal, conv.id, "run-src");
 		journal.noteToolInput(src, "done", "probe", { q: 1 });
 		journal.noteToolDispatch(src, "done", "probe", { q: 1 });
@@ -476,6 +583,7 @@ describe("turn journal", () => {
 			"run-src:plan",
 		]);
 		expect(calls.find((c) => c.toolCallId === "run-src:done")!.result).toBe('{"out":"landed"}');
+		expect(calls.find((c) => c.toolCallId === "run-src:done")!.modelCallId).toBe("call-x");
 		expect(calls.find((c) => c.toolCallId === "run-src:amb")!.state).toBe("resolved-skip");
 		journal.inheritCalls(src, next);
 		expect(journal.callsFor(next)).toHaveLength(3);

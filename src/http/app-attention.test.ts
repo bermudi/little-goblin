@@ -12,6 +12,8 @@ import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 import type { AppAttentionResponse } from "./app-wire.ts";
 import { storeFence } from "../testkit/store-fence.ts";
+import { makeAsks } from "../asks.ts";
+import { attentionBody } from "./app-attention.ts";
 
 const proposal: ProgramProposal = {
 	id: 7,
@@ -58,6 +60,41 @@ const draft: OutboxEntry = {
 };
 
 describe("app attention", () => {
+	test("projects open questions, hides archived and closed asks, and reports an unwired store", () => {
+		const store = openStore(join(mkdtempSync(join(tmpdir(), "goblin-asks-attention-")), "state.sqlite"));
+		const db = store.db;
+		db.query("INSERT INTO conversations (id, chat_id, cwd, created_at) VALUES (?, ?, ?, ?)").run(
+			"app/ask-chat",
+			0,
+			"/tmp",
+			"2026-11-22T08:00:00.000Z",
+		);
+		const asks = makeAsks(db, () => new Date("2026-11-22T08:00:01.000Z"));
+		const result = asks.open({ conversationId: "app/ask-chat", question: "Pick a time?", options: ["9:00", "11:00"] });
+		if ("error" in result) throw new Error(result.error);
+		const ask = result;
+		expect(attentionBody({ asks }).items).toContainEqual({
+			id: `ask:${ask.id}`,
+			kind: "ask",
+			title: "Asks: Pick a time?",
+			detail: "9:00 / 11:00",
+			createdAt: result.createdAt,
+			conversationId: "app/ask-chat",
+			target: { kind: "conversation", conversationId: "app/ask-chat" },
+		});
+		expect(asks.close(ask.id, "tap")).toBe("closed");
+		expect(attentionBody({ asks }).items.some((item) => item.id === `ask:${ask.id}`)).toBe(false);
+		const archivedResult = asks.open({ conversationId: "app/ask-chat", question: "Archived?" });
+		if ("error" in archivedResult) throw new Error(archivedResult.error);
+		const archivedAsk = archivedResult;
+		db.query("UPDATE conversations SET archived_at = ? WHERE id = ?").run("2026-11-22T08:00:02.000Z", "app/ask-chat");
+		expect(attentionBody({ asks }).items).toEqual([]);
+		db.query("UPDATE conversations SET archived_at = NULL WHERE id = ?").run("app/ask-chat");
+		expect(attentionBody({ asks }).items.map((item) => item.id)).toEqual([`ask:${archivedAsk.id}`]);
+		expect(attentionBody({}).unavailable).toContain("asks");
+		store.close();
+	});
+
 	test("projects the durable owners and names unwired seams", async () => {
 		const dirs = mkdtempSync(join(tmpdir(), "goblin-attention-"));
 		const proposed = join(dirs, "skills-proposed", "watcher");

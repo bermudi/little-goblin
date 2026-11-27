@@ -44,6 +44,7 @@ function fixture() {
 	const child = store.resolveAgentChild(
 		parent,
 		COMPUTER_AGENT_TYPE.name,
+		"inspect screen",
 		{ model: "openrouter/minimax/minimax-m3.1-flash", thinking: "off" } as never,
 		new Date().toISOString(),
 	);

@@ -130,6 +130,26 @@ const writeSkill = (home: string, name = "live-skill", base = "live-skills") => 
 const proposeSkill = (home: string) => writeSkill(home, "live-skill", "live-skills-proposed");
 
 describe("app live feed", () => {
+	test("opening an ask changes the attention version", async () => {
+		const { http, call, asks, store } = setup({ token: APP_TOKEN_NAME, liveTickMs: 10, liveSweepMs: 20 });
+		try {
+			const response = await call("/api/app/live");
+			const events: AppLiveEvent[] = [];
+			const reader = response.body!.getReader() as EventReader;
+			const pump = pumpLive(reader, events);
+			await waitUntil(() => events.length > 0, "initial live versions");
+			const baseline = events[0]!.versions.attention;
+			const chat = store.resolve(appAddress("ask-live"), "/tmp");
+			const result = asks.open({ conversationId: chat.id, question: "Changed?" });
+			if ("error" in result) throw new Error(result.error);
+			await moved(events, 1, "attention", baseline, "ask changed attention");
+			await reader.cancel();
+			await pump;
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("announces a complete version map matching every wired GET's version header", async () => {
 		const { http, call, home, appDeps } = setup({ token: APP_TOKEN_NAME, liveSweepMs: 60_000 });
 		const dbPath = join(home, "goblin.sqlite");
@@ -599,6 +619,7 @@ describe("app live feed", () => {
 			store.resolveAgentChild(
 				parent!,
 				"general",
+				"task",
 				{ model: "zai/m", thinking: "medium" },
 				new Date().toISOString(),
 			);

@@ -26,7 +26,6 @@ const base = (conversations: Conv[], extra: Partial<HomeInput> = {}): HomeInput 
 	attention: [],
 	delegations: [],
 	open: null,
-	openRoll: null,
 	seen: null,
 	...extra,
 });
@@ -64,6 +63,19 @@ test("T1: sections stay ordered, pinned chats lead, archived and unpinned projec
 		"app/server-last",
 	]);
 	expect(list.chats[1]?.conv.id).toBe("app/server-first");
+});
+
+test("ask attention marks a chat or its owning roll, while ui choices do not mark it", () => {
+	const ask = { ...item("app/chat", "Asks: q", "ask"), detail: "Waiting for your answer", target: { kind: "conversation" as const, conversationId: "app/chat" } };
+	const chat = chatRows(base([conv("chat")], { attention: [ask] }));
+	expect(chat.active.find((row) => row.kind === "chat" && row.id === "app/chat")).toMatchObject({ mark: "needs", line: "Asks: q" });
+	const oldRoll = conv("roll-old");
+	const newRoll = conv("roll-new");
+	const rolledAsk = { ...ask, conversationId: oldRoll.id, target: { kind: "conversation" as const, conversationId: oldRoll.id } };
+	const roll = chatRows(base([], { chain: [newRoll, oldRoll], attention: [rolledAsk] }));
+	expect(roll.rolling).toMatchObject({ mark: "needs", line: "Asks: q", target: oldRoll.id });
+	const uiOnly = chatRows(base([conv("ui", { newReply: null })]));
+	expect(uiOnly.chats.find((row) => row.id === "app/ui")?.mark).toBeNull();
 });
 
 test("T2: Active sorts by needs, new, working, then newest within each mark", () => {
@@ -288,98 +300,47 @@ test("T11: pin and project changes invalidate a Chats hold; archived chats disap
 	expect(stable.hold).toBe(start.hold);
 });
 
-test("T12: kids flatten in spawn order and folds show for each reason", () => {
+test("subagents never have rows, including pinned, orphaned, and archived-parent children", () => {
 	const list = chatRows(base([
 		conv("root"),
-		conv("later", { parentId: "app/root", createdAt: time(4) }),
-		conv("first", { parentId: "app/root", createdAt: time(2) }),
-		conv("grand", { parentId: "app/later", createdAt: time(3) }),
-	]));
-	const root = list.chats.find((row) => row.id === "app/root");
-	expect(root?.kids.map((kid) => kid.id)).toEqual(["app/first", "app/grand", "app/later"]);
-	expect(root?.showKids).toBe(false);
-
-	for (const [reason, changes] of [
-		["kid works", { kid: { busy: true } }],
-		["kid needs", { attention: [item("app/first", "Need")] }],
-		["parent open", { open: "app/root" }],
-		["kid open", { open: "app/first" }],
-	] as const) {
-		const current = chatRows(base([
-			conv("root"),
-			conv("first", { parentId: "app/root", ...changes.kid }),
-		], changes.attention ? { attention: changes.attention } : { open: changes.open ?? null }));
-		const row = [...current.active, ...current.chats].find((entry) => entry.id === "app/root");
-		expect(row?.kind === "chat" && row.showKids, reason).toBe(true);
-	}
-});
-
-test("T12: pinned kids, orphans, archived parents, and cycles keep every chat", () => {
-	const list = chatRows(base([
-		conv("root"),
+		conv("child", { parentId: "app/root" }),
 		conv("pinned", { parentId: "app/root", pinnedAt: time(1) }),
 		conv("orphan", { parentId: "app/missing" }),
-		conv("orphan-child", { parentId: "app/orphan" }),
 		conv("archived-parent", { archivedAt: time(9) }),
-		conv("archived-orphan", { parentId: "app/archived-parent" }),
-		conv("cycle-a", { parentId: "app/cycle-b" }),
-		conv("cycle-b", { parentId: "app/cycle-a" }),
+		conv("archived-child", { parentId: "app/archived-parent" }),
 	]));
-
-	expect(list.chats.map((row) => row.id)).toContain("app/pinned");
-	expect(list.chats.find((row) => row.id === "app/pinned")?.subagent).toBe(true);
-	expect(list.chats.find((row) => row.id === "app/orphan")?.subagent).toBe(true);
-	expect(list.chats.find((row) => row.id === "app/archived-orphan")?.subagent).toBe(true);
-	expect(list.chats.find((row) => row.id === "app/orphan")?.kids.map((kid) => kid.id))
-		.toContain("app/orphan-child");
-	expect(list.chats.map((row) => row.id)).toContain("app/cycle-a");
-	expect(list.chats.map((row) => row.id)).toContain("app/cycle-b");
-	expect(list.chats.map((row) => row.id)).not.toContain("app/archived-parent");
+	const rows = [...list.active, ...list.chats];
+	expect(rows.map((row) => row.id)).toEqual(["app/root"]);
+	expect(rows.find((row) => row.id === "app/root")).not.toHaveProperty("kids");
 });
 
-test("T13: rolling owns deep kids and needs, work, open-roll, ties, and empty chains", () => {
-	const rollNew = conv("roll-new", { updatedAt: time(1) });
-	const rollOld = conv("roll-old", { updatedAt: time(9) });
-	const input = base([
-		conv("first", { parentId: rollOld.id }),
-		conv("grand", { parentId: "app/first" }),
-		conv("second", { parentId: rollNew.id, busy: true }),
-		conv("third", { parentId: rollOld.id }),
-	], {
-		chain: [rollNew, rollOld],
-		attention: [item("app/grand", "Kid question")],
-	});
-	const list = chatRows(input);
-	const open = chatRows({ ...input, openRoll: rollOld.id });
-	const empty = chatRows(base([]));
-	const ties = chatRows(base([], {
-		chain: [
-			conv("newest", { newReply: 1, updatedAt: time(1) }),
-			conv("older", { newReply: 2, updatedAt: time(9) }),
-		],
-	}));
+test("a busy subagent marks its parent working without getting a row", () => {
+	const list = chatRows(base([
+		conv("parent"),
+		conv("child", { parentId: "app/parent", busy: true }),
+	]));
+	expect(list.active.map((row) => [row.id, row.kind === "chat" ? row.mark : null]))
+		.toEqual([["app/parent", "working"]]);
+});
 
+test("a subagent question marks the parent needs", () => {
+	const list = chatRows(base([
+		conv("parent"),
+		conv("child", { parentId: "app/parent" }),
+	], { attention: [item("app/child", "Child question")] }));
+	expect(list.active.map((row) => [row.id, row.kind === "chat" ? row.mark : null]))
+		.toEqual([["app/parent", "needs"]]);
+});
+
+test("subagents of a roll never show in the Rolling row; busy still marks Rolling working", () => {
+	const rollNew = conv("roll-new", { updatedAt: time(1) });
+	const list = chatRows(base([
+		conv("child", { parentId: rollNew.id, busy: true }),
+	], { chain: [rollNew] }));
 	expect(list.active).toEqual([]);
 	expect(list.chats).toEqual([]);
-	expect(list.rolling.mark).toBe("needs");
-	expect(list.rolling.line).toBe("Kid question");
-	expect(list.rolling.target).toBe(rollOld.id);
-	expect(list.rolling.kids.map((kid) => kid.id)).toEqual([
-		"app/second",
-		"app/first",
-		"app/grand",
-		"app/third",
-	]);
-	expect(list.rolling.kids.find((kid) => kid.id === "app/grand")?.mark).toBe("needs");
-	expect(open.rolling.kids.map((kid) => kid.id)).toEqual([
-		"app/second",
-		"app/first",
-		"app/grand",
-		"app/third",
-	]);
-	expect(ties.rolling.target).toBe("app/newest");
-	expect(empty.rolling.target).toBeNull();
-	expect(empty.rolling.line).toBe("");
+	expect(list.rolling.mark).toBe("working");
+	expect(list.rolling).not.toHaveProperty("kids");
 });
 
 test("T13: needs outranks work and unread reply; running and needs-input delegations differ", () => {
@@ -398,9 +359,6 @@ test("T13: needs outranks work and unread reply; running and needs-input delegat
 	}));
 
 	expect(list.rolling.mark).toBe("needs");
-	expect(list.rolling.kids.find((kid) => kid.id === "app/needs-kid")?.mark).toBe("needs");
-	expect(list.rolling.kids.find((kid) => kid.id === "app/delegated-kid")?.mark).toBe("working");
-	expect(list.rolling.kids.find((kid) => kid.id === "app/input-kid")?.mark).toBeNull();
 });
 
 test("T13: the rolling line is the question, then Working, then the newest roll's preview", () => {

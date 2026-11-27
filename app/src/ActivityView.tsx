@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppPost } from "../../src/http/app-wire.ts";
+import type { AppConversationListItem, AppPost } from "../../src/http/app-wire.ts";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import { listPosts } from "./api.ts";
 import { ActivityRow, type ActivityData, activityRows, otherBusyRow } from "./GoblinPanel.tsx";
@@ -16,9 +16,11 @@ function mergePosts(known: readonly AppPost[], incoming: readonly AppPost[]): Ap
 	return [...byId.values()].sort((a, b) => b.id - a.id);
 }
 
-export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
+export function ActivityView({ token, data, conversations, rollingConversationIds, onOpenConversation, onOpenPage }: {
 	token: string | null;
 	data: ActivityData;
+	conversations: readonly AppConversationListItem[];
+	rollingConversationIds: readonly string[];
 	onOpenConversation(id: string): void;
 	onOpenPage(page: AppPageKey): void;
 }) {
@@ -95,7 +97,7 @@ export function ActivityView({ token, data, onOpenConversation, onOpenPage }: {
 	const byId = new Map<number, AppPost>();
 	for (const post of [...paged.posts, ...(data.activity?.posts ?? [])]) byId.set(post.id, post);
 	const posts = [...byId.values()];
-	const rows = activityRows(data, posts, { onOpenConversation, onOpenPage });
+	const rows = activityRows(data, posts, { onOpenConversation, onOpenPage }, conversations, null, rollingConversationIds);
 	const oldestPost = paged.posts.at(-1);
 	const cutoff = paged.more && oldestPost !== undefined ? Date.parse(oldestPost.createdAt) : Number.NEGATIVE_INFINITY;
 	const finished = rows.finished.filter((row) => row.at >= cutoff);

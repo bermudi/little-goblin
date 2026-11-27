@@ -28,6 +28,48 @@ async function withFakeServer<T>(run: (baseUrl: string) => Promise<T>): Promise<
 	}
 }
 
+async function modelCall(baseUrl: string, message: string) {
+	const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ stream: false, messages: [{ role: "user", content: message }] }),
+	});
+	return response.json() as Promise<{
+		choices: {
+			message: {
+				content?: string | null;
+				tool_calls?: { function: { name: string; arguments: string } }[];
+			};
+		}[];
+	}>;
+}
+
+test("fake model markers call ask open and close with app time suffixes", async () => {
+	await withFakeServer(async (baseUrl) => {
+		const suffix = "[2026-11-26 14:53 -06:00 · app]";
+		const opened = await modelCall(baseUrl, `[ask When should the nudge fire?|9:00|11:00]${suffix}`);
+		const openCall = opened.choices[0]?.message.tool_calls?.[0];
+		expect(openCall?.function.name).toBe("ask");
+		expect(JSON.parse(openCall!.function.arguments)).toEqual({
+			action: "open",
+			question: "When should the nudge fire?",
+			options: ["9:00", "11:00"],
+		});
+		const closed = await modelCall(baseUrl, `[ask-close 17]${suffix}`);
+		const closeCall = closed.choices[0]?.message.tool_calls?.[0];
+		expect(closeCall?.function.name).toBe("ask");
+		expect(JSON.parse(closeCall!.function.arguments)).toEqual({ action: "close", id: 17 });
+	});
+});
+
+test("fake model does not treat an ask tap message as an open marker", async () => {
+	await withFakeServer(async (baseUrl) => {
+		const response = await modelCall(baseUrl, "[ask] Q → 9:00[2026-11-26 14:53 -06:00 · app]");
+		expect(response.choices[0]?.message.tool_calls).toBeUndefined();
+		expect(response.choices[0]?.message.content).toContain("verify-reply:");
+	});
+});
+
 test("fake System1 endpoint scores the exact serialized checkState shape", async () => {
 	await withFakeServer(async (baseUrl) => {
 		const request = (next: string) =>

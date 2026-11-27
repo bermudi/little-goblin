@@ -10,6 +10,8 @@ import type { ConversationStore } from "../conversation.ts";
 import { type ModelSettings, modelSettingsSchema } from "../conversation-settings.ts";
 import type { NoteStore } from "../notes.ts";
 import type { Posts } from "../posts.ts";
+import type { AgentChildren } from "../agent-children.ts";
+import type { Asks } from "../asks.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
 import type { System1Client } from "../system1.ts";
@@ -71,6 +73,8 @@ export interface AppChannelDeps {
 	projects: ProjectStore;
 	notes: NoteStore;
 	posts: Pick<Posts, "recent">;
+	asks?: Pick<Asks, "openForAttention" | "close">;
+	agents?: Pick<AgentChildren, "stop">;
 	auth: Pick<AuthStore, "resolve">;
 	configRef: ConfigRef;
 	gate?: () => Pick<System1Client, "decide"> | undefined;

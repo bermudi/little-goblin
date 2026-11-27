@@ -331,6 +331,9 @@ export function ChatView({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  onRoll,
+  focusSignal,
+  rollDisabled,
   rolling = false,
   onRollingAccepted,
   onFollowStarted,
@@ -352,6 +355,9 @@ export function ChatView({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch opened a new conversation — the host refreshes and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  onRoll?: (() => Promise<string | null>) | undefined;
+  focusSignal?: number | undefined;
+  rollDisabled?: boolean | undefined;
   rolling?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
@@ -367,6 +373,10 @@ export function ChatView({
     compactions: AppCompactionMark[];
   } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [focusOnce, setFocusOnce] = useState(focusSignal ?? 0);
+  useEffect(() => {
+    if (initial !== null && focusOnce !== 0) setFocusOnce(0);
+  }, [initial, focusOnce]);
   useEffect(() => {
     let live = true;
     getMessages(token, conversationId).then(
@@ -412,6 +422,9 @@ export function ChatView({
       onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
+      onRoll={onRoll}
+      focusSignal={focusOnce}
+      rollDisabled={rollDisabled}
       rolling={rolling}
       onRollingAccepted={onRollingAccepted}
       onFollowStarted={onFollowStarted}
@@ -438,6 +451,9 @@ function Chat({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  onRoll,
+  focusSignal,
+  rollDisabled,
   rolling = false,
   onRollingAccepted,
   onFollowStarted,
@@ -464,6 +480,9 @@ function Chat({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  onRoll?: (() => Promise<string | null>) | undefined;
+  focusSignal?: number | undefined;
+  rollDisabled?: boolean | undefined;
   rolling?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
@@ -1528,6 +1547,9 @@ function Chat({
           }}
           stealFocus
           onCompacted={refreshTranscript}
+          onRoll={onRoll}
+          focusSignal={focusSignal ?? 0}
+          rollDisabled={displayed.length === 0 || rollDisabled === true}
           onSend={(parts, whenBusy) => {
             askNotifyPermission();
             return submit({ parts }, whenBusy);

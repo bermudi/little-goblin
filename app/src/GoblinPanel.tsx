@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
-import type { AppAttentionTarget, AppNoteSummary, AppPost } from "../../src/http/app-wire.ts";
+import type { AppAttentionTarget, AppConversationListItem, AppNoteSummary, AppPost } from "../../src/http/app-wire.ts";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
 import { relTime as shortAge } from "./ConversationList.tsx";
@@ -9,6 +9,7 @@ import { relTime } from "./memoryShared.tsx";
 import { ts } from "./opsShared.tsx";
 import { triggerWords } from "./ProgramsView.tsx";
 import type { useGoblinActivity } from "./useGoblinActivity.ts";
+import { flatLine, flatTitle } from "./flatText.ts";
 
 export type ActivityData = ReturnType<typeof useGoblinActivity>;
 type GoblinPanelTab = "activity" | "scheduled" | "library";
@@ -94,6 +95,9 @@ export function GoblinProfileHeader({ page, working, onPage }: {
 
 export interface GoblinPanelProps {
 	data: ActivityData;
+	conversations?: readonly AppConversationListItem[];
+	openConversationId?: string | null;
+	rollingConversationIds?: readonly string[];
 	notes: AppNoteSummary[] | null;
 	notesError?: boolean;
 	variant: "column" | "sheet";
@@ -118,9 +122,11 @@ export interface ActivityItem {
 	detail: string;
 	time: string;
 	iso: string | null;
-	tone: "working" | "needs" | "failed" | "quiet";
+	tone: "working" | "needs" | "failed" | "quiet" | "done";
 	post?: boolean;
 	action?: () => void;
+	subagents?: ActivityItem[];
+	expandedInitially?: boolean;
 }
 
 function oneLine(value: string): string {
@@ -156,20 +162,45 @@ export function PanelRow({ row }: { row: PanelRowData }) {
 }
 
 export function ActivityRow({ row }: { row: ActivityItem }) {
+	const [expanded, setExpanded] = useState(row.expandedInitially ?? true);
+	const listId = useId();
 	const time = row.iso === null
 		? <span className="activity-time">{row.time}</span>
 		: <time className="activity-time" dateTime={row.iso} title={ts(row.iso)}>{row.time}</time>;
 	const children = (
 		<>
-			<span className={`mark mark-${row.tone}`} aria-hidden="true">{row.tone === "needs" ? "!" : null}</span>
+			<span className={`mark mark-${row.tone === "done" ? "done" : row.tone}`} aria-hidden="true">{row.tone === "needs" ? "!" : null}</span>
 			<strong>{row.label}</strong>
 			<span className="activity-detail">{row.detail}</span>
 			{time}
 		</>
 	);
 	const className = `goblin-panel-row activity-row${row.post === true ? " goblin-panel-post" : ""}${row.tone === "failed" ? " activity-failed" : ""}`;
-	if (row.action === undefined) return <div className={className}>{children}</div>;
-	return <button type="button" className={className} onClick={row.action}>{children}</button>;
+	const body = row.action === undefined
+		? <div className={className}>{children}</div>
+		: <button type="button" className={className} onClick={row.action}>{children}</button>;
+	return (
+		<div className="activity-row-wrap">
+			<div className="activity-row-main">
+				{body}
+				{row.subagents && row.subagents.length > 0 && (
+					<button
+						type="button"
+						className="activity-expand"
+						aria-expanded={expanded}
+						aria-controls={listId}
+						aria-label={`Subagents of ${row.label}`}
+						onClick={() => setExpanded((value) => !value)}
+					>›</button>
+				)}
+			</div>
+			{row.subagents && row.subagents.length > 0 && (
+				<div id={listId} className="activity-subagents" hidden={!expanded}>
+					{row.subagents.map((subagent) => <ActivityRow key={subagent.key} row={subagent} />)}
+				</div>
+			)}
+		</div>
+	);
 }
 
 export interface ActivityOpeners {
@@ -181,24 +212,148 @@ export interface ActivityRows {
 	running: ActivityItem[];
 	otherBusy: number;
 	finished: ActivityItem[];
+	thisChat: ActivityItem | null;
 }
 
-export function activityRows(data: ActivityData, posts: readonly AppPost[], open: ActivityOpeners): ActivityRows {
+export function activityRows(
+	data: ActivityData,
+	posts: readonly AppPost[],
+	open: ActivityOpeners,
+	conversations: readonly AppConversationListItem[] = [],
+	openConversationId: string | null = null,
+	rollingConversationIds: readonly string[] = [],
+): ActivityRows {
 	const delegations = data.delegations ?? [];
+	const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+	const busyConversationIds = new Set((data.activity?.busy ?? []).map((conversation) => conversation.id));
+	const rollingIds = new Set([
+		...rollingConversationIds,
+		...(data.activity?.busy ?? []).filter((conversation) => conversation.rolling).map((conversation) => conversation.id),
+	]);
+	const topParent = (conversation: AppConversationListItem): AppConversationListItem | null => {
+		let current = conversation;
+		const seen = new Set<string>();
+		while (current.parentId !== null) {
+			if (seen.has(current.id)) return null;
+			seen.add(current.id);
+			const parent = conversationsById.get(current.parentId);
+			if (!parent) return null;
+			current = parent;
+		}
+		return current;
+	};
+	const chatLabel = (conversation: AppConversationListItem, fallback: string): string =>
+		flatTitle(conversation.title) ?? (flatLine(conversation.preview).slice(0, 60) || fallback);
+	const subagentItem = (conversation: AppConversationListItem): ActivityItem => ({
+		key: `subagent:${conversation.id}`,
+		at: at(conversation.updatedAt),
+		label: chatLabel(conversation, "Subagent"),
+		detail: "",
+		time: conversation.busy || busyConversationIds.has(conversation.id) ? "now" : activityTime(conversation.updatedAt),
+		iso: conversation.busy || busyConversationIds.has(conversation.id) ? null : conversation.updatedAt,
+		tone: conversation.busy || busyConversationIds.has(conversation.id)
+			? "working"
+			: (data.attention ?? []).some((item) => item.conversationId === conversation.id)
+			? "needs"
+			: "done",
+		action: () => open.onOpenConversation(conversation.id),
+	});
+	const childGroups = new Map<string, AppConversationListItem[]>();
+	for (const conversation of conversations) {
+		if (conversation.parentId === null) continue;
+		const parent = topParent(conversation);
+		if (!parent) continue;
+		const children = childGroups.get(parent.id) ?? [];
+		children.push(conversation);
+		childGroups.set(parent.id, children);
+	}
+	for (const children of childGroups.values()) {
+		children.sort((left, right) =>
+			Number(right.busy || busyConversationIds.has(right.id)) -
+				Number(left.busy || busyConversationIds.has(left.id)) ||
+			at(right.updatedAt) - at(left.updatedAt)
+		);
+	}
+	const busyByParent = new Map<string, AppConversationListItem[]>();
+	for (const busy of data.activity?.busy ?? []) {
+		if (busy.parentId === null) continue;
+		const child = conversationsById.get(busy.id);
+		if (!child) continue;
+		const parent = topParent(child);
+		if (!parent) continue;
+		const group = busyByParent.get(parent.id) ?? [];
+		group.push(child);
+		busyByParent.set(parent.id, group);
+	}
+	const parentRows = new Map<string, ActivityItem>();
+	for (const [parentId, children] of busyByParent) {
+		const parent = conversationsById.get(parentId);
+		const busyParent = parent?.busy === true ||
+			(data.activity?.busy ?? []).some((row) => row.id === parentId);
+		const parentRow: ActivityItem = {
+			key: `chat:${parentId}`,
+			at: Number.POSITIVE_INFINITY,
+			label: parent === undefined || rollingIds.has(parentId) ? "Rolling chat" : chatLabel(parent, "Untitled"),
+			detail: busyParent
+				? `Replying · ${children.length} subagent${children.length === 1 ? "" : "s"}`
+				: `Waiting on ${children.length} subagent${children.length === 1 ? "" : "s"}`,
+			time: "now",
+			iso: null,
+			tone: "working",
+			action: parent === undefined || rollingIds.has(parentId)
+				? () => open.onOpenPage("rolling")
+				: () => open.onOpenConversation(parent.id),
+			subagents: children.map(subagentItem),
+		};
+		parentRows.set(parentId, parentRow);
+	}
 	const openDelegation = (d: OperatorDelegationItem) => () =>
 		d.appConversation !== null
 			? open.onOpenConversation(d.appConversation)
 			: open.onOpenPage("delegations");
-	const busyRows: ActivityItem[] = (data.activity?.busy ?? []).map((c) => ({
+	const busyRows: ActivityItem[] = (data.activity?.busy ?? [])
+		.filter((conversation) => conversation.parentId === null)
+		.map((c) => ({
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
-		label: c.rolling ? "Rolling chat" : oneLine(c.title ?? "Untitled"),
-		detail: !c.rolling && c.parentId !== null ? "Subagent" : "Replying",
+		label: c.rolling
+			? "Rolling chat"
+			: conversationsById.has(c.id)
+			? chatLabel(conversationsById.get(c.id)!, "Untitled")
+			: oneLine(c.title ?? "Untitled"),
+		detail: parentRows.get(c.id)?.detail ?? "Replying",
 		time: "now",
 		iso: null,
 		tone: "working",
-		action: c.rolling ? () => open.onOpenPage("rolling") : () => open.onOpenConversation(c.id),
+			action: c.rolling || rollingIds.has(c.id)
+				? () => open.onOpenPage("rolling")
+				: () => open.onOpenConversation(c.id),
+		...(parentRows.get(c.id)?.subagents === undefined
+			? {}
+			: { subagents: parentRows.get(c.id)!.subagents }),
 	}));
+	for (const [parentId, row] of parentRows) {
+		if (!(data.activity?.busy ?? []).some((busy) => busy.id === parentId)) busyRows.push(row);
+	}
+	const openConversation = openConversationId === null ? null : conversationsById.get(openConversationId) ?? null;
+	const openParent = openConversation === null ? null : topParent(openConversation);
+	const openRunning = openParent === null ? undefined : busyRows.find((row) => row.key === `chat:${openParent.id}`);
+	const thisChat = openParent && (childGroups.get(openParent.id)?.length ?? 0) > 0
+		? {
+				key: `this-chat:${openParent.id}`,
+				at: 0,
+				label: rollingIds.has(openParent.id) ? "Rolling chat" : chatLabel(openParent, "Untitled"),
+				detail: openRunning?.detail ?? "",
+				time: openRunning?.time ?? "",
+				iso: null,
+				tone: openRunning?.tone ?? ("quiet" as const),
+				action: rollingIds.has(openParent.id)
+					? () => open.onOpenPage("rolling")
+					: () => open.onOpenConversation(openParent.id),
+				subagents: (childGroups.get(openParent.id) ?? []).map(subagentItem),
+				expandedInitially: true,
+			}
+		: null;
 	const activeRows: ActivityItem[] = delegations
 		.filter((d) => ACTIVE.includes(d.status))
 		.map((d): ActivityItem => ({
@@ -259,9 +414,13 @@ export function activityRows(data: ActivityData, posts: readonly AppPost[], open
 		}),
 	].sort((a, b) => b.at - a.at);
 	return {
-		running: [...busyRows, ...activeRows],
+		running: [
+			...busyRows.filter((row) => thisChat === null || row.key !== `chat:${openParent?.id ?? ""}`),
+			...activeRows,
+		],
 		otherBusy: data.activity?.otherBusy ?? 0,
 		finished: finishedRows,
+		thisChat,
 	};
 }
 
@@ -286,7 +445,14 @@ export function GoblinPanel(props: GoblinPanelProps) {
 		saveTab(value);
 	};
 
-	const all = activityRows(data, data.activity?.posts ?? [], props);
+	const all = activityRows(
+		data,
+		data.activity?.posts ?? [],
+		props,
+		props.conversations ?? [],
+		props.openConversationId ?? null,
+		props.rollingConversationIds ?? [],
+	);
 	const otherBusy = all.otherBusy;
 	const running = all.running.slice(0, ACTIVITY_ROWS - (otherBusy > 0 ? 1 : 0));
 	const finished = all.finished.slice(
@@ -359,6 +525,12 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				</TabsList>
 				<TabsPanel value="activity">
 					<div className="goblin-panel-rows">
+						{all.thisChat !== null && (
+							<>
+								<h2 className="goblin-panel-group">This chat</h2>
+								<ActivityRow row={all.thisChat} />
+							</>
+						)}
 						{(running.length > 0 || otherBusy > 0) && <h2 className="goblin-panel-group">Running</h2>}
 						{running.map((row) => (
 							<ActivityRow key={row.key} row={row} />

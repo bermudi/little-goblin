@@ -56,6 +56,8 @@ To test Stop or a failed turn, put `[slow]` in the message (one word every 400ms
 To watch a long reply stream after tool calls, put `[long]` in the message: two `read_file` calls a second apart, then a reply several screens long, one line every 60ms. It starts with `verify-long: the head of the answer` and ends with `verify-long: the tail of the answer`.
 The live line stays under the text until the reply ends.
 
+`agent-browser fill` on the composer (`[aria-label="Message draft"]`) puts its text in front of the draft that is already there; it does not replace the draft (2026-11-26). Send from an empty composer, or read the composer's text before you rely on it.
+
 ### Long Worked list
 
 An open "Worked" list is capped at 40vh and scrolls inside itself (#936). The fake model stops at two calls per turn, which is below the cap. To see the cap, open the fold and copy a row inside the page: clone a `li`, set `data-fill="copy"` on the copy, label it "a copy made in the page", and insert the copies before the first row so the real calls stay at the end. Check `ul.clientHeight` against `0.4 * innerHeight`.

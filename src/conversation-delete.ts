@@ -11,6 +11,15 @@ import { sweepConversationWakes } from "./wake-store.ts";
 
 export class DeleteRefused extends Error {}
 
+interface Swept {
+	wakes: number;
+	workEvents: number;
+	watches: number;
+	asks: number;
+}
+
+const MAX_SUBAGENT_DEPTH = 64;
+
 const deleteRefusalText = (id: string, anchors: { responsibilityId: string; status: string }[]): string =>
 	`conversation ${id} anchors retired responsibilities ${anchors
 		.map((a) => `${a.responsibilityId} (${a.status})`)
@@ -58,8 +67,36 @@ export function makeConversationDelete(
 		return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
 	}
 
+	function subagentIds(id: string): string[] {
+		return db
+			.query<{ id: string }, [string, number]>(
+				`WITH RECURSIVE tree(id, depth) AS (
+					SELECT id, 1 FROM conversations WHERE parent_conversation_id = ?1
+					UNION
+					SELECT c.id, tree.depth + 1 FROM conversations c
+					JOIN tree ON c.parent_conversation_id = tree.id
+					WHERE tree.depth < ?2
+				)
+				SELECT id FROM tree GROUP BY id ORDER BY MAX(depth) DESC, id`,
+			)
+			.all(id, MAX_SUBAGENT_DEPTH)
+			.map((row) => row.id)
+			.filter((each) => each !== id);
+	}
+
 	function deleteConversation(id: string): void {
-		const swept = db.transaction((): { wakes: number; workEvents: number; watches: number } => {
+		afterSweep(id, sweep(id));
+	}
+
+	function deleteConversationTree(id: string): string[] {
+		const ids = [...subagentIds(id), id];
+		const swept = db.transaction(() => ids.map((each) => sweep(each)))();
+		ids.forEach((each, index) => afterSweep(each, swept[index]!));
+		return ids;
+	}
+
+	function sweep(id: string): Swept {
+		const swept = db.transaction((): Swept => {
 			const anchors = legacyAnchors(db, id);
 			if (anchors.length > 0) throw new DeleteRefused(deleteRefusalText(id, anchors));
 			// Sever the rolling navigation chain first — successors'
@@ -98,6 +135,7 @@ export function makeConversationDelete(
 			// they ride the delete, in the same transaction.
 			const counts = sweepConversationWakes(db, id);
 			const watches = db.query("DELETE FROM watches WHERE conversation_id = ?").run(id).changes;
+			const asks = db.query("DELETE FROM asks WHERE conversation_id = ?").run(id).changes;
 			qDeleteEvents.run(id);
 			qDeleteCompactions.run(id);
 			qDeleteContexts.run(id);
@@ -107,8 +145,12 @@ export function makeConversationDelete(
 			qDeleteWindows.run(id);
 			qDeleteClaudeSessions.run(id);
 			qDeleteConv.run(id);
-			return { ...counts, watches };
+			return { ...counts, watches, asks };
 		})();
+		return swept;
+	}
+
+	function afterSweep(id: string, swept: Swept): void {
 		if (swept.wakes > 0) {
 			log.info("wake rows swept with conversation", {
 				conversation: id,
@@ -118,6 +160,9 @@ export function makeConversationDelete(
 		}
 		if (swept.watches > 0) {
 			log.info("watch rows swept with conversation", { conversation: id, watches: swept.watches });
+		}
+		if (swept.asks > 0) {
+			log.info("ask rows swept with conversation", { conversation: id, asks: swept.asks });
 		}
 		// The purge waits for the commit: queued retention rides the
 		// append transaction only, so cancelling before the delete and
@@ -133,5 +178,5 @@ export function makeConversationDelete(
 		}
 	}
 
-	return { deleteRefusal, deleteConversation };
+	return { deleteRefusal, deleteConversation, deleteConversationTree, subagentIds };
 }

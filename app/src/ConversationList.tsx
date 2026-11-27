@@ -118,8 +118,6 @@ export function ConversationRow({
 	mark = null,
 	line,
 	projectName,
-	subagent = false,
-	compact = false,
 }: {
 	conv: AppConversationList["conversations"][number];
 	current: string | null;
@@ -136,8 +134,6 @@ export function ConversationRow({
 	mark?: Mark | null;
 	line?: string;
 	projectName?: string;
-	subagent?: boolean;
-	compact?: boolean;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
@@ -211,10 +207,9 @@ export function ConversationRow({
 				{ label: "Rename", icon: <PencilGlyph />, run: startRename },
 				{ label: "Archive", icon: <ArchiveGlyph />, run: () => void actions.toggleArchived() },
 			];
-	const hasLine = !compact && (displayLine !== "" || projectName !== undefined);
+	const hasLine = displayLine !== "" || projectName !== undefined;
 	const rowClass = [
 		"conv",
-		compact ? "compact" : null,
 		conv.id === current ? "current" : null,
 		hasLine ? null : "bare",
 	]
@@ -234,7 +229,7 @@ export function ConversationRow({
 				}}
 			>
 				<span className="conv-gutter">
-					{mark !== null || compact
+					{mark !== null
 						? <ChatMark mark={mark ?? "done"} />
 						: pinned ? <PinGlyph /> : null}
 				</span>
@@ -243,8 +238,7 @@ export function ConversationRow({
 						<span className="conv-title">
 							{title ?? (preview === "" ? "new conversation" : preview)}
 						</span>
-						{subagent && <span className="conv-subagent-label">subagent</span>}
-						{!compact && <span className="conv-time">{relTime(conv.updatedAt)}</span>}
+						<span className="conv-time">{relTime(conv.updatedAt)}</span>
 					</span>
 					{hasLine && (
 						<span className="conv-preview">

@@ -396,12 +396,6 @@ p code,
 	flex-direction: column;
 	gap: 1px;
 }
-.conv-subagent-label {
-	flex: none;
-	margin-left: 0.35rem;
-	color: var(--app-fg-muted);
-	font-size: 0.68rem;
-}
 .header-parent {
 	flex: 0 1000 auto;
 	min-width: 2.5rem;
@@ -559,42 +553,6 @@ p code,
 	clip-path: inset(50%);
 	white-space: nowrap;
 	border: 0;
-}
-.home-kids {
-	margin-left: 26px;
-}
-.kidtoggle {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	padding: 3px 6px 5px;
-	border-radius: 6px;
-	color: var(--app-fg-muted);
-	font-size: 11px;
-}
-.kidtoggle:hover {
-	color: var(--app-fg);
-}
-.kidtoggle .chev {
-	transition: transform 120ms ease;
-}
-.kidtoggle[aria-expanded="true"] .chev {
-	transform: rotate(90deg);
-}
-.chatlist-screen .home-kid-list {
-	padding: 0;
-}
-.conv.compact .conv-main {
-	grid-template-columns: 12px minmax(0, 1fr);
-	column-gap: 8px;
-	padding: 4px 6px;
-}
-.conv.compact .conv-gutter {
-	height: auto;
-}
-.conv.compact .conv-title {
-	color: var(--app-fg-muted);
-	font-size: 12px;
 }
 .rolling-history-bar {
 	display: flex;
@@ -3345,17 +3303,18 @@ button.pathchip:hover svg {
 	padding-left: 12px;
 	color: var(--app-fg-muted);
 }
-/* The manual lever — a quiet footer action under a hairline, not a
-   form button floating in the panel. */
+.ctx-actions {
+	display: flex;
+	gap: 0.25rem;
+	margin-top: 0.1rem;
+	border-top: 1px solid var(--app-divider);
+}
 .ctx-act {
-	width: 100%;
 	font-size: 12px;
 	text-align: left;
 	padding: 0.45rem 0.5rem;
-	margin-top: 0.1rem;
 	border-radius: 6px;
 	border: none;
-	border-top: 1px solid var(--app-divider);
 	color: var(--app-fg);
 }
 .ctx-act:hover:not(:disabled) {
@@ -5576,6 +5535,45 @@ button.pathchip:hover svg {
 	cursor: default;
 }
 
+.ask-card {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.5rem;
+	margin: 0.4rem 0;
+	padding: 0.7rem 0.8rem;
+	border: 1px solid color-mix(in oklab, var(--app-accent) 45%, var(--app-divider));
+	border-radius: 8px;
+	background: color-mix(in oklab, var(--app-accent) 7%, var(--app-bg));
+}
+.ask-question {
+	color: var(--app-fg);
+}
+.ask-card.closed .ask-question,
+.ask-closed {
+	color: var(--app-fg-muted);
+}
+.ask-dismiss {
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: var(--app-fg-muted);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.ask-dismiss:focus-visible {
+	outline: 2px solid var(--app-accent);
+	outline-offset: 3px;
+}
+.ask-error {
+	color: var(--app-danger, #b42318);
+}
+.ask-skeleton {
+	width: min(100%, 24rem);
+	height: 3.5rem;
+	opacity: 0.55;
+}
+
 .ui-form {
 	display: flex;
 	flex-direction: column;
@@ -5822,12 +5820,6 @@ select.ui-input option {
 	}
 	.chatlist-screen .conv-gutter {
 		height: 20px;
-	}
-	.chatlist-screen .kidtoggle {
-		padding: 6px 6px 8px;
-	}
-	.chatlist-screen .conv.compact .conv-main {
-		padding: 8px 6px;
 	}
 	.ops {
 		padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
@@ -8538,6 +8530,46 @@ button.link:hover {
 	column-gap: 0.5rem;
 	row-gap: 0.1rem;
 	align-items: baseline;
+}
+.activity-row-wrap {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+.activity-row-main {
+	display: flex;
+	align-items: stretch;
+	min-width: 0;
+}
+.activity-row-main > .activity-row {
+	flex: 1;
+	min-width: 0;
+}
+.activity-expand {
+	width: 28px;
+	flex: none;
+	color: var(--app-fg-muted);
+	font-size: 18px;
+}
+.activity-expand[aria-expanded="true"] {
+	transform: rotate(90deg);
+}
+.activity-subagents {
+	margin: 0 0 5px 14px;
+	padding-left: 10px;
+	border-left: 1px solid var(--app-divider);
+}
+.activity-subagents .activity-row-wrap {
+	font-size: 0.85em;
+	color: var(--app-fg-muted);
+}
+.activity-subagents .activity-row {
+	min-height: 28px;
+	padding-top: 3px;
+	padding-bottom: 3px;
+}
+.activity-subagents .activity-detail {
+	display: none;
 }
 .activity-row > .mark {
 	grid-column: 1;

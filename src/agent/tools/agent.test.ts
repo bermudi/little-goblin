@@ -76,6 +76,7 @@ describe("child tool allowlist", () => {
 			"speak",
 			"send_file",
 			"ui",
+			"ask",
 			"mail",
 			"artifact",
 			"memory_search",

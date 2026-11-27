@@ -31,8 +31,10 @@ import {
 	listConversations,
 	loadToken,
 	patchConversation,
+	rollRollingChat,
 	telegramDoor,
 } from "./api.ts";
+import { moveComposerDraft } from "./composerDraft.ts";
 import { LiveStore } from "./live.ts";
 import { LiveProvider, useLive, useLiveStatus, useLiveStore } from "./useLive.tsx";
 import { ChatView } from "./ChatView.tsx";
@@ -216,6 +218,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		conversationId: string;
 		messageId: string;
 	} | null>(null);
+	const [rollFocus, setRollFocus] = useState(0);
 	const [sourcesOpen, setSourcesOpen] = useState(false);
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
@@ -445,6 +448,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			setRollingRouted(null);
 		}
 	}, [rollingRouted, rollingChain]);
+	useEffect(() => {
+		if (rollFocus !== 0) setRollFocus(0);
+	}, [rollingId, rollFocus]);
 
 	// A /app/c/<id> load selects that conversation once the list
 	// arrives.
@@ -576,7 +582,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		attention: goblin.attention ?? [],
 		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
 		open: railCurrent,
-		openRoll,
 		seen,
 	}, activeProjects, projectsOpen);
 	const desktopFlipRef = useFlip(home.orderSignature);
@@ -790,7 +795,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
 	const archived = unbound
-		.filter((c) => c.archivedAt !== null)
+		.filter((c) => c.archivedAt !== null && c.parentId == null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 
 	const currentProject =
@@ -876,6 +881,25 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		setRollingViewing(target === rollingChain[0]?.id ? null : target);
 		setRollingRouted(null);
 		void openPage("rolling");
+	};
+	const rollChat = async (): Promise<string | null> => {
+		const from = rollingId;
+		const routeAt = routeRef.current;
+		try {
+			const result = await rollRollingChat(token);
+			if (from !== null && from !== result.conversationId)
+				moveComposerDraft(from, result.conversationId);
+			if (routeRef.current === routeAt && routeAt.kind === "page" && routeAt.page === "rolling") {
+				setRollingViewing(null);
+				setRollingRouted(result.conversationId);
+				setRollingFollow(null);
+				setRollFocus((n) => n + 1);
+			}
+			await acted("conversations");
+			return null;
+		} catch (err) {
+			return err instanceof Error ? err.message : String(err);
+		}
 	};
 	const renderHomeList = (navRef: (node: HTMLElement | null) => void) => (
 		<HomeList
@@ -1404,6 +1428,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<ActivityView
 						token={token}
 						data={goblin}
+						conversations={[...all, ...rollingChain]}
+						rollingConversationIds={rollingChain.map((conversation) => conversation.id)}
 						onOpenConversation={openConversation}
 						onOpenPage={(p) => void openPage(p)}
 					/>
@@ -1702,6 +1728,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							seed={null}
 							noteProjectId={null}
 							rolling
+							onRoll={rollChat}
+							focusSignal={rollFocus}
+							rollDisabled={rollingCurrent?.busy === true}
 							onSeeded={() => {}}
 							onSendAccepted={() => void acted("conversations")}
 							onRollingAccepted={(id, _rolled, messageId) => {
@@ -1771,6 +1800,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<GoblinPanel
 						variant="column"
 						data={goblin}
+						conversations={[...all, ...rollingChain]}
+						openConversationId={railCurrent ?? openRoll}
+						rollingConversationIds={rollingChain.map((conversation) => conversation.id)}
 						notes={notes}
 						notesError={notesError}
 						onOpenTarget={openAttentionTarget}
@@ -1794,6 +1826,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<GoblinPanel
 							variant="sheet"
 							data={goblin}
+							conversations={[...all, ...rollingChain]}
+							openConversationId={railCurrent ?? openRoll}
+							rollingConversationIds={rollingChain.map((conversation) => conversation.id)}
 							notes={notes}
 							notesError={notesError}
 							onOpenTarget={(target) => {

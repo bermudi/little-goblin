@@ -382,9 +382,9 @@ export function prepareConversationQueries(db: Database) {
 	// exchanges are never operator exchanges. Same epoch high-water rule
 	// as qInsertConv.
 	const qInsertAgentConv = db.query(
-		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at, epoch,
+		`INSERT INTO conversations (id, chat_id, thread_id, title, title_implicit, cwd, created_at, epoch,
 			 parent_conversation_id, agent_type, memory_excluded)
-			VALUES (?, 0, NULL, NULL, ?, ?,
+			VALUES (?, 0, NULL, ?, 1, ?, ?,
 				COALESCE((SELECT epoch + 1 FROM conversation_epoch_hwm WHERE conversation_id = ?1), 0),
 				?, ?, 1)`,
 	);

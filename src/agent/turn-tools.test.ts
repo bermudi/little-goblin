@@ -101,6 +101,7 @@ describe("hosted web_search mount", () => {
 			now: () => new Date(0),
 			watches: {} as unknown as Watches,
 			posts: { add: () => { throw new Error("unused"); } },
+			asks: { open: () => ({ error: "unused" }), listOpen: () => [], close: () => "missing" },
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
@@ -172,6 +173,15 @@ describe("hosted web_search mount", () => {
 		expect(policyOf("post")).toMatchObject({ guestChannel: false, guestSandbox: false, replay: "unsafe" });
 	});
 
+	test("ask mounts only on app parent turns", () => {
+		const config = cfgFor("off");
+		const app = { ...conv("zai/glm-5"), id: "app/parent" } as Conversation;
+		const telegram = conv("zai/glm-5");
+		expect("ask" in rigTools(config, app)(app)).toBe(true);
+		expect("ask" in rigTools(config, telegram)(telegram)).toBe(false);
+		expect(policyOf("ask")).toMatchObject({ guestChannel: false });
+	});
+
 	test("guests keep web_search exactly like local search", () => {
 		expect(policyOf("web_search").guestSandbox).toBe(true);
 		expect(policyOf("search").guestSandbox).toBe(true);
@@ -209,6 +219,7 @@ describe("agent tool mount", () => {
 			now: () => new Date(0),
 			watches: {} as unknown as Watches,
 			posts: { add: () => { throw new Error("unused"); } },
+			asks: { open: () => ({ error: "unused" }), listOpen: () => [], close: () => "missing" },
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
@@ -239,7 +250,7 @@ describe("agent tool mount", () => {
 		const names = Object.keys(tools);
 		expect(names).toContain("read_file");
 		expect(names).toContain("bash");
-		for (const banned of ["agent", "delegate", "speak", "memory_search", "note", "ui"]) {
+		for (const banned of ["agent", "delegate", "speak", "memory_search", "note", "ui", "ask"]) {
 			expect(names).not.toContain(banned);
 		}
 	});
@@ -284,6 +295,7 @@ describe("computer child mount", () => {
 			now: () => new Date(0),
 			watches: {} as unknown as Watches,
 			posts: { add: () => { throw new Error("unused"); } },
+			asks: { open: () => ({ error: "unused" }), listOpen: () => [], close: () => "missing" },
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,

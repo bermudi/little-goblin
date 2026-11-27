@@ -38,7 +38,6 @@ const input = (conversations: Conv[], open: string | null = null): HomeInput => 
 	}] : [],
 	delegations: [],
 	open,
-	openRoll: null,
 	seen: null,
 });
 
@@ -91,14 +90,14 @@ afterEach(async () => {
 	Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
 });
 
-test("T21: HomeList fold starts closed, opens, exposes kid links in arrow order, and defaults open for the open kid", async () => {
+test("HomeList never renders subagents as chat rows", async () => {
 	const parent = conv("parent");
 	const kid = { ...conv("kid", parent.id), busy: true };
 	const secondKid = conv("second-kid", parent.id);
 	const sibling = conv("sibling");
 	setup();
-	function Fixture({ open }: { open: string | null }) {
-		const data = input([parent, kid, secondKid, sibling], open);
+	function Fixture() {
+		const data = input([parent, kid, secondKid, sibling], kid.id);
 		const home = useHomeList(data, [], true);
 		return <HomeList
 			home={home}
@@ -114,33 +113,16 @@ test("T21: HomeList fold starts closed, opens, exposes kid links in arrow order,
 			renderRow={(row) => <ConversationNavLink className="conv-main" id={row.id} href={`/app/c/${row.id.slice(4)}`}>{row.title}</ConversationNavLink>}
 		/>;
 	}
-	await act(async () => root?.render(<Fixture open={null} />));
-	let fold = container!.querySelector<HTMLButtonElement>(".kidtoggle")!;
-	expect(fold.getAttribute("aria-expanded")).toBe("false");
-	expect(fold.getAttribute("aria-controls")).toBeNull();
-	expect(fold.textContent).toContain("2 subagents");
-	await act(async () => fold.click());
-	fold = container!.querySelector<HTMLButtonElement>(".kidtoggle")!;
-	expect(fold.getAttribute("aria-expanded")).toBe("true");
-	expect(fold.getAttribute("aria-controls")).not.toBeNull();
+	await act(async () => root?.render(<Fixture />));
 	const links = [...container!.querySelectorAll<HTMLAnchorElement>(".conv-main")];
-	expect(links.map((link) => link.textContent)).toContain("kid");
-	const parentLink = links.find((link) => link.textContent === "parent")!;
-	parentLink.focus();
-	await act(async () => parentLink.dispatchEvent(new win!.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }) as unknown as Event));
-	expect(win!.document.activeElement?.textContent).toBe("kid");
-	await act(async () => fold.click());
-	await act(async () => root?.render(<Fixture open={kid.id} />));
-	fold = container!.querySelector<HTMLButtonElement>(".kidtoggle")!;
-	expect(fold.getAttribute("aria-expanded")).toBe("false");
-	await act(async () => root?.unmount());
-	root = createRoot(container!);
-	await act(async () => root?.render(<Fixture open={kid.id} />));
-	fold = container!.querySelector<HTMLButtonElement>(".kidtoggle")!;
-	expect(fold.getAttribute("aria-expanded")).toBe("true");
+	expect(links.map((link) => link.getAttribute("href")).filter((href) => href !== "/app/rolling")).toEqual([
+		"/app/c/parent",
+		"/app/c/sibling",
+	]);
+	expect(container!.querySelector(".home-kids")).toBeNull();
 });
 
-test("T22: each mark has its own shape and words; no mark, no data-mark; a finished subagent says Done", () => {
+test("T22: each chat mark has its own shape and words; no mark, no data-mark", () => {
 	const list = buildHome(input([
 		conv("needs"),
 		{ ...conv("new"), newReply: 1 },
@@ -150,7 +132,7 @@ test("T22: each mark has its own shape and words; no mark, no data-mark; a finis
 		conv("plain"),
 	]), null).list;
 	const html = renderToStaticMarkup(<HomeList
-		home={{ list, orderSignature: "", isExpanded: () => true, toggle: () => {} }}
+		home={{ list, orderSignature: "" }}
 		projects={[]}
 		projectsOpen={false}
 		currentFolderId={null}
@@ -198,12 +180,8 @@ test("T22: each mark has its own shape and words; no mark, no data-mark; a finis
 	expect(rowOf("working")).toEqual({
 		mark: "working", shape: "mark mark-working", words: "Working", line: "Working",
 	});
-	expect(rowOf("running")).toEqual({
-		mark: "working", shape: "mark mark-working", words: "Working", line: null,
-	});
-	expect(rowOf("finished")).toEqual({
-		mark: null, shape: "mark mark-done", words: "Done", line: null,
-	});
+	expect(rowOf("running").mark).toBeNull();
+	expect(rowOf("finished").mark).toBeNull();
 	expect(rowOf("plain")).toEqual({
 		mark: null, shape: null, words: null, line: "plain preview",
 	});

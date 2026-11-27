@@ -15,6 +15,8 @@ import type {
 	AppAttentionResponse,
 	AppActivityResponse,
 	AppPostsResponse,
+	AppBot,
+	AppBotName,
 	AppCompactResponse,
 	AppRollResponse,
 	AppSuggestTitleResponse,
@@ -204,6 +206,14 @@ async function request<T>(token: string | null, path: string, init?: RequestInit
 
 export function listConversations(token: string | null): Promise<AppConversationList> {
 	return request(token, "/api/app/conversations");
+}
+
+export function convertSideChat(token: string | null, id: string, body: AppBotName): Promise<AppBot> {
+	return request(token, `/api/app/conversations/${seg(id)}/convert-to-bot`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
 }
 
 export function markConversationRead(token: string | null, id: string, seq: number): Promise<{ ok: true }> {

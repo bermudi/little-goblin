@@ -24,6 +24,7 @@ import type {
 import { ArchiveView } from "./ArchiveView.tsx";
 import { ActivityView } from "./ActivityView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
+import { BotConversionDialog } from "./BotConversionDialog.tsx";
 import {
 	ApiError,
 	clearToken,
@@ -254,6 +255,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		return live.refresh(...topics);
 	};
 	const [headerRenaming, setHeaderRenaming] = useState(false);
+	const [convertSource, setConvertSource] = useState<string | null>(null);
 	const [railHidden, setRailHidden] = useState(false);
 	// A pending rail create may navigate only while its original route
 	// still owns the screen, even if the operator later returns there.
@@ -817,6 +819,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		setRowError(err instanceof Error ? err.message : String(err));
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
+	const currentBot = conversationsLive.data?.bots?.find((bot) => bot.mainConversationId === current);
 
 	const archived = unbound
 		.filter((c) => c.archivedAt !== null && c.parentId == null)
@@ -1189,6 +1192,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								onAction={(value) => {
 									if (value === "pin") void headerActions.togglePinned();
 									else if (value === "rename") setHeaderRenaming(true);
+									else if (value === "convert-to-bot") setConvertSource(currentConv.id);
 									else if (value === "archive" || value === "unarchive")
 										void headerActions.toggleArchived();
 									else if (value === "delete") headerActions.remove();
@@ -1217,7 +1221,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 												{currentConv.pinnedAt === null ? "Pin" : "Unpin"}
 											</MenuItem>
 											<MenuItem value="rename">Rename</MenuItem>
-											{currentConv.projectId === null && currentConv.parentId === null && (
+											{currentBot === undefined && currentConv.projectId === null && currentConv.parentId === null && (
+												<MenuItem value="convert-to-bot">Convert to bot…</MenuItem>
+											)}
+											{currentBot === undefined && currentConv.projectId === null && currentConv.parentId === null && (
 												<MenuSub>
 													<MenuSubTrigger>Move to project</MenuSubTrigger>
 													<MenuSubContent className="move-menu">
@@ -1230,7 +1237,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 													</MenuSubContent>
 												</MenuSub>
 											)}
-											<MenuItem value="archive">Archive</MenuItem>
+											{currentBot === undefined && <MenuItem value="archive">Archive</MenuItem>}
 										</>
 									) : (
 										<>
@@ -1850,6 +1857,19 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			)}
 			{undoToast.view}
 			{confirm.view}
+			{convertSource !== null && convertSource === current && (
+				<BotConversionDialog
+					key={convertSource}
+					token={token}
+					conversationId={convertSource}
+					title={currentTitle}
+					onClose={() => setConvertSource(null)}
+					onConverted={() => {
+						setConvertSource((source) => source === convertSource ? null : source);
+						void acted("conversations");
+					}}
+				/>
+			)}
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}

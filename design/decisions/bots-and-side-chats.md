@@ -62,6 +62,24 @@ main bot, bots with one job each, and no projects.
   - **Archive.** Chats of an archived project become archived chats, so
     they stay hidden and show on the Archive page.
 
+### Converting a side chat
+
+Operator rulings, 2026-11-27 (#983). An active Little Goblin side chat
+becomes a bot's main chat. Conversion keeps the conversation ID, history,
+model settings, working directory and system prompt snapshot. Use the chat
+title as the suggested bot name. When the bot starts a fresh conversation,
+it uses the app's model and thinking defaults unless overridden, a dedicated
+bot folder, and the bot's instructions, initially blank. Later changes to
+those defaults and instructions apply to fresh conversations.
+
+Little Goblin's ID is `little-goblin`. Other bots have server-generated UUIDs.
+A bot keeps its ID across renames and conversation rolls. The conversation
+has one owner, so notes can use the same bot ID for all its chats.
+
+The converted chat can search its bot's history. Previously recalled
+Hindsight context still replays at its original position. New bot turns
+skip Hindsight recall and retention (#926).
+
 **Rejected.**
 
 - *A list of bots in place of today's layout.* The operator ruled that the

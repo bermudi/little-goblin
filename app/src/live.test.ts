@@ -144,6 +144,7 @@ const list = (preview: string): AppConversationList => ({
 		},
 	],
 	rolling: { chain: [] },
+	bots: [],
 });
 
 const projects = (name: string): AppProjectList => ({

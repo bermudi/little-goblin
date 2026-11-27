@@ -58,6 +58,8 @@ Phone: `ab set viewport 390 844`. A fresh `$URL` shows Little Goblin's main chat
 
 Side chats: every chat outside a project shows under the Little Goblin row as a `.side-chat` row. The `Side chats` chevron (`button[aria-label="Side chats"]`, `aria-expanded`) folds and opens them; on a phone it is the only way to reach them from the list. Opening Little Goblin's main chat or a side chat opens them; opening a project chat or project page folds them. While folded, the Little Goblin row carries the most urgent side-chat mark, with a line such as `New reply in alpha` or `Working in gamma`.
 
+Convert a side chat: open it, open the menu in its title, choose **Convert to bot…**, enter a name, and confirm. The conversation URL and transcript stay the same on reload. Check the bot and its original conversation with `sqlite3 -readonly "$DB" 'SELECT name, conversation_id FROM bots JOIN bot_chats ON bots.id = bot_chats.bot_id'`.
+
 Lost line: see [live.md](live.md). The marks turn grey.
 
 Proof: the `rows` output and a screenshot for each state, in both themes (`ab set media light`), and the `read_seq` values.

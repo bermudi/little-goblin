@@ -4,6 +4,7 @@
 // openStore spreads these.
 
 import type { Database } from "bun:sqlite";
+import type { BotStore } from "./bots.ts";
 import { log } from "./log.ts";
 import type { MemoryQueue } from "./memory/queue.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
@@ -51,6 +52,7 @@ export function makeConversationDelete(
 		| "qDeleteConv"
 	>,
 	memoryQueue: MemoryQueue,
+	bots: Pick<BotStore, "membership">,
 ) {
 	const {
 		qGet,
@@ -63,6 +65,8 @@ export function makeConversationDelete(
 	} = queries;
 
 	function deleteRefusal(id: string): string | null {
+		const membership = bots.membership(id);
+		if (membership !== null && membership.mainOrdinal !== null) return "This chat is a bot's main chat.";
 		const anchors = legacyAnchors(db, id);
 		return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
 	}
@@ -97,8 +101,8 @@ export function makeConversationDelete(
 
 	function sweep(id: string): Swept {
 		const swept = db.transaction((): Swept => {
-			const anchors = legacyAnchors(db, id);
-			if (anchors.length > 0) throw new DeleteRefused(deleteRefusalText(id, anchors));
+			const refusal = deleteRefusal(id);
+			if (refusal !== null) throw new DeleteRefused(refusal);
 			// Sever the rolling navigation chain first — successors'
 			// previous_dm_id would FK-fail the row delete (a demoted
 			// lane's persona reset is the one caller that deletes a

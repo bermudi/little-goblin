@@ -8,9 +8,20 @@ import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
 import type { NoteBatchAction, NoteSelection } from "../note-owner.ts";
 
+export interface AppBot {
+	id: string;
+	name: string;
+	mainConversationId: string;
+}
+
+export interface AppBotName {
+	name: string;
+}
+
 export interface AppConversationList {
 	conversations: AppConversationListItem[];
 	rolling: { chain: AppConversationListItem[] };
+	bots: AppBot[];
 }
 
 export interface AppRollResponse {

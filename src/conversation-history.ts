@@ -101,11 +101,11 @@ export function makeConversationHistory(
 		return found === null ? null : { seq: found.seq, role: found.role };
 	}
 
-	function searchHistory(query: string, limit: number, channelPrefix?: string) {
+	function searchHistory(query: string, limit: number, channelPrefix?: string, botId?: string) {
 		const match = toFtsQuery(query);
 		if (match === null) return [];
 		const hits: HistoryHit[] = [];
-		for (const r of qSearch.all(match, channelPrefix ?? null, Math.max(1, Math.min(limit, 50)))) {
+		for (const r of qSearch.all(match, channelPrefix ?? null, Math.max(1, Math.min(limit, 50)), botId ?? null)) {
 			const message = parseEvent(r.cid, r.seq, r.role, r.data);
 			if (message === null) continue;
 			hits.push({

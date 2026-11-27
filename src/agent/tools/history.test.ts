@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Message } from "../../message.ts";
+import { appAddress } from "../../conversation-address.ts";
 import { openStore, type ConversationStore } from "../../conversation.ts";
 import { z } from "zod";
 import { excerpt, historyInputSchema, historySearchTool } from "./history.ts";
@@ -15,6 +16,7 @@ const deps = (store: ConversationStore, excluded = false, conversationId = "self
 	store,
 	conversationId,
 	isExcluded: () => excluded,
+	botIdFor: (id: string) => store.bots.membership(id)?.botId ?? null,
 });
 
 const msg = (text: string): Message => ({
@@ -71,6 +73,31 @@ describe("history_search tool", () => {
 		})) as string;
 		expect(out).toBe("No past conversations match.");
 		store.close();
+	});
+
+	test("history scope follows a side chat when it becomes a bot", async () => {
+		const store = openStore(tmpDb("goblin-bot-history-"));
+		try {
+			const chat = store.resolve(appAddress("bot-main"), "/workshop");
+			const loose = store.resolve(appAddress("loose"), "/workshop");
+			store.append(chat.id, [msg("workshop supplies")]);
+			store.append(loose.id, [msg("workshop unrelated")]);
+			const tool = historySearchTool(deps(store, false, chat.id));
+			const search = { action: "search", query: "workshop" };
+			expect(await exec(tool, search)).toContain("workshop unrelated");
+
+			expect(store.bots.convertSideChat(chat.id, "Workshop", 0, () => false).kind).toBe("converted");
+			const result = await exec(tool, search);
+			expect(result).toContain("workshop supplies");
+			expect(result).not.toContain("workshop unrelated");
+			expect(await exec(tool, { action: "context", conversation: loose.id, seq: 1 })).toEqual({
+				error: "Only this bot's conversations are in scope.",
+			});
+			expect(await exec(historySearchTool(deps(store, false, loose.id)), search))
+				.toContain("workshop supplies");
+		} finally {
+			store.close();
+		}
 	});
 
 	test("context pages the window around a hit", async () => {

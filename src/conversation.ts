@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { Message } from "./message.ts";
 import { z } from "zod";
+import { type BotStore, makeBotStore } from "./bots.ts";
 import { type Config, splitModelRef } from "./config-schema.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
@@ -88,6 +89,7 @@ export function prepareAppSettingsForConfig(
 export interface ConversationStore extends ConversationReads {
 	// Shared handle — the memory/outage modules each own tables in this file.
 	readonly db: Database;
+	readonly bots: BotStore;
 	readonly memoryQueue: MemoryQueue;
 	readonly memoryContexts: MemoryContexts;
 	// Boot records the live endpoint+bank so forget can reconstruct a
@@ -227,6 +229,7 @@ export function openStore(dbPath: string): ConversationStore {
 	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA foreign_keys = ON");
 	ensureConversationSchema(db);
+	const bots = makeBotStore(db);
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
 	const memoryDestinations = new MemoryDestinations(db);
@@ -295,11 +298,12 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const transcript = makeConversationTranscript(db, queries, {
 		memoryQueue,
+		bots,
 		bump,
 		messageEvent: historyView.messageEvent,
 	});
 
-	const deletion = makeConversationDelete(db, queries, memoryQueue);
+	const deletion = makeConversationDelete(db, queries, memoryQueue, bots);
 
 	function resolveConversation(
 		addr: ConversationAddress,
@@ -366,6 +370,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 	return {
 		db,
+		bots,
 		memoryQueue,
 		memoryContexts,
 		memoryDestinations,
@@ -645,6 +650,7 @@ export function openStore(dbPath: string): ConversationStore {
 		bindProject(id, projectId) {
 			const row = qGet.get(id);
 			if (row === null) throw new Error(`conversation ${id} not found`);
+			if (bots.membership(id) !== null) throw new Error(`conversation ${id} belongs to a bot`);
 			if (row.project_id !== null && row.project_id !== projectId) {
 				throw new Error(`conversation ${id} is already bound to project ${row.project_id}`);
 			}

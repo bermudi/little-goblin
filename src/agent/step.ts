@@ -342,7 +342,7 @@ export function makeStepBuilder(
 				const skip =
 					cfg.memory !== undefined
 						? "memory configured"
-						: conv.memoryExcluded
+						: conv.memoryExcluded || store.bots.membership(conv.id) !== null
 							? "memory excluded"
 							: cfg.providers[splitModelRef(modelRef).provider]?.kind === "claude-code"
 								? "claude-code engine has no tools on the compaction lane"

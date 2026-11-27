@@ -1371,7 +1371,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							else if (value === "sources") setSourcesOpen(true);
 						}}>
 							<MenuTrigger className="header-action" aria-label="Chat tools" title="Chat tools"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></MenuTrigger>
-							<MenuContent>
+							<MenuContent className="title-menu">
 								<MenuItem value="context">Context window</MenuItem>
 								<MenuItem value="sources">From this thread</MenuItem>
 								{!phone && !columnCramped && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}

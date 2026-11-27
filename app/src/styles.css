@@ -762,15 +762,24 @@ p code,
 	color: var(--app-fg);
 	box-shadow: 0 8px 28px rgb(0 0 0 / 22%);
 }
-.title-menu [role="menuitem"] {
+.title-menu :is([role="menuitem"], [role="menuitemcheckbox"]) {
 	padding: 0.45rem 0.6rem;
 	border-radius: 5px;
 	font-size: 13px;
 	cursor: pointer;
 	outline: none;
 }
-.title-menu [role="menuitem"][data-highlighted] {
+.title-menu :is([role="menuitem"], [role="menuitemcheckbox"])[data-highlighted] {
 	background: var(--app-hover);
+}
+.title-menu [role="menuitemcheckbox"] {
+	display: flex;
+	justify-content: space-between;
+	gap: 1rem;
+}
+.title-menu [role="menuitemcheckbox"][aria-checked="true"]::after {
+	content: "✓";
+	color: var(--app-fg-muted);
 }
 .header-title-editor {
 	min-width: 0;

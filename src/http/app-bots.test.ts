@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { noteTool } from "../agent/tools/note.ts";
 import { appAddress, appIdOf } from "../conversation-address.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { deferred } from "../testkit.ts";
 import { handleBotsRoute } from "./app-bots.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
@@ -85,7 +87,7 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 });
 
 test("move back checks current ownership after reading the request", async () => {
-	const { call, store, notes, appDeps, http } = setup({ token: APP_TOKEN_NAME });
+	const { call, store, appDeps, http } = setup({ token: APP_TOKEN_NAME });
 	try {
 		const main = store.resolve(appAddress("desk"), "/workshop");
 		store.append(main.id, [{ id: "u1", role: "user", parts: [{ type: "text", text: "Make a plan." }] }]);
@@ -122,14 +124,39 @@ test("move back checks current ownership after reading the request", async () =>
 		});
 		expect((await moving)?.status).toBe(409);
 		expect(store.bots.membership(main.id)?.botId).toBe(bot.id);
-		expect((await call(`/api/app/conversations/${appIdOf(id)}`, { method: "DELETE" })).status).toBe(200);
+	} finally {
+		http.stop();
+		store.close();
+	}
+});
 
-		const note = notes.create({ title: "Bot note" });
-		notes.batch([note], { action: "move", owner: { botId: bot.id } });
-		const refused = await call(path, { method: "POST", headers: jsonHeaders, body: "{}" });
+test("a note created through the chat tool follows its bot and blocks move back", async () => {
+	const { call, store, notes, projects, http } = setup({ token: APP_TOKEN_NAME });
+	try {
+		const chat = store.resolve(appAddress("desk"), "/workshop");
+		const tool = noteTool({ notes, projects, conversation: chat.id, projectId: chat.projectId });
+		const create = (title: string) => tool.execute({ action: "create", title }, { toolCallId: title });
+		expect(await create("Before conversion")).toMatchObject({ created: true });
+		const converted = await call("/api/app/conversations/desk/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Desk" }),
+		});
+		expect(converted.status).toBe(201);
+		const bot = (await converted.json()) as AppBot;
+		expect(bot.canMoveBack).toBe(true);
+		expect(await create("After conversion")).toMatchObject({ created: true });
+
+		const listed = await (await call("/api/app/notes")).json();
+		expect(listed).toMatchObject({ notes: expect.arrayContaining([
+			expect.objectContaining({ title: "Before conversion", botId: LITTLE_GOBLIN_NOTE_OWNER }),
+			expect.objectContaining({ title: "After conversion", botId: bot.id }),
+		]) });
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({
+			bots: [{ ...bot, canMoveBack: false }],
+		});
+		const refused = await call(`/api/app/bots/${bot.id}/move-back`, {
+			method: "POST", headers: jsonHeaders, body: "{}",
+		});
 		expect(refused.status).toBe(409);
-		expect(notes.get(note.id)?.botId).toBe(bot.id);
-		expect(store.bots.membership(main.id)?.botId).toBe(bot.id);
 	} finally {
 		http.stop();
 		store.close();

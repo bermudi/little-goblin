@@ -466,6 +466,12 @@ const server = Bun.serve({
 			if (postMatch !== null) {
 				return toolCallResponse("post", { text: postMatch[1]! }, parsed.data.stream === true);
 			}
+			const noteMatch = /\[note ([^\]]+)\]/.exec(lastUserText);
+			if (noteMatch !== null) {
+				return toolCallResponse("note", {
+					action: "create", title: noteMatch[1]!.trim(), body: "Verification note.",
+				}, parsed.data.stream === true);
+			}
 			const delegateMatch = /\[delegate (\S+) (\S+) ([^\]]+)\]/.exec(lastUserText);
 			if (delegateMatch !== null) {
 				return toolCallResponse(

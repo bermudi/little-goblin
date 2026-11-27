@@ -17,7 +17,15 @@ One `System1Client` is built at boot and shared by every consumer.
 
 - **Models.** Default and backup are both `typesafe/jev-1.13` (operator
   ruling, 2026-10-05); the configured primary is
-  `perplexity/pplx-decider-v1.2` (operator ruling, 2026-11-06).
+  `perplexity/pplx-decider-v1.2` (operator ruling, 2026-11-06). These are
+  OpenRouter model IDs, not defaults for other backends.
+- **Backends.** OpenRouter's `/api/alpha/decisions` is the default.
+  `kind: "openai-decisions"` opts into the OpenAI Decisions wire format
+  (operator approved, 2026-11-27, #974), as served by [Drex][drex-decisions].
+  Goblin sends named predicates, carries both criteria in the instructions,
+  and requires one valid probability per question. A refusal or invalid
+  answer makes the check unavailable, not a zero score. This backend
+  makes one attempt and never sends an OpenRouter fallback model or key.
 - **Logging.** Never state text, credentials, response bodies, or endpoint
   URLs.
 
@@ -38,12 +46,32 @@ The optional bootstrap-only `system1` block is the shared client's own switch
 (ruling 2026-10-12): set, the client exists and its non-reviewer consumers
 attach, `reviewer` block or not (the skill-review gate itself still needs
 `reviewer`); `reviewer` also implies the client, behaving identically.
-`auth` names the `auth.jsonl` record, resolved live per call, falling back
-to `reviewer.auth`; `model` is a bare decision-model id, never a
-`<provider>/<model>` chat ref (deliberately outside provider validation);
-`model`/`baseUrl` are boot-captured, so changes require an approved restart.
+`auth` names the `auth.jsonl` record, falling back to `reviewer.auth` only
+for reviewer-only configs. The key is resolved per call, but the key
+reference, backend, model, and base URL are captured together at boot, so
+changing them requires an approved restart. `model` is a bare decision-model
+id, never a `<provider>/<model>` chat ref.
 This block has no Settings controls yet; file edits follow the bootstrap and
 recovery validation policy in `DESIGN.md` → Config.
+
+To use Drex, provision a Nace key in the local key snapshot and reference it
+from `auth.jsonl` as usual. Set the base URL through `/v1`, not the full
+`/decisions` endpoint, and replace the placeholder with the model ID you
+want to evaluate.
+
+```json5
+system1: {
+  kind: "openai-decisions",
+  baseUrl: "https://console.nace.ai/v1",
+  model: "<Drex model ID>",
+  auth: "nace",
+}
+```
+
+The new backend must use HTTPS, except for local loopback fixtures. The
+configured backend receives the input for every enabled check, which can
+include mail or chat excerpts. Compare the models in an isolated home
+before switching the running service.
 
 With neither block there is no client: the layer is off.
 
@@ -51,7 +79,10 @@ With neither block there is no client: the layer is off.
 
 `bun scripts/system1-eval.ts [--runs N] [--only check] [--out file] [--stored] model ...`
 runs labeled cases through each check's real questions and state shape,
-with the backup off, and judges them at the score production acts on. The
+using the configured backend with the backup off, and judges them at the
+score production acts on. Use one config per backend. Drex reports input
+tokens but not dollar cost in the response; the evaluation reports
+`cost not reported` rather than `$0`. The OpenRouter
 decision model catalog is
 `https://openrouter.ai/api/v1/models?output_modalities=decisions`.
 
@@ -81,3 +112,5 @@ three hand-labeled real turns.
 ## Provenance
 
 Git owns the sequence; this doc is the shared gate's one home.
+
+[drex-decisions]: https://console.nace.ai/docs/drex/guides/openai-compatible-decisions

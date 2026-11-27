@@ -219,6 +219,14 @@
   // `model` is a bare decision-model id (e.g. typesafe/jev-1.13), NOT a
   // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
+  // For an OpenAI-compatible Decisions service, set kind, model, and URL
+  // explicitly. Use a separate auth record for that service.
+  // system1: {
+  //   kind: "openai-decisions",
+  //   baseUrl: "https://console.nace.ai/v1",
+  //   model: "<Drex model ID>",
+  //   auth: "nace",
+  // },
 
   // --- Delegation (other coding harnesses, via pinned hc) ---
   // Unset = no delegate tool. Each harness has a kind plus native CLI

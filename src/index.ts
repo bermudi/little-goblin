@@ -615,6 +615,7 @@ async function boot() {
 		desktops: desktopsBoot,
 		http: config.http,
 		reviewer: config.reviewer,
+		system1: config.system1,
 	};
 	// One post-write path for every config door: hot-apply what's live,
 	// flip-log what joins/leaves the tool set, warn on what's boot-pinned —

@@ -40,6 +40,7 @@ function pinsFor(c: Config): BootPins {
 		desktops: c.desktops,
 		http: c.http,
 		reviewer: c.reviewer,
+		system1: c.system1,
 	};
 }
 
@@ -84,6 +85,7 @@ describe("bootPinnedDiffs", () => {
 		["desktops", `desktops:{max:5}`, "desktops"],
 		["http", `http:{port:9999}`, "http"],
 		["reviewer", `reviewer:{auth:"openrouter"}`, "reviewer"],
+		["system1", `system1:{auth:"openrouter"}`, "system1"],
 	])("a %s change reports its key", (_label, extra, key) => {
 		const boot = loadExtra("");
 		expect(bootPinnedDiffs(pinsFor(boot), loadExtra(extra))).toEqual([key]);
@@ -100,6 +102,14 @@ describe("bootPinnedDiffs", () => {
 	])("reviewer %s requires restart", (_label, extra) => {
 		const boot = loadExtra(`reviewer:{auth:"openrouter"}`);
 		expect(bootPinnedDiffs(pinsFor(boot), loadExtra(extra))).toEqual(["reviewer"]);
+	});
+
+	test("changing the System One backend and key together requires restart", () => {
+		const boot = loadExtra(`system1:{auth:"openrouter"}`);
+		const cur = loadExtra(
+			`system1:{kind:"openai-decisions",auth:"nace",model:"fixture",baseUrl:"https://console.nace.ai/v1"}`,
+		);
+		expect(bootPinnedDiffs(pinsFor(boot), cur)).toEqual(["system1"]);
 	});
 
 	test("multiple diffs report in pin order, not diff order", () => {

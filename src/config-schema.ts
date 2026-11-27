@@ -317,16 +317,30 @@ export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 // reviewer.auth/DEFAULT_MODEL; model is a bare decision-model id, NOT a
 // "<provider>/<model-id>" chat ref — outside superRefine's provider
 // validation.
-export const system1ConfigSchema = z
-	.object({
+export const system1ConfigSchema = z.discriminatedUnion("kind", [
+	z.strictObject({
+		kind: z.literal("openrouter").optional(),
 		auth: z.string().min(1),
 		model: z.string().min(1).optional(),
-		// z.url(), not a bare string: a typo must fail at load, not surface
-		// later as a mislabeled transport failure riding the injection
-		// checker's fail-open.
 		baseUrl: z.url().optional(),
-	})
-	.strict();
+	}),
+	z.strictObject({
+		kind: z.literal("openai-decisions"),
+		auth: z.string().trim().min(1),
+		model: z.string().trim().min(1),
+		baseUrl: z.url({ normalize: true }).refine(
+			(value) => {
+				const url = URL.parse(value);
+				if (!url || url.username || url.password || /[?#]/.test(value)) return false;
+				return (
+					url.protocol === "https:" ||
+					(url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname))
+				);
+			},
+			"Expected an HTTPS base URL (HTTP only on loopback) without credentials, query, or fragment",
+		),
+	}),
+]);
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 
 // The OpenAI /audio/speech shape (voice optional). 1min is not on

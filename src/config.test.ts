@@ -410,8 +410,40 @@ describe("goblin.json5", () => {
 			`,system1:{auth:"x",model:"other/x"}`,
 			{ auth: "x", model: "other/x" },
 		],
+		[
+			"accepts an explicit OpenAI Decisions route",
+			`,system1:{kind:"openai-decisions",auth:"nace",model:"fixture",baseUrl:"https://console.nace.ai/v1"}`,
+			{
+				kind: "openai-decisions",
+				auth: "nace",
+				model: "fixture",
+				baseUrl: "https://console.nace.ai/v1",
+			},
+		],
 	]);
-	throwRows("system1", P_ZAI, [["auth is required", `,system1:{model:"jev-latest"}`]]);
+	throwRows("system1", P_ZAI, [
+		["auth is required", `,system1:{model:"jev-latest"}`],
+		[
+			"OpenAI Decisions requires an explicit model",
+			`,system1:{kind:"openai-decisions",auth:"nace",baseUrl:"https://example.com/v1"}`,
+		],
+		[
+			"OpenAI Decisions requires a base URL",
+			`,system1:{kind:"openai-decisions",auth:"nace",model:"fixture"}`,
+		],
+		[
+			"OpenAI Decisions requires its own auth reference",
+			`,system1:{kind:"openai-decisions",model:"fixture",baseUrl:"https://example.com/v1"}`,
+		],
+		[
+			"OpenAI Decisions rejects HTTP outside loopback",
+			`,system1:{kind:"openai-decisions",auth:"nace",model:"fixture",baseUrl:"http://example.com/v1"}`,
+		],
+		[
+			"OpenAI Decisions rejects a base URL with credentials or a query",
+			`,system1:{kind:"openai-decisions",auth:"nace",model:"fixture",baseUrl:"https://user@example.com/v1?q=1"}`,
+		],
+	]);
 
 	valueRows("search", P_ZAI, (c) => c.search, [
 		[

@@ -35,32 +35,24 @@ export interface ReviewerWiring {
 
 export function wireReviewer(deps: ReviewerWiringDeps): ReviewerWiring {
 	const { configRef, auth, store, observation, paths, notify, recordSources } = deps;
-	// The hand-edited block boot-captures auth and threshold; the review
-	// model resolves live (see ReviewerDeps.reviewModel).
 	const reviewerBlock = configRef.current.reviewer;
 	// The shared client exists whenever a `system1` block is set, and
 	// `reviewer` still implies it — a system1-only config gains the
 	// client it already named.
 	const system1Block = configRef.current.system1;
+	const authName = system1Block?.auth ?? reviewerBlock?.auth;
 	const gate =
-		system1Block || reviewerBlock
+		authName !== undefined
 			? new System1Client({
-					auth: () => {
-						// Auth resolves live per call; system1.auth wins,
-						// reviewer.auth is the fallback for reviewer-only configs.
-						const name = configRef.current.system1?.auth ?? reviewerBlock?.auth;
-						if (name === undefined) throw new Error("system1 gate without auth");
-						return auth.resolve(name);
-					},
-					...(system1Block?.model !== undefined ? { model: system1Block.model } : {}),
-					...(system1Block?.baseUrl !== undefined ? { baseUrl: system1Block.baseUrl } : {}),
+					...system1Block,
+					auth: () => auth.resolve(authName),
 				})
 			: null;
 	if (reviewerBlock === undefined || gate === null) {
 		if (gate !== null)
 			log.info("system1 enabled", {
 				model: system1Block?.model,
-				baseUrl: system1Block?.baseUrl,
+				backend: system1Block?.kind ?? "openrouter",
 			});
 		return { gate, reviewer: null };
 	}

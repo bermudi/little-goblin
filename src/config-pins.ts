@@ -19,6 +19,7 @@ export interface BootPins {
 	// file and applies nothing, so it warns like the other pins.
 	http: Config["http"];
 	reviewer: Config["reviewer"];
+	system1: Config["system1"];
 }
 
 const eq = (a: unknown, b: unknown): boolean =>
@@ -34,6 +35,7 @@ export function bootPinnedDiffs(pins: BootPins, cur: Config): string[] {
 	if (!eq(cur.desktops, pins.desktops)) diffs.push("desktops");
 	if (!eq(cur.http, pins.http)) diffs.push("http");
 	if (!eq(cur.reviewer, pins.reviewer)) diffs.push("reviewer");
+	if (!eq(cur.system1, pins.system1)) diffs.push("system1");
 	return diffs;
 }
 
@@ -45,6 +47,7 @@ const PIN_LABEL: Record<string, string> = {
 	desktops: "desktops config",
 	http: "http config",
 	reviewer: "reviewer config",
+	system1: "system1 config",
 };
 
 // Counts as configured only as an object — a bare `false` disables

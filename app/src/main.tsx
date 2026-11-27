@@ -4,6 +4,7 @@ import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { telegramDoor } from "./api.ts";
 import { installTelegramFallback } from "./telegram.ts";
 import { installTooltips } from "./tooltip.ts";
+import { registerAppServiceWorker } from "./pwa.ts";
 import "./styles.css";
 
 // Telegram's SDK is never fetched: /t/ shares the PWA's origin — the
@@ -32,7 +33,7 @@ async function boot(): Promise<void> {
 	// The PWA registers it; the telegram door never does — its pages sit
 	// outside the /app/ scope, so the registration could only fail.
 	if (!telegramDoor() && "serviceWorker" in navigator) {
-		void navigator.serviceWorker.register("/app/sw.js", { scope: "/app/" });
+		registerAppServiceWorker(navigator.serviceWorker);
 	}
 }
 

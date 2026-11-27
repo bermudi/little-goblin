@@ -7,7 +7,8 @@ import type { ConversationStore } from "../conversation.ts";
 import type { MemoryTurnDeps } from "../memory/mod.ts";
 import type { Message } from "../message.ts";
 import type { PromptMessage } from "../prompt-message.ts";
-import { omitFunctionToolsFromRequest } from "./ai-sdk-tools.ts";
+import { omitFunctionToolsFromRequest, toolSetDeclarations } from "./ai-sdk-tools.ts";
+import { diffDeclarations, foldDeclarations, storedToolChanges } from "../agent/tool-declarations.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
 import { fromSdkError } from "../agent/sdk-errors.ts";
@@ -125,6 +126,11 @@ function makePrefixRequest(
 		toolsInInput: step.toolsInInput === true,
 		skillRef: resolveSkillRef,
 	};
+	const withPendingTools = async (toolHistory: { message: Message }[]): Promise<ViewContext> => {
+		if (view.toolsInInput !== true) return view;
+		const stored = foldDeclarations(storedToolChanges(toolHistory, conv.id).map(({ change }) => change));
+		return { ...view, pendingToolChange: diffDeclarations(stored, await toolSetDeclarations(tools)) };
+	};
 	const prior =
 		input.memory === undefined || conv.memoryExcluded
 			? []
@@ -159,7 +165,7 @@ function makePrefixRequest(
 					}
 				}
 			}
-			await buildModelView(view, {
+			await buildModelView(await withPendingTools(toolHistory), {
 				entries,
 				toolHistory,
 				prior,
@@ -222,7 +228,7 @@ function makePrefixRequest(
 					}
 				}
 			}
-			const messages = await buildModelView(view, {
+			const messages = await buildModelView(await withPendingTools(toolHistory), {
 				entries,
 				toolHistory,
 				prior,

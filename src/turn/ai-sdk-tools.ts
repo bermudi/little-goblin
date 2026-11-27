@@ -5,6 +5,7 @@ import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { ToolResultOutput } from "../prompt-message.ts";
 import { z } from "zod";
 import { isHosted, type Tool, type ToolOutput, type Tools } from "../tool.ts";
+import type { ToolDeclaration } from "../agent/tool-declarations.ts";
 
 const storedToolSchema = z.object({
 	name: z.string().min(1),
@@ -165,6 +166,24 @@ export function toToolSet(tools: Tools): ToolSet {
 			: toSdkTool(definition);
 	}
 	return out;
+}
+
+export async function toolSetDeclarations(tools: ToolSet): Promise<ToolDeclaration[]> {
+	const declarations: ToolDeclaration[] = [];
+	for (const [name, definition] of Object.entries(tools)) {
+		if (definition.type === "provider") continue;
+		if (typeof definition.description === "function") {
+			throw new Error(`tool ${name} has a dynamic description and cannot be declared as input`);
+		}
+		declarations.push({
+			type: "function",
+			name,
+			description: definition.description ?? "",
+			parameters: (await asSchema(definition.inputSchema).jsonSchema) as Record<string, unknown>,
+			strict: false,
+		});
+	}
+	return declarations;
 }
 
 export function omitFunctionToolsFromRequest(tools: ToolSet): ToolSet {

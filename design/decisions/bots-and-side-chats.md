@@ -28,7 +28,9 @@ main bot, bots with one job each, and no projects.
   belongs to one bot. It shows under that bot's row in the left list, and
   only while that bot is open. A closed bot's row carries the most urgent
   mark of its side chats, in the order the list uses today. Search history
-  still finds side chats and names their bot.
+  still finds side chats and names their bot. A chevron on the bot's row
+  also opens and folds its side chats by hand, so a phone can reach them
+  (lead's pick, 2026-11-27, #978).
 - **Three columns stay.** The left list holds Little Goblin and the bots.
   The centre holds the chat or the bot page. The right panel shows the open
   bot: its avatar, status, activity, schedule and memory. Needs you still

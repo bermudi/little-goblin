@@ -89,7 +89,7 @@ export async function openDesktopPage(root: ParentNode, click: Click, page: Desk
 		return;
 	}
 	const href = page === "Status" ? "/app/status" : "/app/memory";
-	const profile = 'nav[aria-label="Goblin\'s profile"]';
+	const profile = 'nav[aria-label="Little Goblin\'s profile"]';
 	if (root.querySelector(profile) === null) {
 		await click(root.querySelector(".goblin-column .goblin-profile-button"));
 		if (page === "Status") return;

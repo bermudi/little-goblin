@@ -150,6 +150,7 @@ describe("mobile: chats screen and navigation", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -573,10 +574,10 @@ describe("mobile: chats screen and navigation", () => {
 	});
 
 	test.each([
-		{ count: 2, fail: false, expected: "Goblin, 2 need you" },
-		{ count: 1, fail: false, expected: "Goblin, 1 needs you" },
-		{ count: 0, fail: false, expected: "Goblin, idle" },
-		{ count: 0, fail: true, expected: "Goblin, idle, couldn't load what needs you" },
+		{ count: 2, fail: false, expected: "Little Goblin, 2 need you" },
+		{ count: 1, fail: false, expected: "Little Goblin, 1 needs you" },
+		{ count: 0, fail: false, expected: "Little Goblin, idle" },
+		{ count: 0, fail: true, expected: "Little Goblin, idle, couldn't load what needs you" },
 	])("phone: Goblin face shows attention count=$count failure=$fail", async ({ count, fail, expected }) => {
 		attention = Array.from({ length: count }, (_, i) => attentionItem(String(i)));
 		attentionFail = fail;
@@ -593,7 +594,7 @@ describe("mobile: chats screen and navigation", () => {
 		const dialog = container.querySelector('[role="dialog"]');
 		expect(dialog).toBeTruthy();
 		const title = dialog?.getAttribute("aria-labelledby");
-		expect(win.document.getElementById(title!)?.textContent).toBe("Goblin");
+		expect(win.document.getElementById(title!)?.textContent).toBe("Little Goblin");
 		await click(buttonText(".goblin-need-row", "Review oneEvidence"));
 		await waitFor(() => win.location.pathname === "/app/programs", "programs");
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -674,7 +675,7 @@ describe("mobile: chats screen and navigation", () => {
 		const rows = [...container.querySelectorAll(".chatlist-screen .conv-title")].map(
 			(el) => el.textContent,
 		);
-		expect(rows).toEqual(["Rolling chat", "fixture chat", "second chat"]);
+		expect(rows).toEqual(["Little Goblin", "fixture chat", "second chat"]);
 		expect(container.querySelector(".tabbar")).toBeNull();
 		expect(container.textContent).not.toContain("More");
 		// The list screen replaces the composer as the chat surface — the
@@ -682,11 +683,11 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector(".chatlist-screen .composer")).toBeNull();
 	});
 
-	test("Rolling chat is first, opens its page, and has no hold actions", async () => {
+	test("Little Goblin is first, opens its page, and has no hold actions", async () => {
 		await mount();
 		const row = container.querySelector(".chatlist-screen .rolling-row");
-		expect(row?.querySelector(".conv-title")?.textContent).toBe("Rolling chat");
-		expect(row?.querySelectorAll("button")).toHaveLength(0);
+		expect(row?.querySelector(".conv-title")?.textContent).toBe("Little Goblin");
+		expect(row?.querySelectorAll("button")).toHaveLength(1);
 		await hold(row!.querySelector("a")!, "touch");
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 		await click(row!.querySelector("a"));
@@ -698,12 +699,12 @@ describe("mobile: chats screen and navigation", () => {
 		await mount();
 		const rows = [...container.querySelectorAll(".chatlist-screen .conv")];
 		expect(rows.map((row) => row.querySelector(".conv-title")?.textContent)).toEqual([
-			"Rolling chat",
+			"Little Goblin",
 			"fixture chat",
 			"second chat",
 		]);
 		expect(rows[0]?.textContent).toContain("latest rolling preview");
-		expect(rows[0]?.querySelectorAll("button")).toHaveLength(0);
+		expect(rows[0]?.querySelectorAll("button")).toHaveLength(1);
 	});
 
 	test("T3: empty-chain send routes through rolling and loads the new conversation", async () => {
@@ -935,7 +936,7 @@ describe("mobile: chats screen and navigation", () => {
 		rollingChain = [roll("current")];
 		rollingHistories.set("app/current", []);
 		await openRolling();
-		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Rolling chat");
+		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Little Goblin");
 		await click(container.querySelector("main > header .title-trigger"));
 		expect([...container.querySelectorAll('[role="menuitem"]')].some((item) =>
 			item.textContent === "Move to project",
@@ -1055,7 +1056,7 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector(".rail-project-main")?.textContent).toContain("Goblin Work");
 		expect(container.querySelector(".rail-project-main")?.getAttribute("href")).toBe("/app/p/p-goblin");
 		const movedPinned = container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]');
-		expect(movedPinned?.querySelector(".conv-project")?.textContent).toBe(" in Goblin Work");
+		expect(movedPinned).toBeNull();
 		expect(movedPinned?.querySelector(".conv-pin")).not.toBeNull();
 	});
 
@@ -1318,7 +1319,7 @@ describe("mobile: chats screen and navigation", () => {
 	test("phone: + stages the composer; back returns to the list", async () => {
 		await mount();
 
-		await click(container.querySelector('.chatlist-bar [aria-label="New chat"]'));
+		await click(container.querySelector('.chatlist-bar [aria-label="New side chat"]'));
 		await waitFor(
 			() => container.querySelector(".chat .composer") !== null,
 			"staged composer",

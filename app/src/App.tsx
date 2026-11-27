@@ -45,7 +45,7 @@ import { Composer } from "./chat/Composer.tsx";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
-import { loadProjectsOpen, saveProjectsOpen } from "./railFolders.ts";
+import { loadProjectsOpen, loadSideChatsOpen, saveProjectsOpen, saveSideChatsOpen } from "./railFolders.ts";
 import { ConversationRow, relTime } from "./ConversationList.tsx";
 import { HomeList, type RenderRow, useHomeList } from "./HomeList.tsx";
 import { useMarkRead } from "./useMarkRead.ts";
@@ -224,9 +224,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// per device (chatWidth.ts).
 	const [chatWidth, setChatWidthState] = useState<ChatWidth>(loadChatWidth);
 	const [projectsOpen, setProjectsOpenState] = useState(loadProjectsOpen);
+	const [sideChatsOpen, setSideChatsOpenState] = useState(loadSideChatsOpen);
 	const setProjectsOpen = (open: boolean) => {
 		setProjectsOpenState(open);
 		saveProjectsOpen(open);
+	};
+	const setSideChatsOpen = (open: boolean) => {
+		setSideChatsOpenState(open);
+		saveSideChatsOpen(open);
 	};
 	const setChatWidth = (width: ChatWidth) => {
 		setChatWidthState(width);
@@ -583,7 +588,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
 		open: railCurrent,
 		seen,
+		sideChatsOpen,
 	}, activeProjects, projectsOpen);
+	const inGoblin = page === "rolling" || home.list.openInGoblin;
+	useEffect(() => {
+		if (!inGoblin) return;
+		setSideChatsOpenState(true);
+		saveSideChatsOpen(true);
+	}, [inGoblin, railCurrent]);
 	const desktopFlipRef = useFlip(home.orderSignature);
 	const phoneFlipRef = useFlip(home.orderSignature);
 
@@ -908,7 +920,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			projectsOpen={projectsOpen}
 			currentFolderId={currentFolderId}
 			rollingCurrent={page === "rolling"}
+			sideChatsOpen={sideChatsOpen}
 			onToggleProjects={() => setProjectsOpen(!projectsOpen)}
+			onToggleSideChats={() => setSideChatsOpen(!sideChatsOpen)}
+			onNewSideChat={newConversation}
 			onNewProject={() => setCreateProjectOpen(true)}
 			onOpenProject={(id) => void openProject(id)}
 			onOpenTarget={openAttentionTarget}
@@ -1036,7 +1051,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
-						<button type="button" aria-label="New chat" onClick={newConversation}>
+						<button type="button" aria-label="New side chat" onClick={newConversation}>
 							<svg
 								viewBox="0 0 24 24"
 								fill="none"
@@ -1252,7 +1267,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								}}
 							>
 								<MenuTrigger className="header-title title-trigger">
-									Rolling chat
+									Little Goblin
 									<ChevronDownGlyph />
 								</MenuTrigger>
 								<MenuContent className="title-menu">
@@ -1270,7 +1285,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								</MenuContent>
 							</Menu>
 						) : (
-							<span className="header-title">Rolling chat</span>
+							<span className="header-title">Little Goblin</span>
 						))}
 					{page === "chat" && current !== null && (
 						<button
@@ -1368,8 +1383,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							<button
 								type="button"
 								className="header-action"
-								title="New chat"
-								aria-label="New chat"
+								title="New side chat"
+								aria-label="New side chat"
 								onClick={newConversation}
 							>
 								<svg
@@ -1402,7 +1417,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							<>
 								{renderHomeList(phoneFlipRef)}
 								{archivedRows}
-								{conversations !== null && home.list.active.length === 0 && home.list.chats.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
+								{conversations !== null && home.list.active.length === 0 && home.list.side.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
 									<p className="empty">Nothing here yet — start a conversation.</p>
 								)}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
@@ -1671,7 +1686,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<div className="chat">
 							<div className="transcript">
 								<div className="transcript-inner">
-									<p className="empty">Send a message — your rolling chat starts here.</p>
+									<p className="empty">Send a message — your chat with Little Goblin starts here.</p>
 									{startFailed && <p className="error">Couldn't send — check the tailnet, then resend.</p>}
 								</div>
 							</div>
@@ -1724,7 +1739,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							key={`rolling:${rollingId}`}
 							token={token}
 							conversationId={rollingId}
-							title="Rolling chat"
+							title="Little Goblin"
 							seed={null}
 							noteProjectId={null}
 							rolling
@@ -1796,7 +1811,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					))}
 			</main>
 			{!phone && (page === "chat" || page === "rolling") && panelOpen && (
-				<aside className="goblin-column" aria-label="Goblin">
+				<aside className="goblin-column" aria-label="Little Goblin">
 					<GoblinPanel
 						variant="column"
 						data={goblin}
@@ -1822,7 +1837,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				>
 					<DrawerBackdrop className="row-sheet-backdrop" />
 					<DrawerContent className="goblin-sheet">
-						<DrawerTitle className="goblin-sheet-title">Goblin</DrawerTitle>
+						<DrawerTitle className="goblin-sheet-title">Little Goblin</DrawerTitle>
 						<GoblinPanel
 							variant="sheet"
 							data={goblin}

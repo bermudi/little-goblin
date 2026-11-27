@@ -146,21 +146,25 @@ test("rolling row is a plain PWA link with no conversation actions", () => {
 				line="**latest** message"
 				updatedAt={conv.updatedAt}
 				mark={null}
+				sideChatsOpen={false}
+				onToggleSideChats={() => {}}
 				onOpen={() => {}}
 			/>
 		</ConversationNav>,
 	);
 	expect(html).toContain('href="/app/rolling"');
 	expect(html).toContain('aria-current="page"');
-	expect(html).toContain("Rolling chat");
+	expect(html).toContain("Little Goblin");
 	expect(html).toContain("<svg");
-	expect(html).not.toContain("goblin-avatar");
+	expect(html).toContain("goblin-avatar-sm");
+	expect(html).toContain('aria-label="Side chats"');
+	expect(html).toContain('aria-expanded="false"');
 	expect(html).toContain(">latest message<");
 	expect(html).not.toContain("toolbar");
-	expect(html).not.toContain("button");
+	expect(html).toContain("<button");
 	expect(renderToStaticMarkup(
 		<ConversationNav loop={false}>
-			<RollingRow current={false} line="" updatedAt={null} mark={null} onOpen={() => {}} />
+			<RollingRow current={false} line="" updatedAt={null} mark={null} sideChatsOpen={false} onToggleSideChats={() => {}} onOpen={() => {}} />
 		</ConversationNav>,
 	)).toContain(">Always here<");
 });

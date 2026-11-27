@@ -5,7 +5,7 @@ export function buildGoblinFaceLabel(
 	needs: number | null,
 	failed: boolean,
 ): string {
-	const parts = ["Goblin"];
+	const parts = ["Little Goblin"];
 	if (working > 0) parts.push(`${working} ${working === 1 ? "job" : "jobs"}`);
 	else if (needs === null || needs === 0) parts.push("idle");
 

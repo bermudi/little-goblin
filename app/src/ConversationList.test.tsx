@@ -169,6 +169,33 @@ test("rolling row is a plain PWA link with no conversation actions", () => {
 	)).toContain(">Always here<");
 });
 
+test("rolling row keeps its avatar and places a mark after the title", () => {
+	const html = renderToStaticMarkup(
+		<ConversationNav loop={false}>
+			<RollingRow current={false} line="" updatedAt={conv.updatedAt} mark="new" sideChatsOpen={false} onToggleSideChats={() => {}} onOpen={() => {}} />
+		</ConversationNav>,
+	);
+	expect(html).toContain("rolling-avatar");
+	expect(html).toContain("goblin-avatar-sm");
+	expect(html).toContain('data-mark="new"');
+	expect(html.indexOf('class="conv-title"')).toBeLessThan(html.indexOf('class="conv-mark"'));
+	expect(html.indexOf('class="conv-mark"')).toBeLessThan(html.indexOf('class="conv-time"'));
+});
+
+test("conversation marks and pins sit between title and time without a gutter", () => {
+	const marked = renderToStaticMarkup(<ConversationNav loop={false}><li>{<ConversationRow {...{
+		conv, current: null, onOpen: () => {}, onRenamed: () => {}, onToggleArchived: () => {}, onTogglePinned: () => {}, onDelete: () => {}, onError: () => {}, moveTargets: [], onMove: () => {}, onMoveToNewProject: () => {}, token: null, mark: "new",
+	}} />}</li></ConversationNav>);
+	expect(marked).not.toContain("conv-gutter");
+	expect(marked.indexOf('class="conv-title"')).toBeLessThan(marked.indexOf('class="conv-mark"'));
+	expect(marked.indexOf('class="conv-mark"')).toBeLessThan(marked.indexOf('class="conv-time"'));
+	const pinned = renderToStaticMarkup(<ConversationNav loop={false}><li>{<ConversationRow {...{
+		conv: { ...conv, pinnedAt: "2026-10-09T00:00:00.000Z" }, current: null, onOpen: () => {}, onRenamed: () => {}, onToggleArchived: () => {}, onTogglePinned: () => {}, onDelete: () => {}, onError: () => {}, moveTargets: [], onMove: () => {}, onMoveToNewProject: () => {}, token: null,
+	}} />}</li></ConversationNav>);
+	expect(pinned).toContain("conv-mark");
+	expect(pinned).toContain("conv-pin");
+});
+
 test("the row toolbar has one tab stop and arrow keys move between its buttons", async () => {
 	renderRow();
 	await act(async () => root?.render(<ConversationNav loop={false}><li>{rowElement()}</li></ConversationNav>));

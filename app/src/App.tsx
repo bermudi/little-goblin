@@ -5,6 +5,7 @@ import {
 	Menu,
 	MenuContent,
 	MenuItem,
+	MenuCheckboxItem,
 	MenuSub,
 	MenuSubContent,
 	MenuSubTrigger,
@@ -45,6 +46,7 @@ import { Composer } from "./chat/Composer.tsx";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
+import { readHeaderLayout } from "./headerLayout.ts";
 import { loadProjectsOpen, loadSideChatsOpen, saveProjectsOpen, saveSideChatsOpen } from "./railFolders.ts";
 import { ConversationRow, relTime } from "./ConversationList.tsx";
 import { HomeList, type RenderRow, useHomeList } from "./HomeList.tsx";
@@ -94,11 +96,15 @@ export function App() {
 
 const CRAMPED_COLUMN_PX = 400;
 
-function observeColumnWidth(column: HTMLElement | null) {
+function observeColumnWidth(column: HTMLElement | null, setCramped: (value: boolean) => void) {
 	if (column === null || typeof window.ResizeObserver !== "function") return;
 	const observer = new window.ResizeObserver((entries) => {
 		const width = entries[0]?.contentRect.width;
-		if (width !== undefined) column.toggleAttribute("data-cramped", width < CRAMPED_COLUMN_PX);
+		if (width !== undefined) {
+			const cramped = width < CRAMPED_COLUMN_PX;
+			column.toggleAttribute("data-cramped", cramped);
+			setCramped(cramped);
+		}
 	});
 	observer.observe(column);
 	return () => observer.disconnect();
@@ -193,6 +199,8 @@ function LiveLost() {
 
 function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: () => void }) {
 	const phone = usePhoneWidth();
+	const [headerLayout] = useState(readHeaderLayout);
+	const [columnCramped, setColumnCramped] = useState(false);
 	const live = useLiveStore();
 	const liveStatus = useLiveStatus();
 	const goblin = useGoblinActivity();
@@ -1088,7 +1096,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				</nav>
 			)}
 			<main
-				ref={observeColumnWidth}
+				ref={(column) => observeColumnWidth(column, setColumnCramped)}
 				className={
 					[chatWidth === "wide" ? "chat-wide" : "", chatListMode ? "list-mode" : ""]
 						.filter(Boolean)
@@ -1155,7 +1163,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							</svg>
 						</button>
 					)}
-					<h1>goblin</h1>
+					<h1 className={page === "chat" || page === "rolling" ? "sr-only" : undefined}>goblin</h1>
 					{page === "chat" && current !== null && (
 						headerRenaming && currentConv !== undefined ? (
 							<div className="header-title-editor">
@@ -1170,7 +1178,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								/>
 							</div>
 						) : currentConv === undefined || headerActions === null ? (
-							<span className="header-title">{flatTitle(currentTitle)}</span>
+							<span className={`header-title${page === "chat" ? " main-title" : ""}`}>{flatTitle(currentTitle)}</span>
 						) : (
 							<Menu
 								onAction={(value) => {
@@ -1193,7 +1201,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									}
 								}}
 							>
-								<MenuTrigger className="header-title title-trigger">
+								<MenuTrigger className={`header-title title-trigger${page === "chat" ? " main-title" : ""}`}>
 									{rowLabel(currentConv)}
 									<ChevronDownGlyph />
 								</MenuTrigger>
@@ -1271,7 +1279,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									}
 								}}
 							>
-								<MenuTrigger className="header-title title-trigger">
+								<MenuTrigger className="header-title title-trigger main-title">
 									Little Goblin
 									<ChevronDownGlyph />
 								</MenuTrigger>
@@ -1292,7 +1300,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						) : (
 							<span className="header-title">Little Goblin</span>
 						))}
-					{page === "chat" && current !== null && (
+					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
+					{page === "notes" && <span className="header-title">Notes</span>}
+					{page === "note" && <span className="header-title">Note</span>}
+					{PAGES.some((p) => p.key === page) && (
+						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
+					)}
+					<div className="header-tools">
+					{page === "chat" && current !== null && headerLayout === "a" && (
 						<button
 							type="button"
 							className="header-action"
@@ -1316,7 +1331,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							</svg>
 						</button>
 					)}
-					{page === "chat" && current !== null && (
+					{page === "chat" && current !== null && headerLayout === "a" && (
 						<button
 							type="button"
 							className="header-action"
@@ -1341,41 +1356,37 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							</svg>
 						</button>
 					)}
-					{/* Trailing the header-action so the action keeps its
-						    auto margin; hidden with the gauge on phone widths,
-						    where the column is narrow whatever this says. */}
-					{page === "chat" && (
-						<span className="width-seg" role="group" aria-label="Chat width">
-							<button
-								type="button"
-								className={chatWidth === "narrow" ? "on" : undefined}
-								aria-pressed={chatWidth === "narrow"}
-								onClick={() => setChatWidth("narrow")}
-							>
-								narrow
-							</button>
-							<button
-								type="button"
-								className={chatWidth === "wide" ? "on" : undefined}
-								aria-pressed={chatWidth === "wide"}
-								onClick={() => setChatWidth("wide")}
-							>
-								wide
-							</button>
-						</span>
+					{page === "chat" && headerLayout === "a" && (
+						<button type="button" className={`header-action width-toggle${chatWidth === "wide" ? " on" : ""}`} aria-label="Wide column" title="Wide column" aria-pressed={chatWidth === "wide"} onClick={() => setChatWidth(chatWidth === "wide" ? "narrow" : "wide")}>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" width="18" height="18" aria-hidden="true"><path d="M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg>
+						</button>
 					)}
-					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
-					{page === "notes" && <span className="header-title">Notes</span>}
-					{page === "note" && <span className="header-title">Note</span>}
-					{PAGES.some((p) => p.key === page) && (
-						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
+					{page === "chat" && current !== null && headerLayout === "b" && (
+						<Menu onAction={(value) => {
+							if (value === "context") openWindow(current);
+							else if (value === "sources") setSourcesOpen(true);
+						}}>
+							<MenuTrigger className="header-action" aria-label="Chat tools" title="Chat tools"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></MenuTrigger>
+							<MenuContent>
+								<MenuItem value="context">Context window</MenuItem>
+								<MenuItem value="sources">From this thread</MenuItem>
+								{!phone && !columnCramped && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}
+							</MenuContent>
+						</Menu>
 					)}
 					{!phone && (page === "chat" || page === "rolling") && (
-						renderGoblinFace("panel")
+						<>
+						{page === "chat" && <span className="header-tools-divider" aria-hidden="true" />}
+						{renderGoblinFace("panel")}
+						</>
 					)}
 					{phone && !chatListMode && (page === "chat" || page === "rolling") && (
-						renderGoblinFace("sheet")
+						<>
+						{page === "chat" && <span className="header-tools-divider" aria-hidden="true" />}
+						{renderGoblinFace("sheet")}
+						</>
 					)}
+					</div>
 				</header>
 				{/* Mobile (M): the chats surface is a screen. Desktop never sees
 					it — the rail is the list there; CSS shows this on phone

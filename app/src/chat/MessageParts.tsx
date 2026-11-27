@@ -715,6 +715,12 @@ function MessagePartsView({
       </>
     );
   }
+  const openAsks = parts.flatMap((part, index) =>
+    isOpenAskPart(part) && isToolUIPart(part) ? [{ part, index }] : [],
+  );
+  if (openAsks.length > 0) {
+    parts = parts.filter((part) => !(isOpenAskPart(part) && isToolUIPart(part)));
+  }
   const out: ReactNode[] = [];
   let liveDrawn = false;
   for (let i = 0; i < parts.length; i++) {
@@ -733,18 +739,6 @@ function MessagePartsView({
           onOpenNote={onOpenNote}
           messages={messages}
           streaming={streaming}
-        />,
-      );
-      continue;
-    }
-    if (isOpenAskPart(p) && isToolUIPart(p)) {
-      out.push(
-        <AskCard
-          key={p.toolCallId === "" ? i : p.toolCallId}
-          part={p}
-          onAction={onAction}
-          busy={busy === true}
-          token={token ?? null}
         />,
       );
       continue;
@@ -903,6 +897,18 @@ function MessagePartsView({
   }
   if (working === true && !liveDrawn)
     out.push(<Activity key={`w${parts.length}`} parts={[]} live ended={ended} />);
+  for (const { part, index } of openAsks) {
+    if (!isToolUIPart(part)) continue;
+    out.push(
+      <AskCard
+        key={part.toolCallId === "" ? index : part.toolCallId}
+        part={part}
+        onAction={onAction}
+        busy={busy === true}
+        token={token ?? null}
+      />,
+    );
+  }
   return <>{out}</>;
 }
 

@@ -5981,9 +5981,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 	});
 });
 
-// The chat width selector — a header control on the chat page whose
-// choice flips the shell column and survives a remount (per-device
-// localStorage, chatWidth.ts).
+// The chat width control — a header toggle that flips the shell column and survives a remount.
 describe("chat width selector", () => {
 	let win: Window;
 	let container: HTMLElement;
@@ -5997,7 +5995,7 @@ describe("chat width selector", () => {
 	};
 
 	beforeEach(() => {
-		win = new Window();
+		win = new Window({ url: "http://localhost/app/c/fixture" });
 		win.history.replaceState(LIST_ENTRY, "");
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
@@ -6013,6 +6011,13 @@ describe("chat width selector", () => {
 		installGlobal("MouseEvent", win.MouseEvent);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+		installGlobal("HTMLInputElement", win.HTMLInputElement);
+		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -6027,7 +6032,21 @@ describe("chat width selector", () => {
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations")
-				return Promise.resolve(jsonResponse({ conversations: [], rolling: { chain: [] } }));
+				return Promise.resolve(jsonResponse({
+					conversations: [{
+						id: "app/fixture", title: "fixture chat", preview: "fixture preview",
+						createdAt: "2026-11-08T00:00:00.000Z", updatedAt: "2026-11-09T00:00:00.000Z",
+						archivedAt: null, pinnedAt: null, projectId: null, parentId: null, newReply: null, busy: false,
+					}],
+					rolling: { chain: [] },
+				}));
+			if (url.endsWith("/window"))
+				return Promise.resolve(jsonResponse({
+					model: "main/test", capturedAt: "2026-10-22T10:00:00.000Z",
+					capturedModel: "main/test", steps: 1,
+					segments: { identity: 10, environment: 0, project: 0, agentsMd: 0, userMd: 0, skills: 0, toolDefs: 0, history: 20, toolResults: 0 },
+					system: "You are goblin.", tools: [], messages: [], calls: [], toolRuns: [], runs: [], nowMs: Date.parse("2026-10-22T10:00:00.000Z"),
+				}));
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
@@ -6074,19 +6093,28 @@ describe("chat width selector", () => {
 		await settle();
 	};
 
-	test("wide flips the shell class and survives a remount", async () => {
+	test("wide toggle flips the shell class and survives a remount", async () => {
 		await mount();
-		const seg = container.querySelector(".width-seg");
-		expect(seg).not.toBeNull();
+		const wide = container.querySelector<HTMLButtonElement>('button[aria-label="Wide column"]');
+		expect(wide).not.toBeNull();
+		expect(container.querySelector("main > header h1")?.className).toBe("sr-only");
+		expect(container.querySelectorAll(".header-tools [aria-label^='Context window']")).toHaveLength(1);
+		expect(container.querySelectorAll(".header-tools [aria-label^='From this thread']")).toHaveLength(1);
+		expect(container.querySelector(".header-tools .goblin-panel-toggle")).not.toBeNull();
 		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
 
-		const wide = [...(seg?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "wide");
 		await act(async () => {
 			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 
 		expect(container.querySelector("main")?.className).toContain("chat-wide");
+		expect(wide?.getAttribute("aria-pressed")).toBe("true");
+		await act(async () => wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event));
+		await settle();
+		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
+		await act(async () => wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event));
+		await settle();
 		expect(win.localStorage.getItem("goblin.chat-width.v1")).toBe("wide");
 
 		await act(async () => {
@@ -6095,6 +6123,37 @@ describe("chat width selector", () => {
 		root = null;
 		await mount();
 		expect(container.querySelector("main")?.className).toContain("chat-wide");
+	});
+
+	test("layout B opens chat tools and applies the width choice", async () => {
+		await mount();
+		win.localStorage.setItem("goblin.headerLayout", "b");
+		await act(async () => {
+			root?.unmount();
+			root = null;
+			const div = win.document.createElement("div");
+			win.document.body.appendChild(div);
+			container = div as unknown as HTMLElement;
+			root = createRoot(container);
+			root.render(<App />);
+		});
+		await settle();
+		expect(container.querySelector(".header-tools [aria-label^='Context window']")).toBeNull();
+		expect(container.querySelector(".header-tools [aria-label^='From this thread']")).toBeNull();
+		const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Chat tools"]');
+		expect(trigger).not.toBeNull();
+		await act(async () => trigger?.click());
+		await settle();
+		const wide = [...container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((item) => item.textContent?.includes("Wide column"));
+		expect(wide).not.toBeNull();
+		await act(async () => wide?.click());
+		await settle();
+		expect(container.querySelector("main")?.className).toContain("chat-wide");
+		const context = [...container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) => item.textContent === "Context window");
+		expect(context).not.toBeNull();
+		await act(async () => context?.click());
+		await settle();
+		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Context window");
 	});
 
 	test("narrow stays the default on a fresh device", async () => {

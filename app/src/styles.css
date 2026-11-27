@@ -436,8 +436,41 @@ p code,
 	color: inherit;
 	text-decoration: none;
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+}
+.conv-main.rail-project-main {
 	grid-template-columns: 18px minmax(0, 1fr);
 	column-gap: 6px;
+}
+.conv-head {
+	display: flex;
+	align-items: baseline;
+	min-width: 0;
+	gap: 0.35rem;
+}
+.conv-head .conv-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.conv-mark {
+	flex: none;
+	align-self: center;
+	display: inline-grid;
+}
+.rolling-row .conv-main {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding-block: 8px;
+}
+.rolling-avatar {
+	width: 28px;
+	height: 28px;
+	flex: none;
+	display: grid;
+	place-items: center;
 }
 .conv-gutter {
 	height: 19px;
@@ -525,7 +558,6 @@ p code,
 	width: 32px;
 	height: 32px;
 	padding: 0;
-	margin-left: auto;
 	border-radius: 50%;
 }
 .goblin-face-badge {
@@ -762,6 +794,9 @@ p code,
 header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	display: none;
 }
+header:has(> .header-title-editor) .header-tools > :not(.goblin-panel-toggle) {
+	display: none;
+}
 .conv-pin {
 	flex: none;
 	align-self: center;
@@ -985,7 +1020,17 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 	min-width: 0;
 }
 .side-chat {
-	padding-left: 1rem;
+	position: relative;
+	padding-left: 16px;
+}
+.side-chat::before {
+	content: "";
+	position: absolute;
+	left: 14px;
+	top: -1px;
+	bottom: 0;
+	width: 1px;
+	background: var(--app-divider);
 }
 .new-side-chat button {
 	width: 100%;
@@ -1202,46 +1247,52 @@ header h1 {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
-/* The chat header's thread-sources action — pushed to the end so the
-   title keeps its place, icon-only with the accessible name. */
-.header-action {
-	margin-left: auto;
-	color: var(--app-fg-muted);
-	display: inline-flex;
-	padding: 0.25rem;
-}
-.header-action:hover {
+.header-title.main-title,
+.title-trigger.main-title {
 	color: var(--app-fg);
+	font-size: 13px;
+	font-weight: 600;
 }
-/* Chat width selector — trails the header-action (which keeps the auto
-   margin), mono like the composer's knobs. Hidden on phone widths: the
-   column is narrow whatever it says there. Hidden too in a desktop column
-   too narrow for the header, which never wraps (#891). */
-.width-seg {
-	display: inline-flex;
+.header-tools {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
 	gap: 2px;
 }
-.width-seg button {
-	font-family: var(--font-mono);
-	font-size: 11px;
-	color: var(--app-fg-subtle);
-	padding: 0.25rem 0.45rem;
-	border-radius: 6px;
+.header-tools-divider {
+	width: 1px;
+	height: 16px;
+	background: var(--app-divider);
+	flex: none;
 }
-.width-seg button:hover {
+.header-action {
+	color: var(--app-fg-muted);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border-radius: 7px;
+}
+.header-action:hover {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-.width-seg button.on {
+.width-toggle.on {
 	background: var(--app-active);
 	color: var(--app-fg);
 }
+.width-toggle:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
 @media (max-width: 720px) {
-	.width-seg {
+	.width-toggle {
 		display: none;
 	}
 }
-main[data-cramped] .width-seg {
+main[data-cramped] .width-toggle {
 	display: none;
 }
 .nav-toggle {
@@ -5858,9 +5909,6 @@ select.ui-input option {
 	.chatlist-screen .conv-preview {
 		font-size: 12px;
 	}
-	.chatlist-screen .conv-gutter {
-		height: 20px;
-	}
 	.ops {
 		padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
 	}
@@ -5904,6 +5952,10 @@ select.ui-input option {
 	.goblin-panel-toggle {
 		min-width: 36px;
 		min-height: 36px;
+	}
+	.header-action {
+		min-width: 2.25rem;
+		min-height: 2.25rem;
 	}
 	.rail .new,
 	.rail-op,

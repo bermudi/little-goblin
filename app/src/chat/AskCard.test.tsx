@@ -131,3 +131,17 @@ test("failed close shows the retry message; an open ask is outside Worked and li
 	await act(async () => container.querySelector<HTMLButtonElement>(".ask-dismiss")!.click());
 	expect(container.textContent).toContain("Couldn't close the question. Try again.");
 });
+
+test("open ask card follows later assistant text", async () => {
+	oldFetch = globalThis.fetch;
+	globalThis.fetch = (async () =>
+		Response.json({ items: [{ id: "ask:12" }], unavailable: [] }, { headers: { "x-goblin-version": "v1" } })) as unknown as typeof fetch;
+	const ask = part("open") as unknown as UIMessage["parts"][number];
+	const text = { type: "text", text: "Reply text" } as UIMessage["parts"][number];
+	await mount(<LiveProvider store={liveStore()}><MessageParts parts={[ask, text]} onAction={() => {}} busy={false} /></LiveProvider>);
+	const reply = [...container.querySelectorAll("*")].find((node) => node.textContent === "Reply text");
+	const card = container.querySelector(".ask-card");
+	expect(reply).not.toBeNull();
+	expect(card).not.toBeNull();
+	expect(reply!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});

@@ -409,7 +409,7 @@ describe("home screen", () => {
 				"# Projects",
 			]);
 			const rolling = container.querySelector(".rolling-row")!;
-			expect(rolling.querySelector(".conv-gutter img")).not.toBeNull();
+			expect(rolling.querySelector(".rolling-avatar img")).not.toBeNull();
 			expect(rolling.querySelector(".conv-preview")?.textContent).toBe("bold words");
 			expect(container.querySelector(".needs-banner")).toBeNull();
 		});

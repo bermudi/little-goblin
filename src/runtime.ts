@@ -186,6 +186,7 @@ interface AttemptView {
 	sentSeqMax: number | null;
 	foldedSeqs: Set<number>;
 	pendingToolChange: ToolChange | null;
+	toolStamp: ToolChange | null;
 }
 
 type CompletedStream = Extract<StreamOutcome, { kind: "ok" }>;
@@ -1200,6 +1201,7 @@ export class Runtime {
 			sentSeqMax,
 			foldedSeqs: new Set<number>(),
 			pendingToolChange,
+			toolStamp: pendingToolChange ?? (changes.length === 0 ? { added: [], removed: [] } : null),
 		};
 	}
 
@@ -1340,11 +1342,11 @@ export class Runtime {
 			ownedInputSeqs: a.ownedInputSeqs,
 			admissionExchangeExcluded: a.admissionExchangeExcluded,
 			responseMessage:
-				outcome.responseMessage !== null && view.pendingToolChange !== null
+				outcome.responseMessage !== null && view.toolStamp !== null
 					? {
 							...outcome.responseMessage,
 							parts: [
-								{ type: TOOLS_PART, data: view.pendingToolChange },
+								{ type: TOOLS_PART, data: view.toolStamp },
 								...outcome.responseMessage.parts,
 							],
 						}

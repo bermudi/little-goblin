@@ -244,7 +244,7 @@ export async function buildModelView(
 			for (const declaration of ctx.pendingToolChange.added) folded.set(declaration.name, declaration);
 			pendingRenderedAtHead = true;
 		}
-		if (folded.size > 0 || headChanges.length > 0) messages.push(toolMarker([...folded.values()]));
+		if (folded.size > 0) messages.push(toolMarker([...folded.values()]));
 	}
 	const partialId = options.partial?.id ?? null;
 	let foreignReasoningMessages = 0;

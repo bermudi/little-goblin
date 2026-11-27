@@ -5208,6 +5208,50 @@ test("Codex tool removal plus addition appends notices without rewriting old inp
 	}
 });
 
+test("a Codex chat that starts with no function tools appends its first tool", async () => {
+	const store = openStore(tmpDb("goblin-codex-empty-baseline-"));
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "third reply" }] },
+	);
+	const searchTools: Tools = {
+		search: defineTool({ description: "local search", input: z.object({ q: z.string() }), execute: () => "hit" }),
+	};
+	let mountedTools: Tools = {};
+	const base = script.step();
+	if (base.engine !== "ai-sdk") throw new Error("expected ai-sdk step");
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => ({ ...base, toolsInInput: true }),
+	});
+	runtime.mount({ makeTools: () => mountedTools });
+	const promptOf = (index: number) =>
+		(JSON.parse(script.callOptions()[index]!) as { prompt: Array<{ role?: string; content?: unknown }> }).prompt;
+	try {
+		for (const [index, question] of ["first question", "second question"].entries()) {
+			const turn = submit({ store, conv, runtime }, question);
+			expect(await turn.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), `empty-baseline turn ${index + 1} drains`);
+		}
+		const secondPrompt = promptOf(1);
+		expect(JSON.stringify(secondPrompt.slice(0, promptOf(0).length))).toBe(JSON.stringify(promptOf(0)));
+		mountedTools = searchTools;
+		const third = submit({ store, conv, runtime }, "third question");
+		expect(await third.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "empty-baseline turn 3 drains");
+		const thirdPrompt = promptOf(2);
+		expect(JSON.stringify(thirdPrompt.slice(0, secondPrompt.length))).toBe(JSON.stringify(secondPrompt));
+		expect(JSON.stringify(thirdPrompt.slice(secondPrompt.length))).toContain('\\"name\\":\\"search\\"');
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
 test("Codex adoption declares stored tools at the head and the next call appends", async () => {
 	const store = openStore(tmpDb("goblin-codex-adoption-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

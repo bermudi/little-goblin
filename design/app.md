@@ -299,22 +299,22 @@ code) shrinks the table's min-content and fits, and a genuinely wide
 table scrolls instead of pushing the transcript column past its width —
 the ui tool's tables already had the wrapper. The chat column width is
 a selector, not a fixed cap: narrow (46rem, the default) and wide
-(72rem) in the chat header, persisted per device in localStorage — a
+(72rem) in the chat header's Chat tools menu, persisted per device in localStorage — a
 phone and the desktop PWA legitimately want different columns; the mini
-app door honors the stored choice read-only and the selector hides on
-phone widths. A machinery tag line (`[delegation: …]`, `[program: …]`,
+app door honors the stored choice read-only and the menu has no width item
+on phone widths. A machinery tag line (`[delegation: …]`, `[program: …]`,
 spellings owned by src/tags.ts) at a block start renders fenced as
 `status`, not as a transcript paragraph — it is the event envelope, and
 the prose after it in the same paragraph continues as text.
 
 **A cramped column drops the width selector (ruling 2026-11-22, #891).**
 The chat header never wraps. When the chat column is too narrow for it,
-the narrow/wide selector hides; the stored choice is kept. "Too narrow"
+the Chat tools menu drops its Wide column item; the stored choice is kept. "Too narrow"
 is the column's measured width, not the window's: the list and the
 Goblin panel can each be open or hidden, so one window width gives
 several column widths. A ResizeObserver on `main` sets `data-cramped`
-below 400px (`CRAMPED_COLUMN_PX` in App.tsx); the stylesheet hides the
-selector there. 400px keeps about 6rem for the chat title beside the
+below 400px (`CRAMPED_COLUMN_PX` in App.tsx) and the app leaves the item
+out there. 400px keeps about 6rem for the chat title beside the
 header's other controls; the header overflowed at about 290px.
 Below 400px the column is far narrower than the 46rem narrow width, so
 the selector changes nothing there anyway. The desktop composer bar
@@ -327,6 +327,15 @@ up space first, down to 2.5rem, before the chat's own title shrinks: the
 chat's own name matters more than its parent's. Accepted limit: at
 721–790px with a chat and both side panes open, the title gets 0–60px;
 hiding a pane gives it room, and rename stays available from the list.
+
+**Chat header (ruling 2026-11-27, #984).** The chat title is on the left;
+on chat pages it is the heading, and the word "goblin" stays only for
+screen readers. Every tool is in one group on the right: a ⋯ Chat tools
+menu (Context window, From this thread, Wide column), a divider, then
+Goblin's avatar. Before this, each icon pushed itself right on its own, and
+the controls spread across the whole bar. Not chosen: the tools as separate
+icons beside the avatar. The operator tried both on a throwaway instance and
+picked the menu. Accepted cost: the tools take two clicks.
 
 **The phone bar folds three tools into a + menu (ruling 2026-11-22,
 #897).** On phone widths, Attach a file, Attach a note and Invoke a
@@ -981,6 +990,14 @@ is now the home screen, and the avatar means only the agent.
   - **Project chats.** A project chat still enters Active when it has a mark.
     A pinned project chat without a mark is not in the list.
   - Search still finds side chats.
+- **Row layout (operator, 2026-11-27, #984).** A row's mark, or its pin
+  when it has no mark, sits between the title and the time, in every list:
+  side chats, Active and the phone chats screen. Rows have no empty
+  mark column on the left. The Little Goblin row always shows the avatar
+  (28px), with its mark beside the time. Side chats have no indent; a thin
+  line under the avatar joins them to the Little Goblin row. Project rows
+  keep their chevron on the left. Search hits are matching messages, not
+  chat rows, and carry no mark, as before.
 - **Goblin's avatar** is in the chat header, and on a phone also in the chats
   bar. It opens the Goblin panel. Ring: busy anywhere, Telegram included.
   Number: the Attention items; `?` when they cannot be loaded.
@@ -1008,8 +1025,10 @@ as [needs you](../GLOSSARY.md#needs-you) until it is closed.
   questions of this chat; in a [roll](../GLOSSARY.md#roll), those of every
   roll. `close {id}` closes one from the same set. App turns only, never a
   subagent, never a guest.
-- **The card.** The question shows in the transcript where it was asked,
-  outside the Worked fold. A button sends `[ask] <question> → <label>` as
+- **The card.** The question shows at the end of the reply that asked it,
+  after all its text and above the reply actions, outside the Worked fold
+  (operator, 2026-11-27, #984). It used to show where the call happened,
+  so the question came before the reply that explains it. A button sends `[ask] <question> → <label>` as
   the operator's message, then closes the question. "No answer needed"
   closes it without a message. Buttons are off while a reply runs; "No
   answer needed" is not. A closed card says "Closed".
@@ -1390,7 +1409,7 @@ nothing more.
 
 On a conversation: everything that conversation produced, visible in place,
 not by digging through global tabs. The chat header gains its first action
-opening a sheet with two sections:
+(now a Chat tools menu item, #984) opening a sheet with two sections:
 
 - **Retained exchanges** (filter ruling: design/memory.md → Memories
   browser) — the Memories tab's rows and detail/facts/forget affordances,

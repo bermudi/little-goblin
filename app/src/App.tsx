@@ -5,6 +5,7 @@ import {
 	Menu,
 	MenuContent,
 	MenuItem,
+	MenuCheckboxItem,
 	MenuSub,
 	MenuSubContent,
 	MenuSubTrigger,
@@ -95,11 +96,15 @@ export function App() {
 
 const CRAMPED_COLUMN_PX = 400;
 
-function observeColumnWidth(column: HTMLElement | null) {
+function observeColumnWidth(column: HTMLElement | null, setCramped: (value: boolean) => void) {
 	if (column === null || typeof window.ResizeObserver !== "function") return;
 	const observer = new window.ResizeObserver((entries) => {
 		const width = entries[0]?.contentRect.width;
-		if (width !== undefined) column.toggleAttribute("data-cramped", width < CRAMPED_COLUMN_PX);
+		if (width !== undefined) {
+			const cramped = width < CRAMPED_COLUMN_PX;
+			column.toggleAttribute("data-cramped", cramped);
+			setCramped(cramped);
+		}
 	});
 	observer.observe(column);
 	return () => observer.disconnect();
@@ -194,6 +199,11 @@ function LiveLost() {
 
 function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: () => void }) {
 	const phone = usePhoneWidth();
+	const [columnCramped, setColumnCramped] = useState(false);
+	const observeMain = useCallback(
+		(column: HTMLElement | null) => observeColumnWidth(column, setColumnCramped),
+		[],
+	);
 	const live = useLiveStore();
 	const liveStatus = useLiveStatus();
 	const goblin = useGoblinActivity();
@@ -830,6 +840,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		onDelete: deleteConversationHeld,
 		onError: setRowError,
 	});
+	const widthChoice = !phone && !columnCramped;
+	const chatTools = page === "chat" && (current !== null || widthChoice);
 	const headerActions =
 		currentConv === undefined
 			? null
@@ -1089,7 +1101,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				</nav>
 			)}
 			<main
-				ref={observeColumnWidth}
+				ref={observeMain}
 				className={
 					[chatWidth === "wide" ? "chat-wide" : "", chatListMode ? "list-mode" : ""]
 						.filter(Boolean)
@@ -1156,7 +1168,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							</svg>
 						</button>
 					)}
-					<h1>goblin</h1>
+					<h1 className={page === "chat" || page === "rolling" ? "sr-only" : undefined}>goblin</h1>
 					{page === "chat" && current !== null && (
 						headerRenaming && currentConv !== undefined ? (
 							<div className="header-title-editor">
@@ -1171,7 +1183,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								/>
 							</div>
 						) : currentConv === undefined || headerActions === null ? (
-							<span className="header-title">{flatTitle(currentTitle)}</span>
+							<span className={`header-title${page === "chat" ? " main-title" : ""}`}>{flatTitle(currentTitle)}</span>
 						) : (
 							<Menu
 								onAction={(value) => {
@@ -1194,7 +1206,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									}
 								}}
 							>
-								<MenuTrigger className="header-title title-trigger">
+								<MenuTrigger className={`header-title title-trigger${page === "chat" ? " main-title" : ""}`}>
 									{rowLabel(currentConv)}
 									<ChevronDownGlyph />
 								</MenuTrigger>
@@ -1272,7 +1284,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									}
 								}}
 							>
-								<MenuTrigger className="header-title title-trigger">
+								<MenuTrigger className="header-title title-trigger main-title">
 									Little Goblin
 									<ChevronDownGlyph />
 								</MenuTrigger>
@@ -1293,90 +1305,40 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						) : (
 							<span className="header-title">Little Goblin</span>
 						))}
-					{page === "chat" && current !== null && (
-						<button
-							type="button"
-							className="header-action"
-							title="Context window"
-							aria-label="Context window — what the model's next prompt carries, captured at the last call"
-							onClick={() => openWindow(current)}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								width="18"
-								height="18"
-							>
-								<rect x="3" y="4" width="18" height="16" rx="3" />
-								<path d="M3 9h18" />
-								<path d="M9 13l-3 3 3 3" />
-								<path d="M15 13l3 3-3 3" />
-							</svg>
-						</button>
-					)}
-					{page === "chat" && current !== null && (
-						<button
-							type="button"
-							className="header-action"
-							title="From this thread"
-							aria-label="From this thread — memories and skills generated here"
-							onClick={() => setSourcesOpen(true)}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="18"
-								height="18"
-							>
-								<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
-								<path d="M12 12l8-4.5" />
-								<path d="M12 12v9" />
-								<path d="M12 12L4 7.5" />
-							</svg>
-						</button>
-					)}
-					{/* Trailing the header-action so the action keeps its
-						    auto margin; hidden with the gauge on phone widths,
-						    where the column is narrow whatever this says. */}
-					{page === "chat" && (
-						<span className="width-seg" role="group" aria-label="Chat width">
-							<button
-								type="button"
-								className={chatWidth === "narrow" ? "on" : undefined}
-								aria-pressed={chatWidth === "narrow"}
-								onClick={() => setChatWidth("narrow")}
-							>
-								narrow
-							</button>
-							<button
-								type="button"
-								className={chatWidth === "wide" ? "on" : undefined}
-								aria-pressed={chatWidth === "wide"}
-								onClick={() => setChatWidth("wide")}
-							>
-								wide
-							</button>
-						</span>
-					)}
 					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
 					{page === "notes" && <span className="header-title">Notes</span>}
 					{page === "note" && <span className="header-title">Note</span>}
 					{PAGES.some((p) => p.key === page) && (
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
+					<div className="header-tools">
+					{chatTools && (
+						<Menu onAction={(value) => {
+							if (current === null) return;
+							if (value === "context") openWindow(current);
+							else if (value === "sources") setSourcesOpen(true);
+						}}>
+							<MenuTrigger className="header-action" aria-label="Chat tools" title="Chat tools"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></MenuTrigger>
+							<MenuContent className="title-menu">
+								{current !== null && <MenuItem value="context">Context window</MenuItem>}
+								{current !== null && <MenuItem value="sources">From this thread</MenuItem>}
+								{widthChoice && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}
+							</MenuContent>
+						</Menu>
+					)}
 					{!phone && (page === "chat" || page === "rolling") && (
-						renderGoblinFace("panel")
+						<>
+						{chatTools && <span className="header-tools-divider" aria-hidden="true" />}
+						{renderGoblinFace("panel")}
+						</>
 					)}
 					{phone && !chatListMode && (page === "chat" || page === "rolling") && (
-						renderGoblinFace("sheet")
+						<>
+						{chatTools && <span className="header-tools-divider" aria-hidden="true" />}
+						{renderGoblinFace("sheet")}
+						</>
 					)}
+					</div>
 				</header>
 				{/* Mobile (M): the chats surface is a screen. Desktop never sees
 					it — the rail is the list there; CSS shows this on phone

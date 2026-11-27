@@ -67,12 +67,11 @@ export function RollingRow({
 						onOpen();
 					}}
 				>
-					<span className="conv-gutter">
-						{mark ? <ChatMark mark={mark} /> : <GoblinAvatar size="sm" working={false} />}
-					</span>
+					<span className="rolling-avatar"><GoblinAvatar size="sm" working={false} /></span>
 					<span className="conv-copy">
 						<span className="conv-head">
 							<span className="conv-title">Little Goblin</span>
+							{mark !== null && <span className="conv-mark"><ChatMark mark={mark} /></span>}
 							{updatedAt !== null && (
 								<span className="conv-time">{relTime(updatedAt)}</span>
 							)}
@@ -243,16 +242,12 @@ export function ConversationRow({
 					onOpen(conv.id);
 				}}
 			>
-				<span className="conv-gutter">
-					{mark !== null
-						? <ChatMark mark={mark ?? "done"} />
-						: pinned ? <PinGlyph /> : null}
-				</span>
 				<span className="conv-copy">
 					<span className="conv-head">
 						<span className="conv-title">
 							{title ?? (preview === "" ? "new conversation" : preview)}
 						</span>
+						{(mark !== null || pinned) && <span className="conv-mark">{mark !== null ? <ChatMark mark={mark} /> : <PinGlyph />}</span>}
 						<span className="conv-time">{relTime(conv.updatedAt)}</span>
 					</span>
 					{hasLine && (

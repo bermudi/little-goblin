@@ -217,10 +217,10 @@ function LooseListItem({
 						onOpenTarget(target);
 					}}
 				>
-					<span className="conv-gutter"><ChatMark mark="needs" /></span>
 					<span className="conv-copy">
 						<span className="conv-head">
 							<span className="conv-title">{title}</span>
+							<span className="conv-mark"><ChatMark mark="needs" /></span>
 						</span>
 						{line !== "" && <span className="conv-preview">{line}</span>}
 					</span>

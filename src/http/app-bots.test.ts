@@ -163,6 +163,34 @@ test("a note created through the chat tool follows its bot and blocks move back"
 	}
 });
 
+test("saving a note card in a bot chat uses that chat's current owner", async () => {
+	const { call, store, http } = setup({ token: APP_TOKEN_NAME });
+	try {
+		const chat = store.resolve(appAddress("card"), "/workshop");
+		const converted = await call("/api/app/conversations/card/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Desk" }),
+		});
+		expect(converted.status).toBe(201);
+		const bot = (await converted.json()) as AppBot;
+		const save = (conversation?: string) => call("/api/app/notes", {
+			method: "POST", headers: jsonHeaders,
+			body: JSON.stringify({ title: "Parts list", body: "A spool", conversation }),
+		});
+		const response = await save(chat.id);
+		expect(response.status).toBe(201);
+		expect(await response.json()).toMatchObject({ botId: bot.id, body: "A spool" });
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({
+			bots: [{ ...bot, canMoveBack: false }],
+		});
+		expect((await save("dm:1")).status).toBe(422);
+		expect((await save("app/missing")).status).toBe(404);
+		expect(await (await save()).json()).toMatchObject({ botId: LITTLE_GOBLIN_NOTE_OWNER });
+	} finally {
+		http.stop();
+		store.close();
+	}
+});
+
 test("conversion validates the source and rechecks eligibility after reading the request", async () => {
 	const { call, store, projects, configRef, appDeps, http } = setup({ token: APP_TOKEN_NAME });
 	try {

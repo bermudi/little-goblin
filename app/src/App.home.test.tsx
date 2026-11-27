@@ -348,6 +348,35 @@ describe("home screen", () => {
 		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Little Goblin");
 	});
 
+	test("a collapsed bot shows the side chat's unread mark after its main chat is seen", async () => {
+		conversations = [conv("main", { newReply: 2 }), conv("branch", { newReply: 3 })];
+		bots = [{
+			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
+			sideConversationIds: ["app/branch"], canMoveBack: false,
+		}];
+		await open("/app/c/main");
+		expect(reads.map((read) => read.id)).toEqual(["main"]);
+		expect(markOf("main")).toBeNull();
+		expect(markOf("branch")).toBe("new");
+		await click('.rail-body [aria-label="Side chats for Workshop"]');
+		expect(container.querySelector('.rail-body [href="/app/c/branch"]')).toBeNull();
+		expect(markOf("main")).toBe("new");
+		expect(container.querySelector(".bot-row .conv-preview")?.textContent).toBe(conversations[1]?.preview);
+	});
+
+	test("the phone list is empty only before its first bot appears", async () => {
+		phone = true;
+		await open("/app/");
+		expect(container.querySelector(".chatlist-screen .empty")?.textContent).toContain("Nothing here yet");
+		bots = [{
+			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
+			sideConversationIds: [], canMoveBack: true,
+		}];
+		await publish({ conversations: [conv("main")] });
+		expect(container.querySelector(".chatlist-screen .bot-row")?.textContent).toContain("Workshop");
+		expect(container.querySelector(".chatlist-screen .empty")).toBeNull();
+	});
+
 	test("T14: an open chat with a new reply is marked read once, and the list is read again", async () => {
 		conversations = [conv("one", { newReply: 42 })];
 		await open("/app/c/one");

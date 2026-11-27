@@ -61,6 +61,7 @@ export function NotesIndex({
 	const [moveOpen, setMoveOpen] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [listError, setListError] = useState<string | null>(null);
 	const [status, setStatus] = useState("");
 	const [reload, refresh] = useState(0);
 	const mounted = useRef(true);
@@ -95,10 +96,11 @@ export function NotesIndex({
 				(next) => {
 					if (cancelled) return;
 					setList(next);
+					setListError(null);
 				},
 				(err: unknown) => {
 					if (cancelled) return;
-					setError(
+					setListError(
 						`Couldn't list notes. ${err instanceof Error ? err.message : String(err)}`,
 					);
 				},
@@ -114,6 +116,7 @@ export function NotesIndex({
 		setList(null);
 		setSelected(new Map());
 		setError(null);
+		setListError(null);
 		setStatus("");
 	}
 
@@ -320,12 +323,17 @@ export function NotesIndex({
 					{error}
 				</p>
 			)}
+			{listError !== null && (
+				<p className="error" role="alert">
+					{listError}
+				</p>
+			)}
 			{status !== "" && (
 				<p className="empty" role="status">
 					{status}
 				</p>
 			)}
-			{list === null && error === null && <p className="loading">Loading notes…</p>}
+			{list === null && error === null && listError === null && <p className="loading">Loading notes…</p>}
 			{list !== null && rows.length === 0 && (
 				<p className="empty">
 					{query === ""

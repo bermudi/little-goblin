@@ -51,6 +51,14 @@ main bot, bots with one job each, and no projects.
   the operator names becomes a bot instead, and its chats become that bot's
   side chats. A project's instructions become the instructions of the bot
   it turns into; when it turns into side chats, they are kept as a note.
+  A moved chat keeps what its project gave it:
+  - **Memory.** A chat that the project kept out of memory stays out. The
+    operator can turn memory on for each chat later.
+  - **Working directory.** A chat keeps the project's directory as its
+    working directory, because its sent prompt already names it. A project
+    that becomes a bot gives it that directory as the bot's folder.
+  - **Archive.** Chats of an archived project become archived chats, so
+    they stay hidden and show on the Archive page.
 
 **Rejected.**
 

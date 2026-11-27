@@ -99,12 +99,14 @@ test("HomeList never renders subagents as chat rows", async () => {
 	setup();
 	function Fixture() {
 		const data = { ...input([parent, kid, secondKid, sibling], kid.id), sideChatsOpen: true };
-		const home = useHomeList(data, [], true);
+		const home = useHomeList(data, [], true, null);
 		return <HomeList
 			home={home}
 			projects={[]}
 			projectsOpen
 			currentFolderId={null}
+			currentConversationId={null}
+			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
 			onToggleProjects={() => {}}
@@ -114,6 +116,8 @@ test("HomeList never renders subagents as chat rows", async () => {
 			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
+			onOpenConversation={() => {}}
+			onToggleBotSideChats={() => {}}
 			renderRow={(row) => <ConversationNavLink className="conv-main" id={row.id} href={`/app/c/${row.id.slice(4)}`}>{row.title}</ConversationNavLink>}
 		/>;
 	}
@@ -140,6 +144,8 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 		projects={[]}
 		projectsOpen={false}
 		currentFolderId={null}
+		currentConversationId={null}
+		expandedBotId={null}
 		rollingCurrent={false}
 		sideChatsOpen
 		onToggleProjects={() => {}}
@@ -149,6 +155,8 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 		onOpenProject={() => {}}
 		onOpenTarget={() => {}}
 		onOpenRolling={() => {}}
+		onOpenConversation={() => {}}
+		onToggleBotSideChats={() => {}}
 		renderRow={(row, options) => (
 			<ConversationRow
 				conv={row}
@@ -205,6 +213,8 @@ test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visib
 			projects={[]}
 			projectsOpen={false}
 			currentFolderId={null}
+			currentConversationId={null}
+			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen={open}
 			onToggleProjects={() => {}}
@@ -214,6 +224,8 @@ test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visib
 			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
+			onOpenConversation={() => {}}
+			onToggleBotSideChats={() => {}}
 			renderRow={(row) => <ConversationNavLink className="conv-main" id={row.id} href={`/app/c/${row.id}`}>{row.title}</ConversationNavLink>}
 		/>
 	);

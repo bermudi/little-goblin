@@ -4,6 +4,7 @@
 // with their pruning markers retargeted. Pure move from conversation.ts.
 
 import type { Database } from "bun:sqlite";
+import type { BotStore } from "./bots.ts";
 import { appAddress, formatAddress } from "./conversation-address.ts";
 import type { ConversationQueries, Row } from "./conversation-queries.ts";
 import type { ConversationMetaPatch, ModelSettings } from "./conversation-settings.ts";
@@ -34,6 +35,7 @@ export function makeConversationFork<TConversation>(
 	>,
 	applyPatch: (id: string, patch: ConversationMetaPatch) => void,
 	toConversation: (r: Row) => TConversation,
+	bots: Pick<BotStore, "membership" | "attachSideChat">,
 ) {
 	const {
 		qGet,
@@ -74,6 +76,8 @@ export function makeConversationFork<TConversation>(
 			// gate-written exclusion keeps its marker so the fork lifts
 			// with the same project re-open the source would.
 			const source = qGet.get(fromId);
+			const bot = bots.membership(fromId);
+			if (bot !== null) bots.attachSideChat(id, bot.botId);
 			applyPatch(id, {
 				...(title === null ? {} : { title }),
 				titleImplicit: title === null ? true : (opts?.titleImplicit ?? true),
@@ -102,7 +106,7 @@ export function makeConversationFork<TConversation>(
 					e.data,
 					e.anchor_seq,
 					e.created_at,
-					e.memory_eligible,
+					bot === null ? e.memory_eligible : 0,
 				);
 			}
 			db.run(
@@ -128,7 +132,7 @@ export function makeConversationFork<TConversation>(
 					id,
 					compaction.boundary_seq,
 					compaction.summary,
-					compaction.summary_eligible,
+					bot === null ? compaction.summary_eligible : 0,
 					compaction.tokens_before,
 					compaction.model,
 					compaction.created_at,

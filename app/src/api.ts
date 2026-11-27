@@ -16,6 +16,7 @@ import type {
 	AppActivityResponse,
 	AppPostsResponse,
 	AppBot,
+	AppBotMoveBack,
 	AppBotName,
 	AppCompactResponse,
 	AppRollResponse,
@@ -213,6 +214,22 @@ export function convertSideChat(token: string | null, id: string, body: AppBotNa
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
+	});
+}
+
+export function renameBot(token: string | null, id: string, body: AppBotName): Promise<AppBot> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function moveBotChatBack(token: string | null, id: string): Promise<AppBotMoveBack> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}/move-back`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
 	});
 }
 

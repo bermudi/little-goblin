@@ -12,10 +12,16 @@ export interface AppBot {
 	id: string;
 	name: string;
 	mainConversationId: string;
+	sideConversationIds: string[];
+	canMoveBack: boolean;
 }
 
 export interface AppBotName {
 	name: string;
+}
+
+export interface AppBotMoveBack {
+	conversationId: string;
 }
 
 export interface AppConversationList {

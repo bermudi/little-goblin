@@ -1,14 +1,30 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { appIdOf } from "./conversation-address.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER } from "./note-owner.ts";
 
 export type BotId = string;
-export const LITTLE_GOBLIN_BOT_ID: BotId = "little-goblin";
+export const LITTLE_GOBLIN_BOT_ID: BotId = LITTLE_GOBLIN_NOTE_OWNER;
 
 export interface Bot {
 	id: BotId;
 	name: string;
 	mainConversationId: string;
+	sideConversationIds: string[];
+	canMoveBack: boolean;
+}
+
+type BotRow = Omit<Bot, "canMoveBack" | "sideConversationIds"> & {
+	sideConversationIds: string;
+	canMoveBack: number;
+};
+
+function readBot(row: BotRow): Bot {
+	return {
+		...row,
+		sideConversationIds: JSON.parse(row.sideConversationIds) as string[],
+		canMoveBack: row.canMoveBack === 1,
+	};
 }
 
 interface BotMembership {
@@ -19,6 +35,10 @@ interface BotMembership {
 type Conversion =
 	| { kind: "converted" | "existing"; bot: Bot }
 	| { kind: "missing" | "notSideChat" | "archived" | "busy" };
+
+type MoveBack =
+	| { kind: "moved"; conversationId: string }
+	| { kind: "missing" | "ineligible" | "busy" };
 
 export function ensureBotsSchema(db: Database): void {
 	db.run(`
@@ -53,23 +73,33 @@ export function makeBotStore(db: Database) {
 	const membership = db.query<BotMembership, [string]>(`
 		SELECT bot_id AS botId, main_ordinal AS mainOrdinal FROM bot_chats WHERE conversation_id = ?
 	`);
-	const main = db.query<Bot, [BotId]>(`
-		SELECT bots.id, bots.name, bot_chats.conversation_id AS mainConversationId
-		FROM bots JOIN bot_chats ON bot_chats.bot_id = bots.id
-		WHERE bots.id = ? AND bot_chats.main_ordinal IS NOT NULL
-		ORDER BY bot_chats.main_ordinal DESC LIMIT 1
-	`);
-	const list = db.query<Bot, []>(`
-		SELECT bots.id, bots.name, bot_chats.conversation_id AS mainConversationId
+	const currentBots = `
+		SELECT bots.id, bots.name, bot_chats.conversation_id AS mainConversationId,
+			(SELECT json_group_array(conversation_id ORDER BY conversation_id)
+				FROM bot_chats AS side
+				WHERE side.bot_id = bots.id AND side.main_ordinal IS NULL) AS sideConversationIds,
+			(bot_chats.main_ordinal = 1 AND NOT EXISTS (
+				SELECT 1 FROM bot_chats AS other
+				WHERE other.bot_id = bots.id AND other.conversation_id <> bot_chats.conversation_id
+			) AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.bot_id = bots.id)) AS canMoveBack
 		FROM bots JOIN bot_chats ON bot_chats.bot_id = bots.id
 		WHERE bot_chats.main_ordinal = (
 			SELECT MAX(main_ordinal) FROM bot_chats WHERE bot_id = bots.id
 		)
+	`;
+	const main = db.query<BotRow, [BotId]>(`${currentBots} AND bots.id = ?`);
+	const list = db.query<BotRow, []>(`
+		${currentBots}
 		ORDER BY bots.created_at DESC, bots.id
 	`);
 	const insert = db.query("INSERT INTO bots (id, name, created_at) VALUES (?, ?, ?)");
+	const rename = db.query("UPDATE bots SET name = ? WHERE id = ?");
+	const detach = db.query("DELETE FROM bot_chats WHERE conversation_id = ? AND bot_id = ?");
 	const attachMain = db.query(`
 		INSERT INTO bot_chats (conversation_id, bot_id, main_ordinal) VALUES (?, ?, 1)
+	`);
+	const attachSide = db.query(`
+		INSERT INTO bot_chats (conversation_id, bot_id) VALUES (?, ?)
 	`);
 
 	const convert = db.transaction(
@@ -84,20 +114,42 @@ export function makeBotStore(db: Database) {
 			const member = membership.get(id);
 			if (member !== null) {
 				const bot = main.get(member.botId);
-				return bot?.mainConversationId === id ? { kind: "existing", bot } : { kind: "notSideChat" };
+				return bot?.mainConversationId === id
+					? { kind: "existing", bot: readBot(bot) }
+					: { kind: "notSideChat" };
 			}
 			if (busy(id)) return { kind: "busy" };
-			const bot = { id: randomUUID(), name, mainConversationId: id };
+			const bot: Bot = {
+				id: randomUUID(), name, mainConversationId: id,
+				sideConversationIds: [], canMoveBack: true,
+			};
 			insert.run(bot.id, bot.name, createdAt);
 			attachMain.run(id, bot.id);
 			return { kind: "converted", bot };
 		},
 	);
+	const renameActive = db.transaction((id: BotId, name: string): Bot | null => {
+		const row = main.get(id);
+		if (row === null) return null;
+		rename.run(name, id);
+		return readBot({ ...row, name });
+	});
+	const moveBack = db.transaction((id: BotId, busy: (id: string) => boolean): MoveBack => {
+		const row = main.get(id);
+		if (row === null) return { kind: "missing" };
+		if (row.canMoveBack !== 1) return { kind: "ineligible" };
+		if (busy(row.mainConversationId)) return { kind: "busy" };
+		detach.run(row.mainConversationId, id);
+		return { kind: "moved", conversationId: row.mainConversationId };
+	});
 
 	return {
 		membership: (id: string) => membership.get(id),
-		list: () => list.all(),
+		attachSideChat: (id: string, botId: BotId) => attachSide.run(id, botId),
+		list: () => list.all().map(readBot),
 		convertSideChat: convert.immediate,
+		rename: renameActive.immediate,
+		moveBack: moveBack.immediate,
 	};
 }
 

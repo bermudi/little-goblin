@@ -31,6 +31,8 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 			id: expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
 			name: "Workshop",
 			mainConversationId: chat.id,
+			sideConversationIds: [],
+			canMoveBack: true,
 		});
 		expect(await second.json()).toEqual(bot);
 		const list = await call("/api/app/conversations");
@@ -52,6 +54,82 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 		})).status).toBe(409);
 		expect((await call("/api/app/conversations/workshop", { method: "DELETE" })).status).toBe(409);
 		expect(await (await convert("Other name")).json()).toEqual(bot);
+
+		const botPath = `/api/app/bots/${bot.id}`;
+		const rename = await call(botPath, {
+			method: "PATCH",
+			headers: jsonHeaders,
+			body: JSON.stringify({ name: " Repair desk " }),
+		});
+		expect(await rename.json()).toEqual({ ...bot, name: "Repair desk" });
+		const undo = () => call(`${botPath}/move-back`, {
+			method: "POST", headers: jsonHeaders, body: "{}",
+		});
+		const response = await undo();
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ conversationId: chat.id });
+		expect(store.bots.membership(chat.id)).toBeNull();
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({ bots: [] });
+		expect(await (await call(historyPath)).text()).toBe(messages);
+		expect(store.promptSnapshot(chat.id)).toEqual(snapshot);
+		expect(store.get(chat.id)).toEqual(metadata);
+		expect((await undo()).status).toBe(404);
+
+		const convertedAgain = await convert("Workshop");
+		expect(convertedAgain.status).toBe(201);
+		expect(((await convertedAgain.json()) as AppBot).id).not.toBe(bot.id);
+	} finally {
+		http.stop();
+		store.close();
+	}
+});
+
+test("move back checks current ownership after reading the request", async () => {
+	const { call, store, notes, appDeps, http } = setup({ token: APP_TOKEN_NAME });
+	try {
+		const main = store.resolve(appAddress("desk"), "/workshop");
+		store.append(main.id, [{ id: "u1", role: "user", parts: [{ type: "text", text: "Make a plan." }] }]);
+		const converted = await call("/api/app/conversations/desk/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Desk" }),
+		});
+		expect(converted.status).toBe(201);
+		const bot = (await converted.json()) as AppBot;
+		const path = `/api/app/bots/${bot.id}/move-back`;
+		const url = new URL(path, "http://localhost");
+		const reading = deferred();
+		const resume = deferred();
+		const moving = handleBotsRoute(new Request(url.href, {
+			method: "POST",
+			headers: jsonHeaders,
+			body: new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					reading.resolve();
+					await resume.promise;
+					controller.enqueue(new TextEncoder().encode("{}"));
+					controller.close();
+				},
+			}),
+		}), url, appDeps);
+		await reading.promise;
+		const branch = await call("/api/app/conversations/desk/branch", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ messageId: "u1" }),
+		});
+		resume.resolve();
+		expect(branch.status).toBe(201);
+		const { id } = (await branch.json()) as { id: string };
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({
+			bots: [{ ...bot, sideConversationIds: [id], canMoveBack: false }],
+		});
+		expect((await moving)?.status).toBe(409);
+		expect(store.bots.membership(main.id)?.botId).toBe(bot.id);
+		expect((await call(`/api/app/conversations/${appIdOf(id)}`, { method: "DELETE" })).status).toBe(200);
+
+		const note = notes.create({ title: "Bot note" });
+		notes.batch([note], { action: "move", owner: { botId: bot.id } });
+		const refused = await call(path, { method: "POST", headers: jsonHeaders, body: "{}" });
+		expect(refused.status).toBe(409);
+		expect(notes.get(note.id)?.botId).toBe(bot.id);
+		expect(store.bots.membership(main.id)?.botId).toBe(bot.id);
 	} finally {
 		http.stop();
 		store.close();

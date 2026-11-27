@@ -447,7 +447,8 @@ p code,
 	align-self: center;
 	display: inline-grid;
 }
-.rolling-row .conv-main {
+.rolling-row .conv-main,
+.bot-row .conv-main {
 	display: flex;
 	align-items: center;
 	gap: 10px;
@@ -1009,10 +1010,12 @@ header:has(> .header-title-editor) .header-tools > :not(.goblin-panel-toggle) {
 .rolling-disclosure.open .chev {
 	transform: rotate(90deg);
 }
-.rolling-row {
+.rolling-row,
+.bot-row {
 	display: flex;
 }
-.rolling-row > .conv-main {
+.rolling-row > .conv-main,
+.bot-row > .conv-main {
 	flex: 1;
 	min-width: 0;
 }
@@ -8760,6 +8763,43 @@ button.link:hover {
 .goblin-avatar-lg {
 	width: 64px;
 	height: 64px;
+}
+.bot-avatar {
+	display: inline-grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	flex: none;
+	border: 1px solid var(--app-divider);
+	border-radius: 50%;
+	background: color-mix(in oklab, var(--app-accent) 12%, var(--app-gray-50));
+	color: var(--app-fg);
+	font-size: 13px;
+	font-weight: 600;
+	line-height: 1;
+}
+.bot-avatar-large {
+	width: 64px;
+	height: 64px;
+	font-size: 24px;
+}
+.bot-settings {
+	--page-col: 40rem;
+	gap: 1rem;
+}
+.bot-settings-fields {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: end;
+	gap: 0.75rem;
+}
+.bot-settings-fields .frow {
+	flex: 1 1 12rem;
+	margin: 0;
+}
+.bot-settings-move p {
+	margin: 0 0 0.75rem;
+	color: var(--app-fg-muted);
 }
 .goblin-avatar img {
 	display: block;

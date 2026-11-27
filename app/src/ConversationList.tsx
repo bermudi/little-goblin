@@ -132,6 +132,7 @@ export function ConversationRow({
 	mark = null,
 	line,
 	projectName,
+	botChat = false,
 }: {
 	conv: AppConversationList["conversations"][number];
 	current: string | null;
@@ -148,6 +149,7 @@ export function ConversationRow({
 	mark?: Mark | null;
 	line?: string;
 	projectName?: string;
+	botChat?: boolean;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
@@ -162,7 +164,7 @@ export function ConversationRow({
 	const firstSheetActionRef = useRef<HTMLButtonElement>(null);
 	const moveActionRef = useRef<HTMLButtonElement>(null);
 	const returningFromMove = useRef(false);
-	const canMove = conv.projectId === null && conv.parentId === null && !archived;
+	const canMove = !botChat && conv.projectId === null && conv.parentId === null && !archived;
 	const linkRef = useRef<HTMLAnchorElement>(null);
 	useEffect(() => {
 		if (sheetOpen) {

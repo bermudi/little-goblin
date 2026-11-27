@@ -275,7 +275,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const compaction = makeConversationCompaction(queries);
 
-	const fork = makeConversationFork(db, queries, applyPatch, toConversation);
+	const fork = makeConversationFork(db, queries, applyPatch, toConversation, bots);
 
 	const historyView = makeConversationHistory(
 		db,

@@ -32,6 +32,8 @@ main bot, bots with one job each, and no projects.
   also opens and folds its side chats by hand, so a phone can reach them
   (lead's pick, 2026-11-27, #978).
 - **Three columns stay.** The left list holds Little Goblin and the bots.
+  Little Goblin stays at the top and custom bots have their own **Bots**
+  section. A bot's row opens its main chat.
   The centre holds the chat or the bot page. The right panel shows the open
   bot: its avatar, status, activity, schedule and memory. Needs you still
   shows every item.
@@ -79,6 +81,12 @@ has one owner, so notes can use the same bot ID for all its chats.
 The converted chat can search its bot's history. Previously recalled
 Hindsight context still replays at its original position. New bot turns
 skip Hindsight recall and retention (#926).
+
+The bot page saves the display name separately from the original chat title.
+**Move back to Little Goblin** is available while the converted chat is the
+bot's only chat and the bot has no notes. A branch made from a bot chat is a
+side chat of that bot. Moving back returns the same conversation to Little
+Goblin and retires the bot ID. Converting the chat again creates a new bot ID.
 
 **Rejected.**
 

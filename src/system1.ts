@@ -51,7 +51,7 @@ const openAIDecisionsResponse = z.object({
 			probability: z.number().min(0).max(1),
 		}),
 	),
-	usage: z.object({ input_tokens: z.number().int().nonnegative().nullish() }).nullish(),
+	usage: z.object({ input_tokens: z.number().int().nonnegative().nullish() }).nullish().catch(null),
 });
 
 export interface System1Decision {

@@ -83,6 +83,23 @@ describe("System1Client", () => {
 	});
 
 	const predicate = { type: "predicate", name: "first", probability: 0.91 };
+	test("OpenAI Decisions keeps valid answers when usage metadata is malformed", async () => {
+		const baseUrl = served(() =>
+			Response.json({ answers: [predicate], usage: { input_tokens: "106" } }),
+		);
+		const client = new System1Client({
+			kind: "openai-decisions",
+			baseUrl,
+			model: "fixture",
+			auth: async () => "test-key",
+		});
+		expect(await client.decide("s", { first: question })).toEqual({
+			answers: { first: 0.91 },
+			inputTokens: null,
+			cost: null,
+		});
+	});
+
 	test.each([
 		["missing", []],
 		["duplicate", [predicate, predicate]],

@@ -218,13 +218,23 @@ export async function buildModelView(
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const partialStepCount =
 		options.partial?.parts.filter((part) => part.type === "step-start").length ?? 0;
-	const partialInsertRecords =
+	const allPartialInsertRecords =
 		options.partial === null
 			? []
-			: storedTurnInserts([{ message: options.partial }], ctx.convId).flatMap(({ messageId, inserts }) => {
-					const eligible = inserts.filter((insert) => insert.step < partialStepCount);
-					return eligible.length > 0 ? [{ messageId, inserts: eligible }] : [];
-				});
+			: storedTurnInserts([{ message: options.partial }], ctx.convId);
+	const partialInsertRecords = allPartialInsertRecords.flatMap(({ messageId, inserts }) => {
+		const eligible = inserts.filter((insert) => insert.step < partialStepCount);
+		return eligible.length > 0 ? [{ messageId, inserts: eligible }] : [];
+	});
+	const suppressedSteerSeqs = new Set(
+		allPartialInsertRecords.flatMap(({ inserts }) =>
+			inserts
+				.filter((insert) => insert.step >= partialStepCount)
+				.flatMap((insert) =>
+					insert.items.flatMap((item) => item.kind === "steer" ? [item.seq] : []),
+				),
+		),
+	);
 	const insertRecords = [
 		...storedTurnInserts(options.entries, ctx.convId),
 		...partialInsertRecords,
@@ -261,7 +271,13 @@ export async function buildModelView(
 	for (const message of baseView) {
 		const seq = seqByMessage.get(message) ?? null;
 		const isPartial = message === options.partial;
-		if (seq !== null && replayedSeqs.has(seq) && !isSummary(message, seq) && message.role === "user") continue;
+		if (
+			seq !== null &&
+			(replayedSeqs.has(seq) || suppressedSteerSeqs.has(seq)) &&
+			!isSummary(message, seq) &&
+			message.role === "user"
+		)
+			continue;
 		if (message.role !== "assistant" || !insertsByMessage.has(message.id)) {
 			slots.push({ message, seq, replayed: false, partial: isPartial });
 			continue;

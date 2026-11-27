@@ -726,6 +726,8 @@ describe("compacted turn inserts", () => {
 		const script = sdkScript();
 		const buildStarted = deferred<void>();
 		const buildGate = deferred<void>();
+		const secondToolStarted = deferred<void>();
+		const secondToolGate = deferred<void>();
 		let builds = 0;
 		const summary =
 			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nhead; pivot-before\n## Exact identifiers";
@@ -769,7 +771,12 @@ describe("compacted turn inserts", () => {
 				probe: defineTool({
 					description: "probe",
 					input: z.object({ n: z.number() }),
-					execute: async ({ n }) => n === 1 ? "x".repeat(4000) : "small",
+					execute: async ({ n }) => {
+						if (n === 1) return "x".repeat(4000);
+						secondToolStarted.resolve();
+						await secondToolGate.promise;
+						return "small";
+					},
 				}),
 			},
 		});
@@ -778,11 +785,26 @@ describe("compacted turn inserts", () => {
 			await buildStarted.promise;
 			const beforeCut = submit(r, "pivot-before");
 			buildGate.resolve();
+			await first.firstToolCall;
+			await secondToolStarted.promise;
+			const afterCut = submit(r, "pivot-after");
+			secondToolGate.resolve();
 			expect(await first.done).toEqual({ kind: "completed" });
 			expect(await beforeCut.done).toEqual({ kind: "completed" });
+			expect(await afterCut.done).toEqual({ kind: "completed" });
 			await drain(r);
 
-			const reply = r.store.historyDetail(r.conv.id).find((entry) => entry.seq === 3)!.message;
+			const detail = r.store.historyDetail(r.conv.id);
+			const afterCutSeq = detail.find(
+				(entry) =>
+					entry.message.role === "user" &&
+					entry.message.parts.some((part) =>
+						part.type === "text" &&
+						"pivot-after" === (part as { text?: unknown }).text,
+					),
+			)!.seq;
+			const replyEntry = detail.find((entry) => entry.message.role === "assistant")!;
+			const reply = replyEntry.message;
 			const insertPart = reply.parts.find((part) => part.type === INSERTS_PART);
 			expect(insertPart).toBeDefined();
 			const recordedInserts = (
@@ -796,45 +818,28 @@ describe("compacted turn inserts", () => {
 				}
 			)
 				.data.inserts;
-			expect(recordedInserts).toHaveLength(1);
-			expect(recordedInserts[0]).toMatchObject({
-				step: 0,
-				items: [
-					{ kind: "steer", seq: 2 },
-					{ kind: "text" },
-				],
-			});
-			const updatedReply: Message = {
-				...reply,
-				parts: reply.parts.map((part) =>
-					part.type !== INSERTS_PART
-						? part
-						: ({
-								...part,
-								data: {
-									inserts: [
-										...recordedInserts,
-										{
-											step: 1,
-											items: [
-												{ kind: "steer", seq: 999 },
-												{ kind: "text", text: "post-cut insert marker" },
-											],
-										},
-									],
-								},
-							} as Message["parts"][number]),
-				),
-			};
-			r.store.db.run(
-				"UPDATE events SET data = ? WHERE conversation_id = ? AND seq = ?",
-				[JSON.stringify({ v: 1, message: updatedReply }), r.conv.id, 3],
-			);
+			expect(afterCutSeq).toBe(3);
+			expect(replyEntry.seq).toBe(4);
+			expect(replyEntry.seq).toBeGreaterThan(afterCutSeq);
+			expect(recordedInserts).toMatchObject([
+				{
+					step: 0,
+					items: [
+						{ kind: "steer", seq: 2 },
+						{ kind: "text" },
+					],
+				},
+				{
+					step: 2,
+					items: [{ kind: "steer", seq: afterCutSeq }],
+				},
+			]);
 
 			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
-			expect(r.store.getCompaction(r.conv.id)).toMatchObject({
-				boundarySeq: 2,
-				split: { seq: 3, part: 4 },
+			const compaction = r.store.getCompaction(r.conv.id);
+			expect(compaction).toMatchObject({
+				boundarySeq: 3,
+				split: { seq: 4, part: 4 },
 			});
 			const prefixCalls = prefixModel.generateCalls;
 			const splitPrefix = prefixCalls.find((call) =>
@@ -850,10 +855,11 @@ describe("compacted turn inserts", () => {
 			);
 			expect(JSON.stringify(preCutRequest.prompt)).toContain("pivot-before");
 			expect(JSON.stringify(preCutRequest.prompt)).toContain("[context:");
-			expect(JSON.stringify(splitPrefixRequest)).not.toContain("post-cut insert marker");
+			expect(JSON.stringify(splitPrefixRequest)).not.toContain("pivot-after");
 			expect(JSON.stringify(splitPrefixRequest).split("pivot-before")).toHaveLength(2);
 		} finally {
 			buildGate.resolve();
+			secondToolGate.resolve();
 			await r.runtime.shutdown();
 			r.store.close();
 		}

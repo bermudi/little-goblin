@@ -49,7 +49,8 @@ main bot, bots with one job each, and no projects.
   Goblin. Project chats become ordinary chats, so they also become side
   chats of Little Goblin, and the Archive page needs no change. A project
   the operator names becomes a bot instead, and its chats become that bot's
-  side chats.
+  side chats. A project's instructions become the instructions of the bot
+  it turns into; when it turns into side chats, they are kept as a note.
 
 **Rejected.**
 
@@ -75,6 +76,3 @@ main bot, bots with one job each, and no projects.
   work visible, so a missing mark is a bug, not a style issue.
 - Goblin's profile pages (Status, Memory, Skills, Log) need a place on
   Little Goblin's bot page. Not designed yet.
-- Proposed, not ruled: a project's instructions become the instructions of
-  the bot it turns into. When it turns into side chats, they are kept as a
-  note.

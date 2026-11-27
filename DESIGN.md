@@ -62,6 +62,9 @@ of unrelated work. A prefix hash change measures a request change, not what
 the provider actually cached; see
 [`cache-observation.test.ts`](src/cache-observation.test.ts) and
 [`cache-pruning.test.ts`](src/cache-pruning.test.ts).
+Goblin records mid-turn inserts on the landed reply and replays them at the
+same step in the next view; history saved before this change keeps its old
+rendering (#968, #969).
 
 On Codex, Goblin saves function declarations as `additional_tools` input items
 ([`tool-declarations.ts`](src/agent/tool-declarations.ts)). A tool change

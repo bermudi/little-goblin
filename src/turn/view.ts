@@ -29,6 +29,13 @@ import {
 	type ToolChange,
 	type ToolDeclaration,
 } from "../agent/tool-declarations.ts";
+import {
+	INSERTS_PART,
+	storedTurnInserts,
+	type TurnInsert,
+	type TurnInsertItem,
+} from "../agent/turn-inserts.ts";
+import { compactionSummaryId } from "../tags.ts";
 
 export interface ViewContext {
 	convId: string;
@@ -193,23 +200,148 @@ export async function buildModelView(
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: Message | null;
+		partialInsertLimit?: number;
 		summarySeq: number | null;
 		ownedSeqs?: readonly number[] | ReadonlySet<number>;
 		assertAuthority(): void;
 	},
 ): Promise<PromptMessage[]> {
 	const sdkTools = ctx.sdkTools ?? toToolSet(ctx.tools);
-	const view = withMemoryBlocks(
+	const baseView = withMemoryBlocks(
 		options.entries,
 		options.prior,
 		options.current,
 		options.summarySeq,
 	);
-	if (options.partial !== null) view.push(options.partial);
+	if (options.partial !== null) baseView.push(options.partial);
 	const storedChanges = storedToolChanges(options.toolHistory ?? options.entries, ctx.convId);
 	const owned = new Set(options.ownedSeqs ?? []);
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
-	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
+	const partialStepCount =
+		options.partial?.parts.filter((part) => part.type === "step-start").length ?? 0;
+	const partialInsertLimit = options.partialInsertLimit ?? partialStepCount;
+	const allPartialInsertRecords =
+		options.partial === null
+			? []
+			: storedTurnInserts([{ message: options.partial }], ctx.convId);
+	const partialInsertRecords = allPartialInsertRecords.flatMap(({ messageId, inserts }) => {
+		const eligible = inserts.filter((insert) => insert.step < partialInsertLimit);
+		return eligible.length > 0 ? [{ messageId, inserts: eligible }] : [];
+	});
+	const suppressedSteerSeqs = new Set(
+		allPartialInsertRecords.flatMap(({ inserts }) =>
+			inserts
+				.filter((insert) => insert.step >= partialInsertLimit)
+				.flatMap((insert) =>
+					insert.items.flatMap((item) => item.kind === "steer" ? [item.seq] : []),
+				),
+		),
+	);
+	const insertRecords = [
+		...storedTurnInserts(options.entries, ctx.convId),
+		...partialInsertRecords,
+	];
+	const insertsByMessage = new Map<string, TurnInsert[]>();
+	for (const { messageId, inserts } of insertRecords) {
+		insertsByMessage.set(messageId, [...(insertsByMessage.get(messageId) ?? []), ...inserts]);
+	}
+	const replayedSeqs = new Set(insertRecords.flatMap(({ inserts }) =>
+		inserts.flatMap((insert) =>
+			insert.items.flatMap((item) => item.kind === "steer" ? [item.seq] : []),
+		),
+	));
+	const isSummary = (message: Message, seq: number | null): boolean =>
+		seq !== null &&
+		seq === options.summarySeq &&
+		message.id === compactionSummaryId(seq);
+	const visibleBySeq = new Map(
+		baseView.flatMap((message) => {
+			const seq = seqByMessage.get(message) ?? null;
+			return seq === null || isSummary(message, seq) || message.role !== "user"
+				? []
+				: [[seq, message] as const];
+		}),
+	);
+	const slots: {
+		message: Message;
+		seq: number | null;
+		replayed: boolean;
+		partial?: boolean;
+		directText?: string;
+		dataOnly?: boolean;
+	}[] = [];
+	for (const message of baseView) {
+		const seq = seqByMessage.get(message) ?? null;
+		const isPartial = message === options.partial;
+		if (
+			seq !== null &&
+			(replayedSeqs.has(seq) || suppressedSteerSeqs.has(seq)) &&
+			!isSummary(message, seq) &&
+			message.role === "user"
+		)
+			continue;
+		if (message.role !== "assistant" || !insertsByMessage.has(message.id)) {
+			slots.push({ message, seq, replayed: false, partial: isPartial });
+			continue;
+		}
+		const inserts = insertsByMessage.get(message.id)!;
+		const byPosition = new Map<number, TurnInsertItem[]>();
+		for (const insert of inserts) {
+			byPosition.set(insert.step, [...(byPosition.get(insert.step) ?? []), ...insert.items]);
+		}
+		let start = 0;
+		let position = 0;
+		const emitAt = (at: number): void => {
+			for (const item of byPosition.get(at) ?? []) {
+				if (item.kind === "text") {
+					slots.push({
+						message: { id: `${message.id}:insert:${at}:${slots.length}`, role: "user", parts: [{ type: "text", text: item.text }] },
+						seq: null,
+						replayed: true,
+						directText: item.text,
+					});
+					continue;
+				}
+				const steered = visibleBySeq.get(item.seq);
+				if (steered === undefined) {
+					log.warn("steer insert target missing from model view", {
+						conversation: ctx.convId,
+						message: message.id,
+						seq: item.seq,
+					});
+					continue;
+				}
+				slots.push({ message: steered, seq: item.seq, replayed: true });
+			}
+		};
+		for (let i = 0; i < message.parts.length; i++) {
+			if (message.parts[i]?.type !== "step-start") continue;
+			const parts = message.parts.slice(start, i);
+			const modelParts = parts.filter(
+				(part) => part.type !== TOOLS_PART && part.type !== INSERTS_PART,
+			);
+			if (modelParts.length > 0) {
+				slots.push({ message: { ...message, parts }, seq, replayed: false, partial: isPartial });
+			} else if (parts.length > 0) {
+				slots.push({
+					message: { ...message, parts: [] },
+					seq,
+					replayed: false,
+					partial: isPartial,
+					dataOnly: true,
+				});
+			}
+			emitAt(position++);
+			start = i;
+		}
+		const tail = message.parts.slice(start);
+		if (tail.length > 0) {
+			slots.push({ message: { ...message, parts: tail }, seq, replayed: false, partial: isPartial });
+		}
+		emitAt(position);
+	}
+	const view = slots.map(({ message }) => message);
+	const seqByIndex = slots.map(({ seq }) => seq);
 	const prepared = await materializeAttachments(
 		view.map((m) => inlineMentions(m)),
 		ctx.modalities,
@@ -218,6 +350,8 @@ export async function buildModelView(
 	);
 	options.assertAuthority();
 	const messages: PromptMessage[] = [];
+	const unmergeable = new Set<PromptMessage>();
+	const seenStoredChanges = new Set<string>();
 	const isToolsInput = ctx.toolsInInput === true;
 	const changesByMessage = new Map(storedChanges.map(({ messageId, change }) => [messageId, change]));
 	const visibleStoredChanges = prepared.flatMap((message) => {
@@ -250,10 +384,20 @@ export async function buildModelView(
 	let foreignReasoningMessages = 0;
 	let foreignReasoningParts = 0;
 	for (const [i, m] of prepared.entries()) {
-		const storedChange = isToolsInput ? changesByMessage.get(m.id) : undefined;
+		const renderedStart = messages.length;
+		if (slots[i]?.directText !== undefined) {
+			const direct: PromptMessage = { role: "user", content: slots[i]!.directText! };
+			messages.push(direct);
+			unmergeable.add(direct);
+			continue;
+		}
+		const storedChange =
+			isToolsInput && !seenStoredChanges.has(m.id) ? changesByMessage.get(m.id) : undefined;
 		if (storedChange !== undefined && storedChange !== headChange) {
+			seenStoredChanges.add(m.id);
 			messages.push(...toolChangeMessages(storedChange, folded, unavailable));
 		}
+		if (slots[i]?.dataOnly) continue;
 		const entrySeq = seqByIndex[i] ?? null;
 		const includeBody = entrySeq !== null && m.role === "user" && owned.has(entrySeq);
 		const { message: skillMarked, invocations } = skillPartsAsText(
@@ -262,11 +406,13 @@ export async function buildModelView(
 			includeBody,
 		);
 		const rendered = contextPartAsText(ctx, notePartsAsText(ctx, skillMarked));
-		rendered.parts = rendered.parts.filter((part) => part.type !== TOOLS_PART);
+		rendered.parts = rendered.parts.filter(
+			(part) => part.type !== TOOLS_PART && part.type !== INSERTS_PART,
+		);
 		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
 			ctx,
 			rendered,
-			options.partial !== null && i === prepared.length - 1,
+			slots[i]?.partial === true,
 		);
 		if (foreignReasoning > 0) {
 			foreignReasoningMessages += 1;
@@ -309,6 +455,9 @@ export async function buildModelView(
 		if (includeBody) {
 			messages.push(...injectedBodies(ctx, invocations));
 		}
+		if (slots[i]?.replayed) {
+			for (const message of messages.slice(renderedStart)) unmergeable.add(message);
+		}
 	}
 	if (
 		isToolsInput &&
@@ -327,7 +476,7 @@ export async function buildModelView(
 		});
 	}
 	const scoped = ctx.keepProviderExecuted === true ? messages : dropProviderExecuted(ctx, messages);
-	const merged = mergeConsecutiveUserModels(scoped);
+	const merged = mergeConsecutiveUserModels(scoped, unmergeable);
 
 	log.info("model request", {
 		conversation: ctx.convId,
@@ -467,11 +616,19 @@ export async function convertSteeredMessage(
 	return out;
 }
 
-function mergeConsecutiveUserModels(messages: PromptMessage[]): PromptMessage[] {
+function mergeConsecutiveUserModels(
+	messages: PromptMessage[],
+	unmergeable: ReadonlySet<PromptMessage> = new Set(),
+): PromptMessage[] {
 	const out: PromptMessage[] = [];
 	for (const m of messages) {
 		const prev = out[out.length - 1];
-		if (m.role === "user" && prev?.role === "user") {
+		if (
+			m.role === "user" &&
+			prev?.role === "user" &&
+			!unmergeable.has(m) &&
+			!unmergeable.has(prev)
+		) {
 			const prevContent =
 				typeof prev.content === "string"
 					? [{ type: "text" as const, text: prev.content }]

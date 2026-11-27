@@ -183,6 +183,7 @@ function makePrefixRequest(
 				(e) => ceiling === null || e.seq < ceiling,
 			);
 			let partial: Message | null = null;
+			let partialInsertLimit: number | undefined;
 			if (cut !== undefined) {
 				const cutEntry = entries.find((entry) => entry.seq === cut.seq);
 				if (cutEntry === undefined) {
@@ -193,6 +194,9 @@ function makePrefixRequest(
 				}
 				entries = entries.filter((entry) => entry.seq < cut.seq);
 				partial = { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) };
+				partialInsertLimit =
+					partial.parts.filter((part) => part.type === "step-start").length +
+					(cutEntry.message.parts[cut.part]?.type === "step-start" ? 1 : 0);
 			}
 			const fullToolHistory = store.toolHistoryEntries(conv.id);
 			let toolHistory = fullToolHistory.filter(
@@ -234,6 +238,7 @@ function makePrefixRequest(
 				prior,
 				current: null,
 				partial,
+				...(partialInsertLimit === undefined ? {} : { partialInsertLimit }),
 				summarySeq: store.memoryEligibility(conv.id).summarySeq,
 				ownedSeqs: [],
 				assertAuthority: input.assertAuthority,

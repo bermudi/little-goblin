@@ -630,6 +630,7 @@ function MessagePartsView({
   messages?: readonly UIMessage[] | undefined;
   sentMedia?: ReadonlyMap<string, readonly UIMessage[]> | undefined;
 }) {
+  parts = parts.filter((part) => part.type !== "data-inserts");
   if (hasInlineParts(parts)) {
     const prose: string[] = [];
     const chipNodes: ReactNode[] = [];

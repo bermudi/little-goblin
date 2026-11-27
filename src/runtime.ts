@@ -18,6 +18,7 @@ import {
 	storedToolChanges,
 	type ToolChange,
 } from "./agent/tool-declarations.ts";
+import { INSERTS_PART } from "./agent/turn-inserts.ts";
 import { PendingInputs, type PendingInput, type PendingInputMode } from "./pending-input.ts";
 import { type Bump, runFence } from "./fence.ts";
 import { log } from "./log.ts";
@@ -1342,11 +1343,20 @@ export class Runtime {
 			ownedInputSeqs: a.ownedInputSeqs,
 			admissionExchangeExcluded: a.admissionExchangeExcluded,
 			responseMessage:
-				outcome.responseMessage !== null && view.toolStamp !== null
+				outcome.responseMessage !== null &&
+				(view.toolStamp !== null || outcome.inserts.length > 0)
 					? {
 							...outcome.responseMessage,
 							parts: [
-								{ type: TOOLS_PART, data: view.toolStamp },
+								...(view.toolStamp !== null
+									? [{ type: TOOLS_PART, data: view.toolStamp } as Message["parts"][number]]
+									: []),
+								...(outcome.inserts.length > 0
+									? [{
+										type: INSERTS_PART,
+										data: { inserts: outcome.inserts },
+									} as Message["parts"][number]]
+									: []),
 								...outcome.responseMessage.parts,
 							],
 						}

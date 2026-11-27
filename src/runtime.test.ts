@@ -24,6 +24,7 @@ import { projectWorkdir } from "./projects.ts";
 import { moveIntoProject } from "./conversation-move.ts";
 import { paths } from "./home-layout.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
+import { INSERTS_PART } from "./agent/turn-inserts.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { toolNames } from "./agent/tools/mod.ts";
 import { bashTool } from "./agent/tools/bash.ts";
@@ -42,6 +43,8 @@ import { compactionBudgets, Runtime, type RuntimeDeps, userMessage } from "./run
 import type { System1Client } from "./system1.ts";
 import {
 	finishPart,
+	generateModel,
+	textResult,
 	type StreamAttempt,
 	scriptedModel as scriptedEdge,
 	textParts,
@@ -502,6 +505,460 @@ describe("context note across turns", () => {
 			await drain(r);
 			expect(script.requests()[1]).toContain("[context: 60k of 240k tokens used (25%)]");
 		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+});
+
+describe("compacted turn inserts", () => {
+	type CapturedMessage = { role: string; content?: unknown };
+	const capturedPrompt = (script: ScriptedModel, index: number): CapturedMessage[] => {
+		return JSON.parse(scriptedPrompt(script, index)) as CapturedMessage[];
+	};
+	const messageTexts = (message: CapturedMessage): string[] =>
+		typeof message.content === "string"
+			? [message.content]
+			: Array.isArray(message.content)
+				? message.content.flatMap((part) => {
+						if (typeof part !== "object" || part === null || !("text" in part)) return [];
+						const text = (part as { text?: unknown }).text;
+						return typeof text === "string" ? [text] : [];
+					})
+				: [];
+	const promptTexts = (prompt: CapturedMessage[]): string[] => prompt.flatMap(messageTexts);
+
+	test("a dangling steer does not move the compaction summary and the prompt stays prefix-stable", async () => {
+		const script = sdkScript();
+		const gate = deferred<void>();
+		const started = deferred<void>();
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "c1" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "c2" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: `final ${"f".repeat(300)}` }] },
+			{ kind: "reply", parts: [{ type: "text", text: `later ${"l".repeat(500)}` }] },
+			{ kind: "reply", parts: [{ type: "text", text: "after compaction reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next after compaction reply" }] },
+		);
+		const r = rig({
+			script,
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 2000,
+					summarize: async (_conv, _system, prompt) => foldSummary("folded past", prompt),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) {
+							started.resolve();
+							await gate.promise;
+						}
+						return { n };
+					},
+				}),
+			},
+		});
+		const logFile = join(tmpDir("goblin-rt-dangling-insert-"), "goblin.log");
+		setLogFile(logFile);
+		try {
+			const first = submit(r, `head ${"h".repeat(1000)}`);
+			await started.promise;
+			const steerA = submit(r, `pivotA ${"a".repeat(1000)}`);
+			const steerB = submit(r, "pivotB");
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steerA.done).toEqual({ kind: "completed" });
+			expect(await steerB.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const later = submit(r, `later question ${"q".repeat(500)}`);
+			expect(await later.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+			expect(r.store.getCompaction(r.conv.id)).toMatchObject({ boundarySeq: 2, split: null });
+
+			const postOne = submit(r, "after compaction");
+			expect(await postOne.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const firstViewWarnings = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as Record<string, unknown>)
+				.filter((line) => line.msg === "steer insert target missing from model view");
+			expect(firstViewWarnings).toHaveLength(1);
+			expect(firstViewWarnings[0]).toMatchObject({ seq: 2 });
+			const postTwo = submit(r, "after compaction again");
+			expect(await postTwo.done).toEqual({ kind: "completed" });
+			await drain(r);
+
+			const postOnePrompt = capturedPrompt(script, 4);
+			const postTwoPrompt = capturedPrompt(script, 5);
+			expect(postOnePrompt[1]!.role).toBe("user");
+			expect(messageTexts(postOnePrompt[1]!).join("\n")).toContain("history compacted");
+			expect(messageTexts(postOnePrompt[1]!).join("\n")).toContain("folded past");
+			expect(promptTexts(postOnePrompt).filter((text) => text === "pivotB")).toHaveLength(1);
+			expect(promptTexts(postOnePrompt)).not.toContain("head " + "h".repeat(1000));
+			expect(promptTexts(postOnePrompt)).not.toContain("pivotA " + "a".repeat(1000));
+			expect(postOnePrompt.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"tool",
+				"user",
+				"assistant",
+				"tool",
+				"assistant",
+				"user",
+				"assistant",
+				"user",
+			]);
+			expect(messageTexts(postOnePrompt[4]!).filter((text) => text === "pivotB")).toHaveLength(1);
+			const toolCallIds = postOnePrompt.flatMap((message) =>
+				Array.isArray(message.content)
+					? message.content.flatMap((part) => {
+							if (typeof part !== "object" || part === null || !("type" in part)) return [];
+							const record = part as { type?: unknown; toolCallId?: unknown };
+							return record.type === "tool-call" && typeof record.toolCallId === "string"
+								? [record.toolCallId]
+								: [];
+						})
+					: [],
+			);
+			expect(toolCallIds).toEqual(["c1", "c2"]);
+			expect(JSON.stringify(postTwoPrompt.slice(0, postOnePrompt.length))).toBe(
+				JSON.stringify(postOnePrompt),
+			);
+		} finally {
+			setLogFile(null);
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a split compaction keeps two later requests prefix-stable without replaying a steer", async () => {
+		const script = sdkScript();
+		const gate = deferred<void>();
+		const started = deferred<void>();
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "c1" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "c2" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "steered final" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "after compaction reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "second after reply" }] },
+		);
+		const r = rig({
+			script,
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => foldSummary("folded past", prompt),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) {
+							started.resolve();
+							await gate.promise;
+						}
+						return {
+							n,
+							...(n === 1 ? { big: "x".repeat(4000) } : { small: "kept suffix tool" }),
+						};
+					},
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "head");
+			await started.promise;
+			const steer = submit(r, "pivot");
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steer.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+			expect(r.store.getCompaction(r.conv.id)).toMatchObject({
+				boundarySeq: 2,
+				split: { seq: 3, part: 4 },
+			});
+			const postOne = submit(r, "after compaction");
+			expect(await postOne.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const postTwo = submit(r, "after compaction again");
+			expect(await postTwo.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const postOnePrompt = capturedPrompt(script, 3);
+			const postTwoPrompt = capturedPrompt(script, 4);
+			expect(JSON.stringify(postTwoPrompt.slice(0, postOnePrompt.length))).toBe(
+				JSON.stringify(postOnePrompt),
+			);
+			expect(promptTexts(postOnePrompt)).not.toContain("pivot");
+			expect(promptTexts(postTwoPrompt)).not.toContain("pivot");
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a split prefix summary keeps the pre-cut request and excludes post-cut inserts", async () => {
+		const script = sdkScript();
+		const buildStarted = deferred<void>();
+		const buildGate = deferred<void>();
+		const secondToolStarted = deferred<void>();
+		const secondToolGate = deferred<void>();
+		let builds = 0;
+		const summary =
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nhead; pivot-before\n## Exact identifiers";
+		const prefixModel = generateModel(() => textResult(summary));
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "cut-tool" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "after-cut-tool" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "finished" }] },
+		);
+		const r = rig({
+			script,
+			buildStep: async () => {
+				if (builds++ === 0) {
+					buildStarted.resolve();
+					await buildGate.promise;
+				}
+				return { ...script.step(), contextWindow: 256_000 };
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "fake/fake-1",
+					contextWindow: () => 1000,
+					summarize: async () => summary,
+					prefixStep: async () => ({
+						modelRef: "fake/fake-1",
+						model: prefixModel.model,
+						system: script.step().system,
+						inputModalities: undefined,
+						carries: () => false,
+						keepProviderExecuted: false,
+					}),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) return "x".repeat(4000);
+						secondToolStarted.resolve();
+						await secondToolGate.promise;
+						return "small";
+					},
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "head");
+			await buildStarted.promise;
+			const beforeCut = submit(r, "pivot-before");
+			buildGate.resolve();
+			await first.firstToolCall;
+			await secondToolStarted.promise;
+			const afterCut = submit(r, "pivot-after");
+			secondToolGate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await beforeCut.done).toEqual({ kind: "completed" });
+			expect(await afterCut.done).toEqual({ kind: "completed" });
+			await drain(r);
+
+			const detail = r.store.historyDetail(r.conv.id);
+			const afterCutSeq = detail.find(
+				(entry) =>
+					entry.message.role === "user" &&
+					entry.message.parts.some((part) =>
+						part.type === "text" &&
+						"pivot-after" === (part as { text?: unknown }).text,
+					),
+			)!.seq;
+			const replyEntry = detail.find((entry) => entry.message.role === "assistant")!;
+			const reply = replyEntry.message;
+			const insertPart = reply.parts.find((part) => part.type === INSERTS_PART);
+			expect(insertPart).toBeDefined();
+			const recordedInserts = (
+				insertPart as unknown as {
+					data: {
+						inserts: {
+							step: number;
+							items: { kind: string; seq?: number; text?: string }[];
+						}[];
+					};
+				}
+			)
+				.data.inserts;
+			expect(afterCutSeq).toBe(3);
+			expect(replyEntry.seq).toBe(4);
+			expect(replyEntry.seq).toBeGreaterThan(afterCutSeq);
+			expect(recordedInserts).toMatchObject([
+				{
+					step: 0,
+					items: [
+						{ kind: "steer", seq: 2 },
+						{ kind: "text" },
+					],
+				},
+				{
+					step: 2,
+					items: [{ kind: "steer", seq: afterCutSeq }],
+				},
+			]);
+
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+			const compaction = r.store.getCompaction(r.conv.id);
+			expect(compaction).toMatchObject({
+				boundarySeq: 3,
+				split: { seq: 4, part: 4 },
+			});
+			const prefixCalls = prefixModel.generateCalls;
+			const splitPrefix = prefixCalls.find((call) =>
+				JSON.stringify(call.prompt).includes("one long turn that compaction split"),
+			);
+			expect(splitPrefix).toBeDefined();
+			const preCutRequest = JSON.parse(script.callOptions()[0]!) as { prompt: unknown[] };
+			const splitPrefixRequest = splitPrefix!.prompt;
+			expect(
+				JSON.stringify(splitPrefixRequest.slice(0, preCutRequest.prompt.length)),
+			).toBe(
+				JSON.stringify(preCutRequest.prompt),
+			);
+			expect(JSON.stringify(preCutRequest.prompt)).toContain("pivot-before");
+			expect(JSON.stringify(preCutRequest.prompt)).toContain("[context:");
+			expect(JSON.stringify(splitPrefixRequest)).not.toContain("pivot-after");
+			expect(JSON.stringify(splitPrefixRequest).split("pivot-before")).toHaveLength(2);
+		} finally {
+			buildGate.resolve();
+			secondToolGate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a split prefix cut at step-start keeps that step's inserts", async () => {
+		const script = sdkScript();
+		const buildStarted = deferred<void>();
+		const buildGate = deferred<void>();
+		const firstToolStarted = deferred<void>();
+		const firstToolGate = deferred<void>();
+		const secondToolStarted = deferred<void>();
+		const secondToolGate = deferred<void>();
+		let builds = 0;
+		const summary =
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nhead; pivot-at-cut\n## Exact identifiers";
+		const prefixModel = generateModel(() => textResult(summary));
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "cut-tool" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "after-cut-tool" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "finished" }] },
+		);
+		const r = rig({
+			script,
+			buildStep: async () => {
+				if (builds++ === 0) {
+					buildStarted.resolve();
+					await buildGate.promise;
+				}
+				return { ...script.step(), contextWindow: 256_000 };
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "fake/fake-1",
+					contextWindow: () => 1000,
+					summarize: async () => summary,
+					prefixStep: async () => ({
+						modelRef: "fake/fake-1",
+						model: prefixModel.model,
+						system: script.step().system,
+						inputModalities: undefined,
+						carries: () => false,
+						keepProviderExecuted: false,
+					}),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) {
+							firstToolStarted.resolve();
+							await firstToolGate.promise;
+							return "x".repeat(4000);
+						}
+						secondToolStarted.resolve();
+						await secondToolGate.promise;
+						return "small";
+					},
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "head");
+			await buildStarted.promise;
+			buildGate.resolve();
+			await firstToolStarted.promise;
+			const atCut = submit(r, "pivot-at-cut");
+			firstToolGate.resolve();
+			await secondToolStarted.promise;
+			const afterCut = submit(r, "pivot-after");
+			secondToolGate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await atCut.done).toEqual({ kind: "completed" });
+			expect(await afterCut.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+
+			const splitPrefix = prefixModel.generateCalls.find((call) =>
+				JSON.stringify(call.prompt).includes("one long turn that compaction split"),
+			);
+			expect(splitPrefix).toBeDefined();
+			const cutStepRequest = JSON.parse(script.callOptions()[1]!) as { prompt: unknown[] };
+			expect(JSON.stringify(cutStepRequest.prompt)).toContain("pivot-at-cut");
+			expect(JSON.stringify(splitPrefix!.prompt.slice(0, cutStepRequest.prompt.length))).toBe(
+				JSON.stringify(cutStepRequest.prompt),
+			);
+			expect(JSON.stringify(splitPrefix!.prompt)).not.toContain("pivot-after");
+		} finally {
+			buildGate.resolve();
+			firstToolGate.resolve();
+			secondToolGate.resolve();
 			await r.runtime.shutdown();
 			r.store.close();
 		}
@@ -3367,10 +3824,186 @@ describe("steering", () => {
 					.map((c) => c.text!),
 			);
 		expect(texts).toEqual(["start this", "actually pivot"]);
+		const third = submit(r, "continue");
+		expect(await third.done).toEqual({ kind: "completed" });
+		await drain(r);
+		const [lastRequest, nextRequest] = (s as ReturnType<typeof sdkScript>)
+			.callOptions()
+			.slice(1)
+			.map((options) => JSON.parse(options) as { prompt: unknown[] });
+		expect(JSON.stringify(nextRequest!.prompt.slice(0, lastRequest!.prompt.length))).toBe(
+			JSON.stringify(lastRequest!.prompt),
+		);
 		const detail = r.store.historyDetail(r.conv.id);
-		expect(detail.map((d) => d.message.role)).toEqual(["user", "user", "assistant"]);
+		expect(detail.map((d) => d.message.role)).toEqual([
+			"user",
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		expect(detail[2]!.message.parts.filter((part) => part.type === "step-start")).toHaveLength(2);
 		expect(detail[2]!.anchorSeq).toBe(detail[1]!.seq);
 		r.store.close();
+	});
+
+	test("toolsInInput steer replay keeps the old request prefix across a tool-description edit", async () => {
+		const gate = deferred<void>();
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }] },
+			{ kind: "reply", parts: [{ type: "text", text: "adjusted" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "continued" }] },
+		);
+		let description = "probe v1";
+		const r = rig({
+			script,
+			step: { toolsInInput: true },
+			makeTools: () => ({
+				probe: defineTool({
+					description,
+					input: z.object({}),
+					execute: async () => {
+						await gate.promise;
+						return "ok";
+					},
+				}),
+			}),
+		});
+		try {
+			const first = submit(r, "start");
+			await first.firstToolCall;
+			const steer = submit(r, "pivot");
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steer.done).toEqual({ kind: "completed" });
+			description = "probe v2";
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const prompts = script.callOptions().map(
+				(options) => (JSON.parse(options) as { prompt: unknown[] }).prompt,
+			);
+			expect(JSON.stringify(prompts[2]!.slice(0, prompts[1]!.length))).toBe(
+				JSON.stringify(prompts[1]),
+			);
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a context note keeps the previous turn's last request as the next prefix", async () => {
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }] },
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+		);
+		const r = rig({
+			script,
+			step: { contextWindow: 256_000 },
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({}),
+					execute: async () => "ok",
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "start");
+			expect(await first.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const requests = script.callOptions().map(
+				(options) => JSON.parse(options) as { prompt: unknown[] },
+			);
+			const last = requests[1]!.prompt;
+			expect(JSON.stringify(requests[2]!.prompt.slice(0, last.length))).toBe(JSON.stringify(last));
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a loop warning keeps the previous turn's last request as the next prefix", async () => {
+		const script = sdkScript();
+		script.script(
+			...Array.from({ length: 10 }, () => ({
+				kind: "reply" as const,
+				parts: [{ type: "tool-call" as const, toolName: "probe", input: {} }],
+			})),
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+		);
+		const r = rig({
+			script,
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({}),
+					execute: async () => "same result",
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "spin");
+			expect(await first.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const requests = script.callOptions().map(
+				(options) => JSON.parse(options) as { prompt: unknown[] },
+			);
+			const last = requests[10]!.prompt;
+			expect(JSON.stringify(requests[11]!.prompt.slice(0, last.length))).toBe(JSON.stringify(last));
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a loop cut nudge keeps the previous turn's last request as the next prefix", async () => {
+		const script = sdkScript();
+		script.script(
+			...Array.from({ length: 20 }, () => ({
+				kind: "reply" as const,
+				parts: [{ type: "tool-call" as const, toolName: "probe", input: {} }],
+			})),
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+		);
+		const r = rig({
+			script,
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({}),
+					execute: async () => "same result",
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "spin");
+			expect(await first.done).toEqual({ kind: "completed", forced: "repeat" });
+			await drain(r);
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const requests = script.callOptions().map(
+				(options) => JSON.parse(options) as { prompt: unknown[] },
+			);
+			const last = requests[20]!.prompt;
+			expect(JSON.stringify(requests[21]!.prompt.slice(0, last.length))).toBe(JSON.stringify(last));
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
 	});
 
 	test("a steer parked mid-step skips unlaunched tool calls — the next model call sees it", async () => {
@@ -4283,7 +4916,7 @@ describe("prefix compaction request identity", () => {
 		let executions = 0;
 		let providerCalls = 0;
 		const validSummary =
-			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nfirst request; restart prior; second request\n## Exact identifiers";
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nfirst request; restart prior; second request; restart large seed\n## Exact identifiers";
 		const encoder = new TextEncoder();
 		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 			const url = String(input);
@@ -4329,7 +4962,7 @@ describe("prefix compaction request identity", () => {
 			const content =
 				providerCalls === 1
 					? "first assistant reply ".repeat(6_500)
-					: providerCalls === 11
+					: providerCalls === 12
 						? "epoch mismatch seed reply ".repeat(6_500)
 					: providerCalls === 7
 						? "restart prior assistant reply ".repeat(1_000)
@@ -4536,16 +5169,7 @@ describe("prefix compaction request identity", () => {
 			if (!Array.isArray(turnMessages) || !Array.isArray(flushMessages) || !Array.isArray(compactMessages)) {
 				throw new Error("fake provider captured malformed messages");
 			}
-			const persistedTurnMessages = turnMessages.filter(
-				(message) =>
-					!(
-						typeof message === "object" &&
-						message !== null &&
-						(message as { role?: unknown }).role === "user" &&
-						typeof (message as { content?: unknown }).content === "string" &&
-						/^\[context: .*]$/.test((message as { content: string }).content)
-					),
-			);
+			const persistedTurnMessages = turnMessages;
 			expect(flushMessages.slice(0, persistedTurnMessages.length)).toEqual(persistedTurnMessages);
 			const flushAppended = flushMessages.slice(persistedTurnMessages.length);
 			expect(flushAppended).toHaveLength(2);
@@ -4619,7 +5243,7 @@ describe("prefix compaction request identity", () => {
 			} finally {
 				setLogFile(null);
 			}
-			expect(providerCalls).toBe(10);
+			expect(providerCalls).toBe(11);
 			const hydratedLog = readFileSync(join(home, "state/goblin.log"), "utf8");
 			expect(hydratedLog).toContain('"msg":"last-turn tools hydrated"');
 			expect(hydratedLog).toContain('"mode":"prefix","reason":null');
@@ -4634,16 +5258,7 @@ describe("prefix compaction request identity", () => {
 			if (!Array.isArray(restartTurnMessages) || !Array.isArray(restartSummaryMessages)) {
 				throw new Error("fake provider captured malformed restart messages");
 			}
-			const persistedRestartTurnMessages = restartTurnMessages.filter(
-				(message) =>
-					!(
-						typeof message === "object" &&
-						message !== null &&
-						(message as { role?: unknown }).role === "user" &&
-						typeof (message as { content?: unknown }).content === "string" &&
-						/^\[context: .*]$/.test((message as { content: string }).content)
-					),
-			);
+			const persistedRestartTurnMessages = restartTurnMessages;
 			expect(restartSummaryMessages.slice(0, persistedRestartTurnMessages.length)).toEqual(
 				persistedRestartTurnMessages,
 			);

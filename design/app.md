@@ -992,11 +992,12 @@ is now the home screen, and the avatar means only the agent.
   - Search still finds side chats.
 - **Row layout (operator, 2026-11-27, #984).** A row's mark, or its pin
   when it has no mark, sits between the title and the time, in every list:
-  side chats, Active, search and the phone chats screen. Rows have no empty
+  side chats, Active and the phone chats screen. Rows have no empty
   mark column on the left. The Little Goblin row always shows the avatar
   (28px), with its mark beside the time. Side chats have no indent; a thin
   line under the avatar joins them to the Little Goblin row. Project rows
-  keep their chevron on the left.
+  keep their chevron on the left. Search hits are matching messages, not
+  chat rows, and carry no mark, as before.
 - **Goblin's avatar** is in the chat header, and on a phone also in the chats
   bar. It opens the Goblin panel. Ring: busy anywhere, Telegram included.
   Number: the Attention items; `?` when they cannot be loaded.

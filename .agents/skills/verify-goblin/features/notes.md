@@ -28,8 +28,9 @@ Proof: the row has the new title and it survives a reload.
 Create a second note the same way. Go back to Notes, check both rows,
 choose Move to… → Global → Move, then filter to Global. Both rows should
 show Global. Select both again and archive them. In Archived, restore
-one and confirm permanent deletion of the other. Verify the restored note
-is the only one in Active and check the database:
+one and confirm permanent deletion of the other. Verify that Active shows
+the restored note, that neither list shows the deleted one, and check the
+database:
 
 ```sh
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select title, bot_id, archived_at from notes'

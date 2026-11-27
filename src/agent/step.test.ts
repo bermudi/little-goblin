@@ -165,3 +165,29 @@ describe("compaction memory flush gate", () => {
 		}
 	});
 });
+
+describe("step builder tool declarations", () => {
+	afterEach(() => {
+		_resetCodexModelsForTest();
+		_resetModelsDevForTest();
+	});
+
+	test("a codex turn step sends tools as input items", async () => {
+		const dir = useHome();
+		const authFile = writeCodexAuth(dir);
+		const fx = fakeFetch(undefined);
+		try {
+			primeModelsDev(dir, { openai: { models: {} } });
+			const r = rig(authFile, "codex/gpt-6.1-sol");
+			try {
+				const step = await r.buildStep(r.conv, {});
+				expect(step.engine).toBe("ai-sdk");
+				expect("toolsInInput" in step && step.toolsInInput).toBe(true);
+			} finally {
+				r.store.close();
+			}
+		} finally {
+			fx.restore();
+		}
+	});
+});

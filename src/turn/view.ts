@@ -19,6 +19,16 @@ import {
 	skillPartDataSchema,
 	type SkillRef,
 } from "../skill-part.ts";
+import {
+	ADDITIONAL_TOOLS_PREFIX,
+	INCREMENTAL_TOOLS_NOTICE,
+	TOOLS_PART,
+	foldDeclarations,
+	storedToolChanges,
+	toolRemovalNotice,
+	type ToolChange,
+	type ToolDeclaration,
+} from "../agent/tool-declarations.ts";
 
 export interface ViewContext {
 	convId: string;
@@ -28,6 +38,8 @@ export interface ViewContext {
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
 	keepProviderExecuted?: boolean;
+	toolsInInput?: boolean;
+	pendingToolChange?: ToolChange | null;
 	skillRef: (
 		ref: SkillRef,
 		includeBody: boolean,
@@ -177,6 +189,7 @@ export async function buildModelView(
 	ctx: ViewContext,
 	options: {
 		entries: { seq: number; message: Message }[];
+		toolHistory?: { seq: number; message: Message }[];
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: Message | null;
@@ -193,6 +206,7 @@ export async function buildModelView(
 		options.summarySeq,
 	);
 	if (options.partial !== null) view.push(options.partial);
+	const storedChanges = storedToolChanges(options.toolHistory ?? options.entries, ctx.convId);
 	const owned = new Set(options.ownedSeqs ?? []);
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
@@ -204,10 +218,42 @@ export async function buildModelView(
 	);
 	options.assertAuthority();
 	const messages: PromptMessage[] = [];
+	const isToolsInput = ctx.toolsInInput === true;
+	const changesByMessage = new Map(storedChanges.map(({ messageId, change }) => [messageId, change]));
+	const visibleStoredChanges = prepared.flatMap((message) => {
+		const change = changesByMessage.get(message.id);
+		return change === undefined ? [] : [change];
+	});
+	const firstVisibleChange = visibleStoredChanges[0];
+	const firstVisibleIndex =
+		firstVisibleChange === undefined
+			? storedChanges.length
+			: storedChanges.findIndex(({ change }) => change === firstVisibleChange);
+	const hiddenChanges = storedChanges.slice(0, firstVisibleIndex).map(({ change }) => change);
+	const headChange =
+		hiddenChanges.length === 0 && firstVisibleChange !== undefined ? firstVisibleChange : undefined;
+	let folded = new Map<string, ToolDeclaration>();
+	const unavailable = new Set<string>();
+	let pendingRenderedAtHead = false;
+	if (isToolsInput) {
+		const headChanges = headChange === undefined ? hiddenChanges : [headChange];
+		folded = foldDeclarations(headChanges);
+		for (const change of headChanges) foldUnavailable(change, unavailable);
+		if (headChanges.length === 0 && ctx.pendingToolChange !== undefined && ctx.pendingToolChange !== null) {
+			for (const name of ctx.pendingToolChange.removed) folded.delete(name);
+			for (const declaration of ctx.pendingToolChange.added) folded.set(declaration.name, declaration);
+			pendingRenderedAtHead = true;
+		}
+		if (folded.size > 0) messages.push(toolMarker([...folded.values()]));
+	}
 	const partialId = options.partial?.id ?? null;
 	let foreignReasoningMessages = 0;
 	let foreignReasoningParts = 0;
 	for (const [i, m] of prepared.entries()) {
+		const storedChange = isToolsInput ? changesByMessage.get(m.id) : undefined;
+		if (storedChange !== undefined && storedChange !== headChange) {
+			messages.push(...toolChangeMessages(storedChange, folded, unavailable));
+		}
 		const entrySeq = seqByIndex[i] ?? null;
 		const includeBody = entrySeq !== null && m.role === "user" && owned.has(entrySeq);
 		const { message: skillMarked, invocations } = skillPartsAsText(
@@ -216,6 +262,7 @@ export async function buildModelView(
 			includeBody,
 		);
 		const rendered = contextPartAsText(ctx, notePartsAsText(ctx, skillMarked));
+		rendered.parts = rendered.parts.filter((part) => part.type !== TOOLS_PART);
 		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
 			ctx,
 			rendered,
@@ -263,6 +310,14 @@ export async function buildModelView(
 			messages.push(...injectedBodies(ctx, invocations));
 		}
 	}
+	if (
+		isToolsInput &&
+		!pendingRenderedAtHead &&
+		ctx.pendingToolChange !== undefined &&
+		ctx.pendingToolChange !== null
+	) {
+		messages.push(...toolChangeMessages(ctx.pendingToolChange, folded, unavailable));
+	}
 	if (foreignReasoningParts > 0) {
 		log.info("foreign reasoning dropped from the model view", {
 			conversation: ctx.convId,
@@ -279,6 +334,58 @@ export async function buildModelView(
 		messages: merged.length,
 	});
 	return merged;
+}
+
+function toolMarker(declarations: ToolDeclaration[]): PromptMessage {
+	return {
+		role: "system",
+		content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify(declarations)}`,
+		providerOptions: { codex: { inInput: true } },
+	};
+}
+
+function toolChangeMessages(
+	change: ToolChange,
+	folded: Map<string, ToolDeclaration>,
+	unavailable: Set<string>,
+): PromptMessage[] {
+	const out: PromptMessage[] = [];
+	for (const declaration of change.added) unavailable.delete(declaration.name);
+	const unavailableNames = [...unavailable];
+	const notice =
+		unavailableNames.length > 0
+			? `${INCREMENTAL_TOOLS_NOTICE}\nStill unavailable: ${unavailableNames.join(", ")}.`
+			: INCREMENTAL_TOOLS_NOTICE;
+	out.push({
+		role: "system",
+		content: notice,
+		providerOptions: { codex: { inInput: true } },
+	});
+	if (change.added.length > 0) out.push(toolMarker(change.added));
+	const added = new Set(change.added.map((declaration) => declaration.name));
+	const removed = change.removed.filter((name) => !added.has(name));
+	if (removed.length > 0) {
+		out.push({
+			role: "system",
+			content: toolRemovalNotice(removed),
+			providerOptions: { codex: { inInput: true } },
+		});
+	}
+	for (const name of removed) {
+		unavailable.add(name);
+		folded.delete(name);
+	}
+	for (const name of change.removed) folded.delete(name);
+	for (const declaration of change.added) folded.set(declaration.name, declaration);
+	return out;
+}
+
+function foldUnavailable(change: ToolChange, unavailable: Set<string>): void {
+	for (const declaration of change.added) unavailable.delete(declaration.name);
+	const added = new Set(change.added.map((declaration) => declaration.name));
+	for (const name of change.removed) {
+		if (!added.has(name)) unavailable.add(name);
+	}
 }
 
 function dropProviderExecuted(ctx: ViewContext, messages: PromptMessage[]): PromptMessage[] {

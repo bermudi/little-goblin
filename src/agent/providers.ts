@@ -29,6 +29,7 @@ import { fromSdkError } from "./sdk-errors.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 import { fromV4Usage } from "./v4-usage.ts";
 import { isZaiHost, zaiReasoningFetch, zaiStatelessReplay } from "./zai-responses.ts";
+import { isInInputSystem } from "./tool-declarations.ts";
 
 // Every chat-turn, compaction, title and reviewer model comes through
 // here, so the quota filter lives here once. The SDK retries only
@@ -295,11 +296,20 @@ export function callHashes(
 	prompt: readonly unknown[],
 	tools: unknown,
 ): { headHash: string; requestHash: string; promptHashes: string[] } {
+	const system = (prompt as { role?: unknown; content?: unknown; providerOptions?: unknown }[])
+		.filter((message) => message.role === "system" && !isInInputSystem(message));
+	const visibleTools = Array.isArray(tools)
+		? tools.filter((tool) => {
+				if (typeof tool !== "object" || tool === null) return true;
+				const item = tool as { providerOptions?: { openai?: { omitFromRequestTools?: unknown } } };
+				return item.providerOptions?.openai?.omitFromRequestTools !== true;
+			})
+		: tools;
 	return {
 		headHash: sha256hex(
 			JSON.stringify({
-				system: (prompt as { role?: unknown }[]).filter((m) => m.role === "system"),
-				tools: tools ?? null,
+				system,
+				tools: visibleTools ?? null,
 			}),
 		),
 		requestHash: sha256hex(JSON.stringify(prompt)),

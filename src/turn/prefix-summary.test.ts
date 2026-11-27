@@ -6,6 +6,8 @@ import { resolveSkillRef } from "../agent/skill-inject.ts";
 import { useHome, tmpDb } from "../testkit.ts";
 import { defineTool } from "../tool.ts";
 import { toToolSet } from "./ai-sdk-tools.ts";
+import { generateModel, textResult } from "../testkit/fake-model.ts";
+import { ADDITIONAL_TOOLS_PREFIX } from "../agent/tool-declarations.ts";
 import { makePrefixFlush, makePrefixSummarizer } from "./prefix-summary.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { z } from "zod";
@@ -216,6 +218,50 @@ describe("prefix split request identity", () => {
 								.join("")
 						: "";
 			expect(instructionText).toBe(checkpointInstruction);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("a Codex flush declares the turn's tools when no tool stamp is stored yet", async () => {
+		useHome("goblin-prefix-flush-tools-");
+		const store = openStore(tmpDb("goblin-prefix-flush-tools-"));
+		const conv = store.resolve({ kind: "dm", chatId: 75 }, "/w");
+		try {
+			store.append(conv.id, [
+				{ id: "u1", role: "user" as const, parts: [{ type: "text" as const, text: "remember I like tea" }] },
+				{ id: "a1", role: "assistant" as const, parts: [{ type: "text" as const, text: "noted" }] },
+			], { anchorSeq: 1 });
+			const fake = generateModel(() => textResult("done"));
+			const sdkTools = toToolSet({
+				note: defineTool({
+					description: "Save a durable note.",
+					input: z.object({ body: z.string() }),
+					execute: () => "unused",
+				}),
+			});
+			const flush = makePrefixFlush({
+				conv,
+				step: {
+					modelRef: "codex/gpt-6-luna",
+					model: fake.model,
+					system: "Frozen system.",
+					inputModalities: undefined,
+					carries: () => false,
+					keepProviderExecuted: true,
+					toolsInInput: true,
+				},
+				store,
+				tools: sdkTools,
+				noteExecutor: async () => "saved",
+				foldCeiling: () => null,
+				assertAuthority: () => {},
+			});
+			if (flush === null) throw new Error("flush was not built");
+			await flush(null, false, new AbortController().signal);
+			const prompt = JSON.stringify(fake.generateCalls[0]?.prompt ?? []);
+			expect(prompt).toContain(ADDITIONAL_TOOLS_PREFIX);
+			expect(prompt).toContain("Save a durable note.");
 		} finally {
 			store.close();
 		}

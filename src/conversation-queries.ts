@@ -149,6 +149,12 @@ export function prepareConversationQueries(db: Database) {
 	>(
 		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? ORDER BY seq",
 	);
+	const qToolHistory = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
+		[string]
+	>(
+		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? AND role = 'assistant' AND instr(data, '\"type\":\"data-tools\"') > 0 ORDER BY seq",
+	);
 	const qHistoryCausal = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
 		[string, number]
@@ -451,6 +457,7 @@ export function prepareConversationQueries(db: Database) {
 		qSelectPrevious,
 		qLastActivity,
 		qHistory,
+		qToolHistory,
 		qHistoryCausal,
 		qEventBySeq,
 		qHistorySlim,

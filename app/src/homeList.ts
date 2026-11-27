@@ -1,10 +1,13 @@
 import type { AppAttentionItem, AppConversationList } from "../../src/http/app-wire.ts";
+import { flatTitle } from "./flatText.ts";
 
 type Conv = AppConversationList["conversations"][number];
 
+const UNMARKED_RANK = 3;
+
 export type Mark = "needs" | "new" | "working";
 export interface Place {
-	section: "active" | "chats";
+	section: "active" | "side";
 	rank: number;
 	at: number;
 }
@@ -36,13 +39,15 @@ export interface RollingRow {
 	mark: Mark | null;
 	line: string;
 	target: string | null;
+	sideTarget: string | null;
 	updatedAt: string | null;
 }
 
 export interface HomeList {
 	rolling: RollingRow;
+	side: ChatRow[];
 	active: (ChatRow | LooseRow)[];
-	chats: ChatRow[];
+	openInGoblin: boolean;
 }
 
 export interface HomeInput {
@@ -53,6 +58,7 @@ export interface HomeInput {
 	delegations: readonly { appConversation: string | null; status: string }[];
 	open: string | null;
 	seen: string | null;
+	sideChatsOpen: boolean;
 }
 
 interface Owner {
@@ -95,11 +101,6 @@ export function buildHome(
 	const attentionByConversation = groupAttention(input.attention);
 	const runningByConversation = groupRunning(input.delegations);
 	const projects = new Map(input.projects.map((project) => [project.id, project.name]));
-	const activeProjectIds = new Set(
-		input.projects
-			.filter((project) => project.archivedAt === null)
-			.map((project) => project.id),
-	);
 	const rowById = new Map<string, ChatRow>();
 
 	for (const conv of chatsById.values()) {
@@ -124,8 +125,8 @@ export function buildHome(
 			runningByConversation,
 			input.seen,
 		);
-		const rawPlace = getRawPlace(conv, rawResult.mark, activeProjectIds);
-		const place = getPlacedPlace(conv, rawPlace, activeProjectIds, activeHold);
+		const rawPlace = getRawPlace(conv, rawResult.mark);
+		const place = getPlacedPlace(conv, rawPlace, activeHold);
 		if (!place) continue;
 
 		const line = getChatLine(conv, visibleResult);
@@ -143,17 +144,20 @@ export function buildHome(
 	}
 
 	const active: (ChatRow | LooseRow)[] = [...rowById.values()]
-		.filter((row) => row.place.section === "active");
+		.filter((row) => row.place.section === "active" && row.conv.projectId != null);
 	active.push(...makeLooseRows(input, owners, rollIds));
 	active.sort((left, right) =>
 		left.place.rank - right.place.rank || right.place.at - left.place.at
 	);
 
-	const chats = [...rowById.values()]
-		.filter((row) => row.place.section === "chats")
+	const side = [...rowById.values()]
+		.filter((row) => row.conv.projectId == null)
 		.sort((left, right) => {
-			const pinOrder = Number(right.conv.pinnedAt != null) -
-				Number(left.conv.pinnedAt != null);
+			const rankOrder = left.place.rank - right.place.rank;
+			if (rankOrder !== 0) return rankOrder;
+			const pinOrder = left.place.rank === UNMARKED_RANK
+				? Number(right.conv.pinnedAt != null) - Number(left.conv.pinnedAt != null)
+				: 0;
 			return pinOrder || right.place.at - left.place.at;
 		});
 
@@ -164,9 +168,28 @@ export function buildHome(
 		attentionByConversation,
 		runningByConversation,
 	);
+	if (!input.sideChatsOpen) {
+		const winner = side.find((row) => row.mark === "needs") ??
+			side.find((row) => row.mark === "new") ??
+			side.find((row) => row.mark === "working");
+		const mark = winner?.mark ?? null;
+		if (winner && mark !== null && (rolling.mark === null || rankOf(mark) < rankOf(rolling.mark))) {
+			const title = flatTitle(winner.conv.title) ?? "a side chat";
+			rolling.mark = mark;
+			rolling.sideTarget = winner.id;
+			rolling.line = mark === "needs"
+				? winner.line
+				: mark === "new" ? `New reply in ${title}` : `Working in ${title}`;
+		}
+	}
+	const openInGoblin = input.open !== null && (() => {
+		const owner = owners.get(input.open);
+		return rollIds.has(input.open) || (owner !== undefined && owner.roll !== null) ||
+			(owner?.row != null && chatsById.get(owner.row)?.projectId == null);
+	})();
 	const hold = makeHold(openRow, rowById, prev);
 
-	return { list: { rolling, active, chats }, hold };
+	return { list: { rolling, active, side, openInGoblin }, hold };
 }
 
 function findOwners(
@@ -297,18 +320,16 @@ function newestAttention(
 function getRawPlace(
 	conv: Conv,
 	mark: Mark | null,
-	activeProjectIds: Set<string>,
 ): Place | null {
+	if (conv.projectId == null) {
+		return {
+			section: "side",
+			rank: mark === null ? UNMARKED_RANK : rankOf(mark),
+			at: timestamp(conv.updatedAt),
+		};
+	}
 	if (mark !== null) {
 		return { section: "active", rank: rankOf(mark), at: timestamp(conv.updatedAt) };
-	}
-	const hasNoProject = conv.projectId == null;
-	const pinnedActiveProject =
-		conv.pinnedAt != null &&
-		conv.projectId != null &&
-		activeProjectIds.has(conv.projectId);
-	if (hasNoProject || pinnedActiveProject) {
-		return { section: "chats", rank: 0, at: timestamp(conv.updatedAt) };
 	}
 	return null;
 }
@@ -316,17 +337,10 @@ function getRawPlace(
 function getPlacedPlace(
 	conv: Conv,
 	raw: Place | null,
-	activeProjectIds: Set<string>,
 	prev: Hold | null,
 ): Place | null {
 	if (prev?.id !== conv.id) return raw;
-	if (
-		prev.place.section === "chats" &&
-		conv.projectId != null &&
-		(conv.pinnedAt == null || !activeProjectIds.has(conv.projectId))
-	) {
-		return raw;
-	}
+	if (prev.place.section === "side" && conv.projectId != null) return raw;
 	return prev.place;
 }
 
@@ -397,6 +411,7 @@ function makeRollingRow(
 		mark: picked?.result.mark ?? null,
 		line,
 		target: picked?.roll.id ?? newest?.id ?? null,
+		sideTarget: null,
 		updatedAt: newest?.updatedAt ?? null,
 	};
 }

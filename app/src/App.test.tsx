@@ -128,6 +128,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -331,6 +332,7 @@ describe("rail row actions and the pinned pool", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -455,7 +457,7 @@ describe("rail row actions and the pinned pool", () => {
 
 	const domOrder = (): (string | null)[] =>
 		[...container.querySelectorAll(".conv-title")]
-			.filter((t) => t.textContent !== "Rolling chat")
+			.filter((t) => t.textContent !== "Little Goblin")
 			.map((t) => t.textContent);
 
 	const rowActions = async (title: string): Promise<string[]> => {
@@ -681,6 +683,7 @@ describe("rename editor with the AI button", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -988,6 +991,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -1466,7 +1470,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await selectFixture();
 		expect(container.querySelector(".chat")).not.toBeNull();
 		const newChat = () =>
-			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
 		await newChat();
 		const emptyState = win.history.state;
 		const emptyLength = win.history.length;
@@ -1952,7 +1956,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// composer holds the cleared text, exactly once.
 		expect(container.textContent).not.toContain("Couldn't start a conversation");
 		const newChat = () =>
-			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+			click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
 		await newChat();
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer again");
 		const restored = container.querySelector("form.composer .message-box")! as HTMLElement;
@@ -2170,6 +2174,7 @@ describe("App telegram door", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -2578,6 +2583,7 @@ describe("app projects surface", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -3084,18 +3090,17 @@ describe("app projects surface", () => {
 		await settle();
 	};
 
-	test("T1 and T2: sidebar shows Rolling chat with its loop mark and opens it", async () => {
+	test("T1 and T2: sidebar shows Little Goblin with its avatar and opens it", async () => {
 		await mount();
 		expect(container.querySelector(".gutter")).toBeNull();
 		const rail = container.querySelector('nav[aria-label="Sidebar"]')!;
 		expect(rail.querySelector('input[aria-label="Search history"]')).not.toBeNull();
-		expect(rail.querySelector('button[aria-label="New chat"]')).not.toBeNull();
+		expect(rail.querySelector('button[aria-label="New side chat"]')).not.toBeNull();
 		expect(rail.querySelector('button[aria-label="You"]')).not.toBeNull();
 		expect(rail.textContent).toContain("Projects");
 		const rolling = rail.querySelector('a[href="/app/rolling"]')!;
-		expect(rolling.querySelector(".conv-title")?.textContent).toBe("Rolling chat");
-		expect(rolling.querySelector("img")).toBeNull();
-		expect(rolling.querySelector(".conv-gutter svg")).not.toBeNull();
+		expect(rolling.querySelector(".conv-title")?.textContent).toBe("Little Goblin");
+		expect(rolling.querySelector("img")).not.toBeNull();
 		await click(rolling);
 		expect(win.location.pathname).toBe("/app/rolling");
 	});
@@ -3147,7 +3152,7 @@ describe("app projects surface", () => {
 		}) as typeof fetch;
 		win.history.replaceState(null, "", "/app/memory");
 		await mount();
-		const profile = container.querySelector('nav[aria-label="Goblin\'s profile"]')!;
+		const profile = container.querySelector('nav[aria-label="Little Goblin\'s profile"]')!;
 		expect([...profile.querySelectorAll("a")].map((link) => link.textContent))
 			.toEqual(["Status", "Memory", "Skills", "Log"]);
 		expect(profile.querySelector('a[href="/app/memory"]')?.getAttribute("aria-current")).toBe("page");
@@ -3176,7 +3181,7 @@ describe("app projects surface", () => {
 		expect(projectLink.textContent).toContain("Goblin Work");
 		expect(container.querySelector(".rail")!.textContent).not.toContain("Old Stuff");
 		expect(container.querySelector(".rail")!.textContent).not.toContain("inside chat");
-		expect(container.querySelector(".rail")!.textContent!.indexOf("Goblin Work")).toBeLessThan(
+		expect(container.querySelector(".rail")!.textContent!.indexOf("Goblin Work")).toBeGreaterThan(
 			container.querySelector(".rail")!.textContent!.indexOf("loose chat"),
 		);
 		expect(projectLink.getAttribute("href")).toBe("/app/p/p-goblin");
@@ -3246,7 +3251,7 @@ describe("app projects surface", () => {
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 	});
 
-	test("pinned active project chats appear in Chats with their project name", async () => {
+	test("unmarked pinned project chats stay out of the rail while loose chats stay under Little Goblin", async () => {
 		projs = [
 			projRow("Goblin Work"),
 			projRow("Old Project", { archivedAt: "2026-10-09T00:00:00.000Z" }),
@@ -3274,26 +3279,14 @@ describe("app projects surface", () => {
 		const rail = container.querySelector(".rail")!;
 		const titles = [...rail.querySelectorAll(".conv:not(.rolling-row) .conv-title")]
 			.map((title) => title.textContent);
-		expect(titles).toEqual(["pinned project", "pinned loose", "loose chat"]);
-		const pinnedProject = [...rail.querySelectorAll(".conv")].find(
-			(row) => row.querySelector(".conv-title")?.textContent === "pinned project",
-		)!;
-		expect(pinnedProject.querySelector(".conv-project")?.textContent).toBe(" in Goblin Work");
-		expect(pinnedProject.querySelector(".conv-pin")).not.toBeNull();
+		expect(titles).toEqual(["pinned loose", "loose chat"]);
+		expect(rail.textContent).not.toContain("pinned project");
 		expect(rail.textContent).not.toContain("unpinned project");
 		expect(rail.textContent).not.toContain("archived project pin");
 
-		await click(pinnedProject.querySelector('[role="toolbar"] button[aria-label="Unpin"]'));
-		expect(posts).toContainEqual({
-			url: "/api/app/conversations/project-pinned",
-			body: { pinned: false },
-		});
-		expect([...rail.querySelectorAll(".conv-title")].some(
-			(title) => title.textContent === "pinned project",
-		)).toBe(false);
 	});
 
-	test("pinning a project chat from its title menu adds it to Chats", async () => {
+	test("pinning an unmarked project chat does not add it to the rail", async () => {
 		projs = [projRow("Goblin Work")];
 		convs = [
 			convRow("project chat", { id: "app/project-chat", projectId: "p-goblin" }),
@@ -3310,9 +3303,8 @@ describe("app projects surface", () => {
 		});
 		const pinnedProject = [...container.querySelectorAll(".rail .conv")].find(
 			(row) => row.querySelector(".conv-title")?.textContent === "project chat",
-		)!;
-		expect(pinnedProject.querySelector(".conv-project")?.textContent).toBe(" in Goblin Work");
-		expect(pinnedProject.querySelector(".conv-pin")).not.toBeNull();
+		);
+		expect(pinnedProject).toBeUndefined();
 	});
 
 	test("only a loose parent conversation offers the move action", async () => {
@@ -3693,7 +3685,7 @@ describe("app projects surface", () => {
 		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
 		gate.resolve();
 		await settle();
-		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
 		await settle();
 		expect(composerText()).toBe(" come back to this");
 		expect(container.querySelectorAll("form.composer .goblin-chip")).toHaveLength(1);
@@ -4896,7 +4888,7 @@ describe("app projects surface", () => {
 
 	const openPage = async (page: DesktopPage) => openDesktopPage(container, click, page);
 	const openNewChat = async () =>
-		click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+		click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
 	const libraryRows = async () => {
 		await click(
 			[...container.querySelectorAll('.goblin-column [role="tab"]')].find(
@@ -5201,7 +5193,7 @@ describe("app projects surface", () => {
 		win.history.replaceState(null, "", "/app/rolling");
 		installChatLayout();
 		await mount();
-		expect(container.textContent).toContain("your rolling chat starts here");
+		expect(container.textContent).toContain("your chat with Little Goblin starts here");
 		await sendComposer("[long] first rolling reply");
 		expect(container.querySelector(".transcript")).not.toBeNull();
 		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(
@@ -5344,7 +5336,7 @@ describe("app projects surface", () => {
 		);
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
 		expect(win.location.pathname).toBe("/app/");
 		expect(startAlert()).toBeNull();
 	});
@@ -5580,6 +5572,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -5797,6 +5790,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -6013,6 +6007,7 @@ describe("chat width selector", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);

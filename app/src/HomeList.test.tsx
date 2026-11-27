@@ -39,6 +39,7 @@ const input = (conversations: Conv[], open: string | null = null): HomeInput => 
 	delegations: [],
 	open,
 	seen: null,
+	sideChatsOpen: false,
 });
 
 let win: Window | null = null;
@@ -97,7 +98,7 @@ test("HomeList never renders subagents as chat rows", async () => {
 	const sibling = conv("sibling");
 	setup();
 	function Fixture() {
-		const data = input([parent, kid, secondKid, sibling], kid.id);
+		const data = { ...input([parent, kid, secondKid, sibling], kid.id), sideChatsOpen: true };
 		const home = useHomeList(data, [], true);
 		return <HomeList
 			home={home}
@@ -105,7 +106,10 @@ test("HomeList never renders subagents as chat rows", async () => {
 			projectsOpen
 			currentFolderId={null}
 			rollingCurrent={false}
+			sideChatsOpen
 			onToggleProjects={() => {}}
+			onToggleSideChats={() => {}}
+			onNewSideChat={() => {}}
 			onNewProject={() => {}}
 			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
@@ -123,21 +127,24 @@ test("HomeList never renders subagents as chat rows", async () => {
 });
 
 test("T22: each chat mark has its own shape and words; no mark, no data-mark", () => {
-	const list = buildHome(input([
+	const list = buildHome({ ...input([
 		conv("needs"),
 		{ ...conv("new"), newReply: 1 },
 		{ ...conv("working"), busy: true },
 		conv("finished", "app/working"),
 		{ ...conv("running", "app/working"), busy: true },
 		conv("plain"),
-	]), null).list;
+	]), sideChatsOpen: true }, null).list;
 	const html = renderToStaticMarkup(<HomeList
 		home={{ list, orderSignature: "" }}
 		projects={[]}
 		projectsOpen={false}
 		currentFolderId={null}
 		rollingCurrent={false}
+		sideChatsOpen
 		onToggleProjects={() => {}}
+		onToggleSideChats={() => {}}
+		onNewSideChat={() => {}}
 		onNewProject={() => {}}
 		onOpenProject={() => {}}
 		onOpenTarget={() => {}}
@@ -185,4 +192,44 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 	expect(rowOf("plain")).toEqual({
 		mark: null, shape: null, words: null, line: "plain preview",
 	});
+});
+
+test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visible only when open", async () => {
+	let toggles = 0;
+	let creates = 0;
+	const main = conv("main");
+	const side = conv("side");
+	const render = (open: boolean) => (
+		<HomeList
+			home={{ list: buildHome({ ...input([main, side]), sideChatsOpen: open }, null).list, orderSignature: "" }}
+			projects={[]}
+			projectsOpen={false}
+			currentFolderId={null}
+			rollingCurrent={false}
+			sideChatsOpen={open}
+			onToggleProjects={() => {}}
+			onToggleSideChats={() => { toggles++; }}
+			onNewSideChat={() => { creates++; }}
+			onNewProject={() => {}}
+			onOpenProject={() => {}}
+			onOpenTarget={() => {}}
+			onOpenRolling={() => {}}
+			renderRow={(row) => <ConversationNavLink className="conv-main" id={row.id} href={`/app/c/${row.id}`}>{row.title}</ConversationNavLink>}
+		/>
+	);
+	setup();
+	await act(async () => root?.render(render(false)));
+	expect(container!.textContent).toContain("Little Goblin");
+	expect(container!.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("false");
+	expect(container!.textContent).not.toContain("side");
+	expect(container!.textContent).not.toContain("Chats");
+	await act(async () => root?.render(render(true)));
+	expect(container!.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("true");
+	expect(container!.querySelector(".side-chat[data-flip='app/side']")).not.toBeNull();
+	await act(async () => {
+		container!.querySelector<HTMLButtonElement>('[aria-label="Side chats"]')?.click();
+		container!.querySelector<HTMLButtonElement>(".new-side-chat button")?.click();
+	});
+	expect(toggles).toBe(1);
+	expect(creates).toBe(1);
 });

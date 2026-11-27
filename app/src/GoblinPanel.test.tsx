@@ -286,7 +286,7 @@ test("a busy Rolling chat turn shows in Activity and opens the Goblin chat", asy
 		),
 	);
 	const row = [...container.querySelectorAll("button.goblin-panel-row")].find((el) =>
-		el.querySelector("strong")?.textContent === "Rolling chat",
+			el.querySelector("strong")?.textContent === "Little Goblin",
 	);
 	expect(row).toBeDefined();
 	await act(async () =>
@@ -421,7 +421,7 @@ test("activity shows short times and program rows open Programs", async () => {
 	root = createRoot(container);
 	await act(async () => root?.render(<GoblinPanel data={data} notes={null} variant="column" onOpenTarget={() => {}} onOpenConversation={() => {}} onOpenPage={(page) => pages.push(page)} onOpenNote={() => {}} onOpenProfile={() => {}} />));
 	const rows = [...container.querySelectorAll(".activity-row")];
-	const rolling = rows.find((el) => el.querySelector("strong")?.textContent === "Rolling chat");
+	const rolling = rows.find((el) => el.querySelector("strong")?.textContent === "Little Goblin");
 	const program = rows.find((el) => el.querySelector("strong")?.textContent === "nightly backup");
 	const older = rows.find((el) => el.querySelector("strong")?.textContent === "older");
 	expect(rolling?.querySelector(".activity-time")?.textContent).toBe("now");

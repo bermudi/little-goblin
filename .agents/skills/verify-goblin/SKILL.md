@@ -65,8 +65,8 @@ URL=$(bun run --silent try <name>)
 ab() { agent-browser --session "verify-<name>" "$@"; }
 HOME_DIR=/tmp/goblin-verify/<name>
 ab set viewport 1280 800
-ab open "$URL"                             # the Rolling chat
-ab click 'button[aria-label="New chat"]'   # an ordinary chat
+ab open "$URL"                             # Little Goblin's main chat
+ab click 'button[aria-label="New side chat"]'   # an ordinary chat
 ab fill '[aria-label="Message draft"]' 'hello'
 ab click 'button[aria-label="Send"]'
 ab wait --text 'verify-reply: hello'

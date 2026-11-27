@@ -44,11 +44,11 @@ export function useHomeList(
 	const built = buildHome(input, hold);
 	if (built.hold !== hold) setHold(built.hold);
 
-	const { active, chats } = built.list;
+	const { active, side } = built.list;
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
 		projectsOpen ? projects.map((project) => project.id) : [],
-		chats.map((row) => row.id),
+		input.sideChatsOpen ? side.map((row) => row.id) : [],
 	]);
 
 	return { list: built.list, orderSignature };
@@ -60,7 +60,10 @@ export function HomeList({
 	projectsOpen,
 	currentFolderId,
 	rollingCurrent,
+	sideChatsOpen,
 	onToggleProjects,
+	onToggleSideChats,
+	onNewSideChat,
 	onNewProject,
 	onOpenProject,
 	onOpenTarget,
@@ -73,7 +76,10 @@ export function HomeList({
 	projectsOpen: boolean;
 	currentFolderId: string | null;
 	rollingCurrent: boolean;
+	sideChatsOpen: boolean;
 	onToggleProjects: () => void;
+	onToggleSideChats: () => void;
+	onNewSideChat: () => void;
 	onNewProject: () => void;
 	onOpenProject: (id: string) => void;
 	onOpenTarget: (target: AppAttentionTarget) => void;
@@ -81,7 +87,7 @@ export function HomeList({
 	renderRow: RenderRow;
 	navRef?: Ref<HTMLUListElement>;
 }) {
-	const { rolling, active, chats } = home.list;
+	const { rolling, active, side } = home.list;
 	return (
 		<ConversationNav ref={navRef} loop={false}>
 			<RollingRow
@@ -89,8 +95,20 @@ export function HomeList({
 				line={rolling.line}
 				updatedAt={rolling.updatedAt}
 				mark={rolling.mark}
+				sideChatsOpen={sideChatsOpen}
+				onToggleSideChats={onToggleSideChats}
 				onOpen={onOpenRolling}
 			/>
+			{sideChatsOpen && side.map((row) => (
+				<li key={row.id} data-flip={row.id} className="side-chat">
+					{renderRow(row.conv, { mark: row.mark, line: row.line })}
+				</li>
+			))}
+			{sideChatsOpen && (
+				<li className="side-chat new-side-chat">
+					<button type="button" onClick={onNewSideChat}>New side chat</button>
+				</li>
+			)}
 			{active.length > 0 && <li className="rail-chats-label">Active</li>}
 			{active.map((row) => row.kind === "chat"
 				? <ChatListItem key={row.id} row={row} renderRow={renderRow} />
@@ -143,10 +161,6 @@ export function HomeList({
 						</span>
 					</a>
 				</li>
-			))}
-			<li className="rail-chats-label">Chats</li>
-			{chats.map((row) => (
-				<ChatListItem key={row.id} row={row} renderRow={renderRow} />
 			))}
 		</ConversationNav>
 	);

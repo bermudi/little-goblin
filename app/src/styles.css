@@ -961,6 +961,46 @@ header:has(> .header-title-editor) > :is(h1, .header-parent, .header-action) {
 .rail-section-toggle[aria-expanded="true"] .chev {
 	transform: rotate(90deg);
 }
+.rolling-disclosure {
+	display: grid;
+	place-items: center;
+	align-self: stretch;
+	padding: 0 0.55rem;
+	color: var(--app-fg-muted);
+}
+.rolling-disclosure:hover {
+	color: var(--app-fg);
+}
+.rolling-disclosure .chev {
+	transition: transform 120ms ease;
+}
+.rolling-disclosure.open .chev {
+	transform: rotate(90deg);
+}
+.rolling-row {
+	display: flex;
+}
+.rolling-row > .conv-main {
+	flex: 1;
+	min-width: 0;
+}
+.side-chat {
+	padding-left: 1rem;
+}
+.new-side-chat button {
+	width: 100%;
+	padding: 0.45rem 0.65rem;
+	color: var(--app-fg-muted);
+	text-align: left;
+	font-size: 12px;
+}
+.new-side-chat button:hover {
+	color: var(--app-fg);
+}
+.rolling-row .goblin-avatar {
+	width: 22px;
+	height: 22px;
+}
 .rail-project-head,
 .rail-chats-label {
 	color: var(--app-fg-muted);

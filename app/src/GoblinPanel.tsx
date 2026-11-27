@@ -71,9 +71,9 @@ export function GoblinProfileHeader({ page, working, onPage }: {
 	return (
 		<div className="goblin-profile-header">
 			<GoblinAvatar size="md" working={working > 0} />
-			<strong>Goblin</strong>
+			<strong>Little Goblin</strong>
 			<span>{goblinStatusText(working)}</span>
-			<nav aria-label="Goblin's profile">
+			<nav aria-label="Little Goblin's profile">
 				{pages.map((key) => (
 					<a
 						key={key}
@@ -293,7 +293,7 @@ export function activityRows(
 		const parentRow: ActivityItem = {
 			key: `chat:${parentId}`,
 			at: Number.POSITIVE_INFINITY,
-			label: parent === undefined || rollingIds.has(parentId) ? "Rolling chat" : chatLabel(parent, "Untitled"),
+			label: parent === undefined || rollingIds.has(parentId) ? "Little Goblin" : chatLabel(parent, "Untitled"),
 			detail: busyParent
 				? `Replying · ${children.length} subagent${children.length === 1 ? "" : "s"}`
 				: `Waiting on ${children.length} subagent${children.length === 1 ? "" : "s"}`,
@@ -317,7 +317,7 @@ export function activityRows(
 		key: `chat:${c.id}`,
 		at: Number.POSITIVE_INFINITY,
 		label: c.rolling
-			? "Rolling chat"
+			? "Little Goblin"
 			: conversationsById.has(c.id)
 			? chatLabel(conversationsById.get(c.id)!, "Untitled")
 			: oneLine(c.title ?? "Untitled"),
@@ -342,7 +342,7 @@ export function activityRows(
 		? {
 				key: `this-chat:${openParent.id}`,
 				at: 0,
-				label: rollingIds.has(openParent.id) ? "Rolling chat" : chatLabel(openParent, "Untitled"),
+				label: rollingIds.has(openParent.id) ? "Little Goblin" : chatLabel(openParent, "Untitled"),
 				detail: openRunning?.detail ?? "",
 				time: openRunning?.time ?? "",
 				iso: null,
@@ -486,12 +486,12 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				<button
 					type="button"
 					className="goblin-profile-button"
-					aria-label="Goblin's profile"
+					aria-label="Little Goblin's profile"
 					onClick={props.onOpenProfile}
 				>
 					<GoblinAvatar size="lg" working={data.working > 0} />
 				</button>
-				<strong>Goblin</strong>
+				<strong>Little Goblin</strong>
 				<span>{goblinStatusText(data.working)}</span>
 			</header>
 			{showNeeds && (
@@ -518,7 +518,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				</section>
 			)}
 			<Tabs value={tab} onValueChange={selectTab}>
-				<TabsList aria-label="Goblin's work">
+				<TabsList aria-label="Little Goblin's work">
 					<TabsTab value="activity">Activity</TabsTab>
 					<TabsTab value="scheduled">Scheduled</TabsTab>
 					<TabsTab value="library">Library</TabsTab>

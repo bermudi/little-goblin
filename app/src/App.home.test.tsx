@@ -389,30 +389,27 @@ describe("home screen", () => {
 	});
 
 	for (const width of ["desktop", "phone"] as const) {
-		test(`T20: ${width} order is Rolling chat, Active, Projects, Chats, and the Rolling row has no avatar`, async () => {
+		test(`T20: ${width} order is Little Goblin, Active and Projects`, async () => {
 			phone = width === "phone";
 			chain = [conv("newest", { preview: "**bold** words" })];
 			conversations = [
 				conv("plain"),
 				conv("kid", { parentId: "app/plain" }),
-				conv("fresh", { newReply: 2 }),
+				conv("fresh", { projectId: "project", newReply: 2 }),
 				conv("pinned", { pinnedAt: "2026-11-02T00:00:00Z" }),
 			];
 			attention = [approval];
 			await open("/app/");
+			expect(container.querySelector('[aria-label="New side chat"]')).not.toBeNull();
 			expect(list()).toEqual([
-				"Rolling chat",
+				"Little Goblin",
 				"# Active",
 				"Review program",
 				"fresh",
 				"# Projects",
-				"# Chats",
-				"pinned",
-				"plain",
 			]);
 			const rolling = container.querySelector(".rolling-row")!;
-			expect(rolling.querySelector(".conv-gutter svg")).not.toBeNull();
-			expect(rolling.querySelector("img")).toBeNull();
+			expect(rolling.querySelector(".conv-gutter img")).not.toBeNull();
 			expect(rolling.querySelector(".conv-preview")?.textContent).toBe("bold words");
 			expect(container.querySelector(".needs-banner")).toBeNull();
 		});
@@ -425,10 +422,47 @@ describe("home screen", () => {
 			conv("child2", { parentId: "app/one" }),
 		];
 		await open("/app/");
-		expect(markOf("one")).toBe("working");
+		expect(container.querySelector(".rolling-row")?.getAttribute("data-mark")).toBe("working");
 		expect(container.querySelector(".home-kids")).toBeNull();
 		expect(container.querySelector('a[href="/app/c/child1"]')).toBeNull();
 		expect(container.querySelector('a[href="/app/c/child2"]')).toBeNull();
+	});
+
+	test("T-D1: opening a side chat opens its list, then a manual fold stays closed", async () => {
+		conversations = [conv("side")];
+		await open("/app/c/side");
+		const disclosure = container.querySelector<HTMLButtonElement>('[aria-label="Side chats"]')!;
+		expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelector(".side-chat[data-flip='app/side']")).not.toBeNull();
+		await click('[aria-label="Side chats"]');
+		expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+		await publish();
+		expect(container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("false");
+	});
+
+	test("T-D3: a folded row with a side chat's mark opens that side chat", async () => {
+		chain = [conv("newest")];
+		conversations = [conv("trip", { title: "Trip plans", newReply: 2 })];
+		await open("/app/");
+		const row = container.querySelector(".rolling-row")!;
+		expect(row.getAttribute("data-mark")).toBe("new");
+		expect(row.querySelector(".conv-preview")?.textContent).toBe("New reply in Trip plans");
+		await click(".rolling-row a");
+		expect(win.location.pathname).toBe("/app/c/trip");
+		expect(container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("true");
+	});
+
+	test("T-D2: a project chat folds the side chats, and the next side chat opens them", async () => {
+		conversations = [conv("side"), conv("other"), conv("work", { projectId: "project" })];
+		await open("/app/c/side");
+		const expanded = () => container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded");
+		expect(expanded()).toBe("true");
+		await goTo("/app/c/work");
+		expect(win.location.pathname).toBe("/app/c/work");
+		expect(expanded()).toBe("false");
+		expect(container.querySelector(".side-chat")).toBeNull();
+		await goTo("/app/c/other");
+		expect(expanded()).toBe("true");
 	});
 
 	test("T23: the face is in the desktop chat header and closes and opens the panel", async () => {
@@ -464,7 +498,7 @@ describe("home screen", () => {
 		attention = [approval];
 		await open("/app/c/one");
 		const face = container.querySelector("main > header .goblin-panel-toggle");
-		expect(face?.getAttribute("aria-label")).toBe("Goblin, 2 jobs, 1 needs you");
+		expect(face?.getAttribute("aria-label")).toBe("Little Goblin, 2 jobs, 1 needs you");
 		expect(face?.querySelector(".goblin-avatar")?.hasAttribute("data-working")).toBe(true);
 		expect(face?.textContent).toBe("1");
 	});
@@ -496,21 +530,22 @@ describe("home screen", () => {
 			await open("/app/", null);
 			expect(win.location.pathname).toBe("/app/rolling");
 			expect([...new Set(messageGets)]).toEqual(["newest"]);
-			expect(container.querySelector("main > header .header-title")?.textContent).toBe("Rolling chat");
+			expect(container.querySelector("main > header .header-title")?.textContent).toBe("Little Goblin");
 			if (phone) {
 				expect(container.querySelector(".chatlist-screen")).toBeNull();
 				await click(".mobile-back");
 				expect(win.location.pathname).toBe("/app/");
 				expect(container.querySelector(".chatlist-screen")).not.toBeNull();
 			}
-			expect(list().slice(0, 2)).toEqual(["Rolling chat", "# Projects"]);
+			expect(list().slice(0, 2)).toEqual(["Little Goblin", "one"]);
 		});
 	}
 
 	test("T30: the app opens in the Rolling chat before the first roll exists", async () => {
 		await open("/app/", null);
 		expect(win.location.pathname).toBe("/app/rolling");
-		expect(container.querySelector("main")?.textContent).toContain("your rolling chat starts here");
+		expect(container.querySelector("main")?.textContent).toContain("your chat with Little Goblin starts here");
+		expect(container.querySelector("main")?.textContent).not.toContain("Rolling chat");
 	});
 
 	test("T31: a link to a chat opens that chat, and a reload of the list stays on the list", async () => {

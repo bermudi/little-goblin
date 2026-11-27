@@ -6,6 +6,7 @@ import type { AppConversationList } from "../../src/http/app-wire.ts";
 import type { AppConversationSummary } from "../../src/conversation-read.ts";
 import { App } from "./App.tsx";
 import { boxView } from "./chat/MessageBox.tsx";
+import { saveSideChatsOpen } from "./railFolders.ts";
 import { LIST_ENTRY, openDesktopPage } from "./testkit.ts";
 
 const conv = (
@@ -135,6 +136,7 @@ describe("app live feed", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		saveSideChatsOpen(true);
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);

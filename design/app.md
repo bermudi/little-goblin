@@ -434,7 +434,7 @@ unavailable the rail only forgets them.
 
 ## [Rolling chat](../GLOSSARY.md#rolling-chat) (ruling 2026-11-21, #840)
 
-> **Amended (operator, 2026-11-27, not built):** the Rolling chat becomes
+> **Amended (operator, 2026-11-27; built in #978):** the Rolling chat becomes
 > [Little Goblin](../GLOSSARY.md#little-goblin)'s main chat, and loose chats
 > become its side chats ([decision](decisions/bots-and-side-chats.md)).
 
@@ -486,9 +486,8 @@ The earlier roll keeps its history, its pending input and its settings. The new
 roll takes the app's model settings, like any roll, and wakes follow the rule
 above.
 
-**Client.** The PWA keeps all ordinary chat rows and adds a
-Rolling chat row at the top of the chat list, with its own loop icon and no
-avatar (#919; until then it was named Goblin, #862). `/app/rolling` shows one roll
+**Client.** The PWA shows loose chats as side chats under the Little Goblin
+row, which uses Goblin's avatar. `/app/rolling` shows one roll
 at a time; when a newer roll begins, its transcript starts with
 "— new conversation —" and a link to the previous conversation. Older rolls
 show an "Earlier conversation" bar with "Back to latest". A `/app/c/<id>` link
@@ -844,10 +843,12 @@ channel addresses.
 
 ## App navigation (ruling 2026-11-21, #862, operator pick)
 
-> **Amended (operator, 2026-11-27, not built):** the left list holds only
+> **Amended (operator, 2026-11-27):** the left list holds only
 > Little Goblin and the bots, with side chats under the open bot. Projects
 > and the Chats section go. The right panel shows the open bot
-> ([decision](decisions/bots-and-side-chats.md)).
+> ([decision](decisions/bots-and-side-chats.md)). Built so far (#978): the
+> Chats section is gone and loose chats show under Little Goblin. Bots, the
+> per-bot right panel and the removal of Projects are not built.
 
 Goblin is someone you message. The chat is the main surface, and one panel
 shows Goblin itself. This replaces the glyph gutter and thumb bar of
@@ -863,8 +864,8 @@ chats screen or of New chat stays there: its history entry already carries the
 app's tag.
 
 **Desktop.** No glyph gutter. Three columns:
-- Left list: a search field and New chat on top; then the Rolling chat,
-  [Active](../GLOSSARY.md#active), Projects and Chats (see [Home
+- Left list: a search field and New side chat on top; then Little Goblin,
+  [Active](../GLOSSARY.md#active) and Projects (see [Home
   screen](#home-screen-rulings-2026-11-23-919)). The collapsible Projects
   section has project link rows that open their project pages and are marked
   current on those pages and in their chats. Its Projects button folds the
@@ -927,13 +928,12 @@ avatar stood for both the agent and the Rolling chat: its ring meant "busy
 anywhere", so a tap on it opened a chat that was not the busy one. The list
 is now the home screen, and the avatar means only the agent.
 
-- **Order.** The Rolling chat (always first, never moves), Active, Projects,
-  Chats with pinned chats first.
-- **[Active](../GLOSSARY.md#active)** holds every chat with a mark, and shows
-  only when there is one: needs you, then [new
-  reply](../GLOSSARY.md#new-reply), then working, newest first inside each. A
-  chat shows once: a pinned chat with a mark is only in Active, a project chat
-  with a mark is in Active with its project's name.
+- **Order.** The Little Goblin row (always first), its side chats when open,
+  Active, Projects.
+- **[Active](../GLOSSARY.md#active)** holds every project chat with a mark,
+  with its project's name, and shows only when there is one: needs you, then
+  [new reply](../GLOSSARY.md#new-reply), then working, newest first inside
+  each. Side chats never enter it.
 - **[Needs you](../GLOSSARY.md#needs-you)** (amber `!`). The second line is
   what waits. It stays until answered; opening the chat does not clear it. An
   approval or delegation question without a chat is a row of its own and opens
@@ -962,8 +962,25 @@ is now the home screen, and the avatar means only the agent.
   under their parent chat. The Archive page skips them too. Deleting a chat
   deletes its subagents with it, after the same Undo window (operator,
   2026-11-26): a subagent has no place without its parent.
-- **The Rolling chat row** shows the mark of any of its rolls (the newest 50)
+- **The Little Goblin row** shows the mark of any of its rolls (the newest 50)
   and opens the roll that has it, otherwise the newest.
+- **[Side chats](../GLOSSARY.md#side-chat) (2026-11-27, #978).** Every chat
+  outside a project is a side chat of Little Goblin. Side chats show under its
+  row only while the row is open. Marked side chats come first, by mark and
+  then newest; then pinned chats; then the rest, newest first.
+  - **Open and fold.** A chevron on the row opens and folds the side chats by
+    hand, so a phone can reach them (lead's pick, 2026-11-27). Opening
+    Little Goblin's main chat or a side chat opens the row. Opening a project
+    chat or a project page folds it, since side chats show only inside
+    Little Goblin. A fold by hand stays until the operator goes to another
+    chat. The device remembers the last state.
+  - **Folded row.** The row carries the most urgent mark of its rolls and
+    side chats. Its line names the side chat: "New reply in …" or
+    "Working in …", or the question that waits. A click opens that side
+    chat; a mark from a roll opens that roll, as before.
+  - **Project chats.** A project chat still enters Active when it has a mark.
+    A pinned project chat without a mark is not in the list.
+  - Search still finds side chats.
 - **Goblin's avatar** is in the chat header, and on a phone also in the chats
   bar. It opens the Goblin panel. Ring: busy anywhere, Telegram included.
   Number: the Attention items; `?` when they cannot be loaded.

@@ -16,7 +16,6 @@ import { conversationActions } from "./conversationActions.ts";
 import { flatLine, flatTitle } from "./flatText.ts";
 import {
 	ArchiveGlyph,
-	LoopGlyph,
 	MoveToProjectGlyph,
 	PencilGlyph,
 	PinActionGlyph,
@@ -27,6 +26,7 @@ import {
 } from "./glyphs.tsx";
 import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
 import { ChatMark } from "./ChatMark.tsx";
+import { GoblinAvatar } from "./GoblinAvatar.tsx";
 import type { Mark } from "./homeList.ts";
 
 const navigationParts = createParts(conversationNavigationPrimitive, { root: "ul", link: "a" });
@@ -38,12 +38,16 @@ export function RollingRow({
 	line,
 	updatedAt,
 	mark,
+	sideChatsOpen,
+	onToggleSideChats,
 	onOpen,
 }: {
 	current: boolean;
 	line: string;
 	updatedAt: string | null;
 	mark: Mark | null;
+	sideChatsOpen: boolean;
+	onToggleSideChats: () => void;
 	onOpen: () => void;
 }) {
 	return (
@@ -64,11 +68,11 @@ export function RollingRow({
 					}}
 				>
 					<span className="conv-gutter">
-						{mark ? <ChatMark mark={mark} /> : <LoopGlyph />}
+						{mark ? <ChatMark mark={mark} /> : <GoblinAvatar size="sm" working={false} />}
 					</span>
 					<span className="conv-copy">
 						<span className="conv-head">
-							<span className="conv-title">Rolling chat</span>
+							<span className="conv-title">Little Goblin</span>
 							{updatedAt !== null && (
 								<span className="conv-time">{relTime(updatedAt)}</span>
 							)}
@@ -76,6 +80,17 @@ export function RollingRow({
 						<span className="conv-preview">{flatLine(line) || "Always here"}</span>
 					</span>
 				</a>
+				<button
+					type="button"
+					className={`rolling-disclosure${sideChatsOpen ? " open" : ""}`}
+					aria-expanded={sideChatsOpen}
+					aria-label="Side chats"
+					onClick={onToggleSideChats}
+				>
+					<svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" width="12" height="12" aria-hidden="true">
+						<path d="M9 6l6 6-6 6" />
+					</svg>
+				</button>
 			</div>
 		</li>
 	);

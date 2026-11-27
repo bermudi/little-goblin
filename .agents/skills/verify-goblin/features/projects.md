@@ -6,9 +6,11 @@ Create a project managed by goblin.
 
 ## How to get to it (user POV)
 
-With the desktop Chats pane showing, click New project to open a dialog.
+With the desktop left list showing, click New project to open a dialog.
 
-Project chats show on the project page, not in the sidebar unless pinned.
+Project chats show on the project page. In the left list a project chat shows
+only in Active, while it has a mark; pinned or not, it never shows as a side
+chat of Little Goblin.
 If the Projects section is closed, click the `Projects` button first. Then
 `ab find role link click --name '<project name>'` opens the project page.
 The all-projects page is in the You menu: click You, then Projects.
@@ -16,7 +18,7 @@ The all-projects page is in the You menu: click You, then Projects.
 ## Projects section disclosure
 
 Use a fresh browser profile with an existing active project. In the desktop
-Chats pane:
+left list:
 
 1. Before looking for a project link, find the `Projects` button. Its
    `aria-expanded` value should be `false`; the project link should not be
@@ -31,9 +33,11 @@ Chats pane:
 ## Pin a project chat
 
 Open an unpinned chat from its project page. Open the chat title menu and
-choose Pin. The chat should appear at the top of Chats, with its project name
-at the end of its second line. Unpinned project chats should remain on the project page,
-not in Chats.
+choose Pin. The `conversations` row gains a `pinned_at` value. The chat does
+not appear in the left list: the Chats section is gone, and a project chat
+without a mark is listed only on its project page. Give it a mark (for
+example `read_seq = 0` after a reply) and it shows in Active with its project
+name at the end of its second line.
 
 ## Driving it with agent-browser
 

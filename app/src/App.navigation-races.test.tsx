@@ -126,6 +126,7 @@ describe("navigation races: late completions", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		win.localStorage.setItem("goblin.rail-side-chats-open.v1", "true");
 		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("MouseEvent", win.MouseEvent);
@@ -600,7 +601,7 @@ describe("navigation races: late completions", () => {
 				(b) => b.textContent === "Chat with this note",
 			),
 		);
-		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New chat"]'));
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
 		gate.resolve();
 		await settle();
 		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);

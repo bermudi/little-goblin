@@ -6121,6 +6121,20 @@ describe("chat width selector", () => {
 		expect(container.querySelector("main")?.className).toContain("chat-wide");
 	});
 
+	test("a new chat keeps the width choice in the chat tools menu", async () => {
+		await mount();
+		const newChat = container.querySelector<HTMLButtonElement>('button[aria-label="New side chat"]');
+		expect(newChat).not.toBeNull();
+		await act(async () => newChat?.click());
+		await settle();
+		await openTools();
+		const items = [...container.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')].map((item) => item.textContent);
+		expect(items).toEqual(["Wide column"]);
+		await act(async () => wideItem()?.click());
+		await settle();
+		expect(container.querySelector("main")?.className).toContain("chat-wide");
+	});
+
 	test("the chat tools menu opens the context window", async () => {
 		await mount();
 		await openTools();

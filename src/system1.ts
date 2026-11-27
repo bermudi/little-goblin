@@ -1,21 +1,12 @@
-// OpenRouter Decisions API (alpha). One primary POST, at most one
-// backup; typed yes/no (noul) questions about the turn's state,
-// calibrated probabilities back. Wire contract: POST
-// {baseUrl}/api/alpha/decisions with {model, state, questions};
-// answers carry {type, noul}; usage carries input/output tokens + cost.
-//
-// Consumers log their routing/verdict; this boundary logs the selected
-// model and recovery under one request id, never input text or secrets.
-
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { System1Config } from "./config-schema.ts";
 import { log } from "./log.ts";
 import { ownedReader } from "./dispose.ts";
 import { after } from "./timing.ts";
 
 export const DEFAULT_MODEL = "typesafe/jev-1.13";
 export const FALLBACK_MODEL = DEFAULT_MODEL;
-const DECISIONS_PATH = "/api/alpha/decisions";
 
 type FailureKind = "http" | "transport" | "timeout" | "protocol" | "auth";
 
@@ -30,8 +21,6 @@ export class System1Error extends Error {
 	}
 }
 
-// Both criteria are required — the transport rejects a noul carrying
-// only one side.
 export interface System1Question {
 	type: "noul";
 	instructions: string;
@@ -43,7 +32,7 @@ const noulAnswerSchema = z.object({
 	noul: z.number().min(0).max(1),
 });
 
-const decisionsResponseSchema = z.object({
+const openRouterResponse = z.object({
 	answers: z.record(z.string(), z.unknown()),
 	usage: z
 		.object({
@@ -54,12 +43,84 @@ const decisionsResponseSchema = z.object({
 		.optional(),
 });
 
+const openAIDecisionsResponse = z.object({
+	answers: z.array(
+		z.object({
+			type: z.literal("predicate"),
+			name: z.string(),
+			probability: z.number().min(0).max(1),
+		}),
+	),
+	usage: z.object({ input_tokens: z.number().int().nonnegative().nullish() }).nullish(),
+});
+
 export interface System1Decision {
 	/** Asked question id → yes-probability. */
 	answers: Record<string, number>;
 	inputTokens: number | null;
 	cost: number | null;
 }
+
+type System1Kind = NonNullable<System1Config["kind"]>;
+type System1Route =
+	| Omit<Extract<System1Config, { kind?: "openrouter" | undefined }>, "auth">
+	| Omit<Extract<System1Config, { kind: "openai-decisions" }>, "auth">;
+
+interface DecisionProtocol {
+	path: string;
+	encode(state: unknown, questions: Record<string, System1Question>): object;
+	decode(json: unknown, questionIds: readonly string[]): System1Decision;
+}
+
+const protocols: Record<System1Kind, DecisionProtocol> = {
+	openrouter: {
+		path: "/api/alpha/decisions",
+		encode: (state, questions) => ({ state, questions }),
+		decode(json, questionIds) {
+			const parsed = openRouterResponse.safeParse(json);
+			if (!parsed.success) throw new System1Error("protocol");
+			const answers = questionIds.map((id) => {
+				const answer = noulAnswerSchema.safeParse(parsed.data.answers[id]);
+				if (!answer.success) throw new System1Error("protocol");
+				return [id, answer.data.noul] as const;
+			});
+			return {
+				answers: Object.fromEntries(answers),
+				inputTokens: parsed.data.usage?.input_tokens ?? null,
+				cost: parsed.data.usage?.cost ?? null,
+			};
+		},
+	},
+	"openai-decisions": {
+		path: "/decisions",
+		encode(state, questions) {
+			const input = typeof state === "string" ? state : JSON.stringify(state);
+			if (input === undefined) throw new TypeError("System1 state must be JSON-serializable");
+			return {
+				input,
+				questions: Object.entries(questions).map(([name, question]) => ({
+					type: "predicate",
+					name,
+					instructions: `${question.instructions}\n\nCriteria for true:\n${question.criteria.true}\n\nCriteria for false:\n${question.criteria.false}`,
+				})),
+			};
+		},
+		decode(json, questionIds) {
+			const parsed = openAIDecisionsResponse.safeParse(json);
+			if (!parsed.success || parsed.data.answers.length !== questionIds.length)
+				throw new System1Error("protocol");
+			const answers = new Map(
+				parsed.data.answers.map(({ name, probability }) => [name, probability]),
+			);
+			if (!questionIds.every((id) => answers.has(id))) throw new System1Error("protocol");
+			return {
+				answers: Object.fromEntries(answers),
+				inputTokens: parsed.data.usage?.input_tokens ?? null,
+				cost: null,
+			};
+		},
+	},
+};
 
 const MAX_RESPONSE_BYTES = 1_048_576;
 
@@ -85,25 +146,28 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 export class System1Client {
+	private readonly kind: System1Kind;
+	private readonly protocol: DecisionProtocol;
 	private readonly url: string;
 	private readonly model: string;
 	private readonly timeoutMs: number;
 	private readonly auth: () => Promise<string>;
 	private readonly fallback: boolean;
 
-	constructor(options: {
-		baseUrl?: string;
-		model?: string;
-		timeoutMs?: number;
-		// Off for model evals: a backup answer would score the wrong model.
-		fallback?: boolean;
-		auth: () => Promise<string>;
-	}) {
-		this.url = `${(options.baseUrl ?? "https://openrouter.ai").replace(/\/+$/, "")}${DECISIONS_PATH}`;
+	constructor(
+		options: System1Route & {
+			timeoutMs?: number;
+			fallback?: boolean;
+			auth: () => Promise<string>;
+		},
+	) {
+		this.kind = options.kind ?? "openrouter";
+		this.protocol = protocols[this.kind];
+		this.url = `${(options.baseUrl ?? "https://openrouter.ai").replace(/\/+$/, "")}${this.protocol.path}`;
 		this.model = options.model ?? DEFAULT_MODEL;
 		this.timeoutMs = options.timeoutMs ?? 30_000;
 		this.auth = options.auth;
-		this.fallback = options.fallback ?? true;
+		this.fallback = this.kind === "openrouter" && (options.fallback ?? true);
 	}
 
 	async decide(
@@ -114,7 +178,7 @@ export class System1Client {
 		// Serialize once before any await: a fallback must see exactly the
 		// same input, even if the caller mutates it during the first call.
 		// Serialization failures are programming errors, not transport failures.
-		const input = JSON.stringify({ state, questions });
+		const input = JSON.stringify(this.protocol.encode(state, questions));
 		const questionIds = Object.keys(questions);
 		const requestId = randomUUID();
 		const inputHash = createHash("sha256").update(input).digest("hex").slice(0, 16);
@@ -130,6 +194,7 @@ export class System1Client {
 			const attempt = (attemptModel: string, budgetMs: number): Promise<System1Decision> => {
 				log.info("system1 request", {
 					requestId,
+					backend: this.kind,
 					model: attemptModel,
 					fallback: attemptModel !== this.model,
 					questionIds,
@@ -168,6 +233,7 @@ export class System1Client {
 			}
 			log.info("system1 decision", {
 				requestId,
+				backend: this.kind,
 				model,
 				fallback: model !== this.model,
 				answers: decision.answers,
@@ -180,6 +246,7 @@ export class System1Client {
 			if (err instanceof System1Error) {
 				log.warn("system1 failed", {
 					requestId,
+					backend: this.kind,
 					model,
 					fallback: model !== this.model,
 					kind: err.kind,
@@ -242,19 +309,7 @@ export class System1Client {
 				await response.body?.cancel();
 				throw new System1Error("http", response.status);
 			}
-			const parsed = decisionsResponseSchema.safeParse(await readJson(response));
-			if (!parsed.success) throw new System1Error("protocol");
-			const answers: Record<string, number> = {};
-			for (const id of questionIds) {
-				const answer = noulAnswerSchema.safeParse(parsed.data.answers[id]);
-				if (!answer.success) throw new System1Error("protocol");
-				answers[id] = answer.data.noul;
-			}
-			return {
-				answers,
-				inputTokens: parsed.data.usage?.input_tokens ?? null,
-				cost: parsed.data.usage?.cost ?? null,
-			};
+			return this.protocol.decode(await readJson(response), questionIds);
 		} catch (err) {
 			if (err instanceof System1Error) throw err;
 			throw new System1Error(controller.signal.aborted ? "timeout" : "transport");

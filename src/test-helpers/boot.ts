@@ -4,6 +4,7 @@
 
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Config } from "../config-schema.ts";
 import { sleep } from "../timing.ts";
 
 const REPO = join(dirname(import.meta.dir), "..");
@@ -115,6 +116,7 @@ export function bootChild(opts: {
 	baseDir: string;
 	telegram: { enabled: boolean; apiRoot?: string };
 	withTelegramAuth?: boolean;
+	system1?: Config["system1"];
 	/** Runs inside the isolated home before the child spawns — seed
 	 *  durable state (programs, outbox) through the real stores. */
 	seed?: (home: string) => void;
@@ -123,9 +125,10 @@ export function bootChild(opts: {
 	const blocked = join(home, "blocked-fetch.log");
 	const httpPort = 0;
 	const tg = opts.telegram.apiRoot !== undefined ? `,apiRoot:"${opts.telegram.apiRoot}"` : "";
+	const system1 = opts.system1 === undefined ? "" : `,system1:${JSON.stringify(opts.system1)}`;
 	writeFileSync(
 		join(home, "goblin.json5"),
-		`{providers:{fixture:{kind:"openai-compatible",baseUrl:"http://127.0.0.1:1/v1",auth:"fixture"}},model:"fixture/test",operators:${opts.telegram.enabled ? "[42]" : "[]"},telegram:{enabled:${opts.telegram.enabled}${tg}},http:{port:${httpPort}},logLevel:"debug"}\n`,
+		`{providers:{fixture:{kind:"openai-compatible",baseUrl:"http://127.0.0.1:1/v1",auth:"fixture"}},model:"fixture/test",operators:${opts.telegram.enabled ? "[42]" : "[]"},telegram:{enabled:${opts.telegram.enabled}${tg}},http:{port:${httpPort}},logLevel:"debug"${system1}}\n`,
 	);
 	const authRecords = [`{"name":"fixture","value":"synthetic-fixture-key"}`];
 	if (opts.withTelegramAuth !== false && opts.telegram.enabled) {

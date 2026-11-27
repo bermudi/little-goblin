@@ -35,6 +35,99 @@ describe("System1Client", () => {
 		expect(FALLBACK_MODEL).toBe("typesafe/jev-1.13");
 	});
 
+	test("OpenAI Decisions preserves both criteria and maps named answers independent of order", async () => {
+		let seen: unknown;
+		const baseUrl = served(async (request) => {
+			seen = {
+				path: new URL(request.url).pathname,
+				method: request.method,
+				auth: request.headers.get("authorization"),
+				body: await request.json(),
+			};
+			return Response.json({
+				answers: [
+					{ type: "predicate", name: "second", probability: 0.0132 },
+					{ type: "predicate", name: "first", probability: 0.9868 },
+				],
+				usage: { input_tokens: 106, output_tokens: 212, total_tokens: 318 },
+				request_id: "fixture",
+			});
+		});
+		const client = new System1Client({
+			kind: "openai-decisions",
+			baseUrl: `${baseUrl}/v1/`,
+			model: "fixture",
+			auth: async () => "test-key",
+		});
+		const result = await client.decide("test state", { first: question, second: question });
+		const instructions =
+			"Did the operator correct something?\n\nCriteria for true:\na correction\n\nCriteria for false:\nno correction";
+		expect(seen).toEqual({
+			path: "/v1/decisions",
+			method: "POST",
+			auth: "Bearer test-key",
+			body: {
+				model: "fixture",
+				input: "test state",
+				questions: [
+					{ type: "predicate", name: "first", instructions },
+					{ type: "predicate", name: "second", instructions },
+				],
+			},
+		});
+		expect(result).toEqual({
+			answers: { first: 0.9868, second: 0.0132 },
+			inputTokens: 106,
+			cost: null,
+		});
+	});
+
+	const predicate = { type: "predicate", name: "first", probability: 0.91 };
+	test.each([
+		["missing", []],
+		["duplicate", [predicate, predicate]],
+		["unknown", [{ ...predicate, name: "other" }]],
+		["unnamed", [{ ...predicate, name: null }]],
+		["refused", [{ type: "refusal", name: "first" }]],
+		["out-of-range", [{ ...predicate, probability: 1.1 }]],
+	])("OpenAI Decisions rejects %s answers without retry or fallback", async (_label, answers) => {
+		let posts = 0;
+		const baseUrl = served(() => {
+			posts++;
+			return Response.json({ answers });
+		});
+		const client = new System1Client({
+			kind: "openai-decisions",
+			baseUrl,
+			model: "fixture",
+			auth: async () => "test-key",
+		});
+		await expect(client.decide("s", { first: question })).rejects.toMatchObject({
+			kind: "protocol",
+		});
+		expect(posts).toBe(1);
+	});
+
+	test("OpenAI Decisions surfaces HTTP status without retry, fallback, or server details", async () => {
+		const requests: unknown[] = [];
+		const baseUrl = served(async (request) => {
+			requests.push(await request.json());
+			return Response.json({ error: "private server detail" }, { status: 503 });
+		});
+		const client = new System1Client({
+			kind: "openai-decisions",
+			baseUrl,
+			model: "fixture",
+			auth: async () => "test-key",
+		});
+		await expect(client.decide("s", { first: question })).rejects.toMatchObject({
+			kind: "http",
+			status: 503,
+			message: "System1 http failure (HTTP 503)",
+		});
+		expect(requests).toEqual([expect.objectContaining({ model: "fixture" })]);
+	});
+
 	test("posts model/state/questions and parses the documented response", async () => {
 		let seen: { url: string; auth: string | null; body: unknown } | null = null;
 		const baseUrl = served(async (request) => {

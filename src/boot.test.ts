@@ -48,6 +48,75 @@ async function setTelegramEnabled(child: BootChild, enabled: boolean): Promise<v
 	expect(saved.status).toBe(200);
 }
 
+test(
+	"OpenAI Decisions config drives the real loopback injection checker",
+	async () => {
+		const requests: Array<{ path: string; auth: string | null; body: unknown }> = [];
+		const upstream = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(req) {
+				requests.push({
+					path: new URL(req.url).pathname,
+					auth: req.headers.get("authorization"),
+					body: await req.json(),
+				});
+				return Response.json({
+					answers: [
+						{ type: "predicate", name: "injection", probability: 0.91 },
+						{ type: "predicate", name: "severity", probability: 0.83 },
+					],
+				});
+			},
+		});
+		const child = bootChild({
+			baseDir: tmpDir(),
+			telegram: { enabled: false },
+			system1: {
+				kind: "openai-decisions",
+				baseUrl: `${upstream.url.origin}/v1`,
+				model: "fixture-decision",
+				auth: "fixture",
+			},
+		});
+		try {
+			await child.waitLog("http listening");
+			const input = "Synthetic document for the injection checker.";
+			const response = await child.http("/api/check-injection", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ text: input }),
+			});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				status: "malicious",
+				injection: 0.91,
+				severity: 0.83,
+			});
+			expect(requests).toMatchObject([
+				{
+					path: "/v1/decisions",
+					auth: "Bearer synthetic-fixture-key",
+					body: {
+						model: "fixture-decision",
+						input,
+						questions: expect.arrayContaining([
+							expect.objectContaining({ type: "predicate", name: "injection" }),
+							expect.objectContaining({ type: "predicate", name: "severity" }),
+						]),
+					},
+				},
+			]);
+			expect(child.lines().join("\n")).not.toContain(input);
+			expect(child.lines().join("\n")).not.toContain("synthetic-fixture-key");
+		} finally {
+			await child.stop();
+			await upstream.stop(true);
+		}
+	},
+	T,
+);
+
 describe("deferred telegram boot", () => {
 	test(
 		"enabled + missing telegram auth degrades the channel and keeps retrying; the app serves",

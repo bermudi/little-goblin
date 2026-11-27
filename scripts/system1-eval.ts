@@ -706,16 +706,17 @@ const cases = [
 
 for (const model of args.models) {
 	const client = new System1Client({
+		...config.system1,
 		model,
 		fallback: false,
 		auth: () => auth.resolve(authRef),
-		...(config.system1?.baseUrl ? { baseUrl: config.system1.baseUrl } : {}),
 	});
 	const scores: Score[] = [];
 	const misses: string[] = [];
 	const spreads: number[] = [];
 	let failures = 0;
-	let cost = 0;
+	let cost: number | null = 0;
+	let inputTokens: number | null = 0;
 	for (const c of cases) {
 		const perQuestion = new Map<string, number[]>();
 		for (let run = 0; run < args.runs; run++) {
@@ -723,7 +724,9 @@ for (const model of args.models) {
 			try {
 				const d = await client.decide(c.state, QUESTIONS[c.check]);
 				const ms = performance.now() - started;
-				cost += d.cost ?? 0;
+				cost = cost === null || d.cost === null ? null : cost + d.cost;
+				inputTokens =
+					inputTokens === null || d.inputTokens === null ? null : inputTokens + d.inputTokens;
 				for (const [question, expected] of Object.entries(c.expect)) {
 					const score = d.answers[question];
 					if (score === undefined) throw new System1Error("protocol");
@@ -767,8 +770,10 @@ for (const model of args.models) {
 	const brier =
 		scores.reduce((sum, s) => sum + (s.score - (s.expected ? 1 : 0)) ** 2, 0) / scores.length;
 	const correct = scores.filter((s) => s.score >= CUT[s.question]! === s.expected).length;
+	const costText = cost === null || scores.length === 0 ? "not reported" : `$${cost.toFixed(6)}`;
+	const tokenText = inputTokens === null || scores.length === 0 ? "not reported" : inputTokens;
 	process.stdout.write(
-		`total ${correct}/${scores.length} · brier ${brier.toFixed(3)} · failed calls ${failures} · median ${Math.round(median(scores.map((s) => s.ms)))}ms · max spread ${fmt(spreads.length > 0 ? Math.max(...spreads) : Number.NaN)} · cost $${cost.toFixed(6)}\n`,
+		`total ${correct}/${scores.length} · brier ${brier.toFixed(3)} · failed calls ${failures} · median ${Math.round(median(scores.map((s) => s.ms)))}ms · max spread ${fmt(spreads.length > 0 ? Math.max(...spreads) : Number.NaN)} · input tokens ${tokenText} · cost ${costText}\n`,
 	);
 	for (const miss of misses) process.stdout.write(`  miss: ${miss}\n`);
 }

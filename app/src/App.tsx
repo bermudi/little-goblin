@@ -46,7 +46,6 @@ import { Composer } from "./chat/Composer.tsx";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
-import { readHeaderLayout } from "./headerLayout.ts";
 import { loadProjectsOpen, loadSideChatsOpen, saveProjectsOpen, saveSideChatsOpen } from "./railFolders.ts";
 import { ConversationRow, relTime } from "./ConversationList.tsx";
 import { HomeList, type RenderRow, useHomeList } from "./HomeList.tsx";
@@ -200,7 +199,6 @@ function LiveLost() {
 
 function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: () => void }) {
 	const phone = usePhoneWidth();
-	const [headerLayout] = useState(readHeaderLayout);
 	const [columnCramped, setColumnCramped] = useState(false);
 	const observeMain = useCallback(
 		(column: HTMLElement | null) => observeColumnWidth(column, setColumnCramped),
@@ -1312,61 +1310,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 					<div className="header-tools">
-					{page === "chat" && current !== null && headerLayout === "a" && (
-						<button
-							type="button"
-							className="header-action"
-							title="Context window"
-							aria-label="Context window — what the model's next prompt carries, captured at the last call"
-							onClick={() => openWindow(current)}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								width="18"
-								height="18"
-							>
-								<rect x="3" y="4" width="18" height="16" rx="3" />
-								<path d="M3 9h18" />
-								<path d="M9 13l-3 3 3 3" />
-								<path d="M15 13l3 3-3 3" />
-							</svg>
-						</button>
-					)}
-					{page === "chat" && current !== null && headerLayout === "a" && (
-						<button
-							type="button"
-							className="header-action"
-							title="From this thread"
-							aria-label="From this thread — memories and skills generated here"
-							onClick={() => setSourcesOpen(true)}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="18"
-								height="18"
-							>
-								<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
-								<path d="M12 12l8-4.5" />
-								<path d="M12 12v9" />
-								<path d="M12 12L4 7.5" />
-							</svg>
-						</button>
-					)}
-					{page === "chat" && headerLayout === "a" && (
-						<button type="button" className={`header-action width-toggle${chatWidth === "wide" ? " on" : ""}`} aria-label="Wide column" title="Wide column" aria-pressed={chatWidth === "wide"} onClick={() => setChatWidth(chatWidth === "wide" ? "narrow" : "wide")}>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" width="18" height="18" aria-hidden="true"><path d="M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg>
-						</button>
-					)}
-					{page === "chat" && current !== null && headerLayout === "b" && (
+					{page === "chat" && current !== null && (
 						<Menu onAction={(value) => {
 							if (value === "context") openWindow(current);
 							else if (value === "sources") setSourcesOpen(true);

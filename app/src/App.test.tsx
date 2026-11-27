@@ -1343,6 +1343,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	};
 	// Archive is a rail row action; Delete lives on the Archive page.
+	const chatTool = async (label: string) => {
+		await click(container.querySelector('main > header button[aria-label="Chat tools"]'));
+		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === label));
+	};
 	const clickRowAction = async (action: "Archive" | "Delete") => {
 		if (action === "Archive") {
 			await click(container.querySelector('[role="toolbar"] button[aria-label="Archive"]'));
@@ -1366,9 +1370,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		seedConversation();
 		await mount();
 		await selectFixture();
-		const action = container.querySelector('button[aria-label^="From this thread"]');
-		expect(action).not.toBeNull();
-		await click(action);
+		await chatTool("From this thread");
 		await settle();
 		const dialog = container.querySelector('[role="dialog"]');
 		expect(dialog?.getAttribute("aria-label")).toBe("From this conversation");
@@ -1420,7 +1422,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		seedConversation();
 		await mount();
 		await selectFixture();
-		await click(container.querySelector('button[aria-label^="From this thread"]'));
+		await chatTool("From this thread");
 		expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Retained exchanges");
 
 		await traverse("back");
@@ -1434,13 +1436,11 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
-	test("the context-window button opens /app/c/<id>/window and Back returns to the chat", async () => {
+	test("the context-window tool opens /app/c/<id>/window and Back returns to the chat", async () => {
 		seedConversation();
 		await mount();
 		await selectFixture();
-		const action = container.querySelector('button[aria-label^="Context window"]');
-		expect(action).not.toBeNull();
-		await click(action);
+		await chatTool("Context window");
 		await settle();
 		expect(win.location.pathname).toBe("/app/c/fixture/window");
 		expect(container.querySelector(".ops")?.textContent).toContain("You are goblin.");
@@ -6088,28 +6088,29 @@ describe("chat width selector", () => {
 		await settle();
 	};
 
-	test("wide toggle flips the shell class and survives a remount", async () => {
+	const openTools = async () => {
+		const trigger = container.querySelector<HTMLButtonElement>('main > header .header-tools [aria-label="Chat tools"]');
+		expect(trigger).not.toBeNull();
+		await act(async () => trigger?.click());
+		await settle();
+	};
+	const wideItem = () =>
+		[...container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((item) => item.textContent?.includes("Wide column"));
+
+	test("the chat tools menu flips the width, and the choice survives a remount", async () => {
 		await mount();
-		const wide = container.querySelector<HTMLButtonElement>('button[aria-label="Wide column"]');
-		expect(wide).not.toBeNull();
 		expect(container.querySelector("main > header h1")?.className).toBe("sr-only");
-		expect(container.querySelectorAll(".header-tools [aria-label^='Context window']")).toHaveLength(1);
-		expect(container.querySelectorAll(".header-tools [aria-label^='From this thread']")).toHaveLength(1);
+		expect(container.querySelector("main > header [aria-label^='Context window']")).toBeNull();
+		expect(container.querySelector("main > header [aria-label^='From this thread']")).toBeNull();
 		expect(container.querySelector(".header-tools .goblin-panel-toggle")).not.toBeNull();
 		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
 
-		await act(async () => {
-			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
-		});
+		await openTools();
+		expect(wideItem()?.getAttribute("aria-checked")).toBe("false");
+		await act(async () => wideItem()?.click());
 		await settle();
-
 		expect(container.querySelector("main")?.className).toContain("chat-wide");
-		expect(wide?.getAttribute("aria-pressed")).toBe("true");
-		await act(async () => wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event));
-		await settle();
-		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
-		await act(async () => wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event));
-		await settle();
+		expect(wideItem()?.getAttribute("aria-checked")).toBe("true");
 		expect(win.localStorage.getItem("goblin.chat-width.v1")).toBe("wide");
 
 		await act(async () => {
@@ -6120,30 +6121,9 @@ describe("chat width selector", () => {
 		expect(container.querySelector("main")?.className).toContain("chat-wide");
 	});
 
-	test("layout B opens chat tools and applies the width choice", async () => {
+	test("the chat tools menu opens the context window", async () => {
 		await mount();
-		win.localStorage.setItem("goblin.headerLayout", "b");
-		await act(async () => {
-			root?.unmount();
-			root = null;
-			const div = win.document.createElement("div");
-			win.document.body.appendChild(div);
-			container = div as unknown as HTMLElement;
-			root = createRoot(container);
-			root.render(<App />);
-		});
-		await settle();
-		expect(container.querySelector(".header-tools [aria-label^='Context window']")).toBeNull();
-		expect(container.querySelector(".header-tools [aria-label^='From this thread']")).toBeNull();
-		const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Chat tools"]');
-		expect(trigger).not.toBeNull();
-		await act(async () => trigger?.click());
-		await settle();
-		const wide = [...container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((item) => item.textContent?.includes("Wide column"));
-		expect(wide).not.toBeNull();
-		await act(async () => wide?.click());
-		await settle();
-		expect(container.querySelector("main")?.className).toContain("chat-wide");
+		await openTools();
 		const context = [...container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) => item.textContent === "Context window");
 		expect(context).not.toBeNull();
 		await act(async () => context?.click());

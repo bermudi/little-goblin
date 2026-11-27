@@ -612,19 +612,14 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
-	test("phone: the chat header groups its tools and hides the width toggle", async () => {
-		const style = win.document.createElement("style");
-		style.textContent = readFileSync(join(import.meta.dir, "styles.css"), "utf8");
-		win.document.head.appendChild(style);
-		win.happyDOM.setWindowSize({ width: 390, height: 800 });
+	test("phone: the chat tools menu has no width choice", async () => {
 		await mount();
 		await click(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]'));
 		const tools = container.querySelector("main > header .header-tools");
-		expect(tools?.querySelector('[aria-label^="Context window"]')).toBeTruthy();
-		expect(tools?.querySelector('[aria-label^="From this thread"]')).toBeTruthy();
 		expect(tools?.querySelector(".goblin-panel-toggle")).toBeTruthy();
-		const wide = tools?.querySelector('[aria-label="Wide column"]');
-		expect(wide === null || wide === undefined || getComputedStyle(wide).display === "none").toBe(true);
+		await click(tools?.querySelector('[aria-label="Chat tools"]'));
+		const items = [...container.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')].map((item) => item.textContent);
+		expect(items).toEqual(["Context window", "From this thread"]);
 	});
 
 	test.each([
@@ -1457,11 +1452,11 @@ describe("mobile: chats screen and navigation", () => {
 	});
 
 	test.each([
-		[193, "none"],
-		[399, "none"],
-		[400, "inline-flex"],
-		[752, "inline-flex"],
-	])("desktop: a %ipx column shows the chat width selector as %s; the composer bar wraps", async (width, display) => {
+		[193, false],
+		[399, false],
+		[400, true],
+		[752, true],
+	])("desktop: a %ipx column offers the width choice: %s; the composer bar wraps", async (width, offered) => {
 		phone = false;
 		win.happyDOM.setWindowSize({ width: 721, height: 800 });
 		const style = win.document.createElement("style");
@@ -1493,9 +1488,8 @@ describe("mobile: chats screen and navigation", () => {
 		await act(async () => {
 			for (const o of observers) if (o.target === column) o.report(width);
 		});
-		const selector = container.querySelector('main > header [aria-label="Wide column"]');
-		expect(selector).not.toBeNull();
-		expect(getComputedStyle(selector!).display).toBe(display);
+		await click(container.querySelector('main > header [aria-label="Chat tools"]'));
+		expect(container.querySelector('[role="menuitemcheckbox"]') !== null).toBe(offered);
 		expect(getComputedStyle(container.querySelector(".chat .composer-bar")!).flexWrap).toBe("wrap");
 	});
 });

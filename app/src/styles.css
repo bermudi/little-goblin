@@ -1276,22 +1276,6 @@ header h1 {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-.width-toggle.on {
-	background: var(--app-active);
-	color: var(--app-fg);
-}
-.width-toggle:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
-}
-@media (max-width: 720px) {
-	.width-toggle {
-		display: none;
-	}
-}
-main[data-cramped] .width-toggle {
-	display: none;
-}
 .nav-toggle {
 	display: none;
 	align-items: center;

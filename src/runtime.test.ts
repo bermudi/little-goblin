@@ -864,6 +864,105 @@ describe("compacted turn inserts", () => {
 			r.store.close();
 		}
 	});
+
+	test("a split prefix cut at step-start keeps that step's inserts", async () => {
+		const script = sdkScript();
+		const buildStarted = deferred<void>();
+		const buildGate = deferred<void>();
+		const firstToolStarted = deferred<void>();
+		const firstToolGate = deferred<void>();
+		const secondToolStarted = deferred<void>();
+		const secondToolGate = deferred<void>();
+		let builds = 0;
+		const summary =
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nhead; pivot-at-cut\n## Exact identifiers";
+		const prefixModel = generateModel(() => textResult(summary));
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "cut-tool" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "after-cut-tool" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "finished" }] },
+		);
+		const r = rig({
+			script,
+			buildStep: async () => {
+				if (builds++ === 0) {
+					buildStarted.resolve();
+					await buildGate.promise;
+				}
+				return { ...script.step(), contextWindow: 256_000 };
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "fake/fake-1",
+					contextWindow: () => 1000,
+					summarize: async () => summary,
+					prefixStep: async () => ({
+						modelRef: "fake/fake-1",
+						model: prefixModel.model,
+						system: script.step().system,
+						inputModalities: undefined,
+						carries: () => false,
+						keepProviderExecuted: false,
+					}),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) {
+							firstToolStarted.resolve();
+							await firstToolGate.promise;
+							return "x".repeat(4000);
+						}
+						secondToolStarted.resolve();
+						await secondToolGate.promise;
+						return "small";
+					},
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "head");
+			await buildStarted.promise;
+			buildGate.resolve();
+			await firstToolStarted.promise;
+			const atCut = submit(r, "pivot-at-cut");
+			firstToolGate.resolve();
+			await secondToolStarted.promise;
+			const afterCut = submit(r, "pivot-after");
+			secondToolGate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await atCut.done).toEqual({ kind: "completed" });
+			expect(await afterCut.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+
+			const splitPrefix = prefixModel.generateCalls.find((call) =>
+				JSON.stringify(call.prompt).includes("one long turn that compaction split"),
+			);
+			expect(splitPrefix).toBeDefined();
+			const cutStepRequest = JSON.parse(script.callOptions()[1]!) as { prompt: unknown[] };
+			expect(JSON.stringify(cutStepRequest.prompt)).toContain("pivot-at-cut");
+			expect(JSON.stringify(splitPrefix!.prompt.slice(0, cutStepRequest.prompt.length))).toBe(
+				JSON.stringify(cutStepRequest.prompt),
+			);
+			expect(JSON.stringify(splitPrefix!.prompt)).not.toContain("pivot-after");
+		} finally {
+			buildGate.resolve();
+			firstToolGate.resolve();
+			secondToolGate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
 });
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);

@@ -640,7 +640,7 @@ describe("reasoning origin (#417)", () => {
 		expect(JSON.stringify(view)).toContain("partial thinking");
 	});
 
-	test("partial inserts at and after the step-start count are not replayed", async () => {
+	test("a mid-step partial excludes inserts at its step-start count", async () => {
 		const partial = {
 			id: "p-inserts",
 			role: "assistant",

@@ -200,6 +200,7 @@ export async function buildModelView(
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: Message | null;
+		partialInsertLimit?: number;
 		summarySeq: number | null;
 		ownedSeqs?: readonly number[] | ReadonlySet<number>;
 		assertAuthority(): void;
@@ -218,18 +219,19 @@ export async function buildModelView(
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const partialStepCount =
 		options.partial?.parts.filter((part) => part.type === "step-start").length ?? 0;
+	const partialInsertLimit = options.partialInsertLimit ?? partialStepCount;
 	const allPartialInsertRecords =
 		options.partial === null
 			? []
 			: storedTurnInserts([{ message: options.partial }], ctx.convId);
 	const partialInsertRecords = allPartialInsertRecords.flatMap(({ messageId, inserts }) => {
-		const eligible = inserts.filter((insert) => insert.step < partialStepCount);
+		const eligible = inserts.filter((insert) => insert.step < partialInsertLimit);
 		return eligible.length > 0 ? [{ messageId, inserts: eligible }] : [];
 	});
 	const suppressedSteerSeqs = new Set(
 		allPartialInsertRecords.flatMap(({ inserts }) =>
 			inserts
-				.filter((insert) => insert.step >= partialStepCount)
+				.filter((insert) => insert.step >= partialInsertLimit)
 				.flatMap((insert) =>
 					insert.items.flatMap((item) => item.kind === "steer" ? [item.seq] : []),
 				),

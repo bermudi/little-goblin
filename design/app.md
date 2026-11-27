@@ -434,6 +434,10 @@ unavailable the rail only forgets them.
 
 ## [Rolling chat](../GLOSSARY.md#rolling-chat) (ruling 2026-11-21, #840)
 
+> **Amended (operator, 2026-11-27, not built):** the Rolling chat becomes
+> [Little Goblin](../GLOSSARY.md#little-goblin)'s main chat, and loose chats
+> become its side chats ([decision](decisions/bots-and-side-chats.md)).
+
 The chat list keeps all existing chats and adds one Rolling chat entry. The
 DM's quiet-gap routing rule is shared in `src/rolling.ts` (`routeLane`). Each
 [roll](../GLOSSARY.md#roll) is an ordinary `app/` conversation tracked in
@@ -839,6 +843,11 @@ not in scope: `editMessageId` names a durable event, which only the app
 channel addresses.
 
 ## App navigation (ruling 2026-11-21, #862, operator pick)
+
+> **Amended (operator, 2026-11-27, not built):** the left list holds only
+> Little Goblin and the bots, with side chats under the open bot. Projects
+> and the Chats section go. The right panel shows the open bot
+> ([decision](decisions/bots-and-side-chats.md)).
 
 Goblin is someone you message. The chat is the main surface, and one panel
 shows Goblin itself. This replaces the glyph gutter and thumb bar of

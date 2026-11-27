@@ -1,5 +1,10 @@
 # One assistant, with bots for lasting work
 
+> **Amended (operator, 2026-11-27, not built):** [bots and side chats](bots-and-side-chats.md)
+> lets bots message each other, removes projects and loose chats, and
+> renames the Rolling chat to Little Goblin's main chat. Where the two
+> records differ, the newer one holds.
+
 Operator rulings, 2026-11-24 (#924). [Bots](../../GLOSSARY.md#bot) are not
 built. The [loop rule](../../AGENTS.md#goblin-is-a-loop-with-tools-and-connectors-thats-it)
 still outranks this record: code gives bots chats, memory, messages and

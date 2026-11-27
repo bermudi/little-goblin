@@ -12,8 +12,9 @@ Goblin is the operator's personal assistant, in one place
   appointment. Results and questions come back there.
 - **Errands and lasting work.** Goblin does errands itself. Work that lasts
   gets its own [bot](GLOSSARY.md#bot) (not built yet).
-- **Goblin in the middle.** Goblin messages and reads the bots. They do not
-  message or read each other.
+- **Goblin reads every bot.** Bots may hand work to each other, but only
+  Goblin reads their chats and memory
+  ([decision](design/decisions/bots-and-side-chats.md), not built).
 - **Ask first.** Goblin asks before it spends money or sends mail.
 - **Elsewhere.** Coding stays in T3 Code; Goblin starts and watches threads.
 - **Frozen.** Telegram and [delegation](GLOSSARY.md#delegation) get fixes,

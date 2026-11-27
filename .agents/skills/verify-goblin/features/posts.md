@@ -8,7 +8,7 @@ Goblin calls the `post` tool; the post shows in the Goblin panel's Activity tab 
 
 Desktop: the Goblin panel is the right column beside any chat page, Activity tab first. Phone: tap Goblin's avatar in the chats bar or a chat's header to open the panel as a sheet.
 
-Above the panel tabs, both ear tips and the hair should extend past the round backdrop. Clicking the portrait opens the profile, which shows the same art above its tabs.
+Above the panel tabs, the shoulders follow the thin dotted gray ring. It has no fill, and both ear tips and the hair remain intact. Clicking the portrait opens the profile, which shows the same art above its tabs.
 
 ## Driving it with agent-browser
 

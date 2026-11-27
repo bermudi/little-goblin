@@ -1099,8 +1099,10 @@ feed and one copy of each list. It starts after the auth gate passes.
   while it watches a retry.
 
 **Avatar.** The profile uses the operator's transparent pixel art: the
-goblin's ears and hair overlap the round backdrop rather than being clipped
-by it. The navigation avatar and installed app icons keep the original art.
+goblin sits 3 px left of its original position at panel size. The fixed
+circular crop shapes the shoulders but leaves the ears and hair intact.
+A thin dotted gray ring follows the crop, with no fill behind the goblin.
+The navigation avatar and installed app icons keep the original art.
 
 ## The app wire must never idle — SSE heartbeat
 

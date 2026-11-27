@@ -1098,8 +1098,9 @@ feed and one copy of each list. It starts after the auth gate passes.
   Settings load as before. The Attention page still polls memory status
   while it watches a retry.
 
-**Avatar.** `app/public/goblin-avatar.webp` is the operator's pixel-art
-goblin. The PWA icons use the same picture.
+**Avatar.** The profile uses the operator's transparent pixel art: the
+goblin's ears and hair overlap the round backdrop rather than being clipped
+by it. The navigation avatar and installed app icons keep the original art.
 
 ## The app wire must never idle — SSE heartbeat
 

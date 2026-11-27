@@ -976,7 +976,8 @@ is now the home screen, and the avatar means only the agent.
     chat. The device remembers the last state.
   - **Folded row.** The row carries the most urgent mark of its rolls and
     side chats. Its line names the side chat: "New reply in …" or
-    "Working in …", or the question that waits.
+    "Working in …", or the question that waits. A click opens that side
+    chat; a mark from a roll opens that roll, as before.
   - **Project chats.** A project chat still enters Active when it has a mark.
     A pinned project chat without a mark is not in the list.
   - Search still finds side chats.

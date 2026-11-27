@@ -440,6 +440,18 @@ describe("home screen", () => {
 		expect(container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("false");
 	});
 
+	test("T-D3: a folded row with a side chat's mark opens that side chat", async () => {
+		chain = [conv("newest")];
+		conversations = [conv("trip", { title: "Trip plans", newReply: 2 })];
+		await open("/app/");
+		const row = container.querySelector(".rolling-row")!;
+		expect(row.getAttribute("data-mark")).toBe("new");
+		expect(row.querySelector(".conv-preview")?.textContent).toBe("New reply in Trip plans");
+		await click(".rolling-row a");
+		expect(win.location.pathname).toBe("/app/c/trip");
+		expect(container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("true");
+	});
+
 	test("T-D2: a project chat folds the side chats, and the next side chat opens them", async () => {
 		conversations = [conv("side"), conv("other"), conv("work", { projectId: "project" })];
 		await open("/app/c/side");

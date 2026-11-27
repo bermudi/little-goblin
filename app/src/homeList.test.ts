@@ -334,13 +334,13 @@ test("T-B3: closed Little Goblin folds urgent side marks; open keeps roll mark o
 	const closed = chatRows(base([sideNeeds, sideNew], {
 		chain: [roll], attention,
 	}));
-	expect(closed.rolling).toMatchObject({ mark: "needs", line: "Approve this" });
+	expect(closed.rolling).toMatchObject({ mark: "needs", line: "Approve this", sideTarget: sideNeeds.id });
 	const newClosed = chatRows(base([sideNew], { chain: [conv("roll")] }));
-	expect(newClosed.rolling).toMatchObject({ mark: "new", line: "New reply in Reply chat" });
+	expect(newClosed.rolling).toMatchObject({ mark: "new", line: "New reply in Reply chat", sideTarget: sideNew.id });
 	const open = chatRows(base([sideNeeds, sideNew], {
 		chain: [roll], attention, sideChatsOpen: true,
 	}));
-	expect(open.rolling).toMatchObject({ mark: "new", line: "roll reply" });
+	expect(open.rolling).toMatchObject({ mark: "new", line: "roll reply", sideTarget: null });
 });
 
 test("T-B4: open Goblin context includes rolls and loose chats, not project chats", () => {

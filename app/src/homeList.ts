@@ -39,6 +39,7 @@ export interface RollingRow {
 	mark: Mark | null;
 	line: string;
 	target: string | null;
+	sideTarget: string | null;
 	updatedAt: string | null;
 }
 
@@ -175,6 +176,7 @@ export function buildHome(
 		if (winner && mark !== null && (rolling.mark === null || rankOf(mark) < rankOf(rolling.mark))) {
 			const title = flatTitle(winner.conv.title) ?? "a side chat";
 			rolling.mark = mark;
+			rolling.sideTarget = winner.id;
 			rolling.line = mark === "needs"
 				? winner.line
 				: mark === "new" ? `New reply in ${title}` : `Working in ${title}`;
@@ -409,6 +411,7 @@ function makeRollingRow(
 		mark: picked?.result.mark ?? null,
 		line,
 		target: picked?.roll.id ?? newest?.id ?? null,
+		sideTarget: null,
 		updatedAt: newest?.updatedAt ?? null,
 	};
 }

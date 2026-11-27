@@ -890,7 +890,11 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		);
 	};
 	const openRollingFromList = () => {
-		const target = home.list.rolling.target;
+		const { sideTarget, target } = home.list.rolling;
+		if (sideTarget !== null) {
+			openConversation(sideTarget);
+			return;
+		}
 		setRollingViewing(target === rollingChain[0]?.id ? null : target);
 		setRollingRouted(null);
 		void openPage("rolling");

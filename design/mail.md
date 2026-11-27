@@ -53,5 +53,23 @@ accepted for arrivals that outlast the grace, fall outside a full search
 page, or precede a later match already fired. The watcher warns when a
 full page or oversized collapsed record can hide matches.
 
+Each tick reads the history once for every program with a filter,
+starting at the oldest stored cursor; each program then takes only the
+records after its own cursor, so cursors, the lag grace and at-least-once
+delivery stay per program (2026-11-26). A failed or expired read affects
+only the programs that share its cursor, and the read restarts from the
+next-oldest cursor. A stored cursor that is not a history id fails only
+its program. The profile call stays per program, and runs only for a new
+or expired filter. History ids are decimal strings and compare exactly.
+One shared cursor was rejected: a held checkpoint would hold every
+program.
+
+The reason is quota: agents that call Workspace REST directly move to
+Standard Tier quotas on 2027-02-01, which Google gives as 5,000 requests
+per day, per project, per product. The history read was about 288 calls
+per program per day and is now 288 a day in total. The filter's list call
+stays per program, about 288 a day in a busy mailbox, so the day quota
+is still reached at about 16 programs.
+
 Push watch was rejected because Pub/Sub resources and recurring watch
 renewals introduce a second system to operate.

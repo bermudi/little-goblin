@@ -11,6 +11,7 @@ import type { DeliveryApi } from "./tg/delivery.ts";
 import type { Message } from "./message.ts";
 import { HistoryExpiredError, type MailHistory, type MailHit, type MailPoller } from "./mail.ts";
 import { BoundaryError } from "./boundary-error.ts";
+import { makeGwsReader, type GwsRunResult } from "./mail-gws.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { startMailWatcher, makeMailNoticeRouter, type MailWatcher } from "./mail-watcher.ts";
@@ -21,6 +22,7 @@ import type { Runtime } from "./runtime.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import type { Config } from "./config-schema.ts";
 import { sleep, waitUntil } from "./testkit.ts";
+import { fakeGws } from "./testkit/fake-gws.ts";
 
 let dirs: string[] = [];
 let watchers: MailWatcher[] = [];
@@ -201,6 +203,52 @@ function mailProgram(h: Harness, name = "bank watch", filter = "from:bank"): Pro
 	);
 }
 
+function gwsBoundary(
+	h: Harness,
+	routes: Parameters<typeof fakeGws>[0],
+	alter?: (args: string[], result: GwsRunResult) => GwsRunResult,
+) {
+	const fake = fakeGws(routes);
+	h.reader = makeGwsReader(async (args) => {
+		const result = await fake.run(args);
+		return alter?.(args, result) ?? result;
+	});
+	return fake.calls;
+}
+
+function historyStarts(calls: Array<{ args: string[] }>): string[] {
+	return calls
+		.filter((call) => call.args[2] === "history" && call.args[3] === "list")
+		.map((call) => {
+			const index = call.args.indexOf("--params");
+			const params = JSON.parse(call.args[index + 1]!) as { startHistoryId: string };
+			return params.startHistoryId;
+		});
+}
+
+function countCalls(calls: Array<{ args: string[] }>, resource: string, method: string): number {
+	return calls.filter(
+		(call) => call.args[2] === resource && (method === "" || call.args[3] === method),
+	).length;
+}
+
+function historyPage(entries: string[], historyId = "200"): unknown {
+	return {
+		history: entries.map((entry) => {
+			const split = entry.indexOf(":");
+			return {
+				id: entry.slice(0, split),
+				messagesAdded: [{ message: { id: entry.slice(split + 1) } }],
+			};
+		}),
+		historyId,
+	};
+}
+
+function nonEmptyFires(h: Harness): Array<{ program: number; matches: string[] }> {
+	return h.fired.filter((fire) => fire.matches.length > 0);
+}
+
 describe("mail watcher", () => {
 	test("the ticker scans on its interval and stops scanning once stopped", async () => {
 		const h = harness();
@@ -305,7 +353,7 @@ describe("mail watcher", () => {
 			const h = harness();
 			const p = mailProgram(h);
 			if (expired) {
-				h.programs.setMailHistory(p.id, "old", 0);
+				h.programs.setMailHistory(p.id, "1", 0);
 				h.historyImpl = async () => {
 					throw new HistoryExpiredError();
 				};
@@ -335,7 +383,7 @@ describe("mail watcher", () => {
 	test("an edit while an expired cursor re-baselines cannot inherit its stale head", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "old", 0);
+		h.programs.setMailHistory(p.id, "1", 0);
 		h.historyImpl = async () => {
 			throw new HistoryExpiredError();
 		};
@@ -719,6 +767,193 @@ describe("mail watcher", () => {
 		// The fire that was in flight completed inside the join.
 		expect(h.fired).toHaveLength(1);
 		await closeSinks(h);
+	});
+});
+
+describe("mail watcher at the gws boundary", () => {
+	test("one tick reads Gmail's history once for every program, from the oldest cursor", async () => {
+		const h = harness();
+		const a = mailProgram(h, "A", "from:a");
+		const b = mailProgram(h, "B", "from:b");
+		const c = mailProgram(h, "C", "from:c");
+		h.programs.setMailHistory(a.id, "150", 0);
+		h.programs.setMailHistory(b.id, "100", 0);
+		h.programs.setMailHistory(c.id, "120", 0);
+		const calls = gwsBoundary(h, { history: () => ({ history: [], historyId: "200" }) });
+		const w = start(h);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100"]);
+		expect(countCalls(calls, "messages", "list")).toBe(0);
+		expect(countCalls(calls, "messages", "get")).toBe(0);
+		expect(countCalls(calls, "getProfile", "")).toBe(0);
+		expect([a, b, c].map((p) => h.programs.get(p.id)!.mailHistoryId)).toEqual(["200", "200", "200"]);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100", "200"]);
+		expect(countCalls(calls, "messages", "list")).toBe(0);
+	});
+
+	test("a held checkpoint holds only its own program", async () => {
+		const h = harness();
+		const a = mailProgram(h, "A", "from:a");
+		const b = mailProgram(h, "B", "from:b");
+		h.programs.setMailHistory(a.id, "100", 0);
+		h.programs.setMailHistory(b.id, "108", 0);
+		const calls = gwsBoundary(h, {
+			history: () => historyPage(["105:x1", "110:b1", "112:b2"]),
+			list: (params) =>
+				params.q === "from:a" ? { messages: [] } : { messages: [{ id: "b2" }, { id: "b1" }] },
+		});
+		const w = start(h);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100"]);
+		expect(h.programs.get(a.id)!.mailHistoryId).toBe("100");
+		expect(h.programs.get(b.id)!.mailHistoryId).toBe("200");
+		expect(nonEmptyFires(h)).toEqual([{ program: b.id, matches: ["b1", "b2"] }]);
+		expect(h.submitted).toHaveLength(1);
+		expect(countCalls(calls, "messages", "list")).toBe(2);
+		expect(countCalls(calls, "messages", "get")).toBe(2);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100", "100"]);
+		expect(h.programs.get(a.id)!.mailHistoryId).toBe("100");
+		expect(h.programs.get(b.id)!.mailHistoryId).toBe("200");
+		expect(nonEmptyFires(h)).toEqual([{ program: b.id, matches: ["b1", "b2"] }]);
+		expect(countCalls(calls, "messages", "list")).toBe(3);
+		expect(countCalls(calls, "messages", "get")).toBe(2);
+		await closeSinks(h);
+	});
+
+	test("an expired cursor re-baselines only the programs on it, and the read restarts from the next cursor", async () => {
+		const h = harness();
+		const a = mailProgram(h, "A", "from:a");
+		const b = mailProgram(h, "B", "from:b");
+		const c = mailProgram(h, "C", "from:c");
+		const d = mailProgram(h, "D", "from:d");
+		for (const p of [a, b]) h.programs.setMailHistory(p.id, "50", 0);
+		h.programs.setMailHistory(c.id, "120", 0);
+		h.programs.setMailHistory(d.id, "130", 0);
+		const calls = gwsBoundary(
+			h,
+			{
+				history: () => ({ history: [], historyId: "200" }),
+				profile: () => ({ historyId: "200" }),
+			},
+			(args, result) => {
+				if (args[2] !== "history" || args[3] !== "list") return result;
+				const index = args.indexOf("--params");
+				const params = JSON.parse(args[index + 1]!) as { startHistoryId: string };
+				if (params.startHistoryId === "50" || params.startHistoryId === "120") {
+					return { code: 1, stdout: JSON.stringify({ error: { code: 404 } }), stderr: "" };
+				}
+				return result;
+			},
+		);
+		const w = start(h);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["50", "120", "130"]);
+		expect(countCalls(calls, "getProfile", "")).toBe(3);
+		expect([a, b, c, d].map((p) => h.programs.get(p.id)!.mailHistoryId)).toEqual([
+			"200", "200", "200", "200",
+		]);
+		expect(h.notices).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
+	});
+
+	test("a failed read fails only the programs on its cursor", async () => {
+		const h = harness();
+		const a = mailProgram(h, "A", "from:a");
+		const b = mailProgram(h, "B", "from:b");
+		const c = mailProgram(h, "C", "from:c");
+		h.programs.setMailHistory(a.id, "100", 0);
+		h.programs.setMailHistory(b.id, "100", 0);
+		h.programs.setMailHistory(c.id, "120", 0);
+		const failing = new Set(["100"]);
+		const calls = gwsBoundary(
+			h,
+			{ history: () => ({ history: [], historyId: "200" }) },
+			(args, result) => {
+				if (args[2] !== "history" || args[3] !== "list") return result;
+				const index = args.indexOf("--params");
+				const params = JSON.parse(args[index + 1]!) as { startHistoryId: string };
+				return failing.has(params.startHistoryId)
+					? { code: 1, stdout: JSON.stringify({ error: { code: 403 } }), stderr: "" }
+					: result;
+			},
+		);
+		const w = start(h);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100", "120"]);
+		expect(h.programs.get(a.id)!.mailHistoryId).toBe("100");
+		expect(h.programs.get(b.id)!.mailHistoryId).toBe("100");
+		expect(h.programs.get(c.id)!.mailHistoryId).toBe("200");
+		expect(h.notices).toHaveLength(2);
+		expect(h.notices.map((notice) => notice.program).sort()).toEqual([a.id, b.id].sort());
+		expect(h.notices.every((notice) => notice.text.includes("is failing"))).toBe(true);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100", "120", "100", "200"]);
+		expect(h.notices).toHaveLength(2);
+		failing.clear();
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100", "120", "100", "200", "100"]);
+		expect([a, b, c].map((p) => h.programs.get(p.id)!.mailHistoryId)).toEqual(["200", "200", "200"]);
+		expect(h.notices).toHaveLength(2);
+	});
+
+	test("a fire that does not land holds only its program's checkpoint, and it refires next tick", async () => {
+		const h = harness();
+		const a = mailProgram(h, "A", "from:a");
+		const b = mailProgram(h, "B", "from:b");
+		h.programs.setMailHistory(a.id, "100", 0);
+		h.programs.setMailHistory(b.id, "100", 0);
+		h.failSubmit = true;
+		const calls = gwsBoundary(h, {
+			history: () => historyPage(["105:a1", "106:b1"]),
+			list: (params) => {
+				if (params.q === "from:b") h.failSubmit = false;
+				return params.q === "from:a" ? { messages: [{ id: "a1" }] } : { messages: [{ id: "b1" }] };
+			},
+		});
+		const w = start(h);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100"]);
+		expect(h.programs.get(a.id)!.mailHistoryId).toBe("100");
+		expect(h.programs.get(b.id)!.mailHistoryId).toBe("200");
+		expect(h.submitted).toHaveLength(1);
+		expect(nonEmptyFires(h)).toEqual([
+			{ program: a.id, matches: ["a1"] },
+			{ program: b.id, matches: ["b1"] },
+		]);
+		expect(countCalls(calls, "messages", "list")).toBe(2);
+		expect(countCalls(calls, "messages", "get")).toBe(2);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100", "100"]);
+		expect(h.programs.get(a.id)!.mailHistoryId).toBe("105");
+		expect(h.programs.get(b.id)!.mailHistoryId).toBe("200");
+		expect(h.submitted).toHaveLength(2);
+		expect(nonEmptyFires(h)).toEqual([
+			{ program: a.id, matches: ["a1"] },
+			{ program: b.id, matches: ["b1"] },
+			{ program: a.id, matches: ["a1"] },
+		]);
+		expect(countCalls(calls, "messages", "list")).toBe(3);
+		expect(countCalls(calls, "messages", "get")).toBe(3);
+		await closeSinks(h);
+	});
+
+	test("a stored cursor that is not a history id fails only its program", async () => {
+		const h = harness();
+		const a = mailProgram(h, "A", "from:a");
+		const b = mailProgram(h, "B", "from:b");
+		h.programs.setMailHistory(a.id, "old", 0);
+		h.programs.setMailHistory(b.id, "100", 0);
+		const calls = gwsBoundary(h, { history: () => ({ history: [], historyId: "200" }) });
+		const w = start(h);
+		await w.tick();
+		expect(historyStarts(calls)).toEqual(["100"]);
+		expect(h.programs.get(a.id)!.mailHistoryId).toBe("old");
+		expect(h.programs.get(b.id)!.mailHistoryId).toBe("200");
+		expect(h.notices).toHaveLength(1);
+		expect(h.notices[0]!.program).toBe(a.id);
+		expect(h.notices[0]!.text).toContain("is not a Gmail history id");
 	});
 });
 

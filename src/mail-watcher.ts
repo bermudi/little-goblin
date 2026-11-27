@@ -3,7 +3,7 @@
 // the checkpoint; the watcher never writes program state. Outbox
 // draft expiry is the approval gate's job.
 
-import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
+import { compareHistoryIds, HistoryExpiredError, type MailHistory, type MailHit, type MailPoller } from "./mail.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
 import { every } from "./timing.ts";
@@ -46,6 +46,12 @@ const TICK_MS = 5 * 60_000;
 
 const activeWatchers = new WeakSet<object>();
 
+type Poll =
+	| { kind: "baseline" }
+	| { kind: "expired" }
+	| { kind: "failed"; error: unknown }
+	| { kind: "history"; history: MailHistory };
+
 /** One ticker per store object; duplicate starts fail until the old owner stops. */
 export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailWatcher {
 	if (activeWatchers.has(deps.programs))
@@ -86,9 +92,10 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 				log.debug("mail watcher idle — mail is not configured");
 				return;
 			}
-			for (const program of programs) {
+			const polls = await planPolls(gmail, programs);
+			for (const { program, poll } of polls) {
 				try {
-					await check(deps, failing, gmail, program, now);
+					await check(deps, failing, gmail, program, poll, now);
 				} catch (err) {
 					// One bad row must not take the scan down — but
 					// it surfaces as an error line, never a swallow.
@@ -121,16 +128,57 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 	};
 }
 
+async function planPolls(
+	gmail: MailPoller,
+	programs: Program[],
+): Promise<Array<{ program: Program; poll: Poll }>> {
+	const polls = new Map<Program, Poll>();
+	const ordered: Array<{ program: Program; cursor: string }> = [];
+	for (const program of programs) {
+		const cursor = program.mailHistoryId;
+		if (cursor === null) {
+			polls.set(program, { kind: "baseline" });
+		} else if (!/^\d+$/.test(cursor)) {
+			polls.set(program, {
+				kind: "failed",
+				error: new Error(`stored mail cursor is not a Gmail history id: ${cursor}`),
+			});
+		} else {
+			ordered.push({ program, cursor });
+		}
+	}
+	ordered.sort((a, b) => compareHistoryIds(a.cursor, b.cursor));
+	for (let i = 0; i < ordered.length; ) {
+		const { cursor } = ordered[i]!;
+		let end = i + 1;
+		while (end < ordered.length && compareHistoryIds(ordered[end]!.cursor, cursor) === 0) end++;
+		try {
+			const history = await gmail.history(cursor);
+			for (let j = i; j < ordered.length; j++) {
+				polls.set(ordered[j]!.program, { kind: "history", history });
+			}
+			break;
+		} catch (err) {
+			const poll: Poll =
+				err instanceof HistoryExpiredError ? { kind: "expired" } : { kind: "failed", error: err };
+			for (let j = i; j < end; j++) polls.set(ordered[j]!.program, poll);
+		}
+		i = end;
+	}
+	return programs.map((program) => ({ program, poll: polls.get(program)! }));
+}
+
 async function check(
 	deps: MailWatcherDeps,
 	failing: Map<number, string>,
 	gmail: MailPoller,
 	program: Program,
+	poll: Poll,
 	now: Date,
 ): Promise<void> {
 	const filter = program.mailFilter!;
 	try {
-		if (program.mailHistoryId === null) {
+		if (poll.kind === "baseline") {
 			// New filter: baseline at the current head — the mailbox's
 			// backlog is history, not arrivals, so it never fires.
 			const head = await gmail.profileHistoryId();
@@ -145,12 +193,7 @@ async function check(
 			recovered(deps, failing, program);
 			return;
 		}
-		let hits: MailHit[];
-		let historyId: string;
-		try {
-			({ hits, historyId } = await gmail.matches(await gmail.history(program.mailHistoryId), filter, program.mailHistoryId));
-		} catch (err) {
-			if (!(err instanceof HistoryExpiredError)) throw err;
+		if (poll.kind === "expired") {
 			// Google forgot the cursor — re-baseline like a new filter.
 			// Mail between the old cursor and now may fire late or not
 			// at all; the log says which.
@@ -169,6 +212,11 @@ async function check(
 			recovered(deps, failing, program);
 			return;
 		}
+		if (poll.kind === "failed") {
+			await failed(deps, failing, program, poll.error);
+			return;
+		}
+		const { hits, historyId } = await gmail.matches(poll.history, filter, program.mailHistoryId!);
 		// The row can change while the poll is in flight — a disable,
 		// delete, or filter edit that landed mid-poll wins over this
 		// poll's snapshot. A stale charter must not fire, and

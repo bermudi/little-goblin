@@ -24,9 +24,6 @@ import { boundedRun, spawnProc } from "./proc.ts";
 
 const LIVE = process.env.GOBLIN_GWS_LIVE === "1";
 
-// Matches nothing real — poll's history.list ignores the filter and
-// the list intersection can only come back empty, so the poll pin
-// exercises the wire without ever reading message metadata.
 const IMPOSSIBLE_FILTER = "from:goblin-gws-drift-nonexistent";
 
 // Well-formed enough for Gmail to answer notFound (long ids get
@@ -53,9 +50,10 @@ describe.skipIf(!LIVE)("gws live drift (GOBLIN_GWS_LIVE=1)", () => {
 		expect(historyId).toMatch(/^\d+$/);
 	}, 60_000);
 
-	test("poll at head over a matchless filter: empty hits, numeric cursor", async () => {
+	test("history and matches at head over a matchless filter: empty hits, numeric cursor", async () => {
 		const head = await reader!.profileHistoryId();
-		const { hits, historyId } = await reader!.poll(IMPOSSIBLE_FILTER, head);
+		const history = await reader!.history(head);
+		const { hits, historyId } = await reader!.matches(history, IMPOSSIBLE_FILTER, head);
 		expect(hits).toEqual([]);
 		expect(historyId).toMatch(/^\d+$/);
 	}, 60_000);
@@ -94,9 +92,6 @@ describe.skipIf(!LIVE)("gws live drift (GOBLIN_GWS_LIVE=1)", () => {
 	}, 60_000);
 
 	test("messages.get on an absent id maps 404 to null", async () => {
-		// Red here means gws moved the error envelope off stdout or the
-		// API code changed — poll's history-expiry re-baseline hinges on
-		// this exact mapping.
 		expect(await reader!.threadFor(MISSING_ID)).toBeNull();
 	}, 60_000);
 

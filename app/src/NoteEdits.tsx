@@ -34,47 +34,52 @@ export default function NoteEdits({
 	const [older, setOlder] = useState(false);
 	const [preview, setPreview] = useState<NoteEdit | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const request = useRef(0);
-	const detail = useRef(0);
+	const request = useRef<{ active: boolean } | null>(null);
+	const detail = useRef({ sequence: 0 });
 	useEffect(() => {
-		const current = ++request.current;
+		const current = { active: true };
+		request.current = current;
 		setOlder(false);
 		void listNoteEdits(token, id).then((next) => {
-			if (request.current !== current) return;
+			if (!current.active) return;
 			setPage(next);
 			setError(null);
 		}, () => {
-			if (request.current === current) setError("Couldn't list edits.");
+			if (current.active) setError("Couldn't list edits.");
 		});
-		return () => { request.current++; };
+		return () => { current.active = false; };
 	}, [token, id, rev]);
-	useEffect(() => () => { detail.current++; }, [token, id]);
+	useEffect(() => {
+		const scope = detail.current;
+		return () => { scope.sequence++; };
+	}, [token, id]);
 
 	async function showOlder() {
-		if (older || page === null || page.before === null) return;
 		const current = request.current;
+		if (current === null || older || page === null || page.before === null) return;
 		setOlder(true);
 		try {
 			const next = await listNoteEdits(token, id, page.before);
-			if (request.current !== current) return;
+			if (!current.active) return;
 			setPage({ edits: [...page.edits, ...next.edits], before: next.before });
 			setError(null);
 		} catch {
-			if (request.current === current) setError("Couldn't load earlier edits.");
+			if (current.active) setError("Couldn't load earlier edits.");
 		} finally {
-			if (request.current === current) setOlder(false);
+			if (current.active) setOlder(false);
 		}
 	}
 
 	async function openDiff(revision: number) {
-		const current = ++detail.current;
+		const scope = detail.current;
+		const current = ++scope.sequence;
 		try {
 			const edit = await getNoteEdit(token, id, revision);
-			if (detail.current !== current) return;
+			if (scope.sequence !== current) return;
 			setPreview(edit);
 			setError(null);
 		} catch {
-			if (detail.current === current) setError("Couldn't load the diff.");
+			if (scope.sequence === current) setError("Couldn't load the diff.");
 		}
 	}
 
@@ -87,7 +92,7 @@ export default function NoteEdits({
 					<div className="row">
 						<strong>Revision {preview.rev} · {authorName(preview.author)}</strong>
 						<button type="button" className="ghost-inline" onClick={() => {
-							detail.current++;
+							detail.current.sequence++;
 							setPreview(null);
 						}}>Close diff</button>
 					</div>

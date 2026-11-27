@@ -130,7 +130,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, context) => {
 		const snapshot = store.promptSnapshot(conv.id);
-		const provider = conv.model === null ? undefined : configRef.current.providers[splitModelRef(conv.model).provider];
+		const provider = conv.model === null
+			? undefined
+			: configRef.current.providers?.[splitModelRef(conv.model).provider];
 		const toolProjectId =
 			snapshot === null || promptHasProject(snapshot) ? conv.projectId : null;
 		const { mail, desktops, agents } = deps;
@@ -220,13 +222,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			web: { configRef, auth },
 			// Codex conversations swap local search for the hosted
 			// web_search unless the provider parks it off.
-			hostedSearch: (() => {
-				if (conv.model === null) return undefined;
-				const { provider } = splitModelRef(conv.model);
-				const p = configRef.current.providers?.[provider];
-				if (p?.kind !== "codex" || p.webSearch === "off") return undefined;
-				return { externalWebAccess: p.webSearch === "live" };
-			})(),
+			hostedSearch: provider?.kind === "codex" && provider.webSearch !== "off"
+				? { externalWebAccess: provider.webSearch === "live" }
+				: undefined,
 			transcribe: configRef.current.transcription !== undefined ? { transcribe } : undefined,
 			// Boot fixtures under a live gate.
 			delegate,

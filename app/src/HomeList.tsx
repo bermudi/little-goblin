@@ -5,6 +5,8 @@ import { BotAvatar } from "./BotAvatar.tsx";
 import { ConversationNav, ConversationNavLink, relTime, RollingRow } from "./ConversationList.tsx";
 import {
 	buildHome,
+	mostUrgentChat,
+	rankOf,
 	type ChatRow,
 	type HomeInput,
 	type HomeList as HomeListModel,
@@ -123,17 +125,18 @@ export function HomeList({
 			{bots.length > 0 && <li className="rail-chats-label">Bots</li>}
 			{bots.map(({ bot, main, side }) => {
 				const open = bot.id === expandedBotId;
-				const markedSide = open ? undefined : side.find((row) => row.mark !== null);
-				const mark = markedSide !== undefined && markedSide.place.rank < main.place.rank
-					? markedSide.mark : main.mark;
+				const markedSide = open ? undefined : mostUrgentChat(side);
+				const display = markedSide?.mark != null &&
+					(main.mark === null || rankOf(markedSide.mark) < rankOf(main.mark))
+					? markedSide : main;
 				const current = currentConversationId === main.id;
 				return (
 					<BotListRows
 						key={bot.id}
 						name={bot.name}
 						main={main}
-						mark={mark}
-						line={mark === main.mark ? main.line : markedSide?.line ?? main.line}
+						mark={display.mark}
+						line={display.line}
 						current={current}
 						side={side}
 						expanded={open}

@@ -23,6 +23,7 @@ import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
+import { NoteConversationContext } from "./markdown.tsx";
 import { copyInlineSelection, hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
 import { placeSentMedia } from "./chat/sentMedia.ts";
 import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
@@ -405,32 +406,34 @@ export function ChatView({
     return <div className="error">History failed to load: {loadError}</div>;
   if (initial === null) return <div className="loading">…</div>;
   return (
-    <Chat
-      conversationId={conversationId}
-      title={title}
-      token={token}
-      initial={initial.messages}
-      initialStart={initial.start}
-      initialOlderCursor={initial.olderCursor}
-      initialRatings={initial.ratings}
-      initialRateableIds={initial.rateableMessageIds}
-      initialCompactions={initial.compactions}
-      seed={seed}
-      followAfter={followAfter}
-      noteProjectId={noteProjectId}
-      onSeeded={onSeeded}
-      onSendAccepted={onSendAccepted}
-      onOpenNote={onOpenNote}
-      onBranched={onBranched}
-      onRoll={onRoll}
-      focusSignal={focusOnce}
-      rollDisabled={rollDisabled}
-      rolling={rolling}
-      onRollingAccepted={onRollingAccepted}
-      onFollowStarted={onFollowStarted}
-      header={header}
-      now={now}
-    />
+    <NoteConversationContext value={conversationId}>
+      <Chat
+        conversationId={conversationId}
+        title={title}
+        token={token}
+        initial={initial.messages}
+        initialStart={initial.start}
+        initialOlderCursor={initial.olderCursor}
+        initialRatings={initial.ratings}
+        initialRateableIds={initial.rateableMessageIds}
+        initialCompactions={initial.compactions}
+        seed={seed}
+        followAfter={followAfter}
+        noteProjectId={noteProjectId}
+        onSeeded={onSeeded}
+        onSendAccepted={onSendAccepted}
+        onOpenNote={onOpenNote}
+        onBranched={onBranched}
+        onRoll={onRoll}
+        focusSignal={focusOnce}
+        rollDisabled={rollDisabled}
+        rolling={rolling}
+        onRollingAccepted={onRollingAccepted}
+        onFollowStarted={onFollowStarted}
+        header={header}
+        now={now}
+      />
+    </NoteConversationContext>
   );
 }
 

@@ -1441,7 +1441,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							<>
 								{renderHomeList(phoneFlipRef)}
 								{archivedRows}
-								{conversations !== null && home.list.active.length === 0 && home.list.side.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
+								{conversations !== null && home.list.active.length === 0 && home.list.side.length === 0 &&
+									home.list.bots.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
 									<p className="empty">Nothing here yet — start a conversation.</p>
 								)}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}

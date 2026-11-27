@@ -37,6 +37,7 @@ import type {
 	AppMessageList,
 	AppNote,
 	AppNoteBatch,
+	AppNoteCreate,
 	AppNoteList,
 	AppNoteRewriteRequest,
 	AppNoteRewriteResponse,
@@ -414,7 +415,7 @@ export function batchNotes(token: string | null, body: AppNoteBatch): Promise<{ 
 
 export function createNote(
 	token: string | null,
-	body: { title: string; body?: string; projectId?: string | null },
+	body: AppNoteCreate,
 ): Promise<AppNote> {
 	return request(token, "/api/app/notes", {
 		method: "POST",

@@ -187,9 +187,7 @@ export function buildHome(
 		runningByConversation,
 	);
 	if (!input.sideChatsOpen) {
-		const winner = side.find((row) => row.mark === "needs") ??
-			side.find((row) => row.mark === "new") ??
-			side.find((row) => row.mark === "working");
+		const winner = mostUrgentChat(side);
 		const mark = winner?.mark ?? null;
 		if (winner && mark !== null && (rolling.mark === null || rankOf(mark) < rankOf(rolling.mark))) {
 			const title = flatTitle(winner.conv.title) ?? "a side chat";
@@ -435,7 +433,13 @@ function makeRollingRow(
 	};
 }
 
-function rankOf(mark: Mark): number {
+export function mostUrgentChat(rows: readonly ChatRow[]): ChatRow | undefined {
+	return rows.find((row) => row.mark === "needs") ??
+		rows.find((row) => row.mark === "new") ??
+		rows.find((row) => row.mark === "working");
+}
+
+export function rankOf(mark: Mark): number {
 	if (mark === "needs") return 0;
 	if (mark === "new") return 1;
 	return 2;

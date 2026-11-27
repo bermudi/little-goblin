@@ -406,6 +406,9 @@ const server = Bun.serve({
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		if (lastUserText.includes("[note-card]")) {
+			reply = "```note title=\"Parts list\"\nVerification note.\n```";
+		}
 		const askMarker = /\[ask ([^\]]+)\]/.exec(lastUserText);
 		const askCloseMarker = /\[ask-close (\d+)\]/.exec(lastUserText);
 		if (parsed.data.stream === true && (lastUserText.includes("[work]") || lastUserText.includes("[think]"))) {

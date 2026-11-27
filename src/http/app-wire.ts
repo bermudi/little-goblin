@@ -74,6 +74,13 @@ export interface AppProjectList {
 	projects: AppProject[];
 }
 
+export interface AppNoteCreate {
+	title: string;
+	body?: string | undefined;
+	projectId?: string | null | undefined;
+	conversation?: string | undefined;
+}
+
 export interface AppNote {
 	botId?: string | null;
 	id: string;

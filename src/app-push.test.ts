@@ -231,6 +231,7 @@ describe("app push owner", () => {
 		const child = store.resolveAgentChild(
 			parent,
 			"general",
+			"task",
 			{ model: "fake/parent", thinking: "low" },
 			"2026-11-24T00:00:00.000Z",
 		);

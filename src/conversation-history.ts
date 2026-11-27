@@ -50,6 +50,7 @@ export function makeConversationHistory(
 	queries: Pick<
 		ConversationQueries,
 		| "qHistory"
+		| "qToolHistory"
 		| "qHistoryCausal"
 		| "qEventBySeq"
 		| "qHistorySlim"
@@ -65,6 +66,7 @@ export function makeConversationHistory(
 ) {
 	const {
 		qHistory,
+		qToolHistory,
 		qHistoryCausal,
 		qEventBySeq,
 		qHistorySlim,
@@ -140,6 +142,10 @@ export function makeConversationHistory(
 
 	function historyEntries(id: string) {
 		return historyDetail(id).map((e) => ({ seq: e.seq, message: e.message }));
+	}
+
+	function toolHistoryEntries(id: string) {
+		return detailFromRows(id, qToolHistory.all(id)).map((e) => ({ seq: e.seq, message: e.message }));
 	}
 
 	type RawRow = {
@@ -334,6 +340,7 @@ export function makeConversationHistory(
 		eventContext,
 		history,
 		historyEntries,
+		toolHistoryEntries,
 		historyDetail,
 		historySlim,
 		historyData,

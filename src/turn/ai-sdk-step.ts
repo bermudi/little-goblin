@@ -11,6 +11,7 @@ export interface ModelStep {
 	inputModalities?: Set<string>;
 	carries?(mediaType: string, position: MediaPosition): boolean;
 	keepProviderExecuted?: boolean;
+	toolsInInput?: boolean;
 	contextWindow?: number;
 	uncapped?: boolean;
 	maxRetries?: number;

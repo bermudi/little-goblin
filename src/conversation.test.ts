@@ -783,6 +783,19 @@ describe("compaction pointers", () => {
 		expect(store.modelEntries(c.id)).toEqual(store.historyEntries(c.id));
 		store.close();
 	});
+
+	test("toolHistoryEntries reads only assistant replies that carry a tool stamp", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const stamp = { type: "data-tools", data: { added: [], removed: ["old"] } };
+		store.append(c.id, [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: '{"type":"data-tools"}' }] },
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "plain" }] },
+			{ id: "a2", role: "assistant", parts: [stamp, { type: "text", text: "stamped" }] },
+		] as unknown as Message[]);
+		expect(store.toolHistoryEntries(c.id).map((entry) => entry.message.id)).toEqual(["a2"]);
+		store.close();
+	});
 });
 
 // Spin-off: the fork copies the DM's model view — events verbatim, only

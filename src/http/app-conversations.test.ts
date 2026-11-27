@@ -1615,6 +1615,43 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("delete takes the conversation's subagents with it and leaves other chats", async () => {
+		const stopped: string[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			agents: {
+				stop: (id) => {
+					stopped.push(id);
+					return { error: `no agent child ${id}` };
+				},
+			},
+		});
+		try {
+			for (const id of ["chat-01", "chat-02"]) {
+				await call("/api/app/conversations", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ id }),
+				});
+			}
+			const defaults = { model: "a/b", thinking: "low" as const };
+			const child = store.resolveAgentChild(store.get("app/chat-01")!, "general", "child task", defaults, "2026-11-26T00:00:00.000Z");
+			const grandchild = store.resolveAgentChild(child, "general", "grandchild task", defaults, "2026-11-26T00:01:00.000Z");
+			const other = store.resolveAgentChild(store.get("app/chat-02")!, "general", "other task", defaults, "2026-11-26T00:02:00.000Z");
+
+			const res = await call("/api/app/conversations/chat-01", { method: "DELETE" });
+			expect(res.status).toBe(200);
+			expect(store.get("app/chat-01")).toBeNull();
+			expect(store.get(child.id)).toBeNull();
+			expect(store.get(grandchild.id)).toBeNull();
+			expect(store.get("app/chat-02")).not.toBeNull();
+			expect(store.get(other.id)?.parentId).toBe("app/chat-02");
+			expect(stopped.sort()).toEqual([child.id, grandchild.id].sort());
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("deleting a conversation that anchors a legacy responsibility answers 409 and keeps it", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

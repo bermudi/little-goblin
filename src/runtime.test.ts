@@ -16,7 +16,6 @@ import type { Message, MessageChunk } from "./message.ts";
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
 import { listCalls, newestTurnCall, openCacheObservation } from "./cache-observation.ts";
-import { observedModel } from "./agent/providers.ts";
 import type { Config } from "./config-schema.ts";
 import { openNotes } from "./notes.ts";
 import { noteTool } from "./agent/tools/note.ts";
@@ -67,6 +66,10 @@ import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { openWindowCapture } from "./window-capture.ts";
 import { makeStepBuilder } from "./agent/step.ts";
+import { loadAgentTypes } from "./agent-types.ts";
+import { withAgent } from "./agent/tools/agent.ts";
+import type { AgentChildren } from "./agent-children.ts";
+import { observedModel } from "./agent/providers.ts";
 import { _resetModelsDevForTest } from "./agent/models-dev.ts";
 import { prefixInstruction } from "./agent/compaction.ts";
 import { sdkScript } from "./testkit/turn-script-sdk.ts";
@@ -5063,6 +5066,300 @@ test("moving an app chat keeps its request prefix and tool definitions byte-iden
 		await waitUntil(() => !runtime.busy(conv.id), "third turn drains");
 		expect(systemTexts[2]?.includes(`## project — ${project.name}`)).toBe(true);
 		expect(systemTexts[2]?.includes("Ship the thing.")).toBe(true);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("Codex tool-set changes append after the cached conversation input", async () => {
+	useHome("goblin-codex-tool-change-");
+	const typeDir = paths.agentTypes();
+	mkdirSync(typeDir, { recursive: true });
+	const typeFile = join(typeDir, "researcher.md");
+	writeFileSync(typeFile, "---\ndescription: Original researcher.\n---\nResearch.");
+	const store = openStore(tmpDb("goblin-codex-tool-change-"));
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+	);
+	const observation = openCacheObservation(store.db);
+	const base = script.step();
+	if (base.engine !== "ai-sdk") throw new Error("expected ai-sdk step");
+	const model = observedModel(base.model, { conversation: conv.id, observation });
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => ({ ...base, model, toolsInInput: true }),
+	});
+	runtime.mount({
+		makeTools: (target) =>
+			withAgent(
+				{},
+				{
+					engine: {} as AgentChildren,
+					types: loadAgentTypes(typeDir),
+					conversation: target,
+					intrinsicTools: [],
+				},
+			),
+	});
+	try {
+		const first = submit({ store, conv, runtime }, "first question");
+		expect(await first.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "first Codex tool-change turn drains");
+		const firstRequest = JSON.parse(script.callOptions()[0]!) as {
+			prompt: Array<{ role: string; content: unknown; providerOptions?: unknown }>;
+			tools: Array<{
+				name: string;
+				description?: string;
+				providerOptions?: { openai?: { omitFromRequestTools?: boolean } };
+			}>;
+		};
+		expect(JSON.stringify(firstRequest.prompt)).toContain("GOBLIN_ADDITIONAL_TOOLS:");
+		writeFileSync(typeFile, "---\ndescription: Updated researcher with new scope.\n---\nResearch.");
+		const second = submit({ store, conv, runtime }, "second question");
+		expect(await second.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "second Codex tool-change turn drains");
+		const secondRequest = JSON.parse(script.callOptions()[1]!) as {
+			prompt: Array<{ role: string; content: unknown; providerOptions?: unknown }>;
+			tools: Array<{
+				name: string;
+				description?: string;
+				providerOptions?: { openai?: { omitFromRequestTools?: boolean } };
+			}>;
+		};
+		expect(JSON.stringify(secondRequest.prompt.slice(0, firstRequest.prompt.length))).toBe(
+			JSON.stringify(firstRequest.prompt),
+		);
+		expect(JSON.stringify(secondRequest.prompt.slice(firstRequest.prompt.length))).toContain("first reply");
+		const appended = JSON.stringify(secondRequest.prompt.slice(firstRequest.prompt.length));
+		expect(appended).toContain("This is an incremental tools update.");
+		expect(appended).toContain("Updated researcher with new scope.");
+		expect(secondRequest.tools.find((tool) => tool.name === "agent")?.providerOptions?.openai?.omitFromRequestTools).toBe(true);
+		const calls = store.db
+			.query<{ head_hash: string; prefix_relation: string | null }, []>(
+				"SELECT head_hash, prefix_relation FROM model_cache_calls ORDER BY started_ms, rowid",
+			)
+			.all();
+		expect(calls).toHaveLength(2);
+		expect(calls[1]!.head_hash).toBe(calls[0]!.head_hash);
+		expect(calls[1]!.prefix_relation).toBe("append");
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("Codex tool removal plus addition appends notices without rewriting old input", async () => {
+	const store = openStore(tmpDb("goblin-codex-removal-addition-"));
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+	);
+	const previousTools: Tools = {
+		old_tool: defineTool({ description: "old tool", input: z.object({}), execute: () => "old" }),
+	};
+	const nextTools: Tools = {
+		new_tool: defineTool({ description: "new tool", input: z.object({}), execute: () => "new" }),
+	};
+	let mountedTools = previousTools;
+	const observation = openCacheObservation(store.db);
+	const base = script.step();
+	if (base.engine !== "ai-sdk") throw new Error("expected ai-sdk step");
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => ({
+			...base,
+			model: observedModel(base.model, { conversation: conv.id, observation }),
+			toolsInInput: true,
+		}),
+	});
+	runtime.mount({ makeTools: () => mountedTools });
+	try {
+		const first = submit({ store, conv, runtime }, "first question");
+		expect(await first.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "first removal/addition turn drains");
+		const firstPrompt = (JSON.parse(script.callOptions()[0]!) as { prompt: Array<{ role?: string; content?: unknown }> }).prompt;
+		mountedTools = nextTools;
+		const second = submit({ store, conv, runtime }, "second question");
+		expect(await second.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "second removal/addition turn drains");
+		const secondRequest = JSON.parse(script.callOptions()[1]!) as {
+			prompt: Array<{ role?: string; content?: unknown }>;
+			tools: Array<{ name: string; providerOptions?: { openai?: { omitFromRequestTools?: boolean } } }>;
+		};
+		expect(JSON.stringify(secondRequest.prompt.slice(0, firstPrompt.length))).toBe(JSON.stringify(firstPrompt));
+		const tail = secondRequest.prompt.slice(firstPrompt.length);
+		expect(JSON.stringify(tail)).toContain("The following tools are no longer available. Do not call them:\\n- old_tool");
+		const addedMarker = tail.find((message) =>
+			typeof message.content === "string" && message.content.includes("GOBLIN_ADDITIONAL_TOOLS:"),
+		);
+		expect(addedMarker?.content).toContain('"name":"new_tool"');
+		expect(secondRequest.tools.find((tool) => tool.name === "new_tool")?.providerOptions?.openai?.omitFromRequestTools).toBe(true);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("a Codex chat that starts with no function tools appends its first tool", async () => {
+	const store = openStore(tmpDb("goblin-codex-empty-baseline-"));
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "third reply" }] },
+	);
+	const searchTools: Tools = {
+		search: defineTool({ description: "local search", input: z.object({ q: z.string() }), execute: () => "hit" }),
+	};
+	let mountedTools: Tools = {};
+	const base = script.step();
+	if (base.engine !== "ai-sdk") throw new Error("expected ai-sdk step");
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => ({ ...base, toolsInInput: true }),
+	});
+	runtime.mount({ makeTools: () => mountedTools });
+	const promptOf = (index: number) =>
+		(JSON.parse(script.callOptions()[index]!) as { prompt: Array<{ role?: string; content?: unknown }> }).prompt;
+	try {
+		for (const [index, question] of ["first question", "second question"].entries()) {
+			const turn = submit({ store, conv, runtime }, question);
+			expect(await turn.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), `empty-baseline turn ${index + 1} drains`);
+		}
+		const secondPrompt = promptOf(1);
+		expect(JSON.stringify(secondPrompt.slice(0, promptOf(0).length))).toBe(JSON.stringify(promptOf(0)));
+		mountedTools = searchTools;
+		const third = submit({ store, conv, runtime }, "third question");
+		expect(await third.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "empty-baseline turn 3 drains");
+		const thirdPrompt = promptOf(2);
+		expect(JSON.stringify(thirdPrompt.slice(0, secondPrompt.length))).toBe(JSON.stringify(secondPrompt));
+		expect(JSON.stringify(thirdPrompt.slice(secondPrompt.length))).toContain('\\"name\\":\\"search\\"');
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("Codex adoption declares stored tools at the head and the next call appends", async () => {
+	const store = openStore(tmpDb("goblin-codex-adoption-"));
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	store.append(conv.id, [
+		userMessage([{ type: "text", text: "old question" }]),
+		{ id: "old-answer", role: "assistant", parts: [{ type: "text", text: "old answer" }] },
+	]);
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+	);
+	const toolSet: Tools = {
+		probe: defineTool({ description: "stable probe", input: z.object({}), execute: () => "ok" }),
+	};
+	const base = script.step();
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => ({ ...base, toolsInInput: true }),
+	});
+	runtime.mount({ makeTools: () => toolSet });
+	try {
+		const first = submit({ store, conv, runtime }, "adopted conversation question");
+		expect(await first.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "adoption turn drains");
+		const firstPrompt = (JSON.parse(script.callOptions()[0]!) as { prompt: Array<{ role: string; content: unknown }> }).prompt;
+		const headMarker = firstPrompt.find((message) =>
+			typeof message.content === "string" && message.content.includes("GOBLIN_ADDITIONAL_TOOLS:"),
+		);
+		expect(headMarker?.content).toContain("GOBLIN_ADDITIONAL_TOOLS:");
+		expect(headMarker?.content).toContain('"name":"probe"');
+		const second = submit({ store, conv, runtime }, "next question");
+		expect(await second.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "post-adoption turn drains");
+		const secondPrompt = (JSON.parse(script.callOptions()[1]!) as { prompt: unknown[] }).prompt;
+		expect(JSON.stringify(secondPrompt.slice(0, firstPrompt.length))).toBe(JSON.stringify(firstPrompt));
+		expect(JSON.stringify(secondPrompt.slice(firstPrompt.length))).toContain("first reply");
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("openai-compatible tool edits still change the head and resend the full list", async () => {
+	useHome("goblin-compatible-tool-change-");
+	const typeDir = paths.agentTypes();
+	mkdirSync(typeDir, { recursive: true });
+	const typeFile = join(typeDir, "researcher.md");
+	writeFileSync(typeFile, "---\ndescription: Original researcher.\n---\nResearch.");
+	const store = openStore(tmpDb("goblin-compatible-tool-change-"));
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "first reply" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "second reply" }] },
+	);
+	const observation = openCacheObservation(store.db);
+	const base = script.step();
+	if (base.engine !== "ai-sdk") throw new Error("expected ai-sdk step");
+	const runtime = new Runtime({
+		engines: script.engines,
+		store,
+		buildStep: () => ({
+			...base,
+			model: observedModel(base.model, { conversation: conv.id, observation }),
+			toolsInInput: false,
+		}),
+	});
+	runtime.mount({
+		makeTools: (target) =>
+			withAgent(
+				{},
+				{
+					engine: {} as AgentChildren,
+					types: loadAgentTypes(typeDir),
+					conversation: target,
+					intrinsicTools: [],
+				},
+			),
+	});
+	try {
+		const first = submit({ store, conv, runtime }, "first question");
+		expect(await first.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "first compatible turn drains");
+		writeFileSync(typeFile, "---\ndescription: Updated researcher.\n---\nResearch.");
+		const second = submit({ store, conv, runtime }, "second question");
+		expect(await second.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "second compatible turn drains");
+		const firstRequest = JSON.parse(script.callOptions()[0]!) as {
+			prompt: Array<{ content: unknown }>;
+			tools: Array<{ name: string; description?: string }>;
+		};
+		const secondRequest = JSON.parse(script.callOptions()[1]!) as {
+			prompt: Array<{ content: unknown }>;
+			tools: Array<{ name: string; description?: string }>;
+		};
+		expect(JSON.stringify(secondRequest.prompt)).not.toContain("GOBLIN_ADDITIONAL_TOOLS:");
+		expect(firstRequest.tools.find((tool) => tool.name === "agent")?.description).not.toBe(
+			secondRequest.tools.find((tool) => tool.name === "agent")?.description,
+		);
+		const hashes = store.db
+			.query<{ head_hash: string }, []>(
+				"SELECT head_hash FROM model_cache_calls ORDER BY started_ms, rowid",
+			)
+			.all();
+		expect(hashes).toHaveLength(2);
+		expect(hashes[0]!.head_hash).not.toBe(hashes[1]!.head_hash);
 	} finally {
 		await runtime.shutdown();
 		store.close();

@@ -14,7 +14,7 @@ import type {
 } from "../message.ts";
 import type { PromptMessage, ToolContent } from "../prompt-message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
-import { toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
+import { omitFunctionToolsFromRequest, toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import { isContentFilter, isContextOverflow } from "../agent/provider-errors.ts";
 import { fromSdkError } from "../agent/sdk-errors.ts";
@@ -361,6 +361,7 @@ export interface StreamStep {
 	contextWindow?: number;
 	uncapped?: boolean;
 	maxRetries?: number;
+	toolsInInput?: boolean;
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -405,7 +406,9 @@ export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,
 ): Promise<StreamOutcome> {
 	const { convId, head, members, live, state } = deps;
-	const sdkTools = toToolSet(deps.tools);
+	const baseTools = toToolSet(deps.tools);
+	const sdkTools =
+		deps.step.toolsInInput === true ? omitFunctionToolsFromRequest(baseTools) : baseTools;
 	const modelLabel = stepModelRef(deps.step);
 	const recorder = openAttemptRecorder(deps, modelLabel, (chunk) =>
 		emitChunk(convId, members, live, chunk),
@@ -433,6 +436,7 @@ export async function driveStream<M extends WireMember>(
 		if (arm !== null) throw new PreemptSignal(arm, stepNumber);
 	};
 	const result = streamText({
+		allowSystemInMessages: deps.step.toolsInInput === true,
 		tools: sdkTools,
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,

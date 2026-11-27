@@ -141,6 +141,7 @@ export interface ConversationReads {
 	// append stamps (the app's fold-mark placement).
 	history(id: string): Message[];
 	historyEntries(id: string): { seq: number; message: Message }[];
+	toolHistoryEntries(id: string): { seq: number; message: Message }[];
 	historyDetail(id: string): {
 		seq: number;
 		anchorSeq: number | null;

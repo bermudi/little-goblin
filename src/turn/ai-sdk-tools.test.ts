@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { defineTool } from "../tool.ts";
-import { persistableToolSet, restoreToolSet, ToolExecuteError, toToolSet } from "./ai-sdk-tools.ts";
+import {
+	omitFunctionToolsFromRequest,
+	persistableToolSet,
+	restoreToolSet,
+	ToolExecuteError,
+	toolSetDeclarations,
+	toToolSet,
+} from "./ai-sdk-tools.ts";
+import { declarationsOf } from "../agent/tool-declarations.ts";
 
 describe("toToolSet", () => {
 	test("preserves function tool names, descriptions, order, and execution context", async () => {
@@ -101,6 +109,22 @@ describe("toToolSet", () => {
 		});
 	});
 
+	test("omits only function tools from the request and preserves their options", () => {
+		const tools = toToolSet({
+			local: defineTool({
+				description: "local",
+				input: z.object({}),
+				execute: () => "ok",
+			}),
+			web_search: { hosted: "codex.web_search", args: { externalWebAccess: true } },
+		});
+		const omitted = omitFunctionToolsFromRequest(tools);
+		expect(omitted.local?.providerOptions?.openai).toMatchObject({
+			omitFromRequestTools: true,
+		});
+		expect(omitted.web_search).toBe(tools.web_search);
+	});
+
 	test("hosted search survives the persisted tool-set round trip", async () => {
 		const persisted = await persistableToolSet({
 			web_search: { hosted: "codex.web_search", args: { externalWebAccess: false } },
@@ -121,5 +145,29 @@ describe("ToolExecuteError", () => {
 
 		expect(error.message).toBe("fetch failed — parallel: timed out");
 		expect(error.cause).toBe(cause);
+	});
+});
+
+describe("toolSetDeclarations", () => {
+	test("matches the turn's declarations for live and restored tool sets", async () => {
+		const tools = {
+			zod: defineTool({
+				description: "Zod input.",
+				input: z.object({ path: z.string(), limit: z.number().optional() }),
+				execute: () => "unused",
+			}),
+			raw: defineTool({
+				description: "Raw JSON schema input.",
+				input: z.object({ q: z.string() }),
+				jsonSchema: { type: "object", properties: { q: { type: "string", description: "query" } }, required: ["q"] },
+				execute: () => "unused",
+			}),
+			web_search: { hosted: "codex.web_search", args: { externalWebAccess: false } },
+		} as const;
+		const expected = JSON.stringify(declarationsOf(tools));
+		expect(JSON.stringify(await toolSetDeclarations(toToolSet(tools)))).toBe(expected);
+		const persisted = await persistableToolSet(tools);
+		if ("unpersistable" in persisted) throw new Error(`${persisted.unpersistable} was unpersistable`);
+		expect(JSON.stringify(await toolSetDeclarations(restoreToolSet(JSON.parse(persisted.json))))).toBe(expected);
 	});
 });

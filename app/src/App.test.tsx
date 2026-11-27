@@ -1374,7 +1374,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
-	test("the subagent fold opens and its header links back to its parent", async () => {
+	test("subagents stay out of the chat list and their header links back to the parent", async () => {
 		seedConversation();
 		conversations.push({
 			...conversations[0]!,
@@ -1386,16 +1386,30 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		const parent = container.querySelector(".conv-main[href='/app/c/fixture']");
 		expect(parent).not.toBeNull();
 		expect(container.querySelector(".home-kids")).toBeNull();
+		expect(container.querySelector(".conv-main[href='/app/c/child']")).toBeNull();
 		await click(parent);
 		await settle();
-		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
-		const child = container.querySelector(".home-kids .conv-main[href='/app/c/child']");
-		expect(child).not.toBeNull();
 		await browserGoesTo("/app/c/child");
 		const parentLink = container.querySelector("main > header .header-parent");
 		expect(parentLink?.textContent).toContain("fixture chat");
 		await click(parentLink);
 		expect(win.location.pathname).toBe("/app/c/fixture");
+	});
+
+	test("an archived subagent stays off the Archive page and its count", async () => {
+		seedConversation();
+		conversations[0]!.archivedAt = "2026-11-25T00:00:00Z";
+		conversations.push({
+			...conversations[0]!,
+			id: "app/child",
+			title: "child chat",
+			parentId: "app/fixture",
+		});
+		await mount();
+		expect(container.querySelector(".rail-archived .count")?.textContent).toBe("1");
+		await click(container.querySelector(".rail-archived"));
+		expect(container.querySelector(".archive-table a[href='/app/c/fixture']")).not.toBeNull();
+		expect(container.querySelector(".archive-table a[href='/app/c/child']")).toBeNull();
 	});
 
 	test("Back to Settings closes thread sources and Forward does not reopen them", async () => {
@@ -3320,8 +3334,11 @@ describe("app projects surface", () => {
 		expect(hasMoveItem()).toBe(true);
 
 		await click(container.querySelector(".title-trigger"));
-		await click(container.querySelector(".home-kids button[aria-expanded='false']"));
-		await click(container.querySelector('.conv-main[href="/app/c/child"]'));
+		win.history.replaceState(null, "", "/app/c/child");
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
 		expect(hasMoveItem()).toBe(false);
 
 		win.history.replaceState(null, "", "/app/c/bound");

@@ -45,6 +45,7 @@ export function setup(
 		approvals?: AppChannelDeps["approvals"];
 		programOps?: AppChannelDeps["programOps"];
 		push?: AppChannelDeps["push"];
+		agents?: AppChannelDeps["agents"];
 		liveTickMs?: number;
 		liveSweepMs?: number;
 		model?: LanguageModel;
@@ -159,6 +160,7 @@ export function setup(
 		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
 		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
 		...(opts.push !== undefined ? { push: opts.push } : {}),
+		...(opts.agents !== undefined ? { agents: opts.agents } : {}),
 	};
 	const appDeps = appDepsBase as AppChannelDeps;
 	appDeps.live = openAppLive(appDepsBase, {

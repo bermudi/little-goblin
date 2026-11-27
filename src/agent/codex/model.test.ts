@@ -12,15 +12,18 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV4Prompt, LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { generateText, stepCountIs, tool } from "ai";
+import { generateText, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
+import { defineTool } from "../../tool.ts";
 import { isTransientTurnFailure, quotaExhausted } from "../provider-errors.ts";
 import { fromSdkError } from "../sdk-errors.ts";
 import type { FetchLike } from "./auth.ts";
-import { codexModel, RESPONSES_URL } from "./model.ts";
+import { codexModel, RESPONSES_URL, rewriteAdditionalToolsRequestBody } from "./model.ts";
 import { quotaFromMetadata } from "./receipts.ts";
 import { codexSessionId } from "./session.ts";
+import { declarationsOf } from "../tool-declarations.ts";
+import { ADDITIONAL_TOOLS_PREFIX } from "../tool-declarations.ts";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
 const jwt = (exp: number) => `${b64({ alg: "none" })}.${b64({ exp })}.sig`;
@@ -176,6 +179,152 @@ describe("codexModel — request headers", () => {
 // ---------- T2 body ----------
 
 describe("codexModel — request body", () => {
+	test("request bodies without a tool marker pass through as the same string", () => {
+		const body = `{"input":[{"type":"input_image","image_url":"data:image/png;base64,${"a".repeat(1_000_000)}"}]}`;
+		expect(rewriteAdditionalToolsRequestBody(body)).toBe(body);
+	});
+
+	test("in-input markers stay ordered; ordinary system content remains instructions", async () => {
+		const declaration = {
+			type: "function",
+			name: "echo",
+			description: "Echo a value",
+			parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+			strict: false,
+		};
+		const backend = fakeBackend([() => sse([created, ...textItem("msg_1", "ok"), completed()])]);
+		await generateText({
+			model: codexModel("gpt-6-luna", authFile(), backend.fetch, {}),
+			system: "stable system",
+			messages: [
+				{
+					role: "system",
+					content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([declaration])}`,
+					providerOptions: { codex: { inInput: true } },
+				},
+				{
+					role: "system",
+					content: "The following tools are no longer available. Do not call them:\n- old_tool",
+					providerOptions: { codex: { inInput: true } },
+				},
+				{ role: "user", content: "hi" },
+			],
+			tools: {
+				echo: tool({
+					description: "Echo a value",
+					inputSchema: z.object({ value: z.string() }),
+					providerOptions: { openai: { omitFromRequestTools: true } },
+					execute: async ({ value }) => value,
+				}),
+			},
+			allowSystemInMessages: true,
+			maxRetries: 0,
+		});
+		const body = backend.sent[0]!.body;
+		expect(body.tools).toEqual([]);
+		expect(body.instructions).toBe("stable system");
+		const input = inputOf(backend.sent[0]!);
+		expect(input[0]).toEqual({
+			type: "additional_tools",
+			role: "developer",
+			tools: [declaration],
+		});
+		expect(input[1]).toMatchObject({
+			role: "developer",
+			content: "The following tools are no longer available. Do not call them:\n- old_tool",
+		});
+		expect(input[2]).toMatchObject({ role: "user" });
+	});
+
+	test("turn two keeps the prior Codex input and appends a tool update", async () => {
+		const initial = {
+			type: "function",
+			name: "old_probe",
+			description: "old",
+			parameters: { type: "object", properties: {}, additionalProperties: false },
+			strict: false,
+		};
+		const changed = { ...initial, description: "updated" };
+		const added = { ...initial, name: "new_probe", description: "new" };
+		const backend = fakeBackend([
+			() => sse([created, ...textItem("msg_1", "first reply"), completed()]),
+			() => sse([created, ...textItem("msg_2", "second reply"), completed()]),
+		]);
+		const model = codexModel("gpt-6-luna", authFile(), backend.fetch, {});
+		const first = await generateText({
+			model,
+			messages: [
+				{
+					role: "system",
+					content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([initial])}`,
+					providerOptions: { codex: { inInput: true } },
+				},
+				{ role: "user", content: "first question" },
+			],
+			allowSystemInMessages: true,
+			maxRetries: 0,
+		});
+		const firstInput = inputOf(backend.sent[0]!);
+		const firstReply = first.response.messages;
+		await generateText({
+			model,
+			messages: [
+				{
+					role: "system",
+					content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([initial])}`,
+					providerOptions: { codex: { inInput: true } },
+				},
+				{ role: "user", content: "first question" },
+				...firstReply,
+				{ role: "user", content: "second question" },
+				{
+					role: "system",
+					content:
+						"This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.",
+					providerOptions: { codex: { inInput: true } },
+				},
+				{
+					role: "system",
+					content: `${ADDITIONAL_TOOLS_PREFIX}${JSON.stringify([changed, added])}`,
+					providerOptions: { codex: { inInput: true } },
+				},
+			],
+			allowSystemInMessages: true,
+			maxRetries: 0,
+		});
+		const secondBody = backend.sent[1]!.body;
+		const secondInput = inputOf(backend.sent[1]!);
+		expect(JSON.stringify(secondInput.slice(0, firstInput.length))).toBe(JSON.stringify(firstInput));
+		const tail = secondInput.slice(firstInput.length);
+		expect(tail.at(-1)).toEqual({ type: "additional_tools", role: "developer", tools: [changed, added] });
+		expect(tail.some((item) => item.role === "developer" && JSON.stringify(item).includes("incremental tools update"))).toBe(true);
+		expect(Array.isArray(secondBody.tools) ? secondBody.tools : []).toEqual([]);
+	});
+
+	test("declarationsOf matches the exact top-level function tool body", async () => {
+		const goblinTool = defineTool({
+			description: "Echo a value",
+			input: z.object({ value: z.string() }),
+			execute: ({ value }) => value,
+		});
+		const backend = fakeBackend([() => sse([created, ...textItem("msg_1", "ok"), completed()])]);
+		await generateText({
+			model: codexModel("gpt-6-luna", authFile(), backend.fetch, {}),
+			prompt: "hi",
+			tools: {
+				echo: tool({
+					description: goblinTool.description,
+					inputSchema: goblinTool.input,
+					execute: async ({ value }) => value,
+				}),
+			},
+			maxRetries: 0,
+		});
+		const sent = backend.sent[0]!.body.tools as Array<Record<string, unknown>>;
+		expect(sent).toHaveLength(1);
+		expect(JSON.stringify(declarationsOf({ echo: goblinTool }))).toBe(JSON.stringify(sent));
+	});
+
 	test("system → instructions; store false; cipher include; cache key; effort from the codex namespace; stream", async () => {
 		const backend = fakeBackend([() => sse([created, ...textItem("msg_1", "ok"), completed()])]);
 		const model = codexModel("gpt-6-luna", authFile(), backend.fetch, { sessionId: "sess-9" });

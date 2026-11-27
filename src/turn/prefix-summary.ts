@@ -7,6 +7,8 @@ import type { ConversationStore } from "../conversation.ts";
 import type { MemoryTurnDeps } from "../memory/mod.ts";
 import type { Message } from "../message.ts";
 import type { PromptMessage } from "../prompt-message.ts";
+import { omitFunctionToolsFromRequest, toolSetDeclarations } from "./ai-sdk-tools.ts";
+import { diffDeclarations, foldDeclarations, storedToolChanges } from "../agent/tool-declarations.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
 import { fromSdkError } from "../agent/sdk-errors.ts";
@@ -30,6 +32,7 @@ export interface PrefixStep {
 	inputModalities: Set<string> | undefined;
 	carries(mediaType: string, position: MediaPosition): boolean;
 	keepProviderExecuted: boolean;
+	toolsInInput?: boolean;
 }
 
 export function makePrefixSummarizer(input: {
@@ -110,6 +113,7 @@ function makePrefixRequest(
 	}) => void,
 ): PrefixSummarizer {
 	const { conv, step, store, tools } = input;
+	const requestTools = step.toolsInInput === true ? omitFunctionToolsFromRequest(sdkTools) : sdkTools;
 	const hydratedModelOutputTools = new Set(input.hydratedModelOutputTools ?? []);
 	const view: ViewContext = {
 		convId: conv.id,
@@ -119,7 +123,13 @@ function makePrefixRequest(
 		modalities: step.inputModalities,
 		carries: step.carries,
 		keepProviderExecuted: step.keepProviderExecuted,
+		toolsInInput: step.toolsInInput === true,
 		skillRef: resolveSkillRef,
+	};
+	const withPendingTools = async (toolHistory: { message: Message }[]): Promise<ViewContext> => {
+		if (view.toolsInInput !== true) return view;
+		const stored = foldDeclarations(storedToolChanges(toolHistory, conv.id).map(({ change }) => change));
+		return { ...view, pendingToolChange: diffDeclarations(stored, await toolSetDeclarations(tools)) };
 	};
 	const prior =
 		input.memory === undefined || conv.memoryExcluded
@@ -130,6 +140,9 @@ function makePrefixRequest(
 			input.assertAuthority();
 			const ceiling = input.foldCeiling();
 			const entries = store.modelEntries(conv.id).filter(
+				(entry) => ceiling === null || entry.seq < ceiling,
+			);
+			const toolHistory = store.toolHistoryEntries(conv.id).filter(
 				(entry) => ceiling === null || entry.seq < ceiling,
 			);
 			if (hydratedModelOutputTools.size > 0) {
@@ -152,8 +165,9 @@ function makePrefixRequest(
 					}
 				}
 			}
-			await buildModelView(view, {
+			await buildModelView(await withPendingTools(toolHistory), {
 				entries,
+				toolHistory,
 				prior,
 				current: null,
 				partial: null,
@@ -180,6 +194,20 @@ function makePrefixRequest(
 				entries = entries.filter((entry) => entry.seq < cut.seq);
 				partial = { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) };
 			}
+			const fullToolHistory = store.toolHistoryEntries(conv.id);
+			let toolHistory = fullToolHistory.filter(
+				(entry) => ceiling === null || entry.seq < ceiling,
+			);
+			if (cut !== undefined) {
+				toolHistory = toolHistory.flatMap((entry) => {
+					if (entry.seq < cut.seq) return [entry];
+					if (entry.seq > cut.seq) return [];
+					const cutEntry = fullToolHistory.find((item) => item.seq === cut.seq);
+					return cutEntry === undefined
+						? []
+						: [{ ...cutEntry, message: { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) } }];
+				});
+			}
 			if (hydratedModelOutputTools.size > 0) {
 				for (const entry of [...entries, ...(partial === null ? [] : [{ message: partial }])]) {
 					for (const part of entry.message.parts) {
@@ -200,8 +228,9 @@ function makePrefixRequest(
 					}
 				}
 			}
-			const messages = await buildModelView(view, {
+			const messages = await buildModelView(await withPendingTools(toolHistory), {
 				entries,
+				toolHistory,
 				prior,
 				current: null,
 				partial,
@@ -214,9 +243,10 @@ function makePrefixRequest(
 				...turns.map((turn): PromptMessage => ({ role: turn.role, content: turn.text })),
 			];
 			const result = await generateText({
+				allowSystemInMessages: step.toolsInInput === true,
 				model: step.model,
 				instructions: step.system,
-				tools: sdkTools,
+				tools: requestTools,
 				messages: requestMessages,
 				...(step.providerOptions !== undefined ? { providerOptions: step.providerOptions } : {}),
 				...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),

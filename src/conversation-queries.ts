@@ -149,6 +149,12 @@ export function prepareConversationQueries(db: Database) {
 	>(
 		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? ORDER BY seq",
 	);
+	const qToolHistory = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
+		[string]
+	>(
+		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? AND role = 'assistant' AND instr(data, '\"type\":\"data-tools\"') > 0 ORDER BY seq",
+	);
 	const qHistoryCausal = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
 		[string, number]
@@ -376,9 +382,9 @@ export function prepareConversationQueries(db: Database) {
 	// exchanges are never operator exchanges. Same epoch high-water rule
 	// as qInsertConv.
 	const qInsertAgentConv = db.query(
-		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at, epoch,
+		`INSERT INTO conversations (id, chat_id, thread_id, title, title_implicit, cwd, created_at, epoch,
 			 parent_conversation_id, agent_type, memory_excluded)
-			VALUES (?, 0, NULL, NULL, ?, ?,
+			VALUES (?, 0, NULL, ?, 1, ?, ?,
 				COALESCE((SELECT epoch + 1 FROM conversation_epoch_hwm WHERE conversation_id = ?1), 0),
 				?, ?, 1)`,
 	);
@@ -451,6 +457,7 @@ export function prepareConversationQueries(db: Database) {
 		qSelectPrevious,
 		qLastActivity,
 		qHistory,
+		qToolHistory,
 		qHistoryCausal,
 		qEventBySeq,
 		qHistorySlim,

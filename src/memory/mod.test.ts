@@ -402,6 +402,23 @@ describe("attachment transcripts in retention text", () => {
 		);
 	});
 
+	test("a stored tool declaration does not change memory text", () => {
+		const withoutTools: Message = {
+			id: "a-tools",
+			role: "assistant",
+			parts: [{ type: "text", text: "The task is complete." }],
+		};
+		const withTools: Message = {
+			...withoutTools,
+			parts: [
+				{ type: "data-tools", data: { added: [], removed: ["old_tool"] } },
+				...withoutTools.parts,
+			],
+		} as unknown as Message;
+		expect(messageText(withTools)).toBe(messageText(withoutTools));
+		expect(messageText(withTools)).toBe("The task is complete.");
+	});
+
 	test("transcript-less attachments stay out — no text, no speech", () => {
 		const photo: Message = {
 			id: "u10",

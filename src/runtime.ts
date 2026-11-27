@@ -10,6 +10,14 @@ import { resolveSkillRef } from "./agent/skill-inject.ts";
 import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
+import {
+	TOOLS_PART,
+	declarationsOf,
+	diffDeclarations,
+	foldDeclarations,
+	storedToolChanges,
+	type ToolChange,
+} from "./agent/tool-declarations.ts";
 import { PendingInputs, type PendingInput, type PendingInputMode } from "./pending-input.ts";
 import { type Bump, runFence } from "./fence.ts";
 import { log } from "./log.ts";
@@ -177,6 +185,8 @@ interface AttemptView {
 	claudeRec: ClaudeSessionRecord | null;
 	sentSeqMax: number | null;
 	foldedSeqs: Set<number>;
+	pendingToolChange: ToolChange | null;
+	toolStamp: ToolChange | null;
 }
 
 type CompletedStream = Extract<StreamOutcome, { kind: "ok" }>;
@@ -1155,8 +1165,13 @@ export class Runtime {
 			modalities: step.inputModalities,
 			carries: step.carries ?? (() => true),
 			keepProviderExecuted: !isClaudeStep(step) && step.keepProviderExecuted === true,
+			toolsInInput: !isClaudeStep(step) && step.toolsInInput === true,
 			skillRef: resolveSkillRef,
 		};
+		const toolHistory = this.deps.store.toolHistoryEntries(convId);
+		const changes = storedToolChanges(toolHistory, convId).map(({ change }) => change);
+		const pendingToolChange = diffDeclarations(foldDeclarations(changes), declarationsOf(tools));
+		ctx.pendingToolChange = pendingToolChange;
 		const claudeRec =
 			isClaudeStep(step) && this.deps.claudeSessions !== undefined
 				? this.deps.claudeSessions.get(convId, step.label)
@@ -1169,6 +1184,7 @@ export class Runtime {
 			viewEntries.length === 0 ? null : Math.max(...viewEntries.map((e) => e.seq));
 		const options: ViewOptions = {
 			entries: viewEntries,
+			toolHistory,
 			prior: a.progress.memory.prior,
 			current: a.progress.memory.current,
 			partial: a.recovery?.partial ?? null,
@@ -1177,7 +1193,16 @@ export class Runtime {
 			assertAuthority: a.checkAuthority,
 		};
 		const messages = await buildModelView(ctx, options);
-		return { ctx, options, messages, claudeRec, sentSeqMax, foldedSeqs: new Set<number>() };
+		return {
+			ctx,
+			options,
+			messages,
+			claudeRec,
+			sentSeqMax,
+			foldedSeqs: new Set<number>(),
+			pendingToolChange,
+			toolStamp: pendingToolChange ?? (changes.length === 0 ? { added: [], removed: [] } : null),
+		};
 	}
 
 	private claudeSessionPlan(a: Attempt, step: TurnStep, view: AttemptView) {
@@ -1316,7 +1341,16 @@ export class Runtime {
 			steerMark: outcome.steerMark,
 			ownedInputSeqs: a.ownedInputSeqs,
 			admissionExchangeExcluded: a.admissionExchangeExcluded,
-			responseMessage: outcome.responseMessage,
+			responseMessage:
+				outcome.responseMessage !== null && view.toolStamp !== null
+					? {
+							...outcome.responseMessage,
+							parts: [
+								{ type: TOOLS_PART, data: view.toolStamp },
+								...outcome.responseMessage.parts,
+							],
+						}
+					: outcome.responseMessage,
 			finishReason: outcome.finishReason,
 			usage: outcome.usage,
 			lastStepInputTokens: outcome.lastStepInputTokens,

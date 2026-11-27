@@ -3367,10 +3367,186 @@ describe("steering", () => {
 					.map((c) => c.text!),
 			);
 		expect(texts).toEqual(["start this", "actually pivot"]);
+		const third = submit(r, "continue");
+		expect(await third.done).toEqual({ kind: "completed" });
+		await drain(r);
+		const [lastRequest, nextRequest] = (s as ReturnType<typeof sdkScript>)
+			.callOptions()
+			.slice(1)
+			.map((options) => JSON.parse(options) as { prompt: unknown[] });
+		expect(JSON.stringify(nextRequest!.prompt.slice(0, lastRequest!.prompt.length))).toBe(
+			JSON.stringify(lastRequest!.prompt),
+		);
 		const detail = r.store.historyDetail(r.conv.id);
-		expect(detail.map((d) => d.message.role)).toEqual(["user", "user", "assistant"]);
+		expect(detail.map((d) => d.message.role)).toEqual([
+			"user",
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		expect(detail[2]!.message.parts.filter((part) => part.type === "step-start")).toHaveLength(2);
 		expect(detail[2]!.anchorSeq).toBe(detail[1]!.seq);
 		r.store.close();
+	});
+
+	test("toolsInInput steer replay keeps the old request prefix across a tool-description edit", async () => {
+		const gate = deferred<void>();
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }] },
+			{ kind: "reply", parts: [{ type: "text", text: "adjusted" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "continued" }] },
+		);
+		let description = "probe v1";
+		const r = rig({
+			script,
+			step: { toolsInInput: true },
+			makeTools: () => ({
+				probe: defineTool({
+					description,
+					input: z.object({}),
+					execute: async () => {
+						await gate.promise;
+						return "ok";
+					},
+				}),
+			}),
+		});
+		try {
+			const first = submit(r, "start");
+			await first.firstToolCall;
+			const steer = submit(r, "pivot");
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steer.done).toEqual({ kind: "completed" });
+			description = "probe v2";
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const prompts = script.callOptions().map(
+				(options) => (JSON.parse(options) as { prompt: unknown[] }).prompt,
+			);
+			expect(JSON.stringify(prompts[2]!.slice(0, prompts[1]!.length))).toBe(
+				JSON.stringify(prompts[1]),
+			);
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a context note keeps the previous turn's last request as the next prefix", async () => {
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }] },
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+		);
+		const r = rig({
+			script,
+			step: { contextWindow: 256_000 },
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({}),
+					execute: async () => "ok",
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "start");
+			expect(await first.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const requests = script.callOptions().map(
+				(options) => JSON.parse(options) as { prompt: unknown[] },
+			);
+			const last = requests[1]!.prompt;
+			expect(JSON.stringify(requests[2]!.prompt.slice(0, last.length))).toBe(JSON.stringify(last));
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a loop warning keeps the previous turn's last request as the next prefix", async () => {
+		const script = sdkScript();
+		script.script(
+			...Array.from({ length: 10 }, () => ({
+				kind: "reply" as const,
+				parts: [{ type: "tool-call" as const, toolName: "probe", input: {} }],
+			})),
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+		);
+		const r = rig({
+			script,
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({}),
+					execute: async () => "same result",
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "spin");
+			expect(await first.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const requests = script.callOptions().map(
+				(options) => JSON.parse(options) as { prompt: unknown[] },
+			);
+			const last = requests[10]!.prompt;
+			expect(JSON.stringify(requests[11]!.prompt.slice(0, last.length))).toBe(JSON.stringify(last));
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a loop cut nudge keeps the previous turn's last request as the next prefix", async () => {
+		const script = sdkScript();
+		script.script(
+			...Array.from({ length: 20 }, () => ({
+				kind: "reply" as const,
+				parts: [{ type: "tool-call" as const, toolName: "probe", input: {} }],
+			})),
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+		);
+		const r = rig({
+			script,
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({}),
+					execute: async () => "same result",
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "spin");
+			expect(await first.done).toEqual({ kind: "completed", forced: "repeat" });
+			await drain(r);
+			const next = submit(r, "continue");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const requests = script.callOptions().map(
+				(options) => JSON.parse(options) as { prompt: unknown[] },
+			);
+			const last = requests[20]!.prompt;
+			expect(JSON.stringify(requests[21]!.prompt.slice(0, last.length))).toBe(JSON.stringify(last));
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
 	});
 
 	test("a steer parked mid-step skips unlaunched tool calls — the next model call sees it", async () => {
@@ -4283,7 +4459,7 @@ describe("prefix compaction request identity", () => {
 		let executions = 0;
 		let providerCalls = 0;
 		const validSummary =
-			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nfirst request; restart prior; second request\n## Exact identifiers";
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nfirst request; restart prior; second request; restart large seed\n## Exact identifiers";
 		const encoder = new TextEncoder();
 		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 			const url = String(input);
@@ -4329,7 +4505,7 @@ describe("prefix compaction request identity", () => {
 			const content =
 				providerCalls === 1
 					? "first assistant reply ".repeat(6_500)
-					: providerCalls === 11
+					: providerCalls === 12
 						? "epoch mismatch seed reply ".repeat(6_500)
 					: providerCalls === 7
 						? "restart prior assistant reply ".repeat(1_000)
@@ -4536,16 +4712,7 @@ describe("prefix compaction request identity", () => {
 			if (!Array.isArray(turnMessages) || !Array.isArray(flushMessages) || !Array.isArray(compactMessages)) {
 				throw new Error("fake provider captured malformed messages");
 			}
-			const persistedTurnMessages = turnMessages.filter(
-				(message) =>
-					!(
-						typeof message === "object" &&
-						message !== null &&
-						(message as { role?: unknown }).role === "user" &&
-						typeof (message as { content?: unknown }).content === "string" &&
-						/^\[context: .*]$/.test((message as { content: string }).content)
-					),
-			);
+			const persistedTurnMessages = turnMessages;
 			expect(flushMessages.slice(0, persistedTurnMessages.length)).toEqual(persistedTurnMessages);
 			const flushAppended = flushMessages.slice(persistedTurnMessages.length);
 			expect(flushAppended).toHaveLength(2);
@@ -4619,7 +4786,7 @@ describe("prefix compaction request identity", () => {
 			} finally {
 				setLogFile(null);
 			}
-			expect(providerCalls).toBe(10);
+			expect(providerCalls).toBe(11);
 			const hydratedLog = readFileSync(join(home, "state/goblin.log"), "utf8");
 			expect(hydratedLog).toContain('"msg":"last-turn tools hydrated"');
 			expect(hydratedLog).toContain('"mode":"prefix","reason":null');
@@ -4634,16 +4801,7 @@ describe("prefix compaction request identity", () => {
 			if (!Array.isArray(restartTurnMessages) || !Array.isArray(restartSummaryMessages)) {
 				throw new Error("fake provider captured malformed restart messages");
 			}
-			const persistedRestartTurnMessages = restartTurnMessages.filter(
-				(message) =>
-					!(
-						typeof message === "object" &&
-						message !== null &&
-						(message as { role?: unknown }).role === "user" &&
-						typeof (message as { content?: unknown }).content === "string" &&
-						/^\[context: .*]$/.test((message as { content: string }).content)
-					),
-			);
+			const persistedRestartTurnMessages = restartTurnMessages;
 			expect(restartSummaryMessages.slice(0, persistedRestartTurnMessages.length)).toEqual(
 				persistedRestartTurnMessages,
 			);

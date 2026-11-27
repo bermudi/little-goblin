@@ -14,6 +14,7 @@ import type {
 } from "../message.ts";
 import type { PromptMessage, ToolContent } from "../prompt-message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
+import type { TurnInsert } from "../agent/turn-inserts.ts";
 import { omitFunctionToolsFromRequest, toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import { isContentFilter, isContextOverflow } from "../agent/provider-errors.ts";
@@ -424,9 +425,29 @@ export async function driveStream<M extends WireMember>(
 		errorHeld: false,
 		partialResponse: null as Message | null,
 		responseMessage: null as Message | null,
+		inserts: [] as TurnInsert[],
 	};
 	const rules = deps.rules;
 	const steers = recorder.steers;
+	const noteInserts = (
+		stepNumber: number,
+		warnMsgs: PromptMessage[],
+		members: M[],
+		contextNote: PromptMessage[],
+		nudge: PromptMessage[],
+	): void => {
+		const items: TurnInsert["items"] = [
+			...warnMsgs.map((message) => ({ kind: "text" as const, text: message.content as string })),
+			...members.flatMap((member) =>
+				member.seq === null ? [] : [{ kind: "steer" as const, seq: member.seq }],
+			),
+			...contextNote.map((message) => ({ kind: "text" as const, text: message.content as string })),
+			...nudge.map((message) => ({ kind: "text" as const, text: message.content as string })),
+		];
+		if (items.length === 0) return;
+		const priorStarts = deps.partial?.parts.filter((part) => part.type === "step-start").length ?? 0;
+		attempt.inserts.push({ step: priorStarts + stepNumber, items });
+	};
 	const notePrompt = (messages: readonly PromptMessage[], stepNumber: number) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
 		attempt.lastPromptChars = segments;
@@ -508,6 +529,7 @@ export async function driveStream<M extends WireMember>(
 					forced || warnMsgs.length > 0 || contextNote.length > 0
 						? [...base, ...warnMsgs, ...contextNote, ...nudge]
 						: base;
+				noteInserts(stepNumber, warnMsgs, [], contextNote, nudge);
 				notePrompt(outbound, stepNumber);
 				return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 			}
@@ -516,6 +538,7 @@ export async function driveStream<M extends WireMember>(
 			if (injected.length === 0) {
 				if (forced || warnMsgs.length > 0 || contextNote.length > 0 || base !== stepMessages) {
 					const outbound = [...base, ...warnMsgs, ...contextNote, ...nudge];
+					noteInserts(stepNumber, warnMsgs, [], contextNote, nudge);
 					notePrompt(outbound, stepNumber);
 					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 				}
@@ -523,6 +546,7 @@ export async function driveStream<M extends WireMember>(
 				return undefined;
 			}
 			const outbound = [...base, ...warnMsgs, ...injected, ...contextNote, ...nudge];
+			noteInserts(stepNumber, warnMsgs, batch.members, contextNote, nudge);
 			notePrompt(outbound, stepNumber);
 			return {
 				messages: outbound,
@@ -749,5 +773,6 @@ export async function driveStream<M extends WireMember>(
 		usage,
 		finishReason,
 		window: windowCapture(),
+		inserts: attempt.inserts,
 	});
 }

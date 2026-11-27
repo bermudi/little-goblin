@@ -9,6 +9,7 @@ import type { SkillWatch } from "./skill-attribution.ts";
 import { replyMetadata } from "./reply-metadata.ts";
 import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
 import type { PromptSegments } from "./itemize.ts";
+import type { TurnInsert } from "../agent/turn-inserts.ts";
 import type { StepRules } from "./step-rules.ts";
 import {
 	noteToolError,
@@ -49,6 +50,7 @@ export type StreamOutcome =
 			window: WindowCapture | null;
 			model: string;
 			steps: number;
+			inserts: TurnInsert[];
 			claudeSession?: { sessionId: string; headUuid: string } | undefined;
 	  }
 	| {
@@ -137,6 +139,7 @@ export interface AttemptRecorder {
 		usage: Usage | null;
 		finishReason: FinishReason | null;
 		window: WindowCapture | null;
+		inserts?: TurnInsert[];
 		claudeSession?: { sessionId: string; headUuid: string };
 	}): StreamOutcome;
 	resetForRetry(): void;
@@ -344,6 +347,7 @@ export function openAttemptRecorder(
 				window: stepCount === 0 ? null : input.window,
 				model: label,
 				steps: stepCount,
+				inserts: input.inserts ?? [],
 				...(input.claudeSession ? { claudeSession: input.claudeSession } : {}),
 			};
 		},

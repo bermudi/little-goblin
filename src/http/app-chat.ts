@@ -29,6 +29,7 @@ import {
 import { appConversationSink } from "./app-sse.ts";
 import type { AppRollResponse, AppTtsResponse } from "./app-wire.ts";
 import { TOOLS_PART } from "../agent/tool-declarations.ts";
+import { INSERTS_PART } from "../agent/turn-inserts.ts";
 
 const conversationIdSchema = z
 	.string()
@@ -60,11 +61,11 @@ const chatBody = z
 							// is persisted, then fails every later turn at
 							// standardizePrompt — the poison-pill shape the
 							// boundary must refuse before persistence.
-							if (p.type === TOOLS_PART) {
+							if (p.type === TOOLS_PART || p.type === INSERTS_PART) {
 								ctx.addIssue({
 									code: "custom",
 									path: [i, "type"],
-									message: "tool declarations are written by goblin, not the client",
+									message: "this data part is written by goblin, not the client",
 								});
 								continue;
 							}

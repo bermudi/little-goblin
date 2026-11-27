@@ -10,10 +10,12 @@ import { promptText, serializePrompt } from "../agent/claude-code/prompt.ts";
 import { summaryMessage } from "../conversation-events.ts";
 import {
 	ADDITIONAL_TOOLS_PREFIX,
+	INCREMENTAL_TOOLS_NOTICE,
 	TOOLS_PART,
 	type ToolChange,
 	type ToolDeclaration,
 } from "../agent/tool-declarations.ts";
+import { INSERTS_PART } from "../agent/turn-inserts.ts";
 import { setLogFile } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
 import {
@@ -86,6 +88,158 @@ const build = async (
 	});
 
 describe("the model view", () => {
+	test("splitting a two-step assistant reply preserves conversion and drops its data-only head", async () => {
+		const reply = {
+			id: "a-split",
+			role: "assistant",
+			parts: [
+				{ type: "step-start" },
+				{ type: "text", text: "first step" },
+				{ type: "step-start" },
+				{ type: "text", text: "second step" },
+			],
+		} as unknown as Message;
+		const expected = await convertToModelMessages([reply], {
+			tools: {},
+			ignoreIncompleteToolCalls: true,
+		});
+		expect(await build(entries([reply]))).toEqual(expected);
+
+		const changedReply = {
+			...reply,
+			parts: [
+				{
+					type: TOOLS_PART,
+					data: { added: [declaration("new-tool")], removed: [] },
+				},
+				{
+					type: INSERTS_PART,
+					data: {
+						inserts: [{
+							step: 1,
+							items: [{ kind: "text", text: "[context: 20k token limit]" }],
+						}],
+					},
+				},
+				...reply.parts,
+			],
+		} as unknown as Message;
+		const changed = await build(
+			entries([user("u1", "start"), changedReply]),
+			[],
+			null,
+			null,
+			null,
+			{ toolsInInput: true },
+		);
+		expect(changed.filter(
+			(message) =>
+				message.role === "system" &&
+				typeof message.content === "string" &&
+				message.content.includes(INCREMENTAL_TOOLS_NOTICE),
+		)).toHaveLength(0);
+		expect(changed.map((message) => message.role)).toEqual([
+			"system",
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		expect(texts(changed)).toContain("[context: 20k token limit]");
+		expect(texts(changed).filter((text) => text.startsWith(ADDITIONAL_TOOLS_PREFIX))).toHaveLength(1);
+	});
+
+	test("a split reply applies its stored incremental tool change once", async () => {
+		const initialChange = { added: [declaration("old-tool")], removed: [] };
+		const nextChange = { added: [declaration("new-tool")], removed: [] };
+		const reply = {
+			id: "a2",
+			role: "assistant",
+			parts: [
+				{ type: TOOLS_PART, data: nextChange },
+				{
+					type: INSERTS_PART,
+					data: {
+						inserts: [{
+							step: 1,
+							items: [{ kind: "text", text: "[context: 10k token limit]" }],
+						}],
+					},
+				},
+				{ type: "step-start" },
+				{ type: "text", text: "first" },
+				{ type: "step-start" },
+				{ type: "text", text: "second" },
+			],
+		} as unknown as Message;
+		const view = await build(
+			entries([
+				user("u1", "start"),
+				{ id: "a1", role: "assistant", parts: [toolStamp(initialChange), { type: "text", text: "old reply" }] } as Message,
+				user("u2", "next"),
+				reply,
+			]),
+			[],
+			null,
+			null,
+			null,
+			{ toolsInInput: true },
+		);
+		expect(view.filter(
+			(message) =>
+				message.role === "system" &&
+				typeof message.content === "string" &&
+				message.content === INCREMENTAL_TOOLS_NOTICE,
+		)).toHaveLength(1);
+	});
+
+	test("replays recorded mid-turn inserts at their step boundary without merging", async () => {
+		const reply = {
+			id: "a1",
+			role: "assistant",
+			parts: [
+				{ type: "text", text: "before" },
+				{ type: "step-start" },
+				{ type: "text", text: "between" },
+				{ type: "step-start" },
+				{ type: "text", text: "after" },
+				{
+					type: INSERTS_PART,
+					data: {
+						inserts: [{
+							step: 1,
+							items: [
+								{ kind: "text", text: "[context: 100k token limit]" },
+								{ kind: "steer", seq: 3 },
+							],
+						}],
+					},
+				},
+			],
+		} as unknown as Message;
+		const view = await build([
+			{ seq: 1, message: user("u1", "start") },
+			{ seq: 2, message: reply },
+			{ seq: 3, message: user("u2", "steer") },
+		]);
+		expect(view.map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+			"assistant",
+			"user",
+			"user",
+			"assistant",
+		]);
+		expect(texts(view)).toEqual([
+			"start",
+			"before",
+			"between",
+			"[context: 100k token limit]",
+			"steer",
+			"after",
+		]);
+	});
+
 	test("recall blocks interleave before their anchored user and fuse with it", async () => {
 		const view = await build(
 			entries([user("u1", "i like quiet"), asst("a1", "noted"), user("u2", "and dark mode")]),
@@ -108,6 +262,18 @@ describe("the model view", () => {
 		);
 		expect(view.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
 		expect(texts(view)).toEqual(["2+2?", "answer", "2+5?"]);
+	});
+
+	test("old history without insert records keeps its exact model prompt", async () => {
+		expect(await build(entries([
+			user("u1", "old question"),
+			asst("a1", "old answer"),
+			user("u2", "next"),
+		]))).toEqual([
+			{ role: "user", content: [{ type: "text", text: "old question" }] },
+			{ role: "assistant", content: [{ type: "text", text: "old answer" }] },
+			{ role: "user", content: [{ type: "text", text: "next" }] },
+		]);
 	});
 
 	test("a resume's partial rides last, as the in-progress assistant message", async () => {

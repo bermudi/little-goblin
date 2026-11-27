@@ -507,6 +507,218 @@ describe("context note across turns", () => {
 		}
 	});
 });
+
+describe("compacted turn inserts", () => {
+	type CapturedMessage = { role: string; content?: unknown };
+	const capturedPrompt = (script: ScriptedModel, index: number): CapturedMessage[] => {
+		return JSON.parse(scriptedPrompt(script, index)) as CapturedMessage[];
+	};
+	const messageTexts = (message: CapturedMessage): string[] =>
+		typeof message.content === "string"
+			? [message.content]
+			: Array.isArray(message.content)
+				? message.content.flatMap((part) => {
+						if (typeof part !== "object" || part === null || !("text" in part)) return [];
+						const text = (part as { text?: unknown }).text;
+						return typeof text === "string" ? [text] : [];
+					})
+				: [];
+	const promptTexts = (prompt: CapturedMessage[]): string[] => prompt.flatMap(messageTexts);
+
+	test("a dangling steer does not move the compaction summary and the prompt stays prefix-stable", async () => {
+		const script = sdkScript();
+		const gate = deferred<void>();
+		const started = deferred<void>();
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "c1" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "c2" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: `final ${"f".repeat(300)}` }] },
+			{ kind: "reply", parts: [{ type: "text", text: `later ${"l".repeat(500)}` }] },
+			{ kind: "reply", parts: [{ type: "text", text: "after compaction reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "next after compaction reply" }] },
+		);
+		const r = rig({
+			script,
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 2000,
+					summarize: async (_conv, _system, prompt) => foldSummary("folded past", prompt),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) {
+							started.resolve();
+							await gate.promise;
+						}
+						return { n };
+					},
+				}),
+			},
+		});
+		const logFile = join(tmpDir("goblin-rt-dangling-insert-"), "goblin.log");
+		setLogFile(logFile);
+		try {
+			const first = submit(r, `head ${"h".repeat(1000)}`);
+			await started.promise;
+			const steerA = submit(r, `pivotA ${"a".repeat(1000)}`);
+			const steerB = submit(r, "pivotB");
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steerA.done).toEqual({ kind: "completed" });
+			expect(await steerB.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const later = submit(r, `later question ${"q".repeat(500)}`);
+			expect(await later.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+			expect(r.store.getCompaction(r.conv.id)).toMatchObject({ boundarySeq: 2, split: null });
+
+			const postOne = submit(r, "after compaction");
+			expect(await postOne.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const firstViewWarnings = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as Record<string, unknown>)
+				.filter((line) => line.msg === "steer insert target missing from model view");
+			expect(firstViewWarnings).toHaveLength(1);
+			expect(firstViewWarnings[0]).toMatchObject({ seq: 2 });
+			const postTwo = submit(r, "after compaction again");
+			expect(await postTwo.done).toEqual({ kind: "completed" });
+			await drain(r);
+
+			const postOnePrompt = capturedPrompt(script, 4);
+			const postTwoPrompt = capturedPrompt(script, 5);
+			expect(postOnePrompt[1]!.role).toBe("user");
+			expect(messageTexts(postOnePrompt[1]!).join("\n")).toContain("history compacted");
+			expect(messageTexts(postOnePrompt[1]!).join("\n")).toContain("folded past");
+			expect(promptTexts(postOnePrompt).filter((text) => text === "pivotB")).toHaveLength(1);
+			expect(promptTexts(postOnePrompt)).not.toContain("head " + "h".repeat(1000));
+			expect(promptTexts(postOnePrompt)).not.toContain("pivotA " + "a".repeat(1000));
+			expect(postOnePrompt.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"tool",
+				"user",
+				"assistant",
+				"tool",
+				"assistant",
+				"user",
+				"assistant",
+				"user",
+			]);
+			expect(messageTexts(postOnePrompt[4]!).filter((text) => text === "pivotB")).toHaveLength(1);
+			const toolCallIds = postOnePrompt.flatMap((message) =>
+				Array.isArray(message.content)
+					? message.content.flatMap((part) => {
+							if (typeof part !== "object" || part === null || !("type" in part)) return [];
+							const record = part as { type?: unknown; toolCallId?: unknown };
+							return record.type === "tool-call" && typeof record.toolCallId === "string"
+								? [record.toolCallId]
+								: [];
+						})
+					: [],
+			);
+			expect(toolCallIds).toEqual(["c1", "c2"]);
+			expect(JSON.stringify(postTwoPrompt.slice(0, postOnePrompt.length))).toBe(
+				JSON.stringify(postOnePrompt),
+			);
+		} finally {
+			setLogFile(null);
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a split compaction keeps two later requests prefix-stable without replaying a steer", async () => {
+		const script = sdkScript();
+		const gate = deferred<void>();
+		const started = deferred<void>();
+		script.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 1 }, toolCallId: "c1" }],
+			},
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: { n: 2 }, toolCallId: "c2" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "steered final" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "after compaction reply" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "second after reply" }] },
+		);
+		const r = rig({
+			script,
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => foldSummary("folded past", prompt),
+				},
+			},
+			tools: {
+				probe: defineTool({
+					description: "probe",
+					input: z.object({ n: z.number() }),
+					execute: async ({ n }) => {
+						if (n === 1) {
+							started.resolve();
+							await gate.promise;
+						}
+						return {
+							n,
+							...(n === 1 ? { big: "x".repeat(4000) } : { small: "kept suffix tool" }),
+						};
+					},
+				}),
+			},
+		});
+		try {
+			const first = submit(r, "head");
+			await started.promise;
+			const steer = submit(r, "pivot");
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steer.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect((await r.runtime.compact(r.conv)).kind).toBe("compacted");
+			expect(r.store.getCompaction(r.conv.id)).toMatchObject({
+				boundarySeq: 2,
+				split: { seq: 3, part: 4 },
+			});
+			const postOne = submit(r, "after compaction");
+			expect(await postOne.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const postTwo = submit(r, "after compaction again");
+			expect(await postTwo.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const postOnePrompt = capturedPrompt(script, 3);
+			const postTwoPrompt = capturedPrompt(script, 4);
+			expect(JSON.stringify(postTwoPrompt.slice(0, postOnePrompt.length))).toBe(
+				JSON.stringify(postOnePrompt),
+			);
+			expect(promptTexts(postOnePrompt)).not.toContain("pivot");
+			expect(promptTexts(postTwoPrompt)).not.toContain("pivot");
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+});
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);
 

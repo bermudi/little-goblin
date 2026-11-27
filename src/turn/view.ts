@@ -35,6 +35,7 @@ import {
 	type TurnInsert,
 	type TurnInsertItem,
 } from "../agent/turn-inserts.ts";
+import { compactionSummaryId } from "../tags.ts";
 
 export interface ViewContext {
 	convId: string;
@@ -222,10 +223,16 @@ export async function buildModelView(
 			insert.items.flatMap((item) => item.kind === "steer" ? [item.seq] : []),
 		),
 	));
+	const isSummary = (message: Message, seq: number | null): boolean =>
+		seq !== null &&
+		seq === options.summarySeq &&
+		message.id === compactionSummaryId(seq);
 	const visibleBySeq = new Map(
 		baseView.flatMap((message) => {
-			const seq = seqByMessage.get(message);
-			return seq === undefined ? [] : [[seq, message] as const];
+			const seq = seqByMessage.get(message) ?? null;
+			return seq === null || isSummary(message, seq) || message.role !== "user"
+				? []
+				: [[seq, message] as const];
 		}),
 	);
 	const slots: {
@@ -237,7 +244,7 @@ export async function buildModelView(
 	}[] = [];
 	for (const message of baseView) {
 		const seq = seqByMessage.get(message) ?? null;
-		if (seq !== null && replayedSeqs.has(seq) && message.role === "user") continue;
+		if (seq !== null && replayedSeqs.has(seq) && !isSummary(message, seq) && message.role === "user") continue;
 		if (message.role !== "assistant" || !insertsByMessage.has(message.id)) {
 			slots.push({ message, seq, replayed: false });
 			continue;

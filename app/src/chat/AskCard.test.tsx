@@ -143,5 +143,5 @@ test("open ask card follows later assistant text", async () => {
 	const card = container.querySelector(".ask-card");
 	expect(reply).not.toBeNull();
 	expect(card).not.toBeNull();
-	expect(reply!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	expect(reply!.compareDocumentPosition(card!) & win.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

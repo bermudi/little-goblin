@@ -901,7 +901,7 @@ function MessagePartsView({
     if (!isToolUIPart(part)) continue;
     out.push(
       <AskCard
-        key={part.toolCallId === "" ? index : part.toolCallId}
+        key={`ask:${part.toolCallId === "" ? index : part.toolCallId}`}
         part={part}
         onAction={onAction}
         busy={busy === true}

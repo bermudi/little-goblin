@@ -612,6 +612,21 @@ describe("mobile: chats screen and navigation", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
+	test("phone: the chat header groups its tools and hides the width toggle", async () => {
+		const style = win.document.createElement("style");
+		style.textContent = readFileSync(join(import.meta.dir, "styles.css"), "utf8");
+		win.document.head.appendChild(style);
+		win.happyDOM.setWindowSize({ width: 390, height: 800 });
+		await mount();
+		await click(container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]'));
+		const tools = container.querySelector("main > header .header-tools");
+		expect(tools?.querySelector('[aria-label^="Context window"]')).toBeTruthy();
+		expect(tools?.querySelector('[aria-label^="From this thread"]')).toBeTruthy();
+		expect(tools?.querySelector(".goblin-panel-toggle")).toBeTruthy();
+		const wide = tools?.querySelector('[aria-label="Wide column"]');
+		expect(wide === null || wide === undefined || getComputedStyle(wide).display === "none").toBe(true);
+	});
+
 	test.each([
 		"settings",
 		"memory",
@@ -1478,7 +1493,7 @@ describe("mobile: chats screen and navigation", () => {
 		await act(async () => {
 			for (const o of observers) if (o.target === column) o.report(width);
 		});
-		const selector = container.querySelector('main > header [aria-label="Chat width"]');
+		const selector = container.querySelector('main > header [aria-label="Wide column"]');
 		expect(selector).not.toBeNull();
 		expect(getComputedStyle(selector!).display).toBe(display);
 		expect(getComputedStyle(container.querySelector(".chat .composer-bar")!).flexWrap).toBe("wrap");

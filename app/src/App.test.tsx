@@ -5981,7 +5981,6 @@ describe("notes and attention load failures surface (issue #213)", () => {
 	});
 });
 
-// The chat width control — a header toggle that flips the shell column and survives a remount.
 describe("chat width selector", () => {
 	let win: Window;
 	let container: HTMLElement;
@@ -6040,13 +6039,8 @@ describe("chat width selector", () => {
 					}],
 					rolling: { chain: [] },
 				}));
-			if (url.endsWith("/window"))
-				return Promise.resolve(jsonResponse({
-					model: "main/test", capturedAt: "2026-10-22T10:00:00.000Z",
-					capturedModel: "main/test", steps: 1,
-					segments: { identity: 10, environment: 0, project: 0, agentsMd: 0, userMd: 0, skills: 0, toolDefs: 0, history: 20, toolResults: 0 },
-					system: "You are goblin.", tools: [], messages: [], calls: [], toolRuns: [], runs: [], nowMs: Date.parse("2026-10-22T10:00:00.000Z"),
-				}));
+			if (url.endsWith("/window")) return new Promise<Response>(() => {});
+
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
@@ -6153,7 +6147,7 @@ describe("chat width selector", () => {
 		expect(context).not.toBeNull();
 		await act(async () => context?.click());
 		await settle();
-		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Context window");
+		expect(win.location.pathname).toBe("/app/c/fixture/window");
 	});
 
 	test("narrow stays the default on a fresh device", async () => {

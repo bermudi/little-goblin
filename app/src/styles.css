@@ -442,18 +442,6 @@ p code,
 	grid-template-columns: 18px minmax(0, 1fr);
 	column-gap: 6px;
 }
-.conv-head {
-	display: flex;
-	align-items: baseline;
-	min-width: 0;
-	gap: 0.35rem;
-}
-.conv-head .conv-title {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
 .conv-mark {
 	flex: none;
 	align-self: center;
@@ -1043,8 +1031,8 @@ header:has(> .header-title-editor) .header-tools > :not(.goblin-panel-toggle) {
 	color: var(--app-fg);
 }
 .rolling-row .goblin-avatar {
-	width: 22px;
-	height: 22px;
+	width: 28px;
+	height: 28px;
 }
 .rail-project-head,
 .rail-chats-label {

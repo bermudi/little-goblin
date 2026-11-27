@@ -201,6 +201,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const phone = usePhoneWidth();
 	const [headerLayout] = useState(readHeaderLayout);
 	const [columnCramped, setColumnCramped] = useState(false);
+	const observeMain = useCallback(
+		(column: HTMLElement | null) => observeColumnWidth(column, setColumnCramped),
+		[],
+	);
 	const live = useLiveStore();
 	const liveStatus = useLiveStatus();
 	const goblin = useGoblinActivity();
@@ -1096,7 +1100,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				</nav>
 			)}
 			<main
-				ref={(column) => observeColumnWidth(column, setColumnCramped)}
+				ref={observeMain}
 				className={
 					[chatWidth === "wide" ? "chat-wide" : "", chatListMode ? "list-mode" : ""]
 						.filter(Boolean)

@@ -145,6 +145,7 @@ describe("app live feed", () => {
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("HTMLElement", win.HTMLElement);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
+	installGlobal("HTMLButtonElement", win.HTMLButtonElement);
 		installGlobal("HTMLInputElement", win.HTMLInputElement);
 		installGlobal("HTMLSelectElement", win.HTMLSelectElement);
 		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
@@ -465,12 +466,12 @@ describe("app live feed", () => {
 		await click(rows().find((r) => r.getAttribute("href") === "/app/c/one"));
 		await openDesktopPage(container, click, "Notes");
 		const select = container.querySelector<HTMLSelectElement>(
-			'select[aria-label="Filter notes by project"]',
+			'select[aria-label="Filter notes by owner"]',
 		)!;
 		await act(async () => {
 			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
 				select,
-				"loose",
+				"little-goblin",
 			);
 			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
 		});
@@ -496,9 +497,9 @@ describe("app live feed", () => {
 		await waitFor(() => requestsTo("/api/app/notes") > notesGets, "the notes refetch");
 		await waitFor(() => container.textContent!.includes("kept filter"), "the new note row");
 		expect(
-			container.querySelector<HTMLSelectElement>('select[aria-label="Filter notes by project"]')
+			container.querySelector<HTMLSelectElement>('select[aria-label="Filter notes by owner"]')
 				?.value,
-		).toBe("loose");
+		).toBe("little-goblin");
 
 		win.history.replaceState(null, "", "/app/skills");
 		await act(async () => {

@@ -143,6 +143,10 @@ describe("navigation races: late completions", () => {
 			"Range",
 			"Node",
 			"HTMLElement",
+			"HTMLButtonElement",
+			"HTMLInputElement",
+			"HTMLSelectElement",
+			"HTMLTextAreaElement",
 			"HTMLFieldSetElement",
 			"HTMLUnknownElement",
 			"requestAnimationFrame",
@@ -657,13 +661,13 @@ describe("navigation races: late completions", () => {
 		// The index debounces its fetch — wait for the row, not the chrome.
 		await waitFor(
 			() =>
-				[...container.querySelectorAll("button.dt-row")].some((b) =>
+				[...container.querySelectorAll("button.note-list-title")].some((b) =>
 					b.textContent?.includes("Shopping"),
 				),
 			"the notes index row",
 		);
 		await click(
-			[...container.querySelectorAll("button.dt-row")].find((b) =>
+			[...container.querySelectorAll("button.note-list-title")].find((b) =>
 				b.textContent?.includes("Shopping"),
 			),
 		);

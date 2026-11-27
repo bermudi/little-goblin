@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { log } from "../log.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER, type NoteOwner } from "../note-owner.ts";
 import {
 	NOTE_BODY_MAX,
 	type Note,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
+	NoteSelectionError,
 	type NoteStore,
 } from "../notes.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
@@ -49,6 +51,22 @@ const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX) });
 
 const NOTE_LIST_LIMIT = 1000;
 
+const noteOwner = z.union([
+	z.strictObject({ botId: z.literal(LITTLE_GOBLIN_NOTE_OWNER).nullable() }),
+	z.strictObject({ projectId: z.string().min(1) }),
+]);
+
+const noteBatch = z.object({
+	selection: z.array(z.object({ id: z.string().min(1).max(200), stateRev: z.number().int().positive() }))
+		.min(1)
+		.max(NOTE_LIST_LIMIT)
+		.refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length, "Duplicate note"),
+	change: z.discriminatedUnion("action", [
+		z.object({ action: z.literal("move"), owner: noteOwner }),
+		z.object({ action: z.enum(["archive", "restore", "delete"]) }),
+	]),
+});
+
 const noteRewriteBody = z
 	.object({
 		selection: z
@@ -64,6 +82,7 @@ function appNote(n: Note): AppNote {
 	return {
 		id: n.id,
 		projectId: n.projectId,
+		botId: n.botId,
 		title: n.title,
 		body: n.body,
 		rev: n.rev,
@@ -80,6 +99,7 @@ function appNoteSummary(s: ReturnType<NoteStore["list"]>[number]): AppNoteSummar
 	return {
 		id: s.id,
 		projectId: s.projectId,
+		botId: s.botId,
 		title: s.title,
 		rev: s.rev,
 		stateRev: s.stateRev,
@@ -104,6 +124,9 @@ function noteError(err: unknown): Response | null {
 			{ status: 409, headers: { ...NO_STORE, etag: `"${err.note.rev}"` } },
 		);
 	}
+	if (err instanceof NoteSelectionError) {
+		return Response.json({ error: err.message }, { status: 409, headers: NO_STORE });
+	}
 	if (err instanceof NoteInputError || err instanceof NoteRangeError) {
 		return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
 	}
@@ -121,6 +144,7 @@ function ifMatchRev(req: Request): number | null {
 
 export interface NoteListQuery {
 	project: string;
+	owner?: NoteOwner | undefined;
 	q: string | null;
 	archivedOnly: boolean;
 }
@@ -131,6 +155,7 @@ export function noteListBody(
 ): AppNoteList {
 	const rows = deps.notes.list({
 		project: query.project,
+		owner: query.owner,
 		...(query.q !== null && query.q !== "" ? { q: query.q } : {}),
 		...(query.archivedOnly ? { archived: true } : {}),
 		limit: NOTE_LIST_LIMIT + 1,
@@ -166,7 +191,16 @@ export async function handleNotesRoute(
 						: projectParam;
 			const q = url.searchParams.get("q");
 			const archivedOnly = url.searchParams.get("archived") === "1";
-			const body = noteListBody(deps, { project, q, archivedOnly });
+			const ownerParam = url.searchParams.get("owner");
+			const owner = ownerParam === "global"
+				? { botId: null }
+				: ownerParam === LITTLE_GOBLIN_NOTE_OWNER
+					? { botId: LITTLE_GOBLIN_NOTE_OWNER }
+					: undefined;
+			if (ownerParam !== null && owner === undefined) {
+				return Response.json({ error: "invalid note owner" }, { status: 422, headers: NO_STORE });
+			}
+			const body = noteListBody(deps, { project, owner, q, archivedOnly });
 			if (body.truncated) {
 				log.warn("app note list truncated", {
 					project,
@@ -174,7 +208,7 @@ export async function handleNotesRoute(
 					archived: archivedOnly,
 				});
 			}
-			return project === "all" && q === null && archivedOnly === false
+			return project === "all" && owner === undefined && q === null && archivedOnly === false
 				? versionedJson(body, noteListVersioned(deps))
 				: Response.json(body, { headers: NO_STORE });
 		}
@@ -204,6 +238,32 @@ export async function handleNotesRoute(
 			}
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	if (path === "/api/app/notes/batch") {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = noteBatch.safeParse(json);
+		if (!parsed.success) {
+			return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+		}
+		try {
+			deps.notes.batch(parsed.data.selection, parsed.data.change);
+			return Response.json({ ok: true }, { headers: NO_STORE });
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
+			throw err;
+		}
 	}
 
 	const noteRewriteMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/rewrite$/);

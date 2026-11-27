@@ -2,17 +2,20 @@
 
 ## Sub-features
 
-Create a note, edit its title, list it.
+Create and edit a note. Filter the Notes manager and move, archive, restore,
+or delete a selection.
 
 ## How to get to it (user POV)
 
-Goblin panel → Library → All notes → New note. On a phone, the avatar (`Goblin`) in the chats bar or in a chat's header opens the panel.
+You → Settings → Notes. Little Goblin's Library → All notes also opens
+the manager.
 
 ## Driving it with agent-browser
 
 ```sh
-ab find role tab click --name 'Library'
-ab find role button click --name 'All notes'
+ab find role button click --name 'You'
+ab find role menuitem click --name 'Settings'
+ab find role button click --name 'Notes Move, archive, and restore notes'
 ab find role button click --name 'New note'
 ab fill '[aria-label="Note title"]' 'verify note'
 ab press Tab
@@ -21,6 +24,18 @@ sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select title from notes'
 ```
 
 Proof: the row has the new title and it survives a reload.
+
+Create a second note the same way. Go back to Notes, check both rows,
+choose Move to… → Global → Move, then filter to Global. Both rows should
+show Global. Select both again and archive them. In Archived, restore
+one and confirm permanent deletion of the other. Verify the restored note
+is the only one in Active and check the database:
+
+```sh
+sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select title, bot_id, archived_at from notes'
+```
+
+A Global row has a null `bot_id`. Little Goblin's rows use `little-goblin`.
 
 ## Gotchas
 

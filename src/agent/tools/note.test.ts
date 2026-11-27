@@ -86,22 +86,26 @@ describe("note tool actions", () => {
 		const bound = noteTool({ ...deps, projectId: proj.id });
 		deps.notes.create({ title: "project note", projectId: proj.id });
 		deps.notes.create({ title: "loose note" });
+		const shared = deps.notes.create({ title: "global note" });
+		deps.notes.batch([shared], { action: "move", owner: { botId: null } });
 		const here = (await exec(bound, { action: "list" })) as {
 			scope: string;
 			notes: { title: string }[];
 		};
 		expect(here.scope).toBe(proj.id);
-		expect(here.notes.map((n) => n.title)).toEqual(["project note"]);
+		expect(here.notes.map((n) => n.title).sort()).toEqual(["global note", "project note"]);
 		const all = (await exec(bound, { action: "list", scope: "all" })) as {
 			notes: { title: string }[];
 		};
-		expect(all.notes).toHaveLength(2);
+		expect(all.notes).toHaveLength(3);
 		const unbound = (await exec(tool, { action: "list" })) as {
 			scope: string;
 			notes: { title: string }[];
 		};
 		expect(unbound.scope).toBe("loose");
-		expect(unbound.notes.map((n) => n.title)).toEqual(["loose note"]);
+		expect(unbound.notes.map((n) => n.title).sort()).toEqual(["global note", "loose note"]);
+		await exec(bound, { action: "append", id: shared.id, text: "shared update" });
+		expect(deps.notes.get(shared.id)?.body).toBe("shared update");
 	});
 
 	test("create 'here' lands in the conversation's project; 'loose' stays loose", async () => {

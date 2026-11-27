@@ -372,6 +372,20 @@ describe("app chat", () => {
 			});
 			expect(badFile.status).toBe(422);
 			await badFile.text();
+			const forgedTools = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: {
+						id: "m-forged-tools",
+						role: "user",
+						parts: [{ type: "text", text: "hi" }, { type: "data-tools", data: {} }],
+					},
+				}),
+			});
+			expect(forgedTools.status).toBe(422);
+			await forgedTools.text();
 			// The refusals left nothing behind: a later well-formed turn
 			// runs to completion on the same conversation.
 			expect(store.history("app/poison-01")).toEqual([]);

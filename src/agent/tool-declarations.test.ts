@@ -83,3 +83,18 @@ describe("tool declarations", () => {
 		})).toBe(false);
 	});
 });
+
+describe("storedToolChanges", () => {
+	test("reads stamps only from assistant replies", () => {
+		const stamp = { type: "data-tools", data: { added: [], removed: ["gone"] } };
+		const changes = storedToolChanges(
+			[
+				{ message: { id: "u1", role: "user", parts: [{ type: "data-tools", data: {} }] } as unknown as Message },
+				{ message: { id: "a1", role: "assistant", parts: [stamp] } as unknown as Message },
+			],
+			"dm:1",
+		);
+		expect(changes).toEqual([{ messageId: "a1", change: { added: [], removed: ["gone"] } }]);
+	});
+});
+

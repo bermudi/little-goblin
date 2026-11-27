@@ -142,7 +142,7 @@ function makePrefixRequest(
 			const entries = store.modelEntries(conv.id).filter(
 				(entry) => ceiling === null || entry.seq < ceiling,
 			);
-			const toolHistory = store.historyEntries(conv.id).filter(
+			const toolHistory = store.toolHistoryEntries(conv.id).filter(
 				(entry) => ceiling === null || entry.seq < ceiling,
 			);
 			if (hydratedModelOutputTools.size > 0) {
@@ -194,7 +194,7 @@ function makePrefixRequest(
 				entries = entries.filter((entry) => entry.seq < cut.seq);
 				partial = { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) };
 			}
-			const fullToolHistory = store.historyEntries(conv.id);
+			const fullToolHistory = store.toolHistoryEntries(conv.id);
 			let toolHistory = fullToolHistory.filter(
 				(entry) => ceiling === null || entry.seq < ceiling,
 			);

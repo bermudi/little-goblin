@@ -1167,7 +1167,7 @@ export class Runtime {
 			toolsInInput: !isClaudeStep(step) && step.toolsInInput === true,
 			skillRef: resolveSkillRef,
 		};
-		const toolHistory = this.deps.store.historyEntries(convId);
+		const toolHistory = this.deps.store.toolHistoryEntries(convId);
 		const changes = storedToolChanges(toolHistory, convId).map(({ change }) => change);
 		const pendingToolChange = diffDeclarations(foldDeclarations(changes), declarationsOf(tools));
 		ctx.pendingToolChange = pendingToolChange;

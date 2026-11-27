@@ -46,7 +46,7 @@ export function storedToolChanges(
 	convId: string,
 ): { messageId: string; change: ToolChange }[] {
 	return entries.flatMap(({ message }) =>
-		message.parts.flatMap((part) => {
+		message.role !== "assistant" ? [] : message.parts.flatMap((part) => {
 			if (part.type !== TOOLS_PART) return [];
 			const parsed = toolChangeSchema.safeParse((part as { data?: unknown }).data);
 			if (!parsed.success) {

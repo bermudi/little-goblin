@@ -640,6 +640,63 @@ describe("reasoning origin (#417)", () => {
 		expect(JSON.stringify(view)).toContain("partial thinking");
 	});
 
+	test("partial inserts at and after the step-start count are not replayed", async () => {
+		const partial = {
+			id: "p-inserts",
+			role: "assistant",
+			parts: [
+				{ type: "step-start" },
+				{ type: "text", text: "first partial step" },
+				{ type: "step-start" },
+				{ type: "text", text: "second partial step" },
+				{
+					type: INSERTS_PART,
+					data: {
+						inserts: [
+							{ step: 1, items: [{ kind: "text", text: "insert before cut" }] },
+							{ step: 2, items: [{ kind: "text", text: "insert at cut" }] },
+						],
+					},
+				},
+			],
+		} as unknown as Message;
+		const view = await build(entries([user("u1", "question")]), [], null, partial);
+		expect(texts(view)).toContain("insert before cut");
+		expect(texts(view)).not.toContain("insert at cut");
+	});
+
+	test("a split foreign-model partial keeps reasoning in both slices", async () => {
+		const partial = {
+			id: "p-foreign-inserts",
+			role: "assistant",
+			metadata: { model: "other/model-2" },
+			parts: [
+				{ type: "step-start" },
+				{ type: "reasoning", text: "first partial reasoning" },
+				{ type: "text", text: "first partial answer" },
+				{ type: "step-start" },
+				{ type: "reasoning", text: "second partial reasoning" },
+				{ type: "text", text: "second partial answer" },
+				{
+					type: INSERTS_PART,
+					data: {
+						inserts: [{ step: 1, items: [{ kind: "text", text: "[context: partial insert]" }] }],
+					},
+				},
+			],
+		} as unknown as Message;
+		const view = await build(entries([user("u1", "question")]), [], null, partial);
+		expect(view.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+		expect(texts(view)).toEqual([
+			"question",
+			"first partial reasoning",
+			"first partial answer",
+			"[context: partial insert]",
+			"second partial reasoning",
+			"second partial answer",
+		]);
+	});
+
 	test("a history message sharing the partial's id is still filtered", async () => {
 		const history = asstReasoning("p", "other/model-2", "foreign thinking");
 		const partial = asstReasoning("p", undefined, "partial thinking");

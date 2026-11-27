@@ -216,8 +216,23 @@ export async function buildModelView(
 	const storedChanges = storedToolChanges(options.toolHistory ?? options.entries, ctx.convId);
 	const owned = new Set(options.ownedSeqs ?? []);
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
-	const insertRecords = storedTurnInserts(options.entries, ctx.convId);
-	const insertsByMessage = new Map(insertRecords.map(({ messageId, inserts }) => [messageId, inserts]));
+	const partialStepCount =
+		options.partial?.parts.filter((part) => part.type === "step-start").length ?? 0;
+	const partialInsertRecords =
+		options.partial === null
+			? []
+			: storedTurnInserts([{ message: options.partial }], ctx.convId).flatMap(({ messageId, inserts }) => {
+					const eligible = inserts.filter((insert) => insert.step < partialStepCount);
+					return eligible.length > 0 ? [{ messageId, inserts: eligible }] : [];
+				});
+	const insertRecords = [
+		...storedTurnInserts(options.entries, ctx.convId),
+		...partialInsertRecords,
+	];
+	const insertsByMessage = new Map<string, TurnInsert[]>();
+	for (const { messageId, inserts } of insertRecords) {
+		insertsByMessage.set(messageId, [...(insertsByMessage.get(messageId) ?? []), ...inserts]);
+	}
 	const replayedSeqs = new Set(insertRecords.flatMap(({ inserts }) =>
 		inserts.flatMap((insert) =>
 			insert.items.flatMap((item) => item.kind === "steer" ? [item.seq] : []),
@@ -239,14 +254,16 @@ export async function buildModelView(
 		message: Message;
 		seq: number | null;
 		replayed: boolean;
+		partial?: boolean;
 		directText?: string;
 		dataOnly?: boolean;
 	}[] = [];
 	for (const message of baseView) {
 		const seq = seqByMessage.get(message) ?? null;
+		const isPartial = message === options.partial;
 		if (seq !== null && replayedSeqs.has(seq) && !isSummary(message, seq) && message.role === "user") continue;
 		if (message.role !== "assistant" || !insertsByMessage.has(message.id)) {
-			slots.push({ message, seq, replayed: false });
+			slots.push({ message, seq, replayed: false, partial: isPartial });
 			continue;
 		}
 		const inserts = insertsByMessage.get(message.id)!;
@@ -286,15 +303,23 @@ export async function buildModelView(
 				(part) => part.type !== TOOLS_PART && part.type !== INSERTS_PART,
 			);
 			if (modelParts.length > 0) {
-				slots.push({ message: { ...message, parts }, seq, replayed: false });
+				slots.push({ message: { ...message, parts }, seq, replayed: false, partial: isPartial });
 			} else if (parts.length > 0) {
-				slots.push({ message: { ...message, parts: [] }, seq, replayed: false, dataOnly: true });
+				slots.push({
+					message: { ...message, parts: [] },
+					seq,
+					replayed: false,
+					partial: isPartial,
+					dataOnly: true,
+				});
 			}
 			emitAt(position++);
 			start = i;
 		}
 		const tail = message.parts.slice(start);
-		if (tail.length > 0) slots.push({ message: { ...message, parts: tail }, seq, replayed: false });
+		if (tail.length > 0) {
+			slots.push({ message: { ...message, parts: tail }, seq, replayed: false, partial: isPartial });
+		}
 		emitAt(position);
 	}
 	const view = slots.map(({ message }) => message);
@@ -369,7 +394,7 @@ export async function buildModelView(
 		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
 			ctx,
 			rendered,
-			options.partial !== null && i === prepared.length - 1,
+			slots[i]?.partial === true,
 		);
 		if (foreignReasoning > 0) {
 			foreignReasoningMessages += 1;

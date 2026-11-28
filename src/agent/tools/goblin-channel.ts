@@ -11,6 +11,9 @@ import { log } from "../../log.ts";
 const MAX_REQUEST = 1024 * 1024;
 const MAX_CALLS = 50;
 
+const actionsOf = (action: { enum?: unknown[]; const?: unknown } | undefined): string[] =>
+	(action?.enum ?? (action?.const === undefined ? [] : [action.const])).filter((value): value is string => typeof value === "string");
+
 export type ToolDispatch = (
 	name: string,
 	input: unknown,
@@ -102,17 +105,20 @@ export function commandRuntime(opts: {
 	};
 	const usage = (name: string): string => {
 		const json = zodInputJsonSchema(schemas.get(name)!) as {
-			properties?: Record<string, { type?: string; enum?: unknown[]; description?: string }>;
+			properties?: Record<string, { type?: string; enum?: unknown[]; const?: unknown; description?: string; items?: { type?: string } }>;
 			required?: string[];
 		};
-		const actions = (json.properties?.action?.enum ?? []).filter((value): value is string => typeof value === "string");
+		const actions = actionsOf(json.properties?.action);
 		const hasAction = json.properties?.action !== undefined;
 		const flags = Object.keys(json.properties ?? {}).filter((key) => key !== "action");
 		return `${descriptions.get(name) ?? ""}\n\nUsage: goblin ${name}${hasAction ? " <action>" : ""} [options]\n${actions.length > 0 ? `Actions: ${actions.join(", ")}\n` : ""}${flags.map((key) => {
 			const property = json.properties?.[key];
 			const values = property?.enum?.filter((value): value is string => typeof value === "string");
 			const flag = key.replaceAll("_", "-").replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
-			return `  --${flag}${json.required?.includes(key) ? " (required)" : ""} <${values?.length ? values.join("|") : property?.type ?? "value"}>${property?.description ? ` — ${property.description}` : ""}`;
+			const shape = property?.type === "array"
+				? `<${property.items?.type ?? "value"}> (repeat for more)`
+				: `<${values?.length ? values.join("|") : property?.type ?? "value"}>`;
+			return `  --${flag}${json.required?.includes(key) ? " (required)" : ""} ${shape}${property?.description ? ` — ${property.description}` : ""}`;
 		}).join("\n")}\n`;
 	};
 	const help = (name?: string): Omit<ReplyMessage, "id"> => {
@@ -156,8 +162,12 @@ export function commandRuntime(opts: {
 			if (schema === undefined || tool === undefined || isHosted(tool)) {
 				return respond({ stdout: "", stderr: `goblin: ${name} is not available in this chat\n`, code: 2 });
 			}
-			const schemaJson = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string }> };
+			const schemaJson = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string; enum?: unknown[]; const?: unknown }> };
 			const hasAction = schemaJson.properties?.action !== undefined;
+			if (hasAction && (argv[0] === undefined || argv[0].startsWith("--"))) {
+				const actions = actionsOf(schemaJson.properties?.action).join(", ");
+				return respond({ stdout: "", stderr: `goblin: ${name} needs an action first: goblin ${name} <action> [options]. Actions: ${actions}\n`, code: 2 });
+			}
 			const action = hasAction ? argv.shift() : undefined;
 			const args: Record<string, unknown> = action === undefined ? {} : { action };
 			let invoked = false;
@@ -179,7 +189,12 @@ export function commandRuntime(opts: {
 					);
 					const type = key === undefined ? undefined : properties[key]?.type;
 					if (key === undefined || type === undefined || key === "action") throw new Error(`unknown option ${flag}`);
-					if (raw === "-" && req.stdin !== undefined) args[key] = req.stdin;
+					const value = raw === "-" && req.stdin !== undefined ? req.stdin : raw;
+					if (type === "array") {
+						const list: unknown = value.trimStart().startsWith("[") ? JSON.parse(value) : undefined;
+						const previous = Array.isArray(args[key]) ? args[key] as unknown[] : [];
+						args[key] = Array.isArray(list) ? [...previous, ...list] : [...previous, value];
+					} else if (raw === "-" && req.stdin !== undefined) args[key] = req.stdin;
 					else if (type === "integer" || type === "number") args[key] = Number(raw);
 					else if (type === "boolean") args[key] = raw === "true" ? true : raw === "false" ? false : raw;
 					else args[key] = raw;

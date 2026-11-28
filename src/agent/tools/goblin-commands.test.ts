@@ -234,6 +234,16 @@ describe("assembled Goblin commands at the bash boundary", () => {
 				speak: { text: "Hello" },
 				post: { conversationId: conv.id, text: "A short update" },
 			});
+			const repeated = await run("goblin mail send --to alex@example.com --to '[\"sam@example.com\"]' --subject Late --body 'I will be late.'");
+			expect(repeated.exit_code, String(repeated.output)).toBe(0);
+			expect(received.mail).toMatchObject({ to: ["alex@example.com", "sam@example.com"], subject: "Late" });
+			const noAction = await run("goblin mail --to alex@example.com --body Late");
+			expect(noAction.exit_code).toBe(2);
+			expect(String(noAction.output)).toContain("mail needs an action first");
+			expect(String(noAction.output)).toContain("Actions: send");
+			const mailHelp = String((await run("goblin mail --help")).output);
+			expect(mailHelp).toContain("Actions: send");
+			expect(mailHelp).toContain("--to <string> (repeat for more)");
 			const created = notes.list({ project: "loose" }).find((note) => note.title === "CLI");
 			expect(created).toBeDefined();
 			expect(notes.get(created!.id)?.body).toBe("from-command");

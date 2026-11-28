@@ -82,21 +82,12 @@ function recordSkillWrites(
 	writes: SkillWrites,
 	toolCallId: string,
 ): void {
-	const moved = new Set<string>();
-	for (const [key, fingerprint] of after) {
-		const [index, name] = key.split("/", 2);
-		if (index !== "0" || name === undefined) continue;
-		if (
-			!before.has(`0/${name}`) &&
-			before.get(`1/${name}`) === fingerprint &&
-			!after.has(`1/${name}`)
-		) moved.add(name);
-	}
 	const names = new Set<string>();
 	for (const [key, fingerprint] of after) {
-		if (before.get(key) === fingerprint) continue;
-		const name = key.slice(key.indexOf("/") + 1);
-		if (!moved.has(name)) names.add(name);
+		const previous = before.get(key);
+		if (previous === fingerprint) continue;
+		if (previous === undefined && key.startsWith("0/")) continue;
+		names.add(key.slice(key.indexOf("/") + 1));
 	}
 	for (const name of names) {
 		try {

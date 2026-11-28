@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
@@ -159,15 +159,19 @@ describe("hosted web_search mount", () => {
 	test("bash skill writes retain the conversation id", async () => {
 		useHome("goblin-skill-write-");
 		const writes: [string, string][] = [];
-		mkdirSync(paths.skills(), { recursive: true });
+		mkdirSync(join(paths.skills(), "demo"), { recursive: true });
+		writeFileSync(join(paths.skills(), "demo", "SKILL.md"), "x\n");
 		const convValue = conv("codex/gpt-6.1-sol");
 		const tools = rigTools(cfgFor("off"), convValue, null, (conversationId, skill) =>
 			writes.push([conversationId, skill]),
 		)(convValue);
 		const bash = tools.bash;
 		if (bash === undefined || !("execute" in bash)) throw new Error("Expected bash");
-		await bash.execute({ command: `mkdir -p ${paths.skills()}/demo && echo x > ${paths.skills()}/demo/SKILL.md` }, { toolCallId: "skill-write" });
-		expect(writes).toEqual([[convValue.id, "demo"]]);
+		await bash.execute(
+			{ command: `echo y >> ${paths.skills()}/demo/SKILL.md && mkdir -p ${paths.skillsProposed()}/draft && echo d > ${paths.skillsProposed()}/draft/SKILL.md` },
+			{ toolCallId: "skill-write" },
+		);
+		expect(writes).toEqual([[convValue.id, "demo"], [convValue.id, "draft"]]);
 	});
 
 	test("default Codex declarations fit in a stored part and test conversation", () => {

@@ -164,11 +164,13 @@ calls (ruling 2026-11-27, #994: file work is bash-only, so there is no
 write tool to match). Around every `bash` call, the tool fingerprints
 each skill directory in `skills/` and `skills-proposed/`: the relative
 path, size and mtime of every regular file, with symlinks not followed.
-A skill directory that is new or changed after the call is a write, also
-when the command failed or timed out. A directory that left
-`skills-proposed/` for `skills/` with an identical fingerprint is an
-approval or install, not a generation, so it is not recorded. Deletions
-are not recorded. Command text is never parsed for writes: arbitrary
+A changed skill directory in either folder, or a new one in
+`skills-proposed/`, is a write, also when the command failed or timed
+out. A directory that is new in `skills/` is an install or an approval,
+not a generation, so it is not recorded: a `mv` or `cp` from proposals,
+a clone from the operator's skills repo, or an install by anyone while
+the call runs (ruling 2026-11-27, #995 review: operator-installed skills
+must stay out of the curator's reach). Deletions are not recorded. Command text is never parsed for writes: arbitrary
 shell is not parseable, and a string match would record an approval as a
 generation. Only those two folders are watched, so `skills/…` inside a
 project workdir is that project's file, not the catalog. `script` calls
@@ -176,10 +178,11 @@ bash through the same execute, so it is covered too.
 
 Accepted misses and false hits: a write that keeps every size and mtime
 is missed; a symlinked skill dir writing through to its outside target
-is missed (links are second-class); a write by anything else while a
-bash call runs (another conversation's bash call, a background job) is
-recorded for that call's conversation too; a copy without `-p` from
-proposals into the catalog counts as a write. The row is immutable
+is missed (links are second-class); a new skill a turn writes straight
+into `skills/`, against the prompt rule that new skills start in
+`skills-proposed/`, is missed; an edit by anything else while a bash
+call runs (another conversation's bash call, a background job, the
+operator by hand) is recorded for that call's conversation too. The row is immutable
 source; current state (installed / proposed / gone) resolves live from
 the filesystem at read, so out-of-band dir moves can never desync it —
 the panel shows what is recorded, never a claim of completeness.

@@ -69,7 +69,7 @@ test("a script call to bash records skill writes", async () => {
 		}),
 	});
 	const out = await exec(scriptToolOf(tools), {
-		code: `await tools.bash({ command: "mkdir -p skills/demo; echo x > skills/demo/SKILL.md" });`,
+		code: `await tools.bash({ command: "mkdir -p proposed/demo; echo x > proposed/demo/SKILL.md" });`,
 	});
 	expect(out.error).toBeUndefined();
 	expect(records).toEqual(["demo"]);

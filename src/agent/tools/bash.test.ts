@@ -83,7 +83,7 @@ describe("bash", () => {
 		expect(reads).toEqual([]);
 	});
 
-	test("records skill directory changes, but not installs, deletions, or symlink targets", async () => {
+	test("records skill edits and proposals, but not new catalog folders, deletions, or symlink targets", async () => {
 		const root = join(home, "project");
 		const skills = join(root, "skills");
 		const proposed = join(root, "proposed");
@@ -95,8 +95,7 @@ describe("bash", () => {
 		});
 		const run = async (command: string) => tool.execute({ command }, opts);
 		await run("mkdir -p skills/demo; echo x > skills/demo/SKILL.md");
-		expect(records).toEqual(["demo"]);
-		records.length = 0;
+		expect(records).toEqual([]);
 		await run("echo changed >> skills/demo/SKILL.md");
 		expect(records).toEqual(["demo"]);
 		records.length = 0;
@@ -111,14 +110,17 @@ describe("bash", () => {
 		mkdirSync(join(proposed, "x"), { recursive: true });
 		writeFileSync(join(proposed, "x", "SKILL.md"), "x\n");
 		await run("cp -r proposed/x skills/x");
-		expect(records).toEqual(["x"]);
-		records.length = 0;
+		expect(records).toEqual([]);
+		await run("mkdir -p clone/z; echo z > clone/z/SKILL.md; cp -r clone/z skills/z");
+		expect(records).toEqual([]);
 		await run("true");
 		expect(records).toEqual([]);
 		await run("rm -rf skills/x");
 		await run("rm -rf skills/demo");
 		expect(records).toEqual([]);
-		await run("mkdir -p skills/demo; echo hi > skills/demo/SKILL.md; exit 3");
+		mkdirSync(join(skills, "demo"), { recursive: true });
+		writeFileSync(join(skills, "demo", "SKILL.md"), "x\n");
+		await run("echo hi >> skills/demo/SKILL.md; exit 3");
 		expect(records).toEqual(["demo"]);
 		records.length = 0;
 		await run("mkdir -p outside/target; echo s > outside/target/SKILL.md; ln -s ../outside/target skills/linked");
@@ -140,7 +142,7 @@ describe("bash", () => {
 				skillWrites: { dirs: [skills, proposed], conversation: "c", record: (name) => records.push(name) },
 			});
 			for (let i = 0; i < 20; i++) {
-				await tool.execute({ command: `mkdir -p skills/w${i}; echo hi > skills/w${i}/SKILL.md` }, opts);
+				await tool.execute({ command: `mkdir -p proposed/w${i}; echo hi > proposed/w${i}/SKILL.md` }, opts);
 			}
 			expect(Array.from({ length: 20 }, (_, i) => `w${i}`).filter((name) => !records.includes(name))).toEqual([]);
 		} finally {

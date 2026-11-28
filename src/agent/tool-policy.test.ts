@@ -8,13 +8,9 @@ test("descriptors reproduce the former name lists", () => {
 	expect(names((p) => p.replay === "safe")).toEqual([
 		"history_search",
 		"memory_search",
-		"read_file",
 	]);
 	expect(names((p) => p.scriptable)).toEqual(
 		[
-			"read_file",
-			"write_file",
-			"edit_file",
 			"bash",
 			"fetch",
 			"search",
@@ -44,7 +40,6 @@ test("descriptors reproduce the former name lists", () => {
 		].sort(),
 	);
 	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "search", "web_search"]);
-	expect(names((p) => p.writesFiles)).toEqual(["edit_file", "script", "write_file"]);
 	expect(names((p) => p.composes)).toEqual(["script"]);
 });
 

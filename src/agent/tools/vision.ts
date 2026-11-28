@@ -37,7 +37,7 @@ export const visionInputSchema = z.object({
 export function visionTool(cwd: string, deps: VisionToolDeps) {
 	return defineTool({
 		description:
-			"Ask a vision model a specific question about an image file and get a text answer. This is the only way to see an image's content — read_file cannot show images. " +
+			"Ask a vision model a specific question about an image file and get a text answer. This is the only way to see an image's content — bash cannot show images. " +
 			"Ask targeted questions ('what error does the dialog show?', 'which element is highlighted?'), and pass followUp=true to continue the previous thread about the same image.",
 		input: visionInputSchema,
 		execute: async ({ path, prompt, followUp }, options) => {

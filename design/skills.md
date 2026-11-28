@@ -32,7 +32,7 @@ tool — defer that sync until the approved deployment verifies
 availability (docs/operations.md → Deploying; the herdr v2.0 seed
 against a v1.0 live copy misfired a pane-send, 2026-10-13).
 
-Invocation is `read_file` plus `bash`; activation is already observable
+Invocation is `bash` (read the SKILL.md, run its scripts); activation is already observable
 in the tool-call log. Explicit invocation (ruling 2026-10-21, below)
 rides a message part, not a tool. Still out: a skill tool, per-skill
 tool scoping, fingerprints, immutable skill snapshots, additional
@@ -40,8 +40,8 @@ catalog roots (host, project), per-conversation selection.
 
 ## Skill invocation (ruling 2026-10-21, operator ask)
 
-The prompt-mediated path is probabilistic — the model can skip the
-`read_file`, and a manual-only skill is by design unadvertised, so the
+The prompt-mediated path is probabilistic — the model can skip reading
+the SKILL.md, and a manual-only skill is by design unadvertised, so the
 operator has no lever that guarantees the body lands in context. The
 operator now has one: an invocation part on a user message, injected
 server-side. The app picker and the Telegram `/skill` command are two
@@ -138,7 +138,7 @@ confirmation submits.
 
 **Injection preamble.** A temp body is injected wrapped: fetched-from
 line, the verdict line, not-installed notice, and the staged directory
-path — the model reaches the scripts with `read_file`/`bash`, no new
+path — the model reaches the scripts with `bash`, no new
 capability. What never happens is persistence: a temp skill produces
 no catalog entry, no proposal, no provenance row. Catalog membership
 remains only via install, which stays the operator-approved
@@ -157,13 +157,32 @@ and rejected: it injects unvalidated bytes with no decision point.
 Which skills a conversation generated must be answerable from durable
 state, not the log — the PWA shows it on the thread (design/app.md →
 Thread sources). Two authoring paths record into the same table at write
-time — a reviewer proposal after a successful swap, a turn write. A
-write's resolved output path decides the skill name — `skills/…` written
-inside a project workdir is that project's file, not the catalog. Bash
-is not scanned: arbitrary shell is not parseable, and approvals move
-directories through bash — a string match would record an approval as a
-generation. A symlinked skill dir writing through to its outside target
-is a documented miss (links are second-class). The row is immutable
+time — a reviewer proposal after a successful swap, a turn write.
+
+A turn write is found by watching the skill folders, not by reading tool
+calls (ruling 2026-11-27, #994: file work is bash-only, so there is no
+write tool to match). Around every `bash` call, the tool fingerprints
+each skill directory in `skills/` and `skills-proposed/`: the relative
+path, size and mtime of every regular file, with symlinks not followed.
+A changed skill directory in either folder, or a new one in
+`skills-proposed/`, is a write, also when the command failed or timed
+out. A directory that is new in `skills/` is an install or an approval,
+not a generation, so it is not recorded: a `mv` or `cp` from proposals,
+a clone from the operator's skills repo, or an install by anyone while
+the call runs (ruling 2026-11-27, #995 review: operator-installed skills
+must stay out of the curator's reach). Deletions are not recorded. Command text is never parsed for writes: arbitrary
+shell is not parseable, and a string match would record an approval as a
+generation. Only those two folders are watched, so `skills/…` inside a
+project workdir is that project's file, not the catalog. `script` calls
+bash through the same execute, so it is covered too.
+
+Accepted misses and false hits: a write that keeps every size and mtime
+is missed; a symlinked skill dir writing through to its outside target
+is missed (links are second-class); a new skill a turn writes straight
+into `skills/`, against the prompt rule that new skills start in
+`skills-proposed/`, is missed; an edit by anything else while a bash
+call runs (another conversation's bash call, a background job, the
+operator by hand) is recorded for that call's conversation too. The row is immutable
 source; current state (installed / proposed / gone) resolves live from
 the filesystem at read, so out-of-band dir moves can never desync it —
 the panel shows what is recorded, never a claim of completeness.
@@ -347,10 +366,14 @@ invisible and bidirectional control characters are dropped
 per skill `useCount`/`lastUsedAt`, `patchCount`/`lastPatchedAt`,
 `createdAt`, `firstSeenAt`, `state` ∈ active|stale|archived, `pinned`,
 `archivedAt`. Use bumps at the doors that submit a `data-skill` part and
-at `read_file` of a catalog SKILL.md — not at the resolver, where a
-retry's view rebuild would double-count. Patch bumps beside the
-provenance record. `bash cat` of a SKILL.md is untracked, same class as
-provenance's "bash is not scanned". One process writes it; no locking.
+at a `bash` call whose command text names a catalog SKILL.md path,
+whatever its exit code (ruling 2026-11-27, #994) — not at the resolver, where a
+retry's view rebuild would double-count. The match is textual: `~/` and
+relative paths resolve against the bash cwd; a path built in a variable
+or a glob is missed, and a mention counts even when the file was not
+read (`ls …/SKILL.md`). Only the SKILL.md
+itself counts: support files ride the body's use. Patch bumps beside
+the provenance record. One process writes it; no locking.
 
 **Curator — deterministic, config-gated.** Optional `curator` block;
 absent = off (goblin convention; hermes defaults it on). No model wiring,

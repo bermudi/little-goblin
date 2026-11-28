@@ -5,11 +5,10 @@ import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
 import { type AskToolDeps, askTool } from "./ask.ts";
 import { type AskOperatorToolDeps, askOperatorTool } from "./ask-operator.ts";
 import { type BotToolDeps, botTool } from "./bot.ts";
-import { bashTool } from "./bash.ts";
+import { bashTool, type SkillWrites } from "./bash.ts";
 import { type ComputerToolDeps, computerTools } from "./computer.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
-import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
 import { type HistorySearchDeps, historySearchTool } from "./history.ts";
 import { type ImageToolDeps, imageTool } from "./image.ts";
@@ -22,8 +21,6 @@ import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { type WatchToolDeps, watchTool } from "./watch.ts";
 import { type PostToolDeps, postTool } from "./post.ts";
-import { readFileTool } from "./read.ts";
-import type { ContextFill } from "./read.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -32,7 +29,6 @@ import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { type VisionToolDeps, visionTool } from "./vision.ts";
 import type { WebToolDeps } from "./web.ts";
-import { writeFileTool } from "./write.ts";
 
 export interface VoiceToolDeps {
 	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
@@ -110,11 +106,8 @@ export interface MakeToolsOptions {
 	// Codex conversations mount the backend's hosted web_search instead of
 	// the local search tool — the mode only decides external_web_access.
 	hostedSearch?: { externalWebAccess: boolean } | undefined;
-	/** Fires with the resolved absolute path on every successful
-	 *  read_file — the skill-usage watch (read_file of a catalog SKILL.md
-	 *  is a use; design/skills.md → Self-authoring, /learn, curator). */
 	onRead?: (abs: string) => void;
-	contextFill?: ContextFill;
+	skillWrites?: SkillWrites;
 }
 
 // The codex provider tool — args travel as the wire tool's
@@ -135,6 +128,8 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		memory,
 		web,
 		hostedSearch,
+		onRead,
+		skillWrites,
 		transcribe,
 		delegate,
 		mail,
@@ -147,14 +142,12 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		computer,
 		askOperator,
 		ui,
-		onRead,
-		contextFill,
 	} = options;
 	return {
-		read_file: readFileTool(cwd, vision !== undefined, onRead, contextFill),
-		write_file: writeFileTool(cwd),
-		edit_file: editFileTool(cwd),
-		bash: bashTool(cwd, bashDescriptionCwd),
+		bash: bashTool(cwd, bashDescriptionCwd, {
+			...(onRead !== undefined ? { onRead } : {}),
+			...(skillWrites !== undefined ? { skillWrites } : {}),
+		}),
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),

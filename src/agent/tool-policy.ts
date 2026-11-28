@@ -15,9 +15,6 @@ export interface ToolPolicy {
 	replay: "safe" | "unsafe";
 	// "untrusted": output carries remote content (taints a script's output).
 	output: "trusted" | "untrusted";
-	// Can write files, directly or (script) through composed calls — its
-	// output is scanned for skill-provenance attribution.
-	writesFiles: boolean;
 	// Composes other tools; its output carries nested call records.
 	composes: boolean;
 	// Callable from inside a `script`.
@@ -31,7 +28,6 @@ export interface ToolPolicy {
 export const CONSERVATIVE_POLICY: ToolPolicy = {
 	replay: "unsafe",
 	output: "untrusted",
-	writesFiles: false,
 	composes: false,
 	scriptable: false,
 	guestSandbox: false,
@@ -41,7 +37,6 @@ export const CONSERVATIVE_POLICY: ToolPolicy = {
 const BASE: ToolPolicy = {
 	replay: "unsafe",
 	output: "trusted",
-	writesFiles: false,
 	composes: false,
 	scriptable: false,
 	guestSandbox: false,
@@ -51,9 +46,6 @@ const BASE: ToolPolicy = {
 const P = (over: Partial<ToolPolicy>): ToolPolicy => ({ ...BASE, ...over });
 
 export const TOOL_NAMES = [
-	"read_file",
-	"write_file",
-	"edit_file",
 	"bash",
 	"speak",
 	"transcribe",
@@ -84,9 +76,6 @@ export const TOOL_NAMES = [
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
-	read_file: P({ replay: "safe", scriptable: true }),
-	write_file: P({ writesFiles: true, scriptable: true }),
-	edit_file: P({ writesFiles: true, scriptable: true }),
 	bash: P({ scriptable: true }),
 	speak: P({ guestChannel: false }),
 	transcribe: P({ scriptable: true }),
@@ -113,7 +102,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	desktop: P({ guestChannel: false }),
 	ui: P({}),
 	ask: P({ guestChannel: false }),
-	script: P({ writesFiles: true, composes: true }),
+	script: P({ composes: true }),
 };
 
 export function policyOf(name: string): ToolPolicy {

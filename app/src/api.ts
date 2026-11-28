@@ -45,6 +45,7 @@ import type {
 	AppNoteRewriteResponse,
 	AppNoteVersion,
 	AppNoteVersionList,
+	ChatNotePinCandidates,
 	ChatNotePinsView,
 	AppProgramMutationResponse,
 	AppProject,
@@ -280,6 +281,7 @@ export function createConversation(
 		botId?: string;
 		memoryExcluded?: boolean;
 		initialModelSettings?: AppModelSettings;
+		pinnedNoteIds?: string[];
 	},
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
@@ -660,6 +662,16 @@ export function listChatNotePins(
 ): Promise<ChatNotePinsView> {
 	const suffix = query === null ? "" : `?${new URLSearchParams({ q: query })}`;
 	return request(token, `/api/app/conversations/${seg(id)}/note-pins${suffix}`);
+}
+
+export function listNotePinCandidates(
+	token: string | null,
+	projectId: string | null,
+	query: string,
+): Promise<ChatNotePinCandidates> {
+	const params = new URLSearchParams({ q: query });
+	if (projectId !== null) params.set("projectId", projectId);
+	return request(token, `/api/app/note-pin-candidates?${params}`);
 }
 
 export function setChatNotePin(

@@ -74,7 +74,6 @@ import {
 import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import { openRunRecord } from "./turn/run-record.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
-import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { TurnState } from "./turn/state.ts";
 import { openStepRules, type PreemptArm, type StepRules } from "./turn/step-rules.ts";
 import {
@@ -203,7 +202,6 @@ export class Runtime {
 	private closed = false;
 	private mounted: RuntimeMount | null = null;
 	private reviewer: Reviewer | undefined;
-	private skillWatch: SkillWatch | undefined;
 	private loopWatchdog: { decide: System1Client["decide"]; every: number } | null = null;
 	private turnCounter = 0;
 	private lastTurns = new Map<string, PriorTurnContext>();
@@ -226,9 +224,6 @@ export class Runtime {
 		this.reviewer = reviewer;
 	}
 
-	setSkillWatch(watch: SkillWatch | null): void {
-		this.skillWatch = watch ?? undefined;
-	}
 
 	setLoopWatchdog(watchdog: { decide: System1Client["decide"]; every?: number } | null): void {
 		this.loopWatchdog =
@@ -578,12 +573,6 @@ export class Runtime {
 						noVoice,
 						recording,
 						noFile,
-						{
-							runId: "compaction-summary",
-							sourceMessageId: () => "",
-							sourceInputSeq: () => null,
-							contextFill: () => null,
-						},
 					);
 					const domainTools: Tools = {};
 					for (const name of Object.keys(lastTurn.tools)) {
@@ -1074,7 +1063,6 @@ export class Runtime {
 			checkAuthority: a.checkAuthority,
 			steerWaiting: () =>
 				steerGate.armed && this.lanes.claimablePending(convId, sink.delivery === "stream"),
-			contextFill: () => stepRules?.contextFill() ?? null,
 		});
 		a.progress.authority = auth;
 		const tools = auth.tools;
@@ -1293,7 +1281,6 @@ export class Runtime {
 			overflowRecoverable: seams.overflowRecoverable,
 			rules,
 			evidence: this.reviewer?.evidence,
-			skillWatch: this.skillWatch,
 			turnStartMs: snapshot.turnStartMs,
 			signal: a.controller.signal,
 			holdZeroEffectError:

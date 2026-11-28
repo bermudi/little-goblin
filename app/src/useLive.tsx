@@ -51,3 +51,11 @@ export function useLiveVersion(topic: Topic): string | null {
 	const snap = () => store.version(topic);
 	return useSyncExternalStore(store.subscribe, snap, snap);
 }
+
+const noSubscribe = () => () => {};
+
+export function useLiveVersionIfLive(topic: Topic): string | null {
+	const store = useLiveStoreOrNull();
+	const snap = () => store?.version(topic) ?? null;
+	return useSyncExternalStore(store?.subscribe ?? noSubscribe, snap, snap);
+}

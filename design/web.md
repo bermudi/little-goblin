@@ -68,7 +68,8 @@ not a native tool. MCP stays out, with its return conditions on record
 - **No silent dead ends** (hermes' `web_extract`, adopted): an unsupported
   type, an oversized body, or a JS-shell page refuses with its named
   recovery (browser skill for JS shells; bash otherwise); overflow reads
-  are footer-named with the exact `read_file` call — never a silent
+  are footer-named with the saved file and the `sed -n` command that
+  pages it — never a silent
   empty result.
 - **No SSRF policy — recorded as a ruling.** `bash` already has full
   network access, so pretending `fetch` is a boundary is security theater;

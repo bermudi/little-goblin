@@ -1032,14 +1032,16 @@ header:has(> .header-title-editor) .header-tools > :not(.goblin-panel-toggle) {
 	width: 1px;
 	background: var(--app-divider);
 }
-.new-side-chat button {
+.new-side-chat button,
+.side-chat-more button {
 	width: 100%;
 	padding: 0.45rem 0.65rem;
 	color: var(--app-fg-muted);
 	text-align: left;
 	font-size: 12px;
 }
-.new-side-chat button:hover {
+.new-side-chat button:hover,
+.side-chat-more button:hover {
 	color: var(--app-fg);
 }
 .rolling-row .goblin-avatar {

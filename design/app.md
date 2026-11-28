@@ -511,6 +511,13 @@ topic whose announced version moved, and the open chat re-reads its
 transcript and reopens the conversation's event stream, so a roll or reply
 that landed while it was hidden shows without a force close.
 
+**Side-chat page size (ruling 2026-11-27, #1000).** Little Goblin's open
+side-chat list starts with five conversation rows. Marked, pinned, and
+currently open rows stay visible even when they fall outside that first page.
+"Show more" adds five rows at a time and counts the rows still hidden. The cap
+is a sidebar presentation rule: it archives or deletes nothing, older chats
+remain searchable, and a reload starts at five again.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

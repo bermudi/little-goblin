@@ -28,9 +28,18 @@ export type RenderRow = (
 	options?: RowOptions,
 ) => ReactNode;
 
+const SIDE_CHAT_PAGE_ROWS = 5;
+
+interface SideChatPage {
+	rows: ChatRow[];
+	hidden: number;
+	showMore: () => void;
+}
+
 export interface Home {
 	list: HomeListModel;
 	orderSignature: string;
+	sidePage: SideChatPage;
 }
 
 interface ProjectLink {
@@ -45,18 +54,39 @@ export function useHomeList(
 	expandedBotId: string | null,
 ): Home {
 	const [hold, setHold] = useState<Hold | null>(null);
+	const [sideRowLimit, setSideRowLimit] = useState(SIDE_CHAT_PAGE_ROWS);
 	const built = buildHome(input, hold);
 	if (built.hold !== hold) setHold(built.hold);
 
 	const { active, side, bots } = built.list;
+	const pagedSide = pageSideChats(side, sideRowLimit, input.open);
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
 		projectsOpen ? projects.map((project) => project.id) : [],
-		input.sideChatsOpen ? side.map((row) => row.id) : [],
+		input.sideChatsOpen ? pagedSide.rows.map((row) => row.id) : [],
 		bots.map(({ bot, side }) => [bot.id, ...(bot.id === expandedBotId ? side.map((row) => row.id) : [])]),
 	]);
 
-	return { list: built.list, orderSignature };
+	return {
+		list: built.list,
+		orderSignature,
+		sidePage: {
+			...pagedSide,
+			showMore: () => setSideRowLimit((limit) => limit + SIDE_CHAT_PAGE_ROWS),
+		},
+	};
+}
+
+function pageSideChats(
+	rows: readonly ChatRow[],
+	limit: number,
+	open: string | null,
+): { rows: ChatRow[]; hidden: number } {
+	const base = new Set(rows.slice(0, limit).map((row) => row.id));
+	const visible = rows.filter((row) =>
+		base.has(row.id) || row.mark !== null || row.conv.pinnedAt !== null || row.id === open
+	);
+	return { rows: visible, hidden: rows.length - visible.length };
 }
 
 export function HomeList({
@@ -100,7 +130,8 @@ export function HomeList({
 	renderRow: RenderRow;
 	navRef?: Ref<HTMLUListElement>;
 }) {
-	const { rolling, active, side, bots } = home.list;
+	const { rolling, active, bots } = home.list;
+	const { sidePage } = home;
 	return (
 		<ConversationNav ref={navRef} loop={false}>
 			<RollingRow
@@ -112,11 +143,16 @@ export function HomeList({
 				onToggleSideChats={onToggleSideChats}
 				onOpen={onOpenRolling}
 			/>
-			{sideChatsOpen && side.map((row) => (
+			{sideChatsOpen && sidePage.rows.map((row) => (
 				<li key={row.id} data-flip={row.id} className="side-chat">
 					{renderRow(row.conv, { mark: row.mark, line: row.line })}
 				</li>
 			))}
+			{sideChatsOpen && sidePage.hidden > 0 && (
+				<li className="side-chat side-chat-more">
+					<button type="button" onClick={sidePage.showMore}>Show more ({sidePage.hidden} left)</button>
+				</li>
+			)}
 			{sideChatsOpen && (
 				<li className="side-chat new-side-chat">
 					<button type="button" onClick={onNewSideChat}>New side chat</button>

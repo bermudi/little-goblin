@@ -540,7 +540,7 @@ test("a large spill names bash paging", async () => {
 	const file = /saved to: (\S+)/.exec(out.text)?.[1] ?? "";
 	expect(file.startsWith(join(home, "state", "scriptcache"))).toBe(true);
 	expect(existsSync(file)).toBe(true);
-	expect(out.text).toContain(`sed -n '1,2000p' "${file}"`);
+	expect(out.text).toContain(`sed -n '1,2000p' '${file}'`);
 }, 20_000);
 
 test("a failed output spill still returns the window — the footer reports the lost save", async () => {

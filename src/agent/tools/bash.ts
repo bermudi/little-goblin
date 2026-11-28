@@ -101,8 +101,8 @@ function recordSkillWrites(
 
 function skillReadCandidates(command: string, cwd: string): string[] {
 	const found = new Set<string>();
-	for (const match of command.matchAll(/[^\s'"`;|&<>()]*SKILL\.md/g)) {
-		const candidate = match[0]!;
+	for (const match of command.matchAll(/"([^"]*SKILL\.md)"|'([^']*SKILL\.md)'|[^\s'"`;|&<>()]*SKILL\.md/g)) {
+		const candidate = match[1] ?? match[2] ?? match[0];
 		const expanded = candidate.startsWith("~/") ? join(homedir(), candidate.slice(2)) : candidate;
 		found.add(resolve(cwd, expanded));
 	}

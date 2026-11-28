@@ -81,6 +81,11 @@ describe("bash", () => {
 		reads.length = 0;
 		await tool.execute({ command: "echo ordinary" }, opts);
 		expect(reads).toEqual([]);
+		const spaced = join(home, "spaced home", "skills", "demo", "SKILL.md");
+		mkdirSync(join(home, "spaced home", "skills", "demo"), { recursive: true });
+		writeFileSync(spaced, "demo");
+		await tool.execute({ command: `cat "${spaced}"; cat '${spaced}'` }, opts);
+		expect(reads).toEqual([spaced]);
 	});
 
 	test("records skill edits and proposals, but not new catalog folders, deletions, or symlink targets", async () => {

@@ -41,7 +41,10 @@ chats do not change until the operator rules on the result.
 - **One private channel per bash call.** When the trial is on, the bash
   tool spawns with Bun's IPC channel. Goblin closes the channel when that
   bash call returns, for any reason: exit, timeout or abort. A call that
-  arrives later fails at once, with a message and a nonzero exit.
+  arrives later fails at once, with a message and a nonzero exit. A call
+  that arrived before the bash process ended finishes first, so the bash
+  result never comes back ahead of an effect it started, and its record
+  is in that result.
 - **Only `goblin` sees the channel.** Bun sets `NODE_CHANNEL_FD` on the
   child even when the caller passes its own env. Any bun or node program
   that inherits it gets `process.send` and may switch to its worker mode.

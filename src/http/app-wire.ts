@@ -7,6 +7,7 @@ import type { AppConversationSummary } from "../conversation-read.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
 import type { NoteBatchAction, NoteSelection } from "../note-owner.ts";
+export type { ChatNotePinCandidates, ChatNotePinsView } from "../chat-note-pins.ts";
 
 export interface AppBot {
 	id: string;

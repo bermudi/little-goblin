@@ -180,14 +180,14 @@ function fallbackFor(ref: AttachmentRef): Message["parts"][number] {
 		ref.transcriptionError !== undefined ? ` transcription failed: ${ref.transcriptionError}.` : "";
 	return {
 		type: "text",
-		text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes.${failure} Read it with read_file or bash tools.]`,
+		text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes.${failure} Read it with bash.]`,
 	};
 }
 
 function malformedFallback(): Message["parts"][number] {
 	return {
 		type: "text",
-		text: "[attachment: unreadable reference — stored attachment data failed validation. The file, if saved, may still be readable with read_file or bash tools.]",
+		text: "[attachment: unreadable reference — stored attachment data failed validation. The file, if saved, may still be readable with bash.]",
 	};
 }
 

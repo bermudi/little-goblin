@@ -53,7 +53,7 @@ The fake model takes the rail title from its own reply, so the title starts with
 
 To test Stop or a failed turn, put `[slow]` in the message (one word every 400ms, so there's time to press Stop) or `[fail]` (a few words, then the connection breaks). The fake checks the last user-role message as goblin sends it, and an unlanded-turn record from a previous turn quotes that turn's text. So after a `[slow]` turn is stopped, a `[fail]` turn also streams slowly before it fails.
 
-To watch a long reply stream after tool calls, put `[long]` in the message: two `read_file` calls a second apart, then a reply several screens long, one line every 60ms. It starts with `verify-long: the head of the answer` and ends with `verify-long: the tail of the answer`.
+To watch a long reply stream after tool calls, put `[long]` in the message: two `bash` calls a second apart, then a reply several screens long, one line every 60ms. It starts with `verify-long: the head of the answer` and ends with `verify-long: the tail of the answer`.
 The live line stays under the text until the reply ends.
 
 `agent-browser fill` on the composer (`[aria-label="Message draft"]`) puts its text in front of the draft that is already there; it does not replace the draft (2026-11-26). Send from an empty composer, or read the composer's text before you rely on it.

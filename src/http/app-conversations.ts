@@ -17,6 +17,7 @@ import type { ConversationStore } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { ModelSettings } from "../conversation-settings.ts";
+import { NotePinsRefused } from "../chat-note-pins.ts";
 import { log } from "../log.ts";
 import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
@@ -65,6 +66,11 @@ const createBody = z.object({
 	projectId: z.string().min(1).optional(),
 	memoryExcluded: z.boolean().optional(),
 	initialModelSettings: modelSettingsBody.optional(),
+	pinnedNoteIds: z
+		.array(z.string().min(1).max(200))
+		.max(50)
+		.refine((ids) => new Set(ids).size === ids.length, "pinnedNoteIds must be unique")
+		.optional(),
 });
 
 const branchBody = z.object({ messageId: z.string().min(1).max(200) });
@@ -304,6 +310,45 @@ export async function handleConversationsRoute(
 	now: () => number = Date.now,
 ): Promise<Response | null> {
 	const path = url.pathname;
+	if (path === "/api/app/note-pin-candidates") {
+		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const input = z.object({
+			projectId: z.string().min(1).max(200).nullable(),
+			q: z.string().max(500),
+		}).safeParse({ projectId: url.searchParams.get("projectId"), q: url.searchParams.get("q") ?? "" });
+		if (!input.success) {
+			return Response.json({ error: z.prettifyError(input.error) }, { status: 422, headers: NO_STORE });
+		}
+		return Response.json(
+			deps.store.chatNotePins.candidates(input.data.projectId, input.data.q),
+			{ headers: NO_STORE },
+		);
+	}
+	const pins = path.match(/^\/api\/app\/conversations\/([^/]+)\/note-pins$/);
+	if (pins !== null && (req.method === "GET" || req.method === "PATCH")) {
+		const address = conversationFromSegment(pins[1]!);
+		if (address instanceof Response) return address;
+		const { id } = address;
+		const query = req.method === "GET" ? url.searchParams.get("q") : null;
+		if (query !== null && query.length > 500) {
+			return Response.json({ error: "Search is too long" }, { status: 422, headers: NO_STORE });
+		}
+		const active = () => {
+			const conv = deps.store.get(id);
+			return conv !== null && conv.archivedAt === null &&
+				(!deps.store.isAppRoll(id) || deps.store.currentAppRoll()?.id === id);
+		};
+		if (req.method === "PATCH") {
+			const input = await parsedJson(req, z.strictObject({ noteId: z.string().min(1).max(200), pinned: z.boolean() }));
+			if (input instanceof Response) return input;
+			if (!active() || !deps.store.chatNotePins.set(id, input.noteId, input.pinned)) {
+				return Response.json({ error: "Chat or note is no longer available" }, { status: 404, headers: NO_STORE });
+			}
+		} else if (!active()) {
+			return Response.json({ error: "Chat is no longer available" }, { status: 404, headers: NO_STORE });
+		}
+		return Response.json(deps.store.chatNotePins.view(id, query), { headers: NO_STORE });
+	}
 	const { store, runtime } = deps;
 
 	const readMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/read$/);
@@ -375,7 +420,8 @@ export async function handleConversationsRoute(
 			}
 			const appId = parsed.data.id ?? randomUUID();
 			const convId = `app/${appId}`;
-			const outcome = store.db.transaction(
+			const pinnedNoteIds = parsed.data.pinnedNoteIds ?? [];
+			const create = store.db.transaction(
 				():
 					| { kind: "ok"; conv: NonNullable<ReturnType<typeof store.get>> }
 					| { kind: "conflict"; bound: string | null }
@@ -435,9 +481,24 @@ export async function handleConversationsRoute(
 					if (parsed.data.title !== undefined) {
 						store.setMeta(row.id, { title: parsed.data.title, titleImplicit: false });
 					}
+					if (existing === null) store.chatNotePins.pinAll(row.id, pinnedNoteIds);
 					return { kind: "ok", conv: store.get(row.id)! };
 				},
-			)();
+			);
+			let outcome: ReturnType<typeof create>;
+			try {
+				outcome = create();
+			} catch (err) {
+				if (!(err instanceof NotePinsRefused)) throw err;
+				log.warn("app conversation create refused: notes not pinnable", {
+					conversation: convId,
+					notes: err.noteIds,
+				});
+				return Response.json(
+					{ error: "Some notes can't be pinned in this chat", noteIds: err.noteIds },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
 			if (outcome.kind === "conflict") {
 				return Response.json(
 					{
@@ -476,6 +537,7 @@ export async function handleConversationsRoute(
 			log.info("app conversation opened", {
 				conversation: conv.id,
 				...(conv.projectId !== null ? { project: conv.projectId } : {}),
+				...(pinnedNoteIds.length > 0 ? { pinnedNotes: pinnedNoteIds.length } : {}),
 			});
 			const body: AppConversationCreate = {
 				id: conv.id,

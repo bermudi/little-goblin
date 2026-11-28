@@ -103,6 +103,19 @@ Move, archive, restore, and delete work on the selection. A changed
 selection refuses the whole operation. Only archived notes can be deleted,
 after confirmation.
 
+**Bot access** (operator, 2026-11-28, #982). The `note` tool in a bot's
+chats reaches only that bot's notes and Global notes. Little Goblin's chats,
+project chats included, reach every note except other bots' notes, which
+they can read but never edit. The store re-checks this inside each agent
+write, so a note moved mid-call cannot be edited by a chat that lost it.
+Notes a chat made before it became a bot stay Little Goblin's; the operator
+moves them to the bot by hand. Pins keep their stricter rule. The tool names
+each note's owner and marks read-only notes. Settings → Notes lists bots by
+name between Little Goblin and projects, in the owner filter and the Move
+dialog. The server refuses an unknown or retired bot as filter or target.
+Project notes move to a successor bot by hand until project retirement
+moves them.
+
 **Edit history** (operator, 2026-11-27, #982). Each new content revision
 records its exact changed text and author. Bots record what they changed
 and why. The operator can supply a reason for their next edit and keeps
@@ -116,7 +129,7 @@ and diff.
 notes it can access. A new roll clears pins and compaction keeps
 them. On its next turn, the model receives a short notice for new pins and
 changes at the tail of the conversation. It reads bodies and diffs on
-demand. The Notes button shows changes in the app.
+demand. The composer's Notes button shows pins and changes in the app.
 
 **Editor: Milkdown** — chosen over Tiptap for being markdown-native (remark
 parse/serialize), so `body_md` stays the only format. The editor saves only
@@ -128,19 +141,56 @@ conversation (Telegram included; guests never). Results ride fenced like
 other operator data; note bodies are the operator's words, not instructions
 from a third party.
 
-**How chats see notes** (operator ruling: index + attach).
+**How chats see notes.**
 
 - **Project conversations** get a notes index in the frozen `## project`
   section; current text is a `note read` away.
-- **Attach.** The composer's attach picker adds notes. The client sends a
-  reference and may add a display title for the chip — labels only; the
-  server ignores it. Intake resolves the id and stores the expanded part —
-  id, title, rev, and the body as of send — so history holds what the
-  server read, never client-supplied content. The model view renders it
-  fenced; the stored part is a frozen snapshot, and a later edit shows
-  through `note read`, never by rewriting the old message.
-- "Chat with a note" is a new conversation with that note attached to its
-  first message. No separate mechanism.
+- **One mode: pin (operator, 2026-11-28, #1002).** Picking a note pins it
+  to the chat; there is no separate attach. The operator: "any time you pin
+  a note, the model is probably going to read it … two modes make no
+  sense." Rejected: attach as a second mode. It froze a copy of the body
+  into one message, so after an edit the model held a stale copy plus a
+  change line, and a long note stayed in context for the rest of the chat.
+  Accepted cost: the model spends one `note read` before it uses a note.
+- **Old attached notes.** Messages sent before #1002 keep their expanded
+  `data-note` part: id, title, rev and the body as of send. Intake still
+  resolves a `data-note` reference (an edited old message keeps its chip),
+  stores what the server read, never client-supplied content, and the model
+  view renders it fenced. The app no longer offers a way to add one.
+- **Chat with this note** opens a new chat with that note staged as pinned
+  and the cursor in the composer. Nothing is sent until the operator types.
+  A note owned by another bot cannot be pinned in Little Goblin's chats, so
+  the button pins it to that bot's main chat and opens it instead.
+- **Staged pins.** A chat that does not exist yet (the new-chat and
+  project composers, and Little Goblin's chat before its first message)
+  holds picked notes locally. The first send creates the chat and its pins
+  in one transaction, before the message is admitted, so the first turn
+  carries the pin notice. A note the new chat could not pin refuses the
+  whole create; the draft stays, and the refused notes are unpinned with a
+  line that names them. For Little Goblin's first message the new roll and
+  its pins commit in one transaction, so a refusal leaves no roll behind;
+  once a roll exists, staged pins are refused and pins go through its
+  composer. Candidates use the same access rule as an existing chat's pins.
+- **Pin to a chat** (operator, 2026-11-27, #982; moved to the composer
+  2026-11-28, #1002). The composer's Notes button opens a panel anchored to
+  it on desktop, or a bottom sheet from the + menu on a phone. Search active
+  notes in the chat's scope, see pinned notes and recent edits, and unpin
+  from the same place. The button shows whether notes are pinned, with a
+  count; hovering it lists the pinned names. A phone has no hover, so the
+  operator opens the sheet to see names. The chat header has no Notes button.
+  A new roll starts with no pins. Compaction keeps the existing pins.
+  On the next turn, a pin notice names the note, ID, and revision. One line
+  per edit names the actor, change, and any reason. Unpinning or losing
+  access produces a final notice. Archive, deletion, or loss of access
+  removes the pin. If moving a chat to or from a bot cuts off access to a
+  note, the pin is removed in the same transaction. The operator can pin
+  the note again once the chat can access it.
+  The notice text and revision advance commit together at admission. The
+  notice belongs to that turn's new input and replays at the same position.
+  Editing a message can remove later notices with their delivery records.
+  The replacement turn reports what changed since the last surviving
+  notice. Retrying an unchanged input replays its recorded notice.
+  The body and diff remain available through the note tool.
 
 **Refresh without push.** No socket, no new push channel (Streaming members'
 "parked" ruling stands). In v1 a note and a chat never share a screen, so no

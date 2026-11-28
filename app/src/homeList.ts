@@ -50,6 +50,7 @@ export interface HomeList {
 	botByChatId: ReadonlyMap<string, AppBot>;
 	active: (ChatRow | LooseRow)[];
 	openInGoblin: boolean;
+	openRow: string | null;
 }
 
 export interface HomeInput {
@@ -206,7 +207,7 @@ export function buildHome(
 	})();
 	const hold = makeHold(openRow, rowById, prev);
 
-	return { list: { rolling, active, side, bots, botByChatId, openInGoblin }, hold };
+	return { list: { rolling, active, side, bots, botByChatId, openInGoblin, openRow }, hold };
 }
 
 function findOwners(

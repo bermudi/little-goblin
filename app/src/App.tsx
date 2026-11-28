@@ -36,6 +36,7 @@ import {
 	loadToken,
 	patchConversation,
 	rollRollingChat,
+	setChatNotePin,
 	telegramDoor,
 } from "./api.ts";
 import { moveComposerDraft } from "./composerDraft.ts";
@@ -64,6 +65,7 @@ import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NoteView } from "./NoteView.tsx";
 import { NotesIndex } from "./NotesIndex.tsx";
+import type { NotesTarget, StagedPin } from "./chat/ComposerNotes.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import {
@@ -98,6 +100,12 @@ export function App() {
 }
 
 const CRAMPED_COLUMN_PX = 400;
+
+function refusedNoteIds(body: unknown): string[] | null {
+	if (typeof body !== "object" || body === null || !("noteIds" in body)) return null;
+	const ids: unknown = body.noteIds;
+	return Array.isArray(ids) && ids.every((id) => typeof id === "string") ? ids : null;
+}
 
 function observeColumnWidth(column: HTMLElement | null, setCramped: (value: boolean) => void) {
 	if (column === null || typeof window.ResizeObserver !== "function") return;
@@ -282,6 +290,21 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
+	const [stagedPins, setStagedPins] = useState<Record<string, StagedPin[]>>({});
+	const [pinRefusal, setPinRefusal] = useState<string | null>(null);
+	const setStagedPinsFor = (scope: string, pins: StagedPin[]) =>
+		setStagedPins((previous) => ({ ...previous, [scope]: pins }));
+	const stagedNotes = (scope: string, projectId: string | null): NotesTarget => ({
+		kind: "staged",
+		projectId,
+		pins: stagedPins[scope] ?? [],
+		onPinsChange: (pins) => setStagedPinsFor(scope, pins),
+	});
+	const unpinRefused = (scope: string, pinned: StagedPin[], refused: string[]) => {
+		const titles = pinned.filter((pin) => refused.includes(pin.id)).map((pin) => pin.title);
+		setStagedPinsFor(scope, pinned.filter((pin) => !refused.includes(pin.id)));
+		setPinRefusal(`This chat can't use ${titles.join(", ")}, so ${titles.length === 1 ? "it was" : "they were"} unpinned. Send again to start without ${titles.length === 1 ? "it" : "them"}.`);
+	};
 	const [startFailed, setStartFailed] = useState(false);
 	// A cancelled send belongs only to the composer that dispatched it.
 	const [draftRestores, setDraftRestores] = useState<
@@ -792,40 +815,32 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const startChat = async (
 		projectId: string | null,
 		parts: UIMessage["parts"],
-		composerScope?: string,
+		composerScope: string,
 		initialModelSettings?: AppModelSettings,
 	): Promise<boolean> => {
 		if (!(await leaveDirty())) return false;
 		if (startBusyRef.current) {
-			// Refuse loudly — a silent no-op reads as success to awaited
-			// callers. A composer-scoped send parks its parts back in the
-			// draft first, the same shape as the fenced path —
-			// note-originated starts carry no scope and restore nothing.
-			if (composerScope !== undefined) {
-				setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
-			}
+			setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
 			throw new Error("a conversation is still starting — resend once it finishes");
 		}
 		startBusyRef.current = true;
 		const seq = ++startSeq.current;
 		setStarting(true);
 		setStartFailed(false);
+		setPinRefusal(null);
+		const pinned = stagedPins[composerScope] ?? [];
 		try {
 			const created = await createConversation(token, {
 				...(projectId === null ? {} : { projectId }),
-				// Only a composer start carries the staged memory toggle —
-				// note-originated chats have no visible toggle and must not
-				// inherit a sticky exclusion.
-				...(composerScope === undefined ? {} : { memoryExcluded: stagedMemoryExcluded }),
+				memoryExcluded: stagedMemoryExcluded,
 				...(initialModelSettings === undefined ? {} : { initialModelSettings }),
+				...(pinned.length === 0 ? {} : { pinnedNoteIds: pinned.map((pin) => pin.id) }),
 			});
 			// A navigation while the create was in flight bumped the
 			// sequence — this continuation closes over the old page, so
 			// its select would skip the dirty-settings guard entirely.
 			if (seq !== startSeq.current) {
-				if (composerScope !== undefined) {
-					setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
-				}
+				setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
 				try {
 					await deleteConversation(token, created.id);
 					await acted("conversations");
@@ -836,14 +851,21 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				}
 				return false;
 			}
+			setStagedPinsFor(composerScope, []);
 			setSeed({ id: created.id, parts });
 			// The guard above already asked — select's own check would
 			// confirm the still-dirty page a second time.
 			void select(created.id, { skipDirtyGuard: true });
 			await acted("conversations");
 			return true;
-		} catch {
-			if (seq === startSeq.current) setStartFailed(true);
+		} catch (err) {
+			if (seq !== startSeq.current) return false;
+			const refused = err instanceof ApiError && err.status === 409 ? refusedNoteIds(err.data) : null;
+			if (refused !== null) {
+				unpinRefused(composerScope, pinned, refused);
+			} else {
+				setStartFailed(true);
+			}
 			return false;
 		} finally {
 			startBusyRef.current = false;
@@ -882,7 +904,11 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		onError: setRowError,
 	});
 	const widthChoice = !phone && !columnCramped;
-	const chatTools = page === "chat" && (current !== null || widthChoice);
+	const notesChat = page === "rolling" && rollingId === rollingCurrent?.id
+		? rollingId
+		: page === "chat" && !currentConv?.archivedAt ? current : null;
+	const chatToolsId = page === "rolling" ? notesChat : page === "chat" ? current : null;
+	const chatTools = chatToolsId !== null || (page === "chat" && widthChoice);
 	const headerActions =
 		currentConv === undefined
 			? null
@@ -1116,20 +1142,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
-						<button type="button" aria-label="New side chat" onClick={newConversation}>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								width="18"
-								height="18"
-								aria-hidden="true"
-							>
-								<path d="M12 5v14M5 12h14" />
-							</svg>
-						</button>
 					</div>
 					<LiveLost />
 					<div className="rail-body">
@@ -1370,15 +1382,15 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<div className="header-tools">
 					{chatTools && (
 						<Menu onAction={(value) => {
-							if (current === null) return;
-							if (value === "context") openWindow(current);
+							if (chatToolsId === null) return;
+							if (value === "context") openWindow(chatToolsId);
 							else if (value === "sources") setSourcesOpen(true);
 						}}>
 							<MenuTrigger className="header-action" aria-label="Chat tools" title="Chat tools"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></MenuTrigger>
 							<MenuContent className="title-menu">
-								{current !== null && <MenuItem value="context">Context window</MenuItem>}
-								{current !== null && <MenuItem value="sources">From this thread</MenuItem>}
-								{widthChoice && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}
+								{chatToolsId !== null && <MenuItem value="context">Context window</MenuItem>}
+								{chatToolsId !== null && <MenuItem value="sources">From this thread</MenuItem>}
+								{page === "chat" && widthChoice && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}
 							</MenuContent>
 						</Menu>
 					)}
@@ -1540,6 +1552,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<NotesIndex
 						token={token}
 						projects={projectList}
+						bots={bots}
 						onOpen={openNote}
 						onSettings={() => void openPage("settings")}
 						onChanged={() => void acted("notes")}
@@ -1556,16 +1569,33 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									token={token}
 									noteId={noteId}
 									projects={projectList}
+									bots={bots}
 									discardRef={noteDiscard}
 									onChanged={() => void acted("notes")}
-									onChat={(note: AppNote) =>
-										startChat(note.projectId, [
-											{
-												type: "data-note",
-												data: { id: note.id, title: note.title },
-											} as UIMessage["parts"][number],
-										])
-									}
+									onChat={(note: AppNote) => {
+										const ownerBot = note.projectId === null ? bots.find((bot) => bot.id === note.botId) : undefined;
+										if (ownerBot !== undefined) {
+											setPinRefusal(null);
+											void setChatNotePin(token, ownerBot.mainConversationId, note.id, true).then(
+												() => openConversation(ownerBot.mainConversationId),
+												() => setPinRefusal(`Couldn't pin ${note.title} to ${ownerBot.name}'s chat.`),
+											);
+											return;
+										}
+										const scope = note.projectId ?? "chat";
+										const owner = (note.projectId === null ? undefined : projectList.find((p) => p.id === note.projectId)?.name)
+											?? bots.find((bot) => bot.id === note.botId)?.name ?? note.botId ?? "Global";
+										setStagedPinsFor(scope, [
+											...(stagedPins[scope] ?? []).filter((pin) => pin.id !== note.id),
+											{ id: note.id, title: note.title, owner },
+										]);
+										setPinRefusal(null);
+										if (note.projectId === null) newConversation();
+										else {
+											setComposerFocus((t) => t + 1);
+											void openProject(note.projectId);
+										}
+									}}
 									// A deleted note has no draft left to guard — clear
 									// the bit before the index navigation runs the check.
 									onDeleted={() => {
@@ -1581,6 +1611,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 										Couldn't start a conversation — check the tailnet, then resend.
 									</p>
 								)}
+								{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 							</>
 						)}
 					</div>
@@ -1626,11 +1657,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 										Couldn't start a conversation — check the tailnet, then resend.
 									</p>
 								)}
+								{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 								{currentProject.archivedAt === null ? (
 									<Composer
 										key={`composer:${currentProject.id}`}
 										token={token}
 										draftScope={currentProject.id}
+										focusSignal={composerFocus}
+										notes={stagedNotes(currentProject.id, currentProject.id)}
 										busy={starting}
 										stagedMemory={{
 											excluded: currentProject.memory === "off" || stagedMemoryExcluded,
@@ -1675,12 +1709,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											Couldn't start a conversation — check the tailnet, then resend.
 										</p>
 									)}
+									{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 								</div>
 							</div>
 							<Composer
 								key={`home-composer:${composerFocus}`}
 								token={token}
 								draftScope="new"
+								notes={stagedNotes("chat", null)}
 								busy={starting}
 								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
 								onStagedMemoryToggle={setStagedMemoryExcluded}
@@ -1721,6 +1757,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								onSeeded={() => setSeed(null)}
 								onSendAccepted={() => void acted("conversations")}
 								onOpenNote={openNote}
+								notePins={notesChat === current}
 								onBranched={(id) => {
 									void acted("conversations");
 									openConversation(id);
@@ -1735,6 +1772,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								<div className="transcript-inner">
 									<p className="empty">Send a message — your chat with Little Goblin starts here.</p>
 									{startFailed && <p className="error">Couldn't send — check the tailnet, then resend.</p>}
+									{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 								</div>
 							</div>
 							<Composer
@@ -1743,9 +1781,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								busy={starting}
 								stagedMemory={{ excluded: false, locked: true }}
 								onStagedMemoryToggle={() => {}}
+								notes={stagedNotes("rolling", null)}
 								onSend={async (parts, _whenBusy, initialModelSettings) => {
 									setStarting(true);
 									setStartFailed(false);
+									setPinRefusal(null);
+									const pinned = stagedPins.rolling ?? [];
 									try {
 										const message = { id: crypto.randomUUID(), role: "user", parts };
 										const response = await fetch("/api/app/chat", {
@@ -1758,12 +1799,21 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 												rolling: true,
 												message,
 												...(initialModelSettings === undefined ? {} : { initialModelSettings }),
+												...(pinned.length === 0 ? {} : { pinnedNoteIds: pinned.map((pin) => pin.id) }),
 											}),
 										});
+										if (response.status === 409) {
+											const refused = refusedNoteIds(await response.json().catch(() => null));
+											if (refused !== null) {
+												unpinRefused("rolling", pinned, refused);
+												return false;
+											}
+										}
 										if (response.status !== 202) throw new Error(`send failed (${response.status})`);
 										const result = (await response.json()) as AppChatResponse;
 										if (!("conversationId" in result))
 											throw new Error("rolling send returned no conversation id");
+										setStagedPinsFor("rolling", []);
 										setRollingViewing(null);
 										setRollingRouted(result.conversationId);
 										setRollingFollow({
@@ -1790,6 +1840,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							seed={null}
 							noteProjectId={null}
 							rolling
+							notePins={notesChat === rollingId}
 							onRoll={rollChat}
 							focusSignal={rollFocus}
 							rollDisabled={rollingCurrent?.busy === true}
@@ -1919,11 +1970,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					</DrawerContent>
 				</Drawer>
 			)}
-			{page === "chat" && sourcesOpen && current !== null && (
+			{sourcesOpen && chatToolsId !== null && (
 				<ThreadSourcesSheet
+					key={chatToolsId}
 					token={token}
-					conversationId={current}
-					title={currentTitle}
+					conversationId={chatToolsId}
+					title={page === "rolling" ? "Little Goblin" : currentTitle}
 					onClose={() => setSourcesOpen(false)}
 				/>
 			)}

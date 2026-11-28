@@ -8,7 +8,7 @@ export interface NoteEditMessage {
 export interface NoteEditMeta {
 	rev: number;
 	at: string;
-	author: { botId: string } | "operator";
+	author: { botId: string; name: string } | "operator";
 	what: string | null;
 	reason: string | null;
 }

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { openStore } from "../../conversation.ts";
+import { appAddress } from "../../conversation-address.ts";
 import { setLogFile } from "../../log.ts";
 import { noteFence, openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";
@@ -298,5 +299,81 @@ describe("guest exclusion", () => {
 	test("note is never mounted on a guest turn", () => {
 		expect(policyOf("note").guestChannel).toBe(false);
 		expect(policyOf("note").guestSandbox).toBe(false);
+	});
+});
+
+describe("note tool access by bot", () => {
+	test("a bot reaches its own and Global notes; Little Goblin reads bot notes but never edits them", async () => {
+		const home = useHome("goblin-notetool-bots-");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const store = openStore(join(home, "state", "goblin.sqlite"));
+		const projects = openProjects(store);
+		const notes = openNotes(store, { projects });
+		const convert = (name: string) => {
+			const chat = store.resolve(appAddress(name.toLowerCase()), "/workshop");
+			const conversion = store.bots.convertSideChat(chat.id, name, 0, () => false);
+			if (conversion.kind !== "converted") throw new Error(`conversion ${conversion.kind}`);
+			return { chat, bot: conversion.bot };
+		};
+		const trip = convert("Trip");
+		const desk = convert("Desk");
+		const goblin = store.resolve(appAddress("goblin"), "/workshop");
+		const toolFor = (conversation: string) =>
+			noteTool({ notes, projects, conversation, projectId: null, editHistory: true });
+		const tripTool = toolFor(trip.chat.id);
+		const goblinTool = toolFor(goblin.id);
+		const own = notes.create({ title: "Lisbon itinerary", conversation: trip.chat.id }, "agent");
+		const other = notes.create({ title: "Desk inbox", body: "secret desk plan", conversation: desk.chat.id }, "agent");
+		const local = notes.create({ title: "Reading list", body: "secret reading list" });
+		const shared = notes.create({ title: "House rules" });
+		notes.batch([{ id: shared.id, stateRev: shared.stateRev }], { action: "move", owner: { botId: null } });
+		try {
+			for (const scope of ["here", "all"] as const) {
+				const listed = await exec(tripTool, { action: "list", scope }) as { notes: Record<string, unknown>[] };
+				expect(listed.notes.map(({ title, owner }) => ({ title, owner })).sort((a, b) => String(a.title).localeCompare(String(b.title))))
+					.toEqual([{ title: "House rules", owner: "Global" }, { title: "Lisbon itinerary", owner: "Trip" }]);
+			}
+			const blocked = (id: string) => ({ error: `note ${id} belongs to another bot; this chat can't use it` });
+			for (const note of [other, local]) {
+				expect(await exec(tripTool, { action: "read", id: note.id })).toEqual(blocked(note.id));
+				expect(await exec(tripTool, { action: "history", id: note.id })).toEqual(blocked(note.id));
+				expect(await exec(tripTool, { action: "diff", id: note.id, rev: 1 })).toEqual(blocked(note.id));
+				expect(await exec(tripTool, { action: "append", id: note.id, text: "x", what: "Added x", reason: "Test" }))
+					.toEqual(blocked(note.id));
+				for (const edit of [
+					{ start: 0, end: 1, expected: "x", text: "y" },
+					{ start: 0, end: 1, expected: note.body.slice(0, 1), text: "y" },
+					{ start: 0, end: 10_000, expected: "x", text: "y" },
+				]) {
+					expect(await exec(tripTool, { action: "replace_range", id: note.id, edits: [edit], what: "Probe", reason: "Test" }))
+						.toEqual(blocked(note.id));
+				}
+			}
+			expect(await exec(tripTool, { action: "append", id: own.id, text: "Day one", what: "Added day one", reason: "Plan" }))
+				.toMatchObject({ note: { rev: 2, owner: "Trip" } });
+			expect(await exec(tripTool, { action: "append", id: shared.id, text: "No shoes", what: "Added a rule", reason: "Asked" }))
+				.toMatchObject({ note: { rev: 2, owner: "Global" } });
+
+			const all = await exec(goblinTool, { action: "list", scope: "all" }) as { notes: Record<string, unknown>[] };
+			expect(all.notes.find(({ id }) => id === other.id)).toMatchObject({ owner: "Desk", readOnly: true });
+			expect(all.notes.find(({ id }) => id === local.id)).toMatchObject({ owner: "Little Goblin" });
+			expect(all.notes.find(({ id }) => id === local.id)).not.toHaveProperty("readOnly");
+			expect(await exec(goblinTool, { action: "read", id: other.id })).toMatchObject({ note: { owner: "Desk", readOnly: true } });
+			expect(await exec(goblinTool, { action: "history", id: own.id })).toMatchObject({
+				edits: [{ rev: 2, author: { botId: trip.bot.id, name: "Trip" } }, { rev: 1 }],
+			});
+			expect(await exec(goblinTool, { action: "append", id: other.id, text: "x", what: "Added x", reason: "Test" }))
+				.toEqual({ error: `note ${other.id} belongs to Desk; this chat can read it but not edit it` });
+			expect(await exec(goblinTool, { action: "append", id: local.id, text: "Dune", what: "Added a book", reason: "Asked" }))
+				.toMatchObject({ note: { rev: 2 } });
+
+			notes.batch([{ id: local.id, stateRev: notes.get(local.id)!.stateRev }], { action: "move", owner: { botId: desk.bot.id } });
+			expect(await exec(goblinTool, { action: "append", id: local.id, text: "Emma", what: "Added a book", reason: "Asked" }))
+				.toEqual({ error: `note ${local.id} belongs to Desk; this chat can read it but not edit it` });
+			expect(notes.get(local.id)?.rev).toBe(2);
+			expect(notes.get(other.id)?.rev).toBe(1);
+		} finally {
+			store.close();
+		}
 	});
 });

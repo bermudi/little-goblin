@@ -15,23 +15,20 @@ import { aiSdkEngine } from "./ai-sdk-engine.ts";
 import type { ModelStep } from "./ai-sdk-step.ts";
 import type { EngineRules, TurnEngine } from "./engine.ts";
 
-type ProbedRule = Exclude<keyof EngineRules, "toolLaunchGate">;
+type ProbedRule = Exclude<keyof EngineRules, "toolLaunchGate" | "contextFill">;
 const probedRules: readonly ProbedRule[] = [
-	"contextFill",
 	"transientRetry",
 	"contentFilterReask",
 	"preemptFold",
 ];
 
 const FINAL = "FINAL-REPLY-9c1e";
-const FILL_TOKENS = 4321;
 const filterWarning =
 	"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content.]";
 
 interface RunResult {
 	done: unknown;
 	reply: string;
-	fill: { used: number; limit: number } | null;
 	foldedMidTurn: boolean;
 }
 
@@ -57,7 +54,6 @@ async function runTurn(
 ): Promise<RunResult> {
 	const store = openStore(tmpDb("goblin-engine-rules-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	let fill: RunResult["fill"] = null;
 	let foldedMidTurn = false;
 	const replyLanded = (): boolean =>
 		store.history(conv.id).some((m) => m.role === "assistant" && textOf(m).includes(FINAL));
@@ -79,14 +75,11 @@ async function runTurn(
 			: {}),
 	});
 	runtime.mount({
-		makeTools: (_conv, _voice, _recording, _file, context): Tools => ({
+		makeTools: (_conv, _voice, _recording, _file): Tools => ({
 			probe: defineTool({
 				description: "test tool",
 				input: z.object({}),
-				execute: () => {
-					fill = context?.contextFill() ?? null;
-					return "probe-ok";
-				},
+				execute: () => "probe-ok",
 			}),
 		}),
 	});
@@ -100,7 +93,6 @@ async function runTurn(
 		return {
 			done,
 			reply: last?.role === "assistant" ? textOf(last) : "",
-			fill,
 			foldedMidTurn,
 		};
 	} finally {
@@ -131,25 +123,6 @@ function aiSdkProbe(): EngineProbe {
 		name: "ai-sdk",
 		engine: () => aiSdkEngine,
 		probe: {
-			contextFill: async () => {
-				const r = await runTurn(
-					aiSdkEngine,
-					sdkStep([
-						{
-							kind: "reply",
-							parts: [{ type: "tool-call", toolName: "probe", input: {} }],
-							usage: { input: FILL_TOKENS, output: 1 },
-						},
-						{
-							kind: "reply",
-							parts: [{ type: "tool-call", toolName: "probe", input: {} }],
-							usage: { input: 50, output: 1 },
-						},
-						{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
-					], 10_000),
-				);
-				return r.fill?.used === FILL_TOKENS;
-			},
 			transientRetry: async () =>
 				recovered(
 					await runTurn(
@@ -215,28 +188,6 @@ function claudeProbe(): EngineProbe {
 		name: "claude-code",
 		engine: () => fresh().engines[0]!,
 		probe: {
-			contextFill: async () => {
-				const model = fresh();
-				model.script(
-					{
-						kind: "reply",
-						parts: [{ type: "tool-call", toolName: "probe", input: {} }],
-						usage: { input: FILL_TOKENS, output: 1 },
-					},
-				);
-				model.script(
-					{
-						kind: "reply",
-						parts: [{ type: "tool-call", toolName: "probe", input: {} }],
-						usage: { input: 50, output: 1 },
-					},
-				);
-				model.script(
-					{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
-				);
-				const r = await runTurn(model.engines[0]!, withWindow(model, 10_000));
-				return r.fill?.used === FILL_TOKENS;
-			},
 			transientRetry: async () => {
 				const model = fresh();
 				model.script(

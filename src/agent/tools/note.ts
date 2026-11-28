@@ -10,6 +10,7 @@ import {
 	noteFence,
 	type NoteStore,
 } from "../../notes.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER, noteAccess } from "../../note-owner.ts";
 import type { ProjectStore } from "../../projects.ts";
 
 export interface NoteToolDeps {
@@ -167,15 +168,25 @@ function actionable(err: unknown): { error: string; rev?: number } | null {
 	return null;
 }
 
-function noteView(n: Note, projects: Pick<ProjectStore, "get">): Record<string, unknown> {
+function ownerFields(
+	n: Pick<Note, "projectId" | "botId">,
+	deps: NoteToolDeps,
+	chatBot: string,
+): Record<string, unknown> {
+	const owner = deps.notes.ownerName(n);
 	return {
-		id: n.id,
-		title: n.title,
-		rev: n.rev,
-		project: n.projectId === null ? null : (projects.get(n.projectId)?.name ?? n.projectId),
-		...(n.projectId === null && n.botId === null ? { owner: "Global" } : {}),
-		updated: n.updatedAt,
+		project: n.projectId === null ? null : (deps.projects.get(n.projectId)?.name ?? n.projectId),
+		...(owner === null ? {} : { owner }),
+		...(noteAccess(n, chatBot) === "read" ? { readOnly: true } : {}),
 	};
+}
+
+function noteView(n: Note, deps: NoteToolDeps, chatBot: string): Record<string, unknown> {
+	return { id: n.id, title: n.title, rev: n.rev, ...ownerFields(n, deps, chatBot), updated: n.updatedAt };
+}
+
+function unavailable(id: string): { error: string } {
+	return { error: `note ${id} belongs to another bot; this chat can't use it` };
 }
 
 export const noteTool = (deps: NoteToolDeps) =>
@@ -196,12 +207,17 @@ export const noteTool = (deps: NoteToolDeps) =>
 			}
 			const input = parsed.data;
 			const message = "what" in input ? { what: input.what, reason: input.reason } : {};
+			const chatBot = deps.notes.chatBot(deps.conversation);
+			const blocked = (id: string) => {
+				const note = deps.notes.get(id);
+				return note !== null && noteAccess(note, chatBot) === "none";
+			};
 			try {
 				switch (input.action) {
 					case "list": {
 						const project = input.scope === "all" ? "all" : (deps.projectId ?? "loose");
 						const rows = deps.notes.list({
-							project,
+							...(chatBot === LITTLE_GOBLIN_NOTE_OWNER ? { project } : { reachableBy: chatBot }),
 							includeGlobal: true,
 							...(input.query !== undefined ? { q: input.query } : {}),
 							limit: LIST_LIMIT + 1,
@@ -214,11 +230,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 								id: s.id,
 								title: s.title,
 								rev: s.rev,
-								project:
-									s.projectId === null
-										? null
-										: (deps.projects.get(s.projectId)?.name ?? s.projectId),
-								...(s.projectId === null && s.botId === null ? { owner: "Global" } : {}),
+								...ownerFields(s, deps, chatBot),
 								updated: s.updatedAt,
 								preview: s.preview,
 							})),
@@ -227,6 +239,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 					case "read": {
 						const note = deps.notes.get(input.id);
 						if (note === null) return { error: `no such note: ${input.id}` };
+						if (noteAccess(note, chatBot) === "none") return unavailable(input.id);
 						const offset = input.offset ?? 0;
 						if (offset > note.body.length) {
 							return {
@@ -240,7 +253,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 							(end < note.body.length ? ` Read again with offset=${end} to continue.` : "") +
 							` replace_range start/end are absolute character offsets into the full body — a character at position p in this window sits at offset ${offset} + p.]`;
 						return {
-							note: noteView(note, deps.projects),
+							note: noteView(note, deps, chatBot),
 							content: noteFence({ ...note, body: window }) + footer,
 						};
 					}
@@ -250,11 +263,11 @@ export const noteTool = (deps: NoteToolDeps) =>
 							{ title: input.title, body: input.body, projectId, conversation: deps.conversation, ...message },
 							"agent",
 						);
-						return { note: noteView(note, deps.projects), created: true };
+						return { note: noteView(note, deps, chatBot), created: true };
 					}
 					case "append": {
 						const note = deps.notes.append(input.id, input.text, "agent", deps.conversation, message);
-						return { note: noteView(note, deps.projects) };
+						return { note: noteView(note, deps, chatBot) };
 					}
 					case "replace": {
 						const note = deps.notes.write(
@@ -270,15 +283,17 @@ export const noteTool = (deps: NoteToolDeps) =>
 								expectedRev: input.rev,
 							},
 						);
-						return { note: noteView(note, deps.projects) };
+						return { note: noteView(note, deps, chatBot) };
 					}
 					case "replace_range": {
 						const note = deps.notes.replaceRanges(input.id, input.edits, deps.conversation, message);
-						return { note: noteView(note, deps.projects) };
+						return { note: noteView(note, deps, chatBot) };
 					}
 					case "history":
+						if (blocked(input.id)) return unavailable(input.id);
 						return deps.notes.listEdits(input.id, input.before);
 					case "diff": {
+						if (blocked(input.id)) return unavailable(input.id);
 						const edit = deps.notes.getEdit(input.id, input.rev);
 						if (edit === null) return { error: `no recorded edit at rev ${input.rev}` };
 						if (edit.body === null) return edit;

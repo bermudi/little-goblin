@@ -3589,7 +3589,7 @@ describe("ChatView edit and branch", () => {
     });
   };
 
-  test("edit moves, adds and removes chips while preserving kept parts", async () => {
+  test("edit moves and removes chips while preserving kept parts, with no note picker", async () => {
     const chatPosts: { editMessageId?: string; message: UIMessage }[] = [];
     const original: UIMessage = {
       id: "u-inline-edit",
@@ -3610,6 +3610,7 @@ describe("ChatView edit and branch", () => {
         },
         { type: "text", text: " please" },
         { type: "data-context", data: { id: "ctx-1", keep: true } },
+        { type: "data-chat-note-notices", data: "Note pinned. Reading list." },
       ],
     };
     globalThis.fetch = Object.assign(
@@ -3623,24 +3624,6 @@ describe("ChatView edit and branch", () => {
           });
         }
         if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-        if (url.startsWith("/api/app/notes")) {
-          return jsonResponse({
-            notes: [
-              {
-                id: "n-added",
-                projectId: null,
-                title: "Added",
-                rev: 1,
-                stateRev: 1,
-                pinnedAt: null,
-                archivedAt: null,
-                updatedAt: "2026-01-01T00:00:00Z",
-                preview: "",
-              },
-            ],
-            truncated: false,
-          });
-        }
         if (url === "/api/app/chat") {
           const body = JSON.parse(String(init?.body)) as {
             editMessageId?: string;
@@ -3698,13 +3681,7 @@ describe("ChatView edit and branch", () => {
     );
     expect(remove).not.toBeNull();
     await act(async () => (remove as unknown as { click(): void } | undefined)?.click());
-    await act(async () => {
-      dom.container.querySelector<HTMLButtonElement>('.msg-edit button[aria-label="Attach a note"]')?.click();
-    });
-    await settle(() => dom.container.querySelector('.note-pick-list [data-value="n-added"]') !== null);
-    await act(async () => {
-      dom.container.querySelector<HTMLButtonElement>('.note-pick-list [data-value="n-added"] button')?.click();
-    });
+    expect(dom.container.querySelector('.msg-edit button[aria-label="Attach a note"]')).toBeNull();
     await act(async () => {
       dom.container.querySelector<HTMLButtonElement>(".msg-edit-actions .primary")?.click();
     });
@@ -3712,9 +3689,7 @@ describe("ChatView edit and branch", () => {
     expect(chatPosts).toHaveLength(1);
     expect(chatPosts[0]?.editMessageId).toBe("u-inline-edit");
     expect(chatPosts[0]?.message.parts).toEqual([
-      { type: "text", text: "Look  at " },
-      { type: "data-note", data: { id: "n-added", title: "Added", inline: true } },
-      { type: "text", text: " please" },
+      { type: "text", text: "Look  at  please" },
       { type: "data-note", data: { id: "n-old", title: "Budget", inline: true } },
       { type: "data-context", data: { id: "ctx-1", keep: true } },
     ]);
@@ -4858,110 +4833,6 @@ describe("FoldMark", () => {
     expect(foldAt).toBeGreaterThan(0);
     expect(order[foldAt - 1]).toContain("earliest answer");
     expect(order[foldAt + 1]).toContain("fresh question");
-  });
-});
-
-// The note picker is a floating panel — an outside press or Escape
-// puts it away; a press on the panel or its opener does not (the
-// opener's own click does the toggling).
-describe("NotePicker dismissal", () => {
-  const dom = mountDom();
-
-  const jsonResponse = (body: unknown, status = 200): Response =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
-
-  test("an outside press closes it; the panel and its opener are exempt", async () => {
-    globalThis.fetch = Object.assign(
-      async (input: RequestInfo | URL) => {
-        const url =
-          typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.href
-              : input.url;
-        if (url.startsWith("/api/app/notes"))
-          return jsonResponse({ notes: [], truncated: false });
-        if (url.endsWith("/messages"))
-          return jsonResponse({
-            messages: [],
-            ratings: [],
-            rateableMessageIds: [],
-          });
-        return new Response(JSON.stringify({ error: "unexpected" }), {
-          status: 404,
-        });
-      },
-      { preconnect: dom.realFetch.preconnect },
-    );
-    dom.root = createRoot(dom.container);
-    await act(async () =>
-      dom.root?.render(
-        <ChatView
-          token={null}
-          conversationId="app/chat-01"
-          title={null}
-          seed={null}
-          onSeeded={() => {}}
-        />,
-      ),
-    );
-    const opener = () =>
-      dom.container.querySelector(
-        "button[aria-label='Attach a note']",
-      ) as HTMLButtonElement | null;
-    for (let i = 0; i < 100 && opener() === null; i++) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 15));
-      });
-    }
-    const pick = () => dom.container.querySelector(".note-pick");
-
-    await act(async () => {
-      opener()!.click();
-    });
-    expect(pick()).not.toBeNull();
-
-    // Inside the panel is not outside.
-    await act(() =>
-      pick()!
-        .querySelector("input")!
-        .dispatchEvent(
-          new dom.win.Event("pointerdown", {
-            bubbles: true,
-          }) as unknown as Event,
-        ),
-    );
-    expect(pick()).not.toBeNull();
-
-    // The opener's press is exempt — its click does the toggling.
-    await act(() =>
-      opener()!.dispatchEvent(
-        new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event,
-      ),
-    );
-    expect(pick()).not.toBeNull();
-
-    await act(() =>
-      dom.win.document.body.dispatchEvent(
-        new dom.win.Event("pointerdown", { bubbles: true }),
-      ),
-    );
-    expect(pick()).toBeNull();
-
-    // Escape puts it away too.
-    await act(async () => {
-      opener()!.click();
-    });
-    expect(pick()).not.toBeNull();
-    await act(() =>
-      dom.win.document.dispatchEvent(
-        new dom.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      ),
-    );
-    expect(pick()).toBeNull();
   });
 });
 

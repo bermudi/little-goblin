@@ -2,7 +2,6 @@ import { z } from "zod";
 import { policyOf } from "../agent/tool-policy.ts";
 import { log } from "../log.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer-evidence.ts";
-import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 
 const scriptOutputSchema = z.object({
 	calls: z.array(
@@ -83,7 +82,6 @@ export function noteToolInputRejected(
 export interface ToolOutputDeps {
 	convId: string;
 	evidence: EvidenceLimits | undefined;
-	skillWatch: SkillWatch | undefined;
 	onCompleted(tool: string, input: unknown, result: unknown, failed: boolean): void;
 }
 
@@ -123,23 +121,6 @@ export function noteToolOutput(
 				conversation: deps.convId,
 				toolCallId,
 			});
-		}
-	}
-	if (deps.skillWatch !== undefined) {
-		const tool = call?.tool ?? "";
-		if (policyOf(tool).writesFiles) {
-			for (const skill of attributedSkills(deps.skillWatch, tool, output)) {
-				try {
-					deps.skillWatch.record(deps.convId, skill);
-					log.info("skill write attributed", { conversation: deps.convId, tool, skill });
-				} catch (err) {
-					log.error("skill provenance record failed — turn continues", err, {
-						conversation: deps.convId,
-						tool,
-						skill,
-					});
-				}
-			}
 		}
 	}
 	deps.onCompleted(call?.tool ?? toolCallId, call?.input, output, false);

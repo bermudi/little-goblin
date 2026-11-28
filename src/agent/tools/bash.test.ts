@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../../home-layout.ts";
 import { bashTool } from "./bash.ts";
@@ -15,12 +15,16 @@ interface BashResult {
 }
 
 let home: string;
+let originalHome: string | undefined;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "goblin-bash-"));
+	originalHome = process.env.HOME;
 	process.env.GOBLIN_HOME = home;
 });
 afterEach(() => {
 	delete process.env.GOBLIN_HOME;
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
 	rmSync(home, { recursive: true, force: true });
 });
 
@@ -41,8 +45,8 @@ describe("bash", () => {
 		expect(tool.description).toBe(bashTool("/another-workspace").description);
 		expect(tool.description).not.toBe(ws.description);
 		const commandSentence = " Some of Goblin's tools also run as commands here: `goblin --help` lists them.";
-		expect(bashTool(paths.workspace(), paths.workspace(), true).description.endsWith(commandSentence)).toBe(true);
-		expect(bashTool("/tmp", "/tmp", true).description.endsWith(commandSentence)).toBe(true);
+		expect(bashTool(paths.workspace(), paths.workspace(), { commands: true }).description.endsWith(commandSentence)).toBe(true);
+		expect(bashTool("/tmp", "/tmp", { commands: true }).description.endsWith(commandSentence)).toBe(true);
 	});
 
 	test("returns output and exit code", async () => {
@@ -51,6 +55,108 @@ describe("bash", () => {
 		expect(out.output).toBe("hello\n");
 		expect(out.exit_code).toBe(0);
 		expect(out.truncated).toBeUndefined();
+	});
+
+	test("records SKILL.md command mentions as reads, whatever the exit code", async () => {
+		const root = join(home, "project");
+		const skill = join(root, "skills", "demo", "SKILL.md");
+		const homeSkill = join(home, "home-skills", "demo", "SKILL.md");
+		mkdirSync(join(root, "skills", "demo"), { recursive: true });
+		mkdirSync(join(home, "home-skills", "demo"), { recursive: true });
+		writeFileSync(skill, "demo");
+		writeFileSync(homeSkill, "demo");
+		process.env.HOME = home;
+		const reads: string[] = [];
+		const tool = bashTool(root, root, { onRead: (abs) => reads.push(abs) });
+		await tool.execute({ command: `cat "${skill}"` }, opts);
+		expect(reads).toEqual([skill]);
+		reads.length = 0;
+		await tool.execute({ command: "cat skills/demo/SKILL.md; cat skills/demo/SKILL.md" }, opts);
+		expect(reads).toEqual([skill]);
+		reads.length = 0;
+		if (homedir() === home) {
+			await tool.execute({ command: "cat ~/home-skills/demo/SKILL.md" }, opts);
+			expect(reads).toEqual([homeSkill]);
+		}
+		reads.length = 0;
+		await tool.execute({ command: "cat skills/demo/SKILL.md >/dev/null; exit 2" }, opts);
+		expect(reads).toEqual([skill]);
+		reads.length = 0;
+		await tool.execute({ command: "echo ordinary" }, opts);
+		expect(reads).toEqual([]);
+		const spaced = join(home, "spaced home", "skills", "demo", "SKILL.md");
+		mkdirSync(join(home, "spaced home", "skills", "demo"), { recursive: true });
+		writeFileSync(spaced, "demo");
+		await tool.execute({ command: `cat "${spaced}"; cat '${spaced}'` }, opts);
+		expect(reads).toEqual([spaced]);
+	});
+
+	test("records skill edits and proposals, but not new catalog folders, deletions, or symlink targets", async () => {
+		const root = join(home, "project");
+		const skills = join(root, "skills");
+		const proposed = join(root, "proposed");
+		mkdirSync(skills, { recursive: true });
+		mkdirSync(proposed, { recursive: true });
+		const records: string[] = [];
+		const tool = bashTool(root, root, {
+			skillWrites: { dirs: [skills, proposed], conversation: "c", record: (name) => records.push(name) },
+		});
+		const run = async (command: string) => tool.execute({ command }, opts);
+		await run("mkdir -p skills/demo; echo x > skills/demo/SKILL.md");
+		expect(records).toEqual([]);
+		await run("echo changed >> skills/demo/SKILL.md");
+		expect(records).toEqual(["demo"]);
+		records.length = 0;
+		await run("mkdir -p proposed/y; echo y > proposed/y/SKILL.md");
+		expect(records).toEqual(["y"]);
+		records.length = 0;
+		mkdirSync(join(proposed, "x"), { recursive: true });
+		writeFileSync(join(proposed, "x", "SKILL.md"), "x\n");
+		await run("mv proposed/x skills/x");
+		expect(records).toEqual([]);
+		await run("rm -rf skills/x");
+		mkdirSync(join(proposed, "x"), { recursive: true });
+		writeFileSync(join(proposed, "x", "SKILL.md"), "x\n");
+		await run("cp -r proposed/x skills/x");
+		expect(records).toEqual([]);
+		await run("mkdir -p clone/z; echo z > clone/z/SKILL.md; cp -r clone/z skills/z");
+		expect(records).toEqual([]);
+		await run("true");
+		expect(records).toEqual([]);
+		await run("rm -rf skills/x");
+		await run("rm -rf skills/demo");
+		expect(records).toEqual([]);
+		mkdirSync(join(skills, "demo"), { recursive: true });
+		writeFileSync(join(skills, "demo", "SKILL.md"), "x\n");
+		await run("echo hi >> skills/demo/SKILL.md; exit 3");
+		expect(records).toEqual(["demo"]);
+		records.length = 0;
+		await run("mkdir -p outside/target; echo s > outside/target/SKILL.md; ln -s ../outside/target skills/linked");
+		expect(records).toEqual([]);
+	});
+
+	test("files vanishing in another skill during a snapshot do not drop this call's writes", async () => {
+		const root = join(home, "project");
+		const skills = join(root, "skills");
+		const proposed = join(root, "proposed");
+		mkdirSync(join(skills, "churn"), { recursive: true });
+		mkdirSync(proposed, { recursive: true });
+		const churner = Bun.spawn(["/bin/bash", "-c", "while :; do for i in $(seq 1 200); do : > f$i; done; rm -f f*; done"], {
+			cwd: join(skills, "churn"),
+		});
+		try {
+			const records: string[] = [];
+			const tool = bashTool(root, root, {
+				skillWrites: { dirs: [skills, proposed], conversation: "c", record: (name) => records.push(name) },
+			});
+			for (let i = 0; i < 20; i++) {
+				await tool.execute({ command: `mkdir -p proposed/w${i}; echo hi > proposed/w${i}/SKILL.md` }, opts);
+			}
+			expect(Array.from({ length: 20 }, (_, i) => `w${i}`).filter((name) => !records.includes(name))).toEqual([]);
+		} finally {
+			churner.kill();
+			await churner.exited;
+		}
 	});
 
 	test("a flooded stream is reported as truncated, not silently cut", async () => {

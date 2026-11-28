@@ -55,6 +55,32 @@ then change the note again and check that the next history row has that reason.
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select rev, author_bot_id, what, reason from note_edits order by note_id, rev'
 ```
 
+## Chat pins
+
+Create a fake note with a distinctive title and body. Send a message to
+start a roll, open the composer's **Notes** button (beside Attach), and
+search for that note by a whole word. Pin it and check the button's count
+and its hover list of pinned names. The chat header has no Notes button. Send another message and check the
+model request or its stored input for the pin notice. The title, ID, and
+revision appear there. The distinctive body is absent.
+
+Edit the note with a reason and return to the chat. Under **Notes**, the
+pinned row says who edited it; hover that line for the change and reason. Send a message, then send another without editing.
+The first new input has the actor, change, and reason. The second has no new
+notice. Previous input retains its prior notices. Unpin from the panel and
+check that the next input reports it once. Pin again, then archive the note
+and check for the unavailable notice and the cleared count. Restore the note
+and pin it again. Use the [rolling journey](rolling.md) to start another roll
+and confirm its count is empty. An ordinary chat keeps a separate pin list.
+At phone width the + button shows a dot and its menu reads
+**Notes · N pinned**, which opens a sheet.
+
+A new side chat stages pins before the first send: pin a note, send, then
+check `chat_note_pins` for the new conversation and its first input for the
+pin notice. Little Goblin's chat on a fresh instance (`/app/rolling`, before
+any message) stages the same way. **Chat with this note** on a note page lands on the new-chat
+composer with that note staged and creates nothing until you send.
+
 ## Gotchas
 
 Saving isn't instant, so wait before reading the row.

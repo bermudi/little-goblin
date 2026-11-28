@@ -10,6 +10,7 @@ import { log } from "./log.ts";
 import { noteBodyChange, type NoteEdit, type NoteEditMessage, type NoteEditMeta, type NoteEditPage } from "./note-edit.ts";
 import {
 	LITTLE_GOBLIN_NOTE_OWNER,
+	noteAccess,
 	type NoteBatchAction,
 	type NoteOwner,
 	type NoteSelection,
@@ -159,6 +160,7 @@ export interface NoteStore {
 		project?: string | "loose" | "all" | undefined;
 		owner?: NoteOwner | undefined;
 		includeGlobal?: boolean | undefined;
+		reachableBy?: string | undefined;
 		q?: string | undefined;
 		archived?: boolean | undefined;
 		limit?: number | undefined;
@@ -209,6 +211,8 @@ export interface NoteStore {
 	delete(id: string): void;
 	batch(selection: NoteSelection[], action: NoteBatchAction): void;
 	index(projectId: string, cap?: number): { id: string; title: string }[];
+	chatBot(conversation: string): string;
+	ownerName(note: Pick<Note, "projectId" | "botId">): string | null;
 }
 
 // Driven by openStore right after ensureProjectsSchema — project_id
@@ -339,11 +343,11 @@ interface EditMetaRow {
 
 type EditRow = EditMetaRow & { title_change: string | null; body_change: string | null };
 
-function toEditMeta(row: EditMetaRow): NoteEditMeta {
+function toEditMeta(row: EditMetaRow, botName: (id: string) => string): NoteEditMeta {
 	return {
 		rev: row.rev,
 		at: row.at,
-		author: row.author_bot_id === null ? "operator" : { botId: row.author_bot_id },
+		author: row.author_bot_id === null ? "operator" : { botId: row.author_bot_id, name: botName(row.author_bot_id) },
 		what: row.what,
 		reason: row.reason,
 	};
@@ -435,6 +439,35 @@ export function openNotes(
 		}
 	}
 
+	function chatBot(conversation: string): string {
+		return store.bots.membership(conversation)?.botId ?? LITTLE_GOBLIN_NOTE_OWNER;
+	}
+
+	function botName(id: string): string {
+		return id === LITTLE_GOBLIN_NOTE_OWNER ? "Little Goblin" : (store.bots.name(id) ?? id);
+	}
+
+	function ownerName(note: Pick<Note, "projectId" | "botId">): string | null {
+		if (note.projectId !== null) return null;
+		return note.botId === null ? "Global" : botName(note.botId);
+	}
+
+	function checkAgentWrite(note: Note, conversation: string): void {
+		const access = noteAccess(note, chatBot(conversation));
+		if (access === "write") return;
+		log.info("note write refused", { note: note.id, conversation, access });
+		throw new NoteInputError(
+			access === "read"
+				? `note ${note.id} belongs to ${ownerName(note)}; this chat can read it but not edit it`
+				: `note ${note.id} belongs to another bot; this chat can't use it`,
+		);
+	}
+
+	function checkBotOwner(botId: string | null): void {
+		if (botId === null || botId === LITTLE_GOBLIN_NOTE_OWNER) return;
+		if (store.bots.get(botId) === null) throw new NoteInputError(`no such bot: ${botId}`);
+	}
+
 	function recordEdit(previous: Pick<Note, "title" | "body">, next: Note, message: NoteWriteOptions) {
 		const title = previous.title === next.title ? null : { before: previous.title, after: next.title };
 		const body = noteBodyChange(previous.body, next.body);
@@ -468,6 +501,9 @@ export function openNotes(
 		opts: NoteWriteOptions,
 	): Note {
 		const current = mustGet(id);
+		if (source === "agent" && opts.conversation !== undefined) {
+			checkAgentWrite(current, opts.conversation);
+		}
 		if (current.archivedAt !== null) {
 			throw new NoteInputError("note is archived");
 		}
@@ -636,6 +672,9 @@ export function openNotes(
 					clauses.push("n.project_id IS NULL AND n.bot_id = ?");
 					params.push(filter.owner.botId);
 				}
+			} else if (filter.reachableBy !== undefined) {
+				clauses.push("n.project_id IS NULL AND (n.bot_id IS NULL OR n.bot_id = ?)");
+				params.push(filter.reachableBy);
 			} else if (filter.project !== undefined && filter.project !== "all") {
 				if (filter.project === "loose") clauses.push("n.project_id IS NULL");
 				else {
@@ -695,6 +734,7 @@ export function openNotes(
 		},
 		replaceRanges(id, edits, conversation, message) {
 			const current = mustGet(id);
+			if (conversation !== undefined) checkAgentWrite(current, conversation);
 			const sorted = [...edits].sort((a, b) => a.start - b.start);
 			const refuse = (reason: string): never => {
 				log.info("note range refused", { note: id, conversation: conversation ?? null, reason });
@@ -769,13 +809,13 @@ export function openNotes(
 			if (qExists.get(id) === null) throw new NoteInputError(`no such note: ${id}`);
 			const limit = 50;
 			const rows = qEditMetas.all(id, before, limit + 1);
-			const edits = rows.slice(0, limit).map(toEditMeta);
+			const edits = rows.slice(0, limit).map((row) => toEditMeta(row, botName));
 			return { edits, before: rows.length > limit ? edits.at(-1)!.rev : null };
 		},
 		getEdit(id, rev) {
 			const row = qEdit.get(id, rev);
 			return row === null ? null : {
-				...toEditMeta(row),
+				...toEditMeta(row, botName),
 				title: row.title_change === null ? null : JSON.parse(row.title_change) as NoteEdit["title"],
 				body: row.body_change === null ? null : JSON.parse(row.body_change) as NoteEdit["body"],
 			};
@@ -788,8 +828,9 @@ export function openNotes(
 	},
 	batch(selection, batch) {
 		db.transaction(() => {
-			if (batch.action === "move" && "projectId" in batch.owner) {
-				checkProjectId(batch.owner.projectId);
+			if (batch.action === "move") {
+				if ("projectId" in batch.owner) checkProjectId(batch.owner.projectId);
+				else checkBotOwner(batch.owner.botId);
 			}
 			for (const { id, stateRev } of selection) {
 				const note = get(id);
@@ -818,5 +859,7 @@ export function openNotes(
 		index(projectId, cap = 50) {
 			return qIndex.all(projectId, cap);
 		},
+		chatBot,
+		ownerName,
 	};
 }

@@ -13,7 +13,6 @@ import { bashTool } from "./bash.ts";
 import { fetchTool } from "./fetch.ts";
 import { policyOf } from "../tool-policy.ts";
 import { bindScriptDispatch, withScript } from "./script.ts";
-import { readFileTool } from "./read.ts";
 
 interface Out {
 	text: string;
@@ -59,6 +58,21 @@ let home: string;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "goblin-script-"));
 	process.env.GOBLIN_HOME = home;
+});
+
+test("a script call to bash records skill writes", async () => {
+	const skills = join(home, "skills");
+	const records: string[] = [];
+	const tools = composed({
+		bash: bashTool(home, home, {
+			skillWrites: { dirs: [skills, join(home, "proposed")], conversation: "c", record: (name) => records.push(name) },
+		}),
+	});
+	const out = await exec(scriptToolOf(tools), {
+		code: `await tools.bash({ command: "mkdir -p proposed/demo; echo x > proposed/demo/SKILL.md" });`,
+	});
+	expect(out.error).toBeUndefined();
+	expect(records).toEqual(["demo"]);
 });
 afterEach(() => {
 	setLogFile(null);
@@ -509,31 +523,25 @@ return "tail marker";`,
 	const full = readFileSync(file, "utf8");
 	expect(full).toContain("line 300 ");
 	expect(full).toContain("tail marker");
-	// The footer's named recovery must work end to end: read_file opens
-	// the spill it names.
-	const opened = await (
-		readFileTool(home) as unknown as {
-			execute: (i: unknown, o: unknown) => Promise<{ error?: string; content?: string }>;
-		}
-	).execute({ path: file }, { toolCallId: "tc-rf", messages: [], context: {} });
-	expect(opened.error).toBeUndefined();
-	expect(opened.content).toContain("line 0 ");
+	const opened = await bashTool(home).execute(
+		{ command: `sed -n '1,2000p' "${file}"` },
+		{ toolCallId: "tc-bash" },
+	);
+	if (!("output" in opened)) throw new Error(opened.error);
+	expect(opened.output).toContain("line 0 ");
 });
 
-test("a spill past read_file's cap names the bash fallback — never a read_file call that refuses", async () => {
+test("a large spill names bash paging", async () => {
 	const tools = composed({ bash: counter(() => "ok") });
 	const out = await exec(scriptToolOf(tools), {
 		code: `text("x".repeat(9_000_000)); return "tail marker";`,
 	});
 	expect(out.text).toContain("[TRUNCATED");
 	expect(out.text).toContain("tail marker");
-	// read_file refuses files over 8 MiB before paging — the footer must
-	// not send the model down that dead end.
-	expect(out.text).not.toContain("read_file with path=");
 	const file = /saved to: (\S+)/.exec(out.text)?.[1] ?? "";
 	expect(file.startsWith(join(home, "state", "scriptcache"))).toBe(true);
 	expect(existsSync(file)).toBe(true);
-	expect(out.text).toContain(`sed -n '1,2000p' "${file}"`);
+	expect(out.text).toContain(`sed -n '1,2000p' '${file}'`);
 }, 20_000);
 
 test("a failed output spill still returns the window — the footer reports the lost save", async () => {

@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { buildLearnPrompt } from "../learn.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
+import { CHAT_NOTE_NOTICE_PART, NotePinsRefused } from "../chat-note-pins.ts";
 import {
 	ATTACHMENT_PART,
 	attachmentRefSchema,
@@ -40,6 +41,11 @@ const chatBody = z
 		conversationId: conversationIdSchema.optional(),
 		rolling: z.literal(true).optional(),
 		initialModelSettings: modelSettingsBody.optional(),
+		pinnedNoteIds: z
+			.array(z.string().min(1).max(200))
+			.max(50)
+			.refine((ids) => new Set(ids).size === ids.length, "pinnedNoteIds must be unique")
+			.optional(),
 		whenBusy: z.enum(["steer", "followUp"]).optional(),
 		retry: z.literal(true).optional(),
 		// Edit-in-place: the durable user event this message replaces. The
@@ -61,7 +67,7 @@ const chatBody = z
 							// is persisted, then fails every later turn at
 							// standardizePrompt — the poison-pill shape the
 							// boundary must refuse before persistence.
-							if (p.type === TOOLS_PART || p.type === INSERTS_PART) {
+							if (p.type === TOOLS_PART || p.type === INSERTS_PART || p.type === CHAT_NOTE_NOTICE_PART) {
 								ctx.addIssue({
 									code: "custom",
 									path: [i, "type"],
@@ -153,6 +159,13 @@ const chatBody = z
 			}
 			return;
 		}
+		if (d.pinnedNoteIds !== undefined) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["pinnedNoteIds"],
+				message: "pinnedNoteIds is only valid for a rolling send",
+			});
+		}
 		if (d.initialModelSettings !== undefined) {
 			ctx.addIssue({
 				code: "custom",
@@ -204,14 +217,18 @@ export async function handleChatRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
-	const appLane = (initialSettings?: ModelSettings): RollLane => ({
+	const appLane = (initialSettings?: ModelSettings, pinnedNoteIds: string[] = []): RollLane => ({
 		current: () => store.currentAppRoll(),
 		mint: () =>
-			store.rollApp(
-				initialSettings === undefined
-					? deps.configRef.current
-					: { ...deps.configRef.current, ...initialSettings },
-			),
+			store.db.transaction(() => {
+				const conv = store.rollApp(
+					initialSettings === undefined
+						? deps.configRef.current
+						: { ...deps.configRef.current, ...initialSettings },
+				);
+				store.chatNotePins.pinAll(conv.id, pinnedNoteIds);
+				return conv;
+			})(),
 		logs: {
 			rolled: "app lane rolled",
 			continued: "app lane continued past gap",
@@ -575,18 +592,35 @@ export async function handleChatRoute(
 					);
 				}
 			}
-			const lane = appLane(initialSettings);
+			const pinnedNoteIds = parsed.data.pinnedNoteIds ?? [];
+			if (pinnedNoteIds.length > 0 && store.currentAppRoll() !== null) {
+				return Response.json(
+					{ error: "Little Goblin's chat already exists — pin notes from its composer" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			const lane = appLane(initialSettings, pinnedNoteIds);
 			const rollDeps: RollDeps = {
 				store,
 				runtime,
 				gapMinutes: () => deps.configRef.current.telegram.dmGapMinutes,
 				...(deps.gate !== undefined ? { gate: deps.gate } : {}),
 			};
-			const result = await routeLaneMessage(
-				rollDeps,
-				lane,
-				projectRollText(message.parts as Message["parts"]),
-			);
+			let result: Awaited<ReturnType<typeof routeLaneMessage>>;
+			try {
+				result = await routeLaneMessage(
+					rollDeps,
+					lane,
+					projectRollText(message.parts as Message["parts"]),
+				);
+			} catch (err) {
+				if (!(err instanceof NotePinsRefused)) throw err;
+				log.warn("app rolling send refused: notes not pinnable", { refused: err.noteIds });
+				return Response.json(
+					{ error: "Some notes can't be pinned in this chat", noteIds: err.noteIds },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
 			convId = result.conv.id;
 			conv = result.conv;
 			rolled = result.rolled;
@@ -594,6 +628,7 @@ export async function handleChatRoute(
 				conversation: convId,
 				rolled,
 				decidedBy: result.decidedBy,
+				pinnedNotes: pinnedNoteIds.length,
 			});
 		}
 		if (conv === null) throw new Error(`rolling route did not resolve a conversation`);

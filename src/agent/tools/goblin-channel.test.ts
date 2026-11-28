@@ -34,7 +34,7 @@ function setup(
 	const notes = openNotes(store, { projects });
 	const note = noteTool({ notes, projects, conversation: "test", projectId: null });
 	const tools = {
-		bash: bashTool("/tmp", "/tmp", true),
+		bash: bashTool("/tmp", "/tmp", { commands: true }),
 		...(allowed ? {
 			note: {
 				...note,
@@ -165,7 +165,7 @@ describe("goblin command channel at the bash boundary", () => {
 	});
 
 	test("an unbound commands-on bash still runs and reports the missing command binding", async () => {
-		const tool = bashTool("/tmp", "/tmp", true);
+		const tool = bashTool("/tmp", "/tmp", { commands: true });
 		const result = await tool.execute!(
 			{ command: "printf shell; goblin note list" },
 			{ toolCallId: "unbound" },

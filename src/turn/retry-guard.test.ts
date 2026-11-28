@@ -83,10 +83,10 @@ describe("classifyRetry", () => {
 	});
 
 	test("a matching safe read executes afresh while every other tool name conflicts", () => {
-		for (const name of ["read_file", "history_search", "memory_search"]) {
+		for (const name of ["history_search", "memory_search"]) {
 			expect(classifyRetry(name, [entry("completed")])).toEqual({ kind: "execute" });
 		}
-		for (const name of ["bash", "script", "fetch", "web_fetch", "unknown_tool"]) {
+		for (const name of ["bash", "script", "fetch", "web_fetch", "read_file", "unknown_tool"]) {
 			expect(classifyRetry(name, [entry("completed")]).kind).toBe("refuse");
 		}
 	});

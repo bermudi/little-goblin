@@ -2,12 +2,74 @@ import { expect, test } from "bun:test";
 import { noteTool } from "../agent/tools/note.ts";
 import { appAddress, appIdOf } from "../conversation-address.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
-import { deferred } from "../testkit.ts";
+import { deferred, waitUntil } from "../testkit.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { handleBotsRoute } from "./app-bots.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
-import type { AppBot } from "./app-wire.ts";
+import type { AppBot, ChatNotePinsView } from "./app-wire.ts";
 
 const jsonHeaders = { "content-type": "application/json" };
+
+test("chat note pins lost on promotion stay removed after move back", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 3; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { call, store, notes, runtime, http } = setup({ token: APP_TOKEN_NAME, scriptedModel: script });
+	try {
+		const chat = store.resolve(appAddress("pin-desk"), "/workshop");
+		const path = "/api/app/conversations/pin-desk";
+		const local = notes.create({ title: "Local reading list" });
+		const global = notes.create({ title: "Global checklist" });
+		notes.batch([{ id: global.id, stateRev: global.stateRev }], { action: "move", owner: { botId: null } });
+		const pin = (noteId: string) => call(`${path}/note-pins`, {
+			method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ noteId, pinned: true }),
+		});
+		const pins = async () => {
+			const list = await (await call(`${path}/note-pins`)).json() as ChatNotePinsView;
+			return list.pins.map(({ id }) => id);
+		};
+		const turn = async (n: number, text: string) => {
+			const response = await call("/api/app/chat", {
+				method: "POST", headers: jsonHeaders, body: JSON.stringify({
+					conversationId: chat.id,
+					message: { id: `u${n}`, role: "user", parts: [{ type: "text", text }] },
+				}),
+			});
+			expect(response.status).toBe(202);
+			await waitUntil(() => store.history(chat.id).length === n * 2 && !runtime.busy(chat.id), "reply persisted");
+			return script.requests().at(-1)!;
+		};
+		expect((await pin(local.id)).status).toBe(200);
+		expect((await pin(global.id)).status).toBe(200);
+		const first = await turn(1, "Before promotion");
+		expect(first).toContain("Local reading list");
+		expect(first).toContain("Global checklist");
+		expect(first.match(/Note pinned\./g)).toHaveLength(2);
+		const converted = await call(`${path}/convert-to-bot`, {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Desk" }),
+		});
+		expect(converted.status).toBe(201);
+		const bot = (await converted.json()) as AppBot;
+		expect(await pins()).toEqual([global.id]);
+		expect((await call(`/api/app/bots/${bot.id}/move-back`, {
+			method: "POST", headers: jsonHeaders, body: "{}",
+		})).status).toBe(200);
+		expect(await pins()).toEqual([global.id]);
+		const second = await turn(2, "After move back");
+		expect(second.match(/is no longer available/g)).toHaveLength(1);
+		expect(second).toContain(`${local.id}\\" is no longer available`);
+		expect(second.match(/Note pinned\./g)).toHaveLength(2);
+		const third = await turn(3, "One more turn");
+		expect(third.match(/is no longer available/g)).toHaveLength(1);
+		expect(third.match(/Note pinned\./g)).toHaveLength(2);
+		expect(await pins()).toEqual([global.id]);
+		expect((await pin(local.id)).status).toBe(200);
+		expect(await pins()).toEqual([global.id, local.id]);
+	} finally {
+		http.stop();
+		await runtime.shutdown();
+		store.close();
+	}
+});
 
 test("converting a side chat keeps its transcript, prompt, and settings through retries", async () => {
 	const { call, store, http, projects } = setup({ token: APP_TOKEN_NAME });
@@ -146,14 +208,18 @@ test("a note created through the chat tool follows its bot and blocks move back"
 		expect(await create("After conversion")).toMatchObject({ created: true });
 		const [before] = notes.list({ q: "Before conversion" });
 		const [after] = notes.list({ q: "After conversion" });
+		const pinPath = "/api/app/conversations/desk/note-pins";
+		const pin = await call(pinPath, {
+			method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ noteId: after!.id, pinned: true }),
+		});
+		expect(pin.status).toBe(200);
 		expect(await tool.execute({ action: "append", id: before!.id, text: "Added from Desk" }, { toolCallId: "append" }))
-			.toMatchObject({ note: { rev: 2 } });
+			.toEqual({ error: `note ${before!.id} belongs to another bot; this chat can't use it` });
 		expect((await (await call(`/api/app/notes/${before!.id}/edits`)).json())).toMatchObject({ edits: [
-			{ rev: 2, author: { botId: bot.id } },
-			{ rev: 1, author: { botId: LITTLE_GOBLIN_NOTE_OWNER } },
+			{ rev: 1, author: { botId: LITTLE_GOBLIN_NOTE_OWNER, name: "Little Goblin" } },
 		] });
 		expect((await (await call(`/api/app/notes/${after!.id}/edits`)).json())).toMatchObject({ edits: [
-			{ rev: 1, author: { botId: bot.id } },
+			{ rev: 1, author: { botId: bot.id, name: "Desk" } },
 		] });
 
 		const listed = await (await call("/api/app/notes")).json();
@@ -168,6 +234,13 @@ test("a note created through the chat tool follows its bot and blocks move back"
 			method: "POST", headers: jsonHeaders, body: "{}",
 		});
 		expect(refused.status).toBe(409);
+		expect(await (await call(pinPath)).json()).toMatchObject({ pins: [{ id: after!.id }] });
+		notes.batch([{ id: after!.id, stateRev: after!.stateRev }], { action: "move", owner: { botId: null } });
+		const moved = await call(`/api/app/bots/${bot.id}/move-back`, {
+			method: "POST", headers: jsonHeaders, body: "{}",
+		});
+		expect(moved.status).toBe(200);
+		expect(await (await call(pinPath)).json()).toMatchObject({ pins: [{ id: after!.id, owner: "Global" }] });
 	} finally {
 		http.stop();
 		store.close();

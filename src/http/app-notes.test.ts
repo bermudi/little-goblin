@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { appAddress } from "../conversation-address.ts";
 import { setLogLevel } from "../log.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { NOTE_BODY_MAX } from "../notes.ts";
 import type { NoteEdit, NoteEditPage } from "../note-edit.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
-import type { AppNote, AppNoteBatch, AppNoteList } from "./app-wire.ts";
+import type { AppNote, AppNoteBatch, AppNoteList, ChatNotePinCandidates, ChatNotePinsView } from "./app-wire.ts";
 
 describe("app notes", () => {
 	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
@@ -26,6 +27,74 @@ describe("app notes", () => {
 		});
 	const create = (call: ReturnType<typeof setup>["call"], body: unknown) =>
 		postJson(call, "/api/app/notes", body);
+
+	test("chat note pins stay in their chat and survive compaction, with a fresh roll empty", async () => {
+		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const roll = store.rollApp(configRef.current);
+			const pathFor = (id: string) => `/api/app/conversations/${id.slice(4)}/note-pins`;
+			const path = pathFor(roll.id);
+			const project = projects.create({ name: "Private project" });
+			const privateNote = (await (await create(call, { title: "Reading private", projectId: project.id })).json()) as AppNote;
+			const note = (await (await create(call, { title: "Reading list" })).json()) as AppNote;
+			const list = async (url: string) => await (await call(url)).json() as ChatNotePinsView;
+			expect((await list(`${path}?q=reading`)).matches.map(({ id }) => id)).toEqual([note.id]);
+			expect((await patchJson(call, path, { noteId: privateNote.id, pinned: true })).status).toBe(404);
+			expect((await patchJson(call, path, { noteId: note.id, pinned: true })).status).toBe(200);
+			expect((await list(path)).pins).toMatchObject([{ id: note.id, rev: 1, owner: "Little Goblin" }]);
+
+			const [seq] = store.append(roll.id, [{ id: "before-fold", role: "user", parts: [{ type: "text", text: "Hello" }] }]);
+			store.setCompaction(roll.id, { boundarySeq: seq!, summary: "Summary", tokensBefore: 10, model: "test/fake", createdAt: new Date().toISOString() });
+			expect((await list(path)).pins.map(({ id }) => id)).toEqual([note.id]);
+			const next = store.rollApp(configRef.current);
+			expect((await list(pathFor(next.id))).pins).toEqual([]);
+			expect((await patchJson(call, path, { noteId: note.id, pinned: true })).status).toBe(404);
+			expect((await patchJson(call, pathFor(next.id), { noteId: note.id, pinned: true })).status).toBe(200);
+			expect((await patchJson(call, pathFor(next.id), { noteId: note.id, pinned: false })).status).toBe(200);
+			expect((await list(pathFor(next.id))).pins).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a new chat is created with its pinned notes, refused notes create nothing, and candidates follow the scope", async () => {
+		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = projects.create({ name: "Private project" });
+			const privateNote = (await (await create(call, { title: "Reading private", projectId: project.id })).json()) as AppNote;
+			const note = (await (await create(call, { title: "Reading list" })).json()) as AppNote;
+			const archived = (await (await create(call, { title: "Reading old" })).json()) as AppNote;
+			expect((await patchJson(call, `/api/app/notes/${archived.id}`, { archived: true })).status).toBe(200);
+			const candidates = async (query: string) =>
+				((await (await call(`/api/app/note-pin-candidates?${query}`)).json()) as ChatNotePinCandidates).matches.map(({ id }) => id);
+			expect(await candidates("q=reading")).toEqual([note.id]);
+			expect(await candidates(`projectId=${project.id}&q=`)).toEqual([privateNote.id]);
+
+			const created = await postJson(call, "/api/app/conversations", { id: "pinned-chat", pinnedNoteIds: [note.id] });
+			expect(created.status).toBe(201);
+			const pins = (await (await call("/api/app/conversations/pinned-chat/note-pins")).json()) as ChatNotePinsView;
+			expect(pins.pins.map(({ id }) => id)).toEqual([note.id]);
+
+			const refused = await postJson(call, "/api/app/conversations", {
+				id: "refused-chat",
+				pinnedNoteIds: [note.id, privateNote.id, archived.id],
+			});
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toMatchObject({ noteIds: [privateNote.id, archived.id] });
+			expect(store.get("app/refused-chat")).toBeNull();
+			expect(store.get("app/pinned-chat")).not.toBeNull();
+
+			const inProject = await postJson(call, "/api/app/conversations", {
+				id: "project-chat",
+				projectId: project.id,
+				pinnedNoteIds: [privateNote.id],
+			});
+			expect(inProject.status).toBe(201);
+			expect((await postJson(call, "/api/app/conversations", { pinnedNoteIds: [note.id, note.id] })).status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
 
 	test("edit history records every content autosave while restore versions stay grouped", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
@@ -95,6 +164,41 @@ describe("app notes", () => {
 			expect((await batch(stillArchived, { action: "delete" })).status).toBe(200);
 			expect((await call(`/api/app/notes/${first.id}`)).status).toBe(404);
 			expect((await readList("owner=global")).map((note) => note.id)).toEqual([second.id]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a bot is a note owner filter and move target, and an unknown or retired bot is refused", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const chat = store.resolve(appAddress("trip"), "/workshop");
+			const conversion = store.bots.convertSideChat(chat.id, "Trip Planner", 0, () => false);
+			if (conversion.kind !== "converted") throw new Error(`conversion ${conversion.kind}`);
+			const bot = conversion.bot;
+			const note = (await (await create(call, { title: "Lisbon itinerary" })).json()) as AppNote;
+			const readList = async (query: string) =>
+				((await (await call(`/api/app/notes?${query}`)).json()) as AppNoteList).notes;
+			const move = (target: AppNote | AppNoteList["notes"][number], botId: string) =>
+				postJson(call, "/api/app/notes/batch", {
+					selection: [{ id: target.id, stateRev: target.stateRev }],
+					change: { action: "move", owner: { botId } },
+				});
+			expect(await readList(`owner=${bot.id}`)).toEqual([]);
+			expect((await call("/api/app/notes?owner=no-such-bot")).status).toBe(422);
+			expect((await move(note, "no-such-bot")).status).toBe(422);
+			expect((await move(note, bot.id)).status).toBe(200);
+			const owned = await readList(`owner=${bot.id}`);
+			expect(owned.map(({ id, botId }) => ({ id, botId }))).toEqual([{ id: note.id, botId: bot.id }]);
+			expect(store.bots.get(bot.id)?.canMoveBack).toBe(false);
+
+			const back = await move(owned[0]!, LITTLE_GOBLIN_NOTE_OWNER);
+			expect(back.status).toBe(200);
+			expect(store.bots.moveBack(bot.id, () => false).kind).toBe("moved");
+			const [loose] = await readList(`owner=${LITTLE_GOBLIN_NOTE_OWNER}`);
+			expect((await move(loose!, bot.id)).status).toBe(422);
+			expect((await call(`/api/app/notes?owner=${bot.id}`)).status).toBe(422);
+			expect((await readList(`owner=${LITTLE_GOBLIN_NOTE_OWNER}`)).map(({ id }) => id)).toEqual([note.id]);
 		} finally {
 			http.stop();
 		}

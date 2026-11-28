@@ -94,7 +94,7 @@ export function tempSkillBodyText(
 		`The operator explicitly invoked a TEMP skill fetched from ${descriptor.sourceUrl}.`,
 		`It is NOT installed in the catalog. System One scored it: ${verdict}.`,
 		`The whole skill directory is staged at ${dir} — SKILL.md below; its scripts and`,
-		`supporting files are reachable there with read_file and bash. Follow it for this request:`,
+		`supporting files are reachable there with bash. Follow it for this request:`,
 		"",
 		body,
 	].join("\n");

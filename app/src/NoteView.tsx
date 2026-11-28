@@ -8,11 +8,13 @@ import {
 	type RefObject,
 } from "react";
 import type {
+	AppBot,
 	AppNote,
 	AppNoteVersion,
 	AppNoteVersionMeta,
 	AppProject,
 } from "../../src/http/app-wire.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER } from "../../src/note-owner.ts";
 import {
 	ApiError,
 	NoteConflictError,
@@ -251,6 +253,7 @@ export function NoteView({
 	token,
 	noteId,
 	projects,
+	bots = [],
 	onChat,
 	onDeleted,
 	onDirtyChange,
@@ -260,6 +263,7 @@ export function NoteView({
 	token: string | null;
 	noteId: string;
 	projects: AppProject[];
+	bots?: AppBot[];
 	// Starts a conversation carrying this note as an attachment —
 	// bound to the note's project when it has one.
 	onChat: (note: AppNote) => void | Promise<void | boolean>;
@@ -721,7 +725,7 @@ export function NoteView({
 				<label className="note-proj">
 					<span>Owner</span>
 					<select
-						value={note.projectId ?? (note.botId === null ? "global" : "")}
+						value={note.projectId ?? (note.botId === null ? "global" : note.botId === undefined || note.botId === LITTLE_GOBLIN_NOTE_OWNER ? "" : note.botId)}
 						disabled={busy || rewriteBusy || chatBusy}
 						aria-label="Note owner"
 						onChange={(e) =>
@@ -730,6 +734,11 @@ export function NoteView({
 					>
 						<option value="">Little Goblin</option>
 						{note.projectId === null && note.botId === null && <option value="global" disabled>Global</option>}
+						{note.projectId === null && note.botId != null && note.botId !== LITTLE_GOBLIN_NOTE_OWNER && (
+							<option value={note.botId} disabled>
+								{bots.find((bot) => bot.id === note.botId)?.name ?? "Bot"}
+							</option>
+						)}
 						{projects.map((p) => (
 							<option key={p.id} value={p.id}>
 								{p.name}

@@ -10,8 +10,7 @@ model.
 holds one descriptor per tool (`TOOL_POLICY`, typed over the closed `TOOL_NAMES`
 tuple): `replay` (safe reads re-execute under the retry guard; everything else
 refuses as an unowned repeat), `output` (untrusted taints a script's output),
-`writesFiles` / `composes` (skill-provenance attribution and nested-call
-expansion), `scriptable`, `guestSandbox` (the sandbox persona's allowlist —
+`composes` (nested-call expansion), `scriptable`, `guestSandbox` (the sandbox persona's allowlist —
 search, plus codex's provider-executed `web_search`, which is not
 scriptable) and `guestChannel` (kept on guest-channel turns). Consumers call
 `policyOf(name)`; a name with no row (a future dynamic/MCP tool) gets the
@@ -92,7 +91,7 @@ every later request, and a pruned or missing PNG degrades to text.
 "large outputs are offloaded, not truncated"; the spill-and-name rule
 fetch and script already follow): over-budget output becomes a tail-heavy
 head+tail window and the full output lands content-addressed in the bash
-cache, the footer naming the file and the `read_file` call that pages
+cache, the footer naming the file and the `sed -n` command that pages
 through it. The old tail cut dropped the head for good, and a command with
 side effects can't be re-run to see it. Overflowing the capture cap still
 kills the process (the runaway guard); the output then says the saved file
@@ -102,15 +101,23 @@ stability); like webcache, it is never pruned. `sandbox` keeps its tail cut
 for now — container output is a separate surface. `transcribe` follows the same rule
 (#668): a transcript over 15k chars returns as a head+tail window, and
 the full text lands content-addressed in `state/transcriptcache`, never
-pruned. Special files (devices,
-FIFOs, sockets) are refused before any I/O — `read_file` on `/dev/zero` is
-a hang, not a read; `bash` (timeouts + output caps) is the sanctioned
-channel for those.
+pruned.
+
+**File work is bash-only** (ruling 2026-11-27, #994). Turn tools have no
+`read_file`, `write_file` or `edit_file`: the model reads with `cat` or
+`sed -n` and writes or edits with heredocs, `sed` or a short script, as
+current models already prefer. One fewer tool family means a smaller
+tool list on every request. Old conversations keep their file-tool calls
+in history, and the app still renders them. The skill reviewer's private
+staging copy still mounts the three tools (`src/reviewer-staging.ts`).
+Skill provenance and usage moved to the bash tool
+([skills.md](skills.md#skill-provenance-ruling-2026-10-16)).
 
 ## Context self-management (#671)
 
-Context notes are ephemeral to preserve the prompt prefix. Large reads
-are bounded when context is nearly full; use a child for bulk reading.
+Context notes are ephemeral to preserve the prompt prefix. Every bash
+result is bounded by the output budget, so no read needs a context-fill
+bound; use a child for bulk reading.
 
 ## Scripting
 
@@ -191,7 +198,7 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
   as defense-in-depth.
 - **Output is bounded, and tainted output rides fenced.** The raw output
   is windowed with the full text spilled and the footer naming the
-  `read_file` call. Unlike webcache
+  saved file and the `sed -n` command that pages it. Unlike webcache
   spills, a scriptcache spill is temporary — a later script's sweep may
   reclaim it, and the footer says so. When any nested `fetch` or `search`
   completed, the body rides in `fenceUntrusted("web", …)` — taint latches

@@ -22,11 +22,11 @@ import {
 import { ModelPicker } from "../ModelPicker.tsx";
 import { SkillPickerSheet } from "../SkillPickerSheet.tsx";
 import { ContextGauge } from "./ContextGauge.tsx";
-import { NotePicker } from "./NotePicker.tsx";
+import { NotesPanel, NotesPopover, NotesSheet, type NotesTarget, useNotePins } from "./ComposerNotes.tsx";
 import type { QuoteSpeaker } from "./QuoteFab.tsx";
 import { MessageBox, type MessageBoxHandle } from "./MessageBox.tsx";
 import { useAttachments } from "./useAttachments.ts";
-import { useSkillNoteStaging } from "./useSkillNoteStaging.ts";
+import { useSkillStaging } from "./useSkillStaging.ts";
 import { useSubmit } from "./useSubmit.ts";
 import { useKeyboard } from "./useKeyboard.ts";
 import { usePhoneWidth } from "../usePhoneWidth.ts";
@@ -56,6 +56,7 @@ export function Composer({
 	onRoll,
 	rollDisabled,
 	onOpenNote,
+	notes: notesTarget,
 	onGoToQuote,
 	quote,
 	focusSignal,
@@ -91,6 +92,7 @@ export function Composer({
 	onRoll?: (() => Promise<string | null>) | undefined;
 	rollDisabled?: boolean | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
+	notes?: NotesTarget | undefined;
 	onGoToQuote?: ((messageId: string) => boolean) | undefined;
 	quote?: { text: string; speaker: QuoteSpeaker | null; messageId?: string | null; n: number } | null;
 	// Bumped by the caller when the composer should grab focus (the
@@ -105,6 +107,23 @@ export function Composer({
 	onDraftRestored?: () => void;
 }) {
 	const phoneWidth = usePhoneWidth();
+	const [notesOpen, setNotesOpen] = useState(false);
+	const [notesQuery, setNotesQuery] = useState("");
+	const notes = useNotePins(token, notesTarget ?? null, notesOpen, notesQuery);
+	const openNotes = (open: boolean) => {
+		setNotesOpen(open);
+		if (!open) setNotesQuery("");
+	};
+	const notesPanel = notesTarget !== undefined && (
+		<NotesPanel
+			notes={notes}
+			query={notesQuery}
+			onQueryChange={setNotesQuery}
+			rolling={notesTarget.kind === "chat" && notesTarget.rolling}
+			onOpenNote={(id) => onOpenNote?.(id)}
+			onClose={() => openNotes(false)}
+		/>
+	);
 	// The draft is durable per scope: restored at mount, stored on every
 	// change. No debounce and no close guard — a tab close at any
 	// instant (the Ctrl+W habit this exists for) finds the last
@@ -363,8 +382,7 @@ export function Composer({
 		if (!programmatic.current) editedAfterSend.current = true;
 		setDraft(next);
 	};
-	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
-		useSkillNoteStaging({ insertChips });
+	const { skillPickerOpen, setSkillPickerOpen, stageSkill } = useSkillStaging({ insertChips });
 	const latestDraftRestoreBindings = useRef({
 		editedAfterSend,
 		onDraftRestored,
@@ -408,7 +426,7 @@ export function Composer({
 		focusSignal,
 		stealFocus,
 		busy,
-		pickersOpen: notePickerOpen || skillPickerOpen || modelMenuOpen || modelSheetOpen,
+		pickersOpen: skillPickerOpen || notesOpen || modelMenuOpen || modelSheetOpen,
 	});
 	return (
 		<form
@@ -490,11 +508,17 @@ export function Composer({
 					<Menu
 						onAction={(value) => {
 							if (value === "file") fileInput.current?.click();
-							else if (value === "note") setNotePickerOpen(true);
 							else if (value === "skill") setSkillPickerOpen(true);
+							else if (value === "notes") openNotes(true);
 						}}
 					>
-						<MenuTrigger ref={noteBtnRef} className="icon-btn" aria-label="Add" title="Add">
+						<MenuTrigger
+							className={`icon-btn${notesTarget !== undefined && notes.pins.length > 0 ? " has-pins" : ""}`}
+							aria-label={notesTarget !== undefined && notes.pins.length > 0
+								? `Add, ${notes.pins.length} ${notes.pins.length === 1 ? "note" : "notes"} pinned`
+								: "Add"}
+							title="Add"
+						>
 							<svg
 								viewBox="0 0 24 24"
 								fill="none"
@@ -510,7 +534,11 @@ export function Composer({
 						</MenuTrigger>
 						<MenuContent className="title-menu">
 							<MenuItem value="file">Attach a file</MenuItem>
-							<MenuItem value="note">Attach a note</MenuItem>
+							{notesTarget !== undefined && (
+								<MenuItem value="notes">
+									{notes.pins.length === 0 ? "Notes" : `Notes · ${notes.pins.length} pinned`}
+								</MenuItem>
+							)}
 							<MenuItem value="skill">Invoke a skill</MenuItem>
 						</MenuContent>
 					</Menu>
@@ -536,31 +564,11 @@ export function Composer({
 								<line x1="5" y1="12" x2="19" y2="12" />
 							</svg>
 						</button>
-						<button
-							type="button"
-							ref={noteBtnRef}
-							className="icon-btn"
-							aria-label="Attach a note"
-							aria-expanded={notePickerOpen}
-							title="Attach a note"
-							onClick={() => setNotePickerOpen((v) => !v)}
-						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="16"
-								height="16"
-							>
-								<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-								<polyline points="14 2 14 8 20 8" />
-								<line x1="9" y1="13" x2="15" y2="13" />
-								<line x1="9" y1="17" x2="13" y2="17" />
-							</svg>
-						</button>
+						{notesTarget !== undefined && (
+							<NotesPopover notes={notes} open={notesOpen} onOpenChange={openNotes}>
+								{notesPanel}
+							</NotesPopover>
+						)}
 						<button
 							type="button"
 							className="icon-btn"
@@ -853,20 +861,17 @@ export function Composer({
 					{draftError}
 				</p>
 			)}
-			{notePickerOpen && (
-				<NotePicker
-					pickRef={notePickRef}
-					token={token}
-					onPick={pickNote}
-					onClose={() => setNotePickerOpen(false)}
-				/>
-			)}
 			{skillPickerOpen && (
 				<SkillPickerSheet
 					token={token}
 					onClose={() => setSkillPickerOpen(false)}
 					onStage={stageSkill}
 				/>
+			)}
+			{phoneWidth && notesTarget !== undefined && (
+				<NotesSheet open={notesOpen} onOpenChange={openNotes}>
+					{notesPanel}
+				</NotesSheet>
 			)}
 		</form>
 	);

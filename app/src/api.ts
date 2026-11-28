@@ -43,6 +43,8 @@ import type {
 	AppNoteRewriteResponse,
 	AppNoteVersion,
 	AppNoteVersionList,
+	ChatNotePinCandidates,
+	ChatNotePinsView,
 	AppProgramMutationResponse,
 	AppProject,
 	AppReplyRating,
@@ -264,6 +266,7 @@ export function createConversation(
 		projectId?: string;
 		memoryExcluded?: boolean;
 		initialModelSettings?: AppModelSettings;
+		pinnedNoteIds?: string[];
 	},
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
@@ -628,6 +631,38 @@ export async function uploadAttachment(
 // The app conversation ids are full "app/<id>" addresses — path segments
 // carry the bare id only.
 const seg = (id: string) => encodeURIComponent(id.slice("app/".length));
+
+export function listChatNotePins(
+	token: string | null,
+	id: string,
+	query: string | null,
+): Promise<ChatNotePinsView> {
+	const suffix = query === null ? "" : `?${new URLSearchParams({ q: query })}`;
+	return request(token, `/api/app/conversations/${seg(id)}/note-pins${suffix}`);
+}
+
+export function listNotePinCandidates(
+	token: string | null,
+	projectId: string | null,
+	query: string,
+): Promise<ChatNotePinCandidates> {
+	const params = new URLSearchParams({ q: query });
+	if (projectId !== null) params.set("projectId", projectId);
+	return request(token, `/api/app/note-pin-candidates?${params}`);
+}
+
+export function setChatNotePin(
+	token: string | null,
+	id: string,
+	noteId: string,
+	pinned: boolean,
+): Promise<ChatNotePinsView> {
+	return request(token, `/api/app/conversations/${seg(id)}/note-pins`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ noteId, pinned }),
+	});
+}
 
 export function patchConversation(
 	token: string | null,

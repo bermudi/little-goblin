@@ -19,6 +19,7 @@ test("bot propose stores and presents a proposal; invalid models create nothing"
 				thinking: h.configRef.current.thinking,
 				providers: h.configRef.current.providers,
 			}),
+			() => new Date("2026-11-28T01:02:03Z"),
 		);
 		const tool = botTool({
 			proposals,

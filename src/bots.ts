@@ -202,13 +202,13 @@ export function makeBotStore(db: Database) {
 			folder: string;
 			model: string | null;
 			thinking: ThinkingLevel | null;
-			createdAt: number;
+			createdAt: Date;
 		}, defaults: { model: string; thinking: ThinkingLevel; providers?: Config["providers"] }): Bot => {
 			const mainConversationId = `app/${randomUUID()}`;
 			const model = input.model ?? defaults.model;
 			const thinking = clampThinkingFor(defaults.providers ?? {}, model, input.thinking ?? defaults.thinking);
-			create.run(input.id, input.name, input.createdAt, input.instructions, input.folder, input.model, input.thinking);
-			createConversation.run(mainConversationId, paths.workspace(), model, thinking, new Date(input.createdAt).toISOString());
+			create.run(input.id, input.name, input.createdAt.getTime(), input.instructions, input.folder, input.model, input.thinking);
+			createConversation.run(mainConversationId, paths.workspace(), model, thinking, input.createdAt.toISOString());
 			attachMain.run(mainConversationId, input.id);
 			return {
 				id: input.id,

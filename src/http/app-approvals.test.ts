@@ -73,6 +73,7 @@ function harness(opts: { publicUrl?: string; sender?: MailSender } = {}) {
 		app.store,
 		paths.workspace,
 		() => ({ model: app.configRef.current.model, thinking: app.configRef.current.thinking, providers: app.configRef.current.providers }),
+		() => new Date("2026-11-28T01:02:03Z"),
 	);
 	app.appDeps.approvals = { program, mail, bot };
 	return { ...app, programs, programsPath, outbox, program, mail, sent, botProposals: bot };

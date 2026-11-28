@@ -9,14 +9,17 @@ import { tmpDir } from "./testkit.ts";
 function fixture(workspace = tmpDir("goblin-bot-proposals-")) {
 	const store = openStore(join(workspace, "goblin.sqlite"));
 	const source = store.resolve(appAddress("proposal-source"), workspace);
+	let at = "2026-11-28T01:02:03.000Z";
+	const clock = () => new Date(at);
 	const proposals = makeBotProposals(
 		store.db,
 		store.bots,
 		store,
 		() => workspace,
 		() => ({ model: "zai/m", thinking: "medium" }),
+		clock,
 	);
-	return { store, source, proposals, workspace };
+	return { store, source, proposals, workspace, clock, setTime: (time: string) => { at = time; } };
 }
 
 function cleanup(f: ReturnType<typeof fixture>): void {
@@ -34,9 +37,12 @@ test("approval creates the bot, an empty main chat, and its folder; repeated app
 			thinking: null,
 		});
 		if (proposal === null) throw new Error("expected a proposal");
-		const approved = f.proposals.approve(proposal.id, 1_800_000_000_000);
+		expect(proposal.createdAt).toBe("2026-11-28T01:02:03.000Z");
+		f.setTime("2026-11-29T01:02:03.000Z");
+		const approved = f.proposals.approve(proposal.id);
 		expect(approved.kind).toBe("approved");
 		if (approved.kind !== "approved") return;
+		expect(approved.proposal.decidedAt).toBe("2026-11-29T01:02:03.000Z");
 		expect(approved.bot).toMatchObject({
 			name: "Stockroom",
 			instructions: "Track stock.",
@@ -60,8 +66,12 @@ test("approval creates the bot, an empty main chat, and its folder; repeated app
 		expect(f.store.get(approved.bot.mainConversationId)).toMatchObject({
 			model: "zai/m",
 			thinking: "medium",
+			createdAt: "2026-11-29T01:02:03.000Z",
 		});
-		expect(f.proposals.approve(proposal.id, 1_800_000_000_001).kind).toBe("settled");
+		f.setTime("2026-11-30T01:02:03.000Z");
+		expect(f.proposals.approve(proposal.id)).toMatchObject({
+			kind: "settled", proposal: { decidedAt: "2026-11-29T01:02:03.000Z" },
+		});
 	} finally {
 		cleanup(f);
 	}
@@ -78,7 +88,10 @@ test("decline settles a proposal without creating a bot", () => {
 			thinking: null,
 		});
 		if (proposal === null) throw new Error("expected a proposal");
-		expect(f.proposals.decline(proposal.id, 1_800_000_000_000).kind).toBe("declined");
+		f.setTime("2026-11-28T02:03:04.000Z");
+		expect(f.proposals.decline(proposal.id)).toMatchObject({
+			kind: "declined", proposal: { decidedAt: "2026-11-28T02:03:04.000Z" },
+		});
 		expect(f.proposals.get(proposal.id)?.state).toBe("declined");
 		expect(f.store.bots.list()).toEqual([]);
 	} finally {
@@ -105,8 +118,9 @@ test("a folder creation failure leaves proposal and bot state untouched", () => 
 			f.store,
 			() => blockedPath,
 			() => ({ model: "zai/m", thinking: "medium" }),
+			f.clock,
 		);
-		expect(() => blocked.approve(proposal.id, 1_800_000_000_000)).toThrow();
+		expect(() => blocked.approve(proposal.id)).toThrow();
 		expect(blocked.get(proposal.id)?.state).toBe("pending");
 		expect(f.store.bots.list()).toEqual([]);
 	} finally {

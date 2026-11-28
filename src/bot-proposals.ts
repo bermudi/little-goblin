@@ -38,6 +38,7 @@ export function makeBotProposals(
 	store: Pick<ConversationStore, "append" | "get">,
 	workspace: () => string,
 	defaults: () => ModelSettings & { providers?: Config["providers"] },
+	now: () => Date,
 ) {
 	const getQuery = db.query<BotProposal, [number]>(`${proposalSelect} WHERE id = ?`);
 	const pendingQuery = db.query<BotProposal, []>(`${proposalSelect} WHERE state = 'pending' ORDER BY id`);
@@ -54,13 +55,13 @@ export function makeBotProposals(
 	};
 
 	return {
-		propose(input: BotProposalInput, now = new Date().toISOString()): BotProposal | null {
+		propose(input: BotProposalInput): BotProposal | null {
 			const proposal = db.transaction(() => {
 				const source = store.get(input.conversationId);
 				if (source === null || appIdOf(source.id) === null || source.archivedAt !== null ||
 					source.persona === "guest" || source.agentType !== null || source.projectId !== null ||
 					bots.membership(source.id) !== null) return null;
-				const result = insert.run(input.conversationId, input.name, input.instructions, input.model, input.thinking, now);
+				const result = insert.run(input.conversationId, input.name, input.instructions, input.model, input.thinking, now().toISOString());
 				const pending = row(Number(result.lastInsertRowid));
 				if (pending === null) throw new Error("bot proposal insert could not be read");
 				presentBotApproval(store, pending);
@@ -72,7 +73,7 @@ export function makeBotProposals(
 		},
 		get: row,
 		pending: () => pendingQuery.all(),
-		approve(id: number, now = Date.now()):
+		approve(id: number):
 			| { kind: "approved"; proposal: BotProposal; bot: Bot }
 			| { kind: "settled"; proposal: BotProposal }
 			| { kind: "missing" } {
@@ -80,6 +81,7 @@ export function makeBotProposals(
 				const current = row(id);
 				if (current === null) return { kind: "missing" as const };
 				if (current.state !== "pending") return { kind: "settled" as const, proposal: current };
+				const decidedAt = now();
 				const folder = join(workspace(), "bots", String(id));
 				mkdirSync(folder, { recursive: true });
 				const bot = bots.create({
@@ -89,9 +91,9 @@ export function makeBotProposals(
 					folder,
 					model: current.model,
 					thinking: current.thinking,
-					createdAt: now,
+					createdAt: decidedAt,
 				}, defaults());
-				update.run("approved", new Date(now).toISOString(), bot.id, id);
+				update.run("approved", decidedAt.toISOString(), bot.id, id);
 				const decided = row(id);
 				if (decided === null) throw new Error(`approved bot proposal ${id} disappeared`);
 				if (store.get(decided.conversationId) !== null) {
@@ -100,7 +102,7 @@ export function makeBotProposals(
 				return { kind: "approved" as const, proposal: decided, bot };
 			}).immediate();
 		},
-		decline(id: number, now = Date.now()):
+		decline(id: number):
 			| { kind: "declined"; proposal: BotProposal }
 			| { kind: "settled"; proposal: BotProposal }
 			| { kind: "missing" } {
@@ -108,7 +110,7 @@ export function makeBotProposals(
 				const current = row(id);
 				if (current === null) return { kind: "missing" as const };
 				if (current.state !== "pending") return { kind: "settled" as const, proposal: current };
-				update.run("declined", new Date(now).toISOString(), null, id);
+				update.run("declined", now().toISOString(), null, id);
 				const decided = row(id);
 				if (decided === null) throw new Error(`declined bot proposal ${id} disappeared`);
 				if (store.get(decided.conversationId) !== null) {

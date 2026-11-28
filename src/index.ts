@@ -450,6 +450,7 @@ async function boot() {
 			thinking: configRef.current.thinking,
 			providers: configRef.current.providers,
 		}),
+		wallClock,
 	);
 
 	// Save notices read the live api at call time — absent while detached.

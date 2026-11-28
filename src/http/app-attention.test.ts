@@ -137,6 +137,7 @@ describe("app attention", () => {
 			memStore,
 			() => dirs,
 			() => ({ model: "zai/m", thinking: "medium" }),
+			() => new Date("2026-11-28T01:02:03Z"),
 		);
 		const botProposal = botProposals.propose({
 			conversationId: "app/chat-01",

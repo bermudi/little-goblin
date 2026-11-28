@@ -153,6 +153,9 @@ from a third party.
   the note again once the chat can access it.
   The notice text and revision advance commit together at admission. The
   notice belongs to that turn's new input and replays at the same position.
+  Editing a message can remove later notices with their delivery records.
+  The replacement turn reports what changed since the last surviving
+  notice. Retrying an unchanged input replays its recorded notice.
   The body and diff remain available through the note tool.
 
 **Refresh without push.** No socket, no new push channel (Streaming members'

@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import type { Message } from "../message.ts";
 import { sendFileTool } from "../agent/tools/send.ts";
 import { speakTool } from "../agent/tools/speak.ts";
+import { CHAT_NOTE_NOTICE_PART } from "../chat-note-pins.ts";
 import { setLogFile } from "../log.ts";
 import type { TurnDone } from "../turn/sink.ts";
 import { sdkScript } from "../testkit/turn-script-sdk.ts";
@@ -1569,6 +1570,60 @@ describe("app chat edit (rewind)", () => {
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
 		});
+
+	test("a chat note pin cut by editing is announced on the replacement input only", async () => {
+		const script = sdkScript();
+		for (let i = 0; i < 7; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+		const { http, call, store, runtime, notes } = setup({ token: APP_TOKEN_NAME, scriptedModel: script });
+		try {
+			const conversationId = "app/chat-01";
+			const created = await call("/api/app/conversations", {
+				method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "chat-01" }),
+			});
+			expect(created.ok).toBe(true);
+			const turn = async (id: string, length: number, editMessageId?: string) => {
+				const response = await postChat(call, {
+					conversationId, editMessageId, message: { id, role: "user", parts: [{ type: "text", text: id }] },
+				});
+				expect(response.status).toBe(202);
+				await waitUntil(() => !runtime.busy(conversationId) && store.history(conversationId).length === length, "reply settles");
+				const notice = store.lastEntry(conversationId, "user")?.message.parts.find((part) => part.type === CHAT_NOTE_NOTICE_PART);
+				return notice && "data" in notice ? notice.data : undefined;
+			};
+			const kept = notes.create({ title: "Kept pin" });
+			const cut = notes.create({ title: "Cut pin" });
+			store.chatNotePins.set(conversationId, kept.id, true);
+			expect(await turn("first", 2)).toContain(kept.id);
+			const prefix = store.history(conversationId);
+			const initialPrompt = JSON.parse(script.requests().at(-1)!) as unknown[];
+			expect(await turn("second", 4)).toBeUndefined();
+			store.chatNotePins.set(conversationId, cut.id, true);
+			notes.write(kept.id, { title: "Edited kept pin" }, "app");
+			const original = await turn("third", 6);
+			expect(original).toContain(cut.id);
+			expect(original).toContain("Edited the title");
+			const replacement = await turn("rewritten second", 4, "second");
+			expect(replacement).toContain(cut.id);
+			expect(replacement).toContain("Edited the title");
+			expect(replacement).not.toContain('Note pinned. "Edited kept pin"');
+			expect(store.history(conversationId).slice(0, 2)).toEqual(prefix);
+			const replacementPrompt = script.requests().at(-1)!;
+			expect((JSON.parse(replacementPrompt) as unknown[]).slice(0, initialPrompt.length)).toEqual(initialPrompt);
+			const editedSeq = store.lastEntry(conversationId, "user")!.seq;
+			expect((await postChat(call, { conversationId, retry: true })).status).toBe(202);
+			await waitUntil(() => !runtime.busy(conversationId) && store.history(conversationId).length === 4
+				&& store.lastEntry(conversationId, "user")!.seq > editedSeq, "retry settles");
+			expect(script.requests().at(-1)).toBe(replacementPrompt);
+			expect(await turn("after edit", 6)).toBeUndefined();
+			store.chatNotePins.set(conversationId, cut.id, false);
+			expect(await turn("unpin", 8)).toContain("Note unpinned.");
+			expect(await turn("rewritten unpin", 8, "unpin")).toContain("Note unpinned.");
+		} finally {
+			http.stop();
+			await runtime.shutdown();
+			store.close();
+		}
+	});
 
 	test("an edit drops the tail, streams the replacement, and never reuses a seq", async () => {
 		const { http, call, store, runtime } = setup({ token: APP_TOKEN_NAME });

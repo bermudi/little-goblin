@@ -46,13 +46,25 @@ export function ensureChatNotePinsSchema(db: Database): void {
 			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
 			note_id TEXT NOT NULL,
 			pinned_rev INTEGER NOT NULL,
-			sent_rev INTEGER,
 			removed TEXT CHECK (removed IN ('unpin', 'unavailable')),
 			unpinned_rev INTEGER,
+			generation INTEGER NOT NULL DEFAULT 1,
 			prior_loss INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (conversation_id, note_id)
 		);
 		CREATE INDEX IF NOT EXISTS chat_note_pins_note ON chat_note_pins(note_id);
+		CREATE TABLE IF NOT EXISTS chat_note_pin_deliveries (
+			conversation_id TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			note_id TEXT NOT NULL,
+			generation INTEGER NOT NULL,
+			rev INTEGER,
+			PRIMARY KEY (conversation_id, seq, note_id),
+			FOREIGN KEY (conversation_id, seq) REFERENCES events(conversation_id, seq)
+				ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+		);
+		CREATE INDEX IF NOT EXISTS chat_note_pin_delivery_latest
+			ON chat_note_pin_deliveries(conversation_id, note_id, seq DESC);
 		CREATE TRIGGER IF NOT EXISTS chat_note_pins_note_change
 		AFTER UPDATE OF archived_at, project_id, bot_id ON notes
 		BEGIN
@@ -86,6 +98,8 @@ interface PinRow {
 	noteId: string;
 	pinnedRev: number;
 	sentRev: number | null;
+	sentGeneration: number | null;
+	generation: number;
 	removed: "unpin" | "unavailable" | null;
 	unpinnedRev: number | null;
 	priorLoss: number;
@@ -118,11 +132,17 @@ function quoted(text: string): string {
 
 export function openChatNotePins(db: Database) {
 	const rows = db.query<PinRow, [string]>(`
-		SELECT cp.note_id AS noteId, cp.pinned_rev AS pinnedRev, cp.sent_rev AS sentRev,
-			cp.removed, cp.unpinned_rev AS unpinnedRev, cp.prior_loss AS priorLoss, n.title, n.rev,
+		SELECT cp.note_id AS noteId, cp.pinned_rev AS pinnedRev, delivery.rev AS sentRev,
+			delivery.generation AS sentGeneration, cp.generation, cp.removed,
+			cp.unpinned_rev AS unpinnedRev, cp.prior_loss AS priorLoss, n.title, n.rev,
 			CASE WHEN n.id IS NULL THEN NULL ELSE COALESCE(p.name, b.name, n.bot_id, 'Global') END AS owner
 		FROM chat_note_pins cp LEFT JOIN notes n ON n.id = cp.note_id
 			AND ${available("n", "cp.conversation_id")}
+		LEFT JOIN chat_note_pin_deliveries delivery ON delivery.rowid = (
+			SELECT d.rowid FROM chat_note_pin_deliveries d
+			WHERE d.conversation_id = cp.conversation_id AND d.note_id = cp.note_id
+			ORDER BY d.seq DESC LIMIT 1
+		)
 		${ownerJoins}
 		WHERE cp.conversation_id = ? ORDER BY cp.rowid
 	`);
@@ -144,8 +164,12 @@ export function openChatNotePins(db: Database) {
 	const add = db.query(`
 		INSERT INTO chat_note_pins (conversation_id, note_id, pinned_rev) VALUES (?, ?, ?)
 		ON CONFLICT (conversation_id, note_id) DO UPDATE SET
-			pinned_rev = excluded.pinned_rev, sent_rev = NULL,
-			prior_loss = CASE WHEN chat_note_pins.removed = 'unavailable' THEN 1 ELSE chat_note_pins.prior_loss END,
+			rowid = (SELECT MAX(rowid) + 1 FROM chat_note_pins),
+			pinned_rev = excluded.pinned_rev,
+			prior_loss = CASE
+				WHEN chat_note_pins.removed = 'unavailable' THEN chat_note_pins.generation
+				ELSE chat_note_pins.prior_loss END,
+			generation = chat_note_pins.generation + 1,
 			removed = NULL, unpinned_rev = NULL
 		WHERE chat_note_pins.removed IS NOT NULL
 	`);
@@ -153,8 +177,15 @@ export function openChatNotePins(db: Database) {
 		UPDATE chat_note_pins SET removed = 'unpin', unpinned_rev = ?
 		WHERE conversation_id = ? AND note_id = ? AND removed IS NULL
 	`);
-	const deletePin = db.query("DELETE FROM chat_note_pins WHERE conversation_id = ? AND note_id = ?");
-	const advance = db.query("UPDATE chat_note_pins SET sent_rev = ?, prior_loss = 0 WHERE conversation_id = ? AND note_id = ?");
+	const markUnavailable = db.query(`
+		UPDATE chat_note_pins SET removed = 'unavailable'
+		WHERE conversation_id = ? AND note_id = ? AND removed IS NULL
+	`);
+	const recordDelivery = db.query(`
+		INSERT INTO chat_note_pin_deliveries (conversation_id, seq, note_id, generation, rev)
+		VALUES (?, ?, ?, ?, ?)
+	`);
+	const reanchor = db.query("UPDATE chat_note_pin_deliveries SET seq = ? WHERE conversation_id = ? AND seq = ?");
 	const stamp = db.query(`
 		UPDATE events SET data = json_insert(data, '$.message.parts[#]', json(?))
 		WHERE conversation_id = ? AND seq = ? AND role = 'user'
@@ -162,6 +193,9 @@ export function openChatNotePins(db: Database) {
 	`);
 
 	return {
+		reanchorRetry(conversation: string, oldSeq: number, newSeq: number): void {
+			reanchor.run(newSeq, conversation, oldSeq);
+		},
 		view(conversation: string, query: string | null): ChatNotePinsView {
 			const pins = rows.all(conversation).flatMap((row) => {
 				const n = pinNote(row);
@@ -189,19 +223,26 @@ export function openChatNotePins(db: Database) {
 			const lines: string[] = [];
 			for (const row of rows.all(conversation)) {
 				const n = pinNote(row);
-				if (row.priorLoss === 1 || row.removed === "unavailable" || n === null) {
+				const samePin = row.sentGeneration === row.generation;
+				const unavailable = row.removed === "unavailable" || n === null;
+				const priorLoss = row.priorLoss > (row.sentGeneration ?? 0)
+					|| (row.priorLoss === row.sentGeneration && row.sentRev !== null);
+				if (unavailable && row.removed === null) markUnavailable.run(conversation, row.noteId);
+				if (row.removed === "unpin" && row.sentRev === null && !priorLoss) continue;
+				if (unavailable && samePin && row.sentRev === null) continue;
+				if (priorLoss || unavailable) {
 					const label = row.sentRev === null ? "A pinned note" : `Note ${quoted(row.noteId)}`;
 					lines.push(`${label} is no longer available. Its pin was removed.`);
 				}
-				if (row.removed === "unavailable" || n === null) {
-					deletePin.run(conversation, row.noteId);
+				if (unavailable || (row.removed === "unpin" && priorLoss)) {
+					recordDelivery.run(conversation, seq, row.noteId, row.generation, null);
 					continue;
 				}
-				if (row.removed === null && row.sentRev === n.rev) continue;
-				if (row.removed === null && row.sentRev === null) {
+				if (row.removed === null && samePin && row.sentRev === n.rev) continue;
+				if (row.removed === null && !samePin) {
 					lines.push(`Note pinned. ${quoted(n.title)} (${n.id}), revision ${n.rev}.`);
 				}
-				const since = row.sentRev ?? row.pinnedRev;
+				const since = samePin || row.removed === "unpin" ? row.sentRev ?? row.pinnedRev : row.pinnedRev;
 				const through = row.removed === null ? n.rev : row.unpinnedRev ?? since;
 				for (const edit of changes.all(n.id, since, through)) {
 					const reason = edit.reason === null ? "" : ` Reason ${quoted(edit.reason)}.`;
@@ -211,10 +252,8 @@ export function openChatNotePins(db: Database) {
 				}
 				if (row.removed === "unpin") {
 					lines.push(`Note unpinned. ${quoted(n.title)} (${n.id}).`);
-					deletePin.run(conversation, n.id);
-				} else {
-					advance.run(n.rev, conversation, n.id);
 				}
+				recordDelivery.run(conversation, seq, n.id, row.generation, row.removed === "unpin" ? null : n.rev);
 			}
 			if (lines.length === 0) return message;
 			const part = {

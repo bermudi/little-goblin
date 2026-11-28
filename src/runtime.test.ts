@@ -148,6 +148,55 @@ test("chat note pins add durable tail notices without resending the note", async
 	}
 });
 
+test("an unannounced chat note pin produces no edits or unpin notice", async () => {
+	const script = sdkScript();
+	script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("pin-cancel") });
+	const notes = openNotes(store, { projects: openProjects(store) });
+	try {
+		const note = notes.create({ title: "Cancelled pin" });
+		store.chatNotePins.set(conv.id, note.id, true);
+		notes.write(note.id, { body: "Changed between pin and unpin" }, "app", { reason: "While pinned briefly" });
+		store.chatNotePins.set(conv.id, note.id, false);
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "Continue" }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		expect(script.requests().at(-1)).not.toContain("Chat note updates");
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("re-pinning after a restore identifies the previously announced lost note", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 3; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("pin-restore") });
+	const notes = openNotes(store, { projects: openProjects(store) });
+	async function turn(text: string) {
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		const notice = store.lastEntry(conv.id, "user")?.message.parts.find((part) => part.type === "data-chat-note-notices");
+		return notice && "data" in notice ? notice.data : undefined;
+	}
+	try {
+		const note = notes.create({ title: "Restored pin" });
+		store.chatNotePins.set(conv.id, note.id, true);
+		expect(await turn("Announce pin")).toContain(note.id);
+		notes.setArchived(note.id, true);
+		notes.setArchived(note.id, false);
+		store.chatNotePins.set(conv.id, note.id, true);
+		const notices = await turn("After re-pin");
+		expect(notices).toContain(`Note "${note.id}" is no longer available.`);
+		expect(notices).toContain(`Note pinned. "Restored pin" (${note.id})`);
+		expect(await turn("Continue")).toBeUndefined();
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
 

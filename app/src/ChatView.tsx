@@ -1115,7 +1115,7 @@ function Chat({
     setEditing({
       id: m.id,
       draft: draftFromMessages([editable]),
-      kept: m.parts.filter((part) => !editable.includes(part)),
+      kept: m.parts.filter((part) => part.type !== "data-chat-note-notices" && !editable.includes(part)),
     });
   };
   const cancelEdit = () => setEditing(null);

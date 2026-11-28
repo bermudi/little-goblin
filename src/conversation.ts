@@ -302,6 +302,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const transcript = makeConversationTranscript(db, queries, {
 		memoryQueue,
 		bots,
+		chatNotePins,
 		bump,
 		messageEvent: historyView.messageEvent,
 	});

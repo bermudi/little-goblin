@@ -44,7 +44,6 @@ export function ensureConversationSchema(db: Database): void {
 	ensureProjectsSchema(db);
 	ensureBotsSchema(db);
 	ensureNotesSchema(db);
-	ensureChatNotePinsSchema(db);
 	// Companion schemas whose rows reference conversations: ensured here
 	// so deleteConversation's anchor check and wake sweep always find
 	// their tables on this handle, and the FK chain is complete from the
@@ -129,6 +128,7 @@ export function ensureConversationSchema(db: Database): void {
 				memory_eligible INTEGER NOT NULL DEFAULT 0,
 				UNIQUE(conversation_id, seq)
 			)`);
+	ensureChatNotePinsSchema(db);
 	if (!convCols.has("read_seq")) {
 		db.transaction(() => {
 			db.run("ALTER TABLE conversations ADD COLUMN read_seq INTEGER NOT NULL DEFAULT 0");

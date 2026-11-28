@@ -114,7 +114,7 @@ export function commandRuntime(opts: {
 		const json = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string }> };
 		const flags = Object.keys(json.properties ?? {}).filter((key) => key !== "action");
 		return {
-			stdout: `${description}\n\nUsage: goblin ${name} <action> [options]\n${flags.map((key) => `  --${key.replaceAll("_", "-")} <${json.properties?.[key]?.type ?? "value"}>`).join("\n")}\n`,
+			stdout: `${description}\n\nUsage: goblin ${name} <action> [options]\n${flags.map((key) => `  --${key.replaceAll("_", "-")} <${json.properties?.[key]?.type ?? "value"}>`).join("\n")}\n\nA value of - reads that option from stdin, so multi-line text can come from a pipe or a heredoc:\n  goblin ${name} <action> --<option> - <<'EOF'\n  ...\n  EOF\n`,
 			stderr: "",
 			code: 0,
 		};
@@ -140,7 +140,7 @@ export function commandRuntime(opts: {
 			const argv = req.argv;
 			if (argv[0] === "--help" || argv.length === 0) return respond(help());
 			const name = argv.shift()!;
-			if (argv[0] === "--help") return respond(help(name));
+			if (argv.includes("--help") || argv.includes("-h")) return respond(help(name));
 			const schema = schemas.get(name);
 			const tool = opts.tools[name];
 			if (schema === undefined || tool === undefined || isHosted(tool)) {

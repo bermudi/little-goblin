@@ -110,6 +110,19 @@ describe("goblin command channel at the bash boundary", () => {
 		}
 	});
 
+	test("help after an action still prints usage, with the stdin form", async () => {
+		const h = setup();
+		try {
+			const output = await run(h, "goblin note create --help; echo code=$?");
+			expect(output.output).toContain("Usage: goblin note <action> [options]");
+			expect(output.output).toContain("reads that option from stdin");
+			expect(output.output).toContain("code=0");
+			expect(output.calls).toBeUndefined();
+		} finally {
+			h.close();
+		}
+	});
+
 	test("parallel commands serialize and retain their own replies", async () => {
 		const h = setup();
 		try {

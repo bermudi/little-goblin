@@ -171,7 +171,6 @@ const NoteEditor = forwardRef<
 	const [reason, setReason] = useState({ text: "" });
 	const reasonRef = useRef(reason);
 	const reasonEditingRef = useRef(false);
-	const reasonEntryRef = useRef(0);
 	// A save requested while one is in flight — runs on settle with
 	// merged options (a forced resolve keeps force + title).
 	const pendingRef = useRef<{
@@ -448,9 +447,6 @@ const NoteEditor = forwardRef<
 		const flight = (async () => {
 			try {
 				const submittedReason = reasonEditingRef.current ? null : reasonRef.current;
-				const unfinishedEntry = opts.flush === true && reasonEditingRef.current
-					? reasonEntryRef.current
-					: null;
 				const patch = {
 					body: md,
 					...(opts.title !== undefined ? { title: opts.title } : {}),
@@ -462,12 +458,7 @@ const NoteEditor = forwardRef<
 						opts.keepalive === true &&
 						utf8.encode(JSON.stringify(patch)).length <= KEEPALIVE_BODY_MAX,
 				});
-				if (
-					data.rev > expectedRev &&
-					((submittedReason?.text && reasonRef.current === submittedReason) ||
-						unfinishedEntry === reasonEntryRef.current)
-				) {
-					reasonEditingRef.current = false;
+				if (submittedReason?.text && data.rev > expectedRev && reasonRef.current === submittedReason) {
 					changeReason("");
 				}
 				baselineRef.current = md;
@@ -1465,7 +1456,6 @@ const NoteEditor = forwardRef<
 					maxLength={NOTE_EDIT_MESSAGE_MAX}
 					value={reason.text}
 					onChange={(e) => {
-						if (!reasonEditingRef.current) reasonEntryRef.current++;
 						reasonEditingRef.current = true;
 						clearTimer();
 						changeReason(e.target.value);

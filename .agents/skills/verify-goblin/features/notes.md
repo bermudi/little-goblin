@@ -47,9 +47,9 @@ both diffs to check the changed text. Restore a snapshot and verify that
 the restore appears as another Operator edit.
 
 Change the body, start typing a reason, then switch tabs while the reason
-field still has focus. The body saves. On return, the unfinished reason has
-cleared after the save, and the history row has no reason. Make another edit
-and check that it has no reason either.
+field still has focus. The body saves, and that history row has no reason.
+On return, check that the partial reason is still in the field. Finish it,
+then change the note again and check that the next history row has that reason.
 
 ```sh
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select rev, author_bot_id, what, reason from note_edits order by note_id, rev'

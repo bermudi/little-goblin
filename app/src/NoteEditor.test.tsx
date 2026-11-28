@@ -430,7 +430,7 @@ describe("NoteEditor save loop", () => {
 		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo", "Add a detail", undefined]);
 	});
 
-	test("tab hide saves the text and retires the unfinished reason when the save lands", async () => {
+	test("tab hide saves the text and keeps the unfinished reason for the next edit", async () => {
 		root = createRoot(container);
 		const ref = await mount();
 		await notice();
@@ -447,16 +447,16 @@ describe("NoteEditor save loop", () => {
 		expect(patches).toHaveLength(1);
 		expect(patches[0]!.body.body).toContain("corrected text");
 		expect(patches[0]!.body.reason).toBeUndefined();
+		await act(async () => releasePatch());
+		expect(field.value).toBe("Fix ty");
 
 		Reflect.deleteProperty(win.document, "hasFocus");
 		Object.defineProperty(win.document, "visibilityState", { value: "visible", configurable: true });
-		await typeReason(field, "Fix typo");
 		await act(async () => field.blur());
-		await act(async () => releasePatch());
-		expect(field.value).toBe("");
-		await edit(ref, "an unrelated edit");
+		await edit(ref, "corrected text with detail");
 		await notice();
-		expect(patches.map(({ body }) => body.reason)).toEqual([undefined, undefined]);
+		expect(patches.map(({ body }) => body.reason)).toEqual([undefined, "Fix ty"]);
+		expect(field.value).toBe("");
 	});
 
 	test("tab hide flushes the latest text even with a save in flight and a reason unfinished", async () => {
@@ -478,7 +478,7 @@ describe("NoteEditor save loop", () => {
 		expect(patches).toHaveLength(2);
 		expect(stored.body).toContain("latest edit");
 		expect(patches[1]!.body.reason).toBeUndefined();
-		expect(field.value).toBe("");
+		expect(field.value).toBe("Unfinished");
 	});
 
 	test("mounting a body Milkdown normalizes autosaves nothing", async () => {

@@ -108,6 +108,19 @@ commands. The operator approves the tool set before any code. Then the
 operator rules on which tools stay typed and whether the 2026-10-10
 rejection is replaced.
 
+**Real-case result (2026-11-28).** Eleven tools ran as commands: `program`,
+`send_file`, `history_search`, `memory_search`, `memory_reflect`, `note`,
+`watch`, `mail`, `transcribe`, `speak` and `post`. Moving them out of the
+typed list cut the declared tools from 27.5 KB to 14.8 KB. On `bash` and
+`fetch` tasks that halved the input tokens, with no loss. A command task
+cost about 1.7 extra requests. With the fixed sentence, the models never
+found `send_file`, `transcribe` or `mail` on Codex, because they never read
+help for them. A variant that names the commands in the sentence fixed
+that on Codex. On OpenRouter, `send_file` still went to `artifact`. A list
+flag such as `mail --to` failed until the parser took repeated values.
+Numbers are on #993. The operator rules next on the tool set and on naming
+the commands.
+
 Accepted risks:
 
 - Every descendant of the bash call inherits the socket. A program the

@@ -197,6 +197,33 @@ test("re-pinning after a restore identifies the previously announced lost note",
 	}
 });
 
+test("binding a chat to a project loses a Little Goblin pin even if the note turns Global", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 2; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("pin-bind") });
+	const projects = openProjects(store);
+	const notes = openNotes(store, { projects });
+	async function turn(text: string) {
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		const notice = store.lastEntry(conv.id, "user")?.message.parts.find((part) => part.type === "data-chat-note-notices");
+		return notice && "data" in notice ? notice.data : undefined;
+	}
+	try {
+		const note = notes.create({ title: "Goblin pin" });
+		store.chatNotePins.set(conv.id, note.id, true);
+		expect(await turn("Announce pin")).toContain(note.id);
+		store.bindProject(conv.id, projects.create({ name: "Bound Project" }).id);
+		notes.batch([{ id: note.id, stateRev: notes.get(note.id)!.stateRev }], { action: "move", owner: { botId: null } });
+		expect(await turn("After bind")).toContain(`Note "${note.id}" is no longer available.`);
+		expect(store.chatNotePins.view(conv.id, null).pins).toEqual([]);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
 

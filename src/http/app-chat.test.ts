@@ -1573,7 +1573,7 @@ describe("app chat edit (rewind)", () => {
 
 	test("a chat note pin cut by editing is announced on the replacement input only", async () => {
 		const script = sdkScript();
-		for (let i = 0; i < 7; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+		for (let i = 0; i < 8; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
 		const { http, call, store, runtime, notes } = setup({ token: APP_TOKEN_NAME, scriptedModel: script });
 		try {
 			const conversationId = "app/chat-01";
@@ -1587,6 +1587,7 @@ describe("app chat edit (rewind)", () => {
 				});
 				expect(response.status).toBe(202);
 				await waitUntil(() => !runtime.busy(conversationId) && store.history(conversationId).length === length, "reply settles");
+				expect(store.history(conversationId).at(-1)?.parts).toContainEqual(expect.objectContaining({ type: "text", text: "ok" }));
 				const notice = store.lastEntry(conversationId, "user")?.message.parts.find((part) => part.type === CHAT_NOTE_NOTICE_PART);
 				return notice && "data" in notice ? notice.data : undefined;
 			};

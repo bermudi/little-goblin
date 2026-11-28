@@ -78,13 +78,17 @@ export function ensureChatNotePinsSchema(db: Database): void {
 			WHERE note_id = OLD.id AND removed IS NULL;
 		END;
 	`);
-	for (const [event, membership] of [["INSERT", "NEW"], ["DELETE", "OLD"]] as const) {
+	for (const [name, change, row] of [
+		["membership_insert", "INSERT ON bot_chats", "NEW.conversation_id"],
+		["membership_delete", "DELETE ON bot_chats", "OLD.conversation_id"],
+		["project_bind", "UPDATE OF project_id ON conversations", "NEW.id"],
+	] as const) {
 		db.run(`
-			CREATE TRIGGER IF NOT EXISTS chat_note_pins_membership_${event.toLowerCase()}
-			AFTER ${event} ON bot_chats
+			CREATE TRIGGER IF NOT EXISTS chat_note_pins_${name}
+			AFTER ${change}
 			BEGIN
 				UPDATE chat_note_pins SET removed = 'unavailable'
-				WHERE conversation_id = ${membership}.conversation_id AND removed IS NULL
+				WHERE conversation_id = ${row} AND removed IS NULL
 					AND NOT EXISTS (
 						SELECT 1 FROM notes n WHERE n.id = chat_note_pins.note_id
 							AND ${available("n", "chat_note_pins.conversation_id")}

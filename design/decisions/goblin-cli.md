@@ -1,9 +1,9 @@
 # Goblin commands reached from bash (trial)
 
-Status: trial, ruled 2026-11-27 on
+Status: trial passed, ruled 2026-11-27 on
 [#993](https://github.com/bermudi/little-goblin/issues/993). The 2026-10-10
 rejection in [tools.md → Scripting](../tools.md#scripting) stands until the
-trial passes.
+real-case measurement below. The trial stays off in production.
 
 **Context.** Every request sends every tool schema. With all tools mounted
 that is 27 tools and about 40 KB, roughly 10k tokens; most turns use two or
@@ -95,9 +95,18 @@ the model finds and uses `goblin note` with the typed `note` tool hidden,
 compared with the typed tool; extra model requests per task; and input and
 cached tokens. OpenRouter runs pin a session id, because #991 is not fixed.
 
-If the trial passes, the operator rules on which tools stay typed, which
-become commands, and whether the 2026-10-10 rejection is replaced. If it
-fails, this record says why and the code is removed.
+**Result (2026-11-27).** Both models found and used `goblin note` in 60
+of 60 runs, and no run called an undeclared tool. With the full
+`goblin --help`, a new chat reads help once. Codex then makes 0.6 extra
+requests per task with about the same input tokens, and OpenRouter about
+one. Hiding one tool saves no tokens: `goblin note --help` is about the
+size of the `note` declaration. Numbers are on #993.
+
+**Next (operator, 2026-11-27).** Mark a set of rarely used tools as
+commands, and measure a full-list chat against a short typed list plus
+commands. The operator approves the tool set before any code. Then the
+operator rules on which tools stay typed and whether the 2026-10-10
+rejection is replaced.
 
 Accepted risks:
 

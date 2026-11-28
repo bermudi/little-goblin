@@ -143,7 +143,7 @@ export const bashTool = (
 					}
 				}
 			}
-			if (result.exitCode === 0 && hooks.onRead !== undefined) {
+			if (hooks.onRead !== undefined) {
 				for (const abs of skillReadCandidates(command, cwd)) {
 					try {
 						hooks.onRead(abs);

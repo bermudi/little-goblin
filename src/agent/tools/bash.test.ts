@@ -54,7 +54,7 @@ describe("bash", () => {
 		expect(out.truncated).toBeUndefined();
 	});
 
-	test("records successful SKILL.md command mentions as reads", async () => {
+	test("records SKILL.md command mentions as reads, whatever the exit code", async () => {
 		const root = join(home, "project");
 		const skill = join(root, "skills", "demo", "SKILL.md");
 		const homeSkill = join(home, "home-skills", "demo", "SKILL.md");
@@ -76,8 +76,9 @@ describe("bash", () => {
 			expect(reads).toEqual([homeSkill]);
 		}
 		reads.length = 0;
-		await tool.execute({ command: "cat skills/demo/SKILL.md; exit 2" }, opts);
-		expect(reads).toEqual([]);
+		await tool.execute({ command: "cat skills/demo/SKILL.md >/dev/null; exit 2" }, opts);
+		expect(reads).toEqual([skill]);
+		reads.length = 0;
 		await tool.execute({ command: "echo ordinary" }, opts);
 		expect(reads).toEqual([]);
 	});

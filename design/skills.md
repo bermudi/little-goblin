@@ -363,12 +363,12 @@ invisible and bidirectional control characters are dropped
 per skill `useCount`/`lastUsedAt`, `patchCount`/`lastPatchedAt`,
 `createdAt`, `firstSeenAt`, `state` ∈ active|stale|archived, `pinned`,
 `archivedAt`. Use bumps at the doors that submit a `data-skill` part and
-at a successful `bash` call whose command text names a catalog
-SKILL.md path (ruling 2026-11-27, #994) — not at the resolver, where a
+at a `bash` call whose command text names a catalog SKILL.md path,
+whatever its exit code (ruling 2026-11-27, #994) — not at the resolver, where a
 retry's view rebuild would double-count. The match is textual: `~/` and
 relative paths resolve against the bash cwd; a path built in a variable
-or a glob is missed, and a mention in a command that exits 0 counts
-even when the file was not read (`ls …/SKILL.md`). Only the SKILL.md
+or a glob is missed, and a mention counts even when the file was not
+read (`ls …/SKILL.md`). Only the SKILL.md
 itself counts: support files ride the body's use. Patch bumps beside
 the provenance record. One process writes it; no locking.
 

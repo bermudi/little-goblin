@@ -31,6 +31,7 @@ function parseAsk(row: unknown): Ask {
 
 export interface Asks {
 	open(input: { conversationId: string; question: string; options?: string[] }): Ask | { error: string };
+	openRequired(input: { conversationId: string; question: string }): Ask;
 	listOpen(conversationId: string): Ask[];
 	close(id: number, by: "goblin" | "tap" | "dismiss", scopeOf?: string): "closed" | "already" | "missing" | "out-of-scope";
 	openForAttention(): Ask[];
@@ -43,20 +44,25 @@ export function makeAsks(db: Database, now: () => Date): Asks {
 	const openCount = db.query<{ count: number }, [string, string]>(
 		`SELECT COUNT(*) AS count FROM asks WHERE closed_at IS NULL AND ${scope}`,
 	);
-	const insert = db.query<unknown, [string, string, string, string]>(
-		"INSERT INTO asks (conversation_id, question, options, created_at) VALUES (?, ?, ?, ?) RETURNING *",
+	const insert = db.query<unknown, [string, string, string, string, number]>(
+		"INSERT INTO asks (conversation_id, question, options, created_at, operator_only) VALUES (?, ?, ?, ?, ?) RETURNING *",
 	);
 	const list = db.query<unknown, [string, string]>(
 		`SELECT * FROM asks WHERE closed_at IS NULL AND ${scope} ORDER BY created_at, id`,
 	);
-	const find = db.query<{ conversation_id: string; closed_at: string | null }, [number]>(
-		"SELECT conversation_id, closed_at FROM asks WHERE id = ?",
+	const find = db.query<{ conversation_id: string; closed_at: string | null; operator_only: number }, [number]>(
+		"SELECT conversation_id, closed_at, operator_only FROM asks WHERE id = ?",
 	);
 	const closeRow = db.query("UPDATE asks SET closed_at = ?, closed_by = ? WHERE id = ? AND closed_at IS NULL");
 	const attention = db.query<unknown, []>(
 		`SELECT asks.* FROM asks JOIN conversations ON conversations.id = asks.conversation_id
 		 WHERE asks.closed_at IS NULL AND conversations.archived_at IS NULL ORDER BY asks.created_at, asks.id`,
 	);
+	const writeQuestion = (conversationId: string, question: string, options: string[], operatorOnly: boolean): Ask => {
+		const row = insert.get(conversationId, question, JSON.stringify(options), now().toISOString(), operatorOnly ? 1 : 0);
+		if (row === null) throw new Error("ask insert returned no row");
+		return parseAsk(row);
+	};
 	return {
 		open(input) {
 			const question = input.question.trim();
@@ -72,12 +78,15 @@ export function makeAsks(db: Database, now: () => Date): Asks {
 			const ask = db.transaction(() => {
 				const count = openCount.get(input.conversationId, input.conversationId)?.count ?? 0;
 				if (count >= 10) return { error: "There are already 10 open questions in this chat. Close one first." } as const;
-				const row = insert.get(input.conversationId, question, JSON.stringify(options), now().toISOString());
-				if (row === null) throw new Error("ask insert returned no row");
-				return parseAsk(row);
+				return writeQuestion(input.conversationId, question, options, false);
 			})();
 			if ("error" in ask) return ask;
 			log.info("ask opened", { ask: ask.id, conversation: ask.conversationId, options: ask.options.length });
+			return ask;
+		},
+		openRequired(input) {
+			const ask = writeQuestion(input.conversationId, input.question, [], true);
+			log.info("operator-only question opened", { ask: ask.id, conversation: ask.conversationId });
 			return ask;
 		},
 		listOpen(conversationId) {
@@ -86,6 +95,7 @@ export function makeAsks(db: Database, now: () => Date): Asks {
 		close(id, by, scopeOf) {
 			const row = find.get(id);
 			if (row === null) return "missing";
+			if (row.operator_only === 1 && by === "goblin") return "out-of-scope";
 			if (scopeOf !== undefined) {
 				const allowed = db.query<{ allowed: number }, [string, string]>(
 					`SELECT CASE WHEN EXISTS (SELECT 1 FROM app_rolls WHERE conversation_id = ?1)

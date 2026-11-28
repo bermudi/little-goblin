@@ -45,6 +45,9 @@ import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { Posts } from "../posts.ts";
 import type { Asks } from "../asks.ts";
+import type { Handovers } from "../handovers.ts";
+import { handoverAvailable, handoverTool } from "./tools/handover.ts";
+import { LITTLE_GOBLIN_BOT_ID } from "../bots.ts";
 import type { GitHub } from "../github.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
@@ -83,6 +86,7 @@ export interface TurnToolsDeps {
 	watches: Watches;
 	posts: Pick<Posts, "add">;
 	asks: Pick<Asks, "open" | "listOpen" | "close">;
+	handovers?: Handovers;
 	github: GitHub;
 	agents: AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
@@ -246,7 +250,12 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				store,
 				conversationId: conv.id,
 				isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
-				botIdFor: (id) => store.bots.membership(id)?.botId ?? null,
+				botIdFor: (id) => {
+					const direct = store.bots.membership(id);
+					const parent = direct === null ? store.get(id)?.parentId ?? null : null;
+					const owner = direct?.botId ?? (parent === null ? null : store.bots.membership(parent)?.botId ?? null);
+					return owner === LITTLE_GOBLIN_BOT_ID ? null : owner;
+				},
 			},
 			// Guests are excluded by the filter below, never by dep absence.
 			note: {
@@ -321,6 +330,13 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			// App turns only — Telegram and guests render plain text.
 			ui: channel === "app",
 		});
+		if (
+			channel === "app" && conv.persona === "personal" && conv.agentType === null &&
+			conv.parentId === null && deps.handovers !== undefined && context !== undefined &&
+			handoverAvailable(snapshot, provider?.kind)
+		) {
+			tools.handover = handoverTool(deps.handovers, conv, context);
+		}
 		// Native subagents (design/agents.md → agent). A child
 		// conversation gets its spawn-time allowlist instead of the agent
 		// tool — depth is 1. A parent gets the tool with the types read

@@ -13,12 +13,15 @@
 
 import type { UIMessage } from "ai";
 import { hasInlineParts, proseOf } from "../../src/inline-parts.ts";
+import { handoverCard } from "../../src/handover-message.ts";
 import { type KeyboardEvent, type RefObject, useEffect, useMemo, useState } from "react";
 import { AT_END_PX, type ScrollDirection } from "./chat/useTranscriptFollow.ts";
 
 // The outline entry for one operator message: the first line of text, or
 // the staged chip kind when the send carried media only.
 export function outlineTitle(m: UIMessage): string {
+	const handover = handoverCard(m.parts);
+	if (handover !== null) return `Handover from ${handover.from}: ${handover.request.split("\n")[0] ?? ""}`;
 	const text = hasInlineParts(m.parts)
 		? proseOf(m.parts)
 		: (m.parts

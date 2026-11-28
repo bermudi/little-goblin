@@ -46,6 +46,23 @@ main bot, bots with one job each, and no projects.
   3. After 5 handovers in a row without the operator, the chain stops and
      asks the operator.
   4. Every handover shows in the chats of both bots.
+- **Handover delivery and stops (operator, 2026-11-28, #1004).** The
+  `handover` tool lists bot names and IDs, and sends a work request to a
+  bot's main chat. Little Goblin receives it in its current main-chat
+  conversation. The sender's card stays in the chat that sent it. The
+  receiving chat appends the request as bot text, not operator authority;
+  it does not rewrite earlier model input or ring the operator for each
+  background reply. The sixth attempted handover
+  opens one question in the sending chat and marks it Needs you. The
+  intended receiver gets no card or turn. The operator can start a
+  fresh chain by replying; the refused request never sends on its own.
+  Editing or retrying text does not undo a handover or remove its card.
+  On model routes that resend every tool declaration, an older chat can
+  receive requests immediately but gets the send tool at its next prompt
+  snapshot rebuild. Codex and Claude Code can add the tool without that wait.
+- A chain counts all accepted handovers from the same work, including ones
+  sent in parallel or from different bots. The check and both chat records
+  commit together, before the receiving bot runs.
 - **Group chats stay out.**
 - **[Goals](../../GLOSSARY.md#goal) come after the first bot.** Bots are
   designed so they can update a goal's status line.

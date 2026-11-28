@@ -1,5 +1,6 @@
 
 import { randomUUID } from "node:crypto";
+import { isHandoverCard } from "./handover-message.ts";
 import type { Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
 import { isClaudeStep, type ClaudeEngine, type ClaudeStep } from "./agent/claude-code/mod.ts";
@@ -325,7 +326,7 @@ export class Runtime {
 			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
-		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false });
+		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false, isolated: isHandoverCard(message.parts) });
 		this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		return true;
 	}
@@ -351,6 +352,10 @@ export class Runtime {
 
 	emitConversationRewound(convId: string, messageId: string, replacedBy: string): void {
 		this.lanes.emitConversation(convId, { type: "rewound", messageId, replacedBy });
+	}
+
+	emitConversationHistory(convId: string): void {
+		this.lanes.emitConversation(convId, { type: "history" });
 	}
 
 	conversationLive(convId: string): boolean {
@@ -573,6 +578,12 @@ export class Runtime {
 						noVoice,
 						recording,
 						noFile,
+						{
+							runId: "compaction-summary",
+							sourceMessageId: () => "",
+							sourceInputSeq: () => null,
+							inputSeqs: () => new Set(),
+						},
 					);
 					const domainTools: Tools = {};
 					for (const name of Object.keys(lastTurn.tools)) {

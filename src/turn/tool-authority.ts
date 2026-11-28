@@ -19,6 +19,7 @@ export type TurnToolMaker = (
 		runId: string;
 		sourceMessageId(): string;
 		sourceInputSeq(): number | null;
+		inputSeqs(): ReadonlySet<number>;
 	},
 ) => Tools;
 
@@ -70,6 +71,7 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			runId: newRunId,
 			sourceMessageId: deps.sourceMessageId,
 			sourceInputSeq: record.sourceInputSeq,
+			inputSeqs: () => record.ownedInputSeqs,
 		},
 	);
 	deps.journaled(() =>

@@ -41,6 +41,7 @@ import { makeGitHub } from "./github.ts";
 import { makeWatches } from "./watches.ts";
 import { makePosts } from "./posts.ts";
 import { makeAsks } from "./asks.ts";
+import { makeHandovers } from "./handovers.ts";
 import { makeWatchObserver } from "./watch-observer.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
@@ -553,6 +554,14 @@ async function boot() {
 		watches,
 		posts,
 		asks,
+		handovers: makeHandovers({
+			store,
+			wakes: wakeStore,
+			asks,
+			config: () => configRef.current,
+			pump: () => delivery.dispatcher.pump(),
+			changed: (conversationId) => runtime.emitConversationHistory(conversationId),
+		}),
 		github,
 		mail: mailApproval,
 		programApproval,

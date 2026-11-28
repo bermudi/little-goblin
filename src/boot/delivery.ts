@@ -2,11 +2,13 @@
 // calls dispatcher.start() after runtime.mount().
 
 import { synthesizeSpeech } from "../agent/tts.ts";
+import { appMediaSink } from "../app-media.ts";
 import type { AppPush } from "../app-push.ts";
 import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
 import type { TtsConfig } from "../config-schema.ts";
 import type { ConversationStore } from "../conversation.ts";
+import { isHandoverCard } from "../handover-message.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { Runtime } from "../runtime.ts";
 import type { SchedulerDeps } from "../scheduler.ts";
@@ -82,7 +84,9 @@ export function wireDelivery(deps: DeliveryDeps): Delivery {
 		wakes: deps.wakes,
 		journal: deps.journal,
 		runtime: deps.runtime,
-		sinkFor: (conv) => sinkFor(wakeDeps, conv),
+		sinkFor: (conv, trigger) => isHandoverCard(trigger.parts)
+			? appMediaSink(conv.id, { append: (messages, opts) => deps.store.append(conv.id, messages, opts) })
+			: sinkFor(wakeDeps, conv),
 		deferStart: true,
 	});
 	// The scheduler rides the SAME wakeDeps object — a spread here

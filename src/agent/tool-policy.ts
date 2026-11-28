@@ -69,6 +69,7 @@ export const TOOL_NAMES = [
 	"desktop",
 	"ui",
 	"ask",
+	"handover",
 	"script",
 ] as const;
 
@@ -100,6 +101,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	desktop: P({ guestChannel: false }),
 	ui: P({}),
 	ask: P({ guestChannel: false }),
+	handover: P({ guestChannel: false }),
 	script: P({ composes: true }),
 };
 

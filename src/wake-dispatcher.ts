@@ -35,7 +35,7 @@ export interface WakeDispatcherDeps {
 	runtime: Runtime;
 	// The wake turn's delivery sink — the composition's bell/delivery
 	// routing by channel, same as every headless submit.
-	sinkFor(conv: Conversation): TurnSink;
+	sinkFor(conv: Conversation, trigger: Message): TurnSink;
 	// Pre-execution submit failures retry under bounded exponential
 	// backoff; the defaults are production-sized, tests inject smaller.
 	backoff?: { baseMs: number; capMs: number };
@@ -215,10 +215,11 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			});
 			return;
 		}
+		const trigger = triggerOf(rec);
 		const admitted = runtime.submitPersisted(
 			conv,
-			triggerOf(rec),
-			deps.sinkFor(conv),
+			trigger,
+			deps.sinkFor(conv, trigger),
 			rec.historySeq,
 		);
 		if (!admitted) {

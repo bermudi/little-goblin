@@ -247,7 +247,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 					case "create": {
 						const projectId = input.where === "loose" ? null : deps.projectId;
 						const note = deps.notes.create(
-							{ title: input.title, body: input.body, projectId, ...message },
+							{ title: input.title, body: input.body, projectId, conversation: deps.conversation, ...message },
 							"agent",
 						);
 						return { note: noteView(note, deps.projects), created: true };

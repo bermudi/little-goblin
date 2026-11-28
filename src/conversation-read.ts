@@ -192,7 +192,7 @@ export interface ConversationReads {
 	// conversations filter at query time against the live flag —
 	// retroactive, unlike the event stamps. channelPrefix is a LIKE
 	// pattern ("app/%").
-	searchHistory(query: string, limit: number, channelPrefix?: string): HistoryHit[];
+	searchHistory(query: string, limit: number, channelPrefix?: string, botId?: string): HistoryHit[];
 	// Arrival-ordered window around one event. No exclusion check here —
 	// the tool owns exclusion (with its own-conversation exception).
 	eventContext(id: string, seq: number, window: number): HistoryContextRow[];

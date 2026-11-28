@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { ensureBotsSchema } from "./bots.ts";
 import { isPrivateChatId, rollingDmOrdinal } from "./conversation-address.ts";
 import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
 import { ensureClaudeSessionsSchema } from "./claude-sessions.ts";
@@ -40,6 +41,7 @@ export function ensureConversationSchema(db: Database): void {
 	// Must precede the column migrations — project_id below REFERENCES
 	// this table.
 	ensureProjectsSchema(db);
+	ensureBotsSchema(db);
 	ensureNotesSchema(db);
 	// Companion schemas whose rows reference conversations: ensured here
 	// so deleteConversation's anchor check and wake sweep always find

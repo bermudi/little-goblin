@@ -725,6 +725,7 @@ export class Runtime {
 			memory: this.deps.memory,
 			assertAuthority: () => this.checkAuthority(conv.id, epoch),
 			isExcluded: () => this.deps.store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
+			recallNew: this.deps.store.bots.membership(conv.id) === null,
 		});
 	}
 

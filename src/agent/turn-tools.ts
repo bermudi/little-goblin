@@ -214,7 +214,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 						},
 						// Live flag: a mid-turn exclusion stops the next
 						// memory call without fencing the running turn.
-						isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
+						isExcluded: () =>
+							store.bots.membership(conv.id) !== null ||
+							(store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded),
 						noteRecall: memory.noteRecall,
 					}
 				: undefined,
@@ -241,6 +243,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				store,
 				conversationId: conv.id,
 				isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
+				botIdFor: (id) => store.bots.membership(id)?.botId ?? null,
 			},
 			// Guests are excluded by the filter below, never by dep absence.
 			note: {

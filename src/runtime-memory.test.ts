@@ -6,13 +6,14 @@ import type { Message } from "./message.ts";
 import { z } from "zod";
 import { appMediaSink, composeTurnSinks } from "./app-media.ts";
 import { memoryConfigSchema } from "./config-schema.ts";
+import { appAddress } from "./conversation-address.ts";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./memory/hindsight.ts";
 import { Runtime, userMessage } from "./runtime.ts";
 
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import { deferred, RecordingSink, tmpDb, useHome } from "./testkit.ts";
+import { deferred, RecordingSink, tmpDb, useHome, waitUntil } from "./testkit.ts";
 import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import type { ScriptCall } from "./testkit/turn-script.ts";
 
@@ -133,6 +134,48 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 }
 
 describe("memory turn integration", () => {
+	test("bot conversion replays previous recall in place and skips new Hindsight traffic", async () => {
+		const h = harness({ factText: "old workshop fact" });
+		try {
+			const chat = h.store.resolve(appAddress("bot-workshop"), "/workshop", { model: "fake/verify", thinking: "medium" });
+			const model = scripted(reply("First answer."), reply("Second answer."));
+			const runtime = new Runtime({
+				engines: model.engines,
+				store: h.store,
+				buildStep: model.step,
+				memory: {
+					client: h.client,
+					config: memConfig,
+					contexts: h.store.memoryContexts,
+					noteRecall: () => {},
+				},
+			});
+			runtime.mount({ makeTools: () => ({}) });
+			const first = new RecordingSink();
+			runtime.submit(chat, userMessage([{ type: "text", text: "Workshop plans" }]), first);
+			expect(await first.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(chat.id), "first reply to finish");
+			expect(h.recallCount()).toBe(1);
+			const eligibility = h.store.memoryEligibility(chat.id).eligibleSeqs;
+			const prior = h.store.memoryContexts.load(chat.id);
+			expect(prior).toHaveLength(1);
+			expect(h.store.bots.convertSideChat(chat.id, "Workshop", 0, (id) => runtime.busy(id)).kind)
+				.toBe("converted");
+
+			const second = new RecordingSink();
+			runtime.submit(chat, userMessage([{ type: "text", text: "Continue the plan" }]), second);
+			expect(await second.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(chat.id), "second reply to finish");
+			expect(h.recallCount()).toBe(1);
+			expect(h.store.memoryContexts.load(chat.id)).toEqual(prior);
+			expect(h.store.memoryEligibility(chat.id).eligibleSeqs).toEqual(eligibility);
+			const [before, after] = model.requests().map((request) => JSON.parse(request) as unknown[]);
+			expect(after?.slice(0, before?.length)).toEqual(before);
+		} finally {
+			h.store.close();
+		}
+	});
+
 	test("unowned excluded input in the admission exchange taints reply and media after re-enable", async () => {
 		const h = harness();
 		const conv = h.store.get(h.conversation)!;

@@ -283,6 +283,7 @@ export function conversationListBody(
 ): AppConversationList {
 	const busy = new Set(deps.runtime.busyConversations());
 	return {
+		bots: deps.store.bots.list(),
 		conversations: deps.store.listAppConversations().map((conversation): AppConversationListItem => ({
 			...conversation,
 			busy: busy.has(conversation.id),
@@ -1183,6 +1184,11 @@ export async function handleConversationsRoute(
 					case "moved":
 					case "unchanged":
 						return Response.json({}, { headers: NO_STORE });
+					case "botChat":
+						return Response.json(
+							{ error: "This conversation belongs to a bot." },
+							{ status: 409, headers: NO_STORE },
+						);
 					case "notFound":
 						return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 					case "noProject":
@@ -1217,6 +1223,16 @@ export async function handleConversationsRoute(
 							{ error: "only the current rolling chat conversation can move into a project" },
 							{ status: 422, headers: NO_STORE },
 						);
+				}
+			}
+			if (parsed.data.archived === true) {
+				const membership = store.bots.membership(convId.id);
+				if (membership !== null && membership.mainOrdinal !== null) {
+					log.info("app conversation archive refused", { conversation: convId.id, bot: membership.botId });
+					return Response.json(
+						{ error: "This chat is a bot's main chat." },
+						{ status: 409, headers: NO_STORE },
+					);
 				}
 			}
 			if (parsed.data.pinned === true) {

@@ -1,7 +1,7 @@
 // Transcript markdown — comfortable reading, not CommonMark
 // conformance: anything unrecognized stays literal text.
 
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
 	Check,
 	Code,
@@ -493,6 +493,8 @@ interface ListItem {
 	text: string;
 }
 
+export const NoteConversationContext = createContext<string | null>(null);
+
 // A `note` info-string fence — the convention the system prompt names:
 // its body is note-ready content the card offers to append somewhere
 // real. `title="…"` prenames a new note; appending to an existing one
@@ -534,6 +536,7 @@ function NoteAppendCard({
 	const [error, setError] = useState<string | null>(null);
 	const searchSeq = useRef(0);
 	const live = useLiveStoreOrNull();
+	const conversation = useContext(NoteConversationContext);
 
 	useEffect(() => {
 		if (!open) return;
@@ -578,6 +581,7 @@ function NoteAppendCard({
 			title: title ?? "untitled",
 			body,
 			...(noteProjectId != null ? { projectId: noteProjectId } : {}),
+			...(noteProjectId == null && conversation !== null ? { conversation } : {}),
 		}).then(
 			(n) => {
 				setStatus("done");

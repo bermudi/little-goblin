@@ -4,6 +4,7 @@
 // the history view and the epoch bump arrive as deps.
 
 import type { Database } from "bun:sqlite";
+import type { BotStore } from "./bots.ts";
 import { parseEvent } from "./conversation-events.ts";
 import type { Message } from "./message.ts";
 import { log } from "./log.ts";
@@ -45,6 +46,7 @@ export function makeConversationTranscript(
 	>,
 	deps: {
 		memoryQueue: MemoryQueue;
+		bots: Pick<BotStore, "membership">;
 		bump: (id: string, previousEpoch?: number) => number;
 		// The history view's message-id seam: resolve a durable event by
 		// its client message id before the rewind decides its fate.
@@ -65,7 +67,7 @@ export function makeConversationTranscript(
 		qDeleteWindows,
 		qDeleteClaudeSessions,
 	} = queries;
-	const { memoryQueue, bump, messageEvent } = deps;
+	const { memoryQueue, bots, bump, messageEvent } = deps;
 
 	function editUserMessage(id: string, messageId: string, message: Message): MessageEdit | null {
 		let unarchived = false;
@@ -107,7 +109,7 @@ export function makeConversationTranscript(
 				JSON.stringify({ v: 1, message }),
 				null,
 				new Date().toISOString(),
-				conv.memory_excluded === 0 ? 1 : 0,
+				conv.memory_excluded === 0 && bots.membership(id) === null ? 1 : 0,
 			);
 			// The rewind retires every pre-edit admission's authority: a
 			// claimed-but-unlinked wake (crash/backoff window) carries a
@@ -178,7 +180,9 @@ export function makeConversationTranscript(
 			// flag: history is not rewritten and exclusion is not retroactive.
 			const conv = qGet.get(id);
 			if (!conv) throw new Error(`conversation ${id} not found`);
-			const eligible = conv.memory_excluded === 0 && opts?.exclude !== true ? 1 : 0;
+			const eligible = conv.memory_excluded === 0 && opts?.exclude !== true && bots.membership(id) === null
+				? 1
+				: 0;
 			// Activity resurrects an archived app conversation — an
 			// event (delegation notice, operator send) returns it to the
 			// rail rather than accumulating replies unseen.

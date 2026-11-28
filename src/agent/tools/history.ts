@@ -10,6 +10,7 @@ export interface HistorySearchDeps {
 	store: Pick<ConversationReads, "searchHistory" | "eventContext" | "get">;
 	conversationId: string;
 	isExcluded: () => boolean;
+	botIdFor(conversationId: string): string | null;
 }
 
 export function excerpt(text: string, query: string, budget = 360): string {
@@ -105,10 +106,13 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 			if (deps.isExcluded() && !own) {
 				return { error: "memory is excluded in this conversation" };
 			}
+			const botId = deps.botIdFor(deps.conversationId);
 			switch (input.action) {
 				case "search": {
 					const started = Date.now();
-					const hits = deps.store.searchHistory(input.query, input.limit ?? 8);
+					const hits = botId === null
+						? deps.store.searchHistory(input.query, input.limit ?? 8)
+						: deps.store.searchHistory(input.query, input.limit ?? 8, undefined, botId);
 					log.info("history searched", {
 						query: input.query,
 						results: hits.length,
@@ -119,6 +123,9 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 					return `${lines}\n\nPage context around a hit with action="context", its conversation id, and its seq.`;
 				}
 				case "context": {
+					if (botId !== null && !own && deps.botIdFor(input.conversation) !== botId) {
+						return { error: "Only this bot's conversations are in scope." };
+					}
 					const conv = deps.store.get(input.conversation);
 					if (!conv) return { error: `no conversation "${input.conversation}"` };
 					if (conv.memoryExcluded && !own) {

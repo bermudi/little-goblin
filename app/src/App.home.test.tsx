@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { AppAttentionItem, AppConversationList } from "../../src/http/app-wire.ts";
+import type { AppAttentionItem, AppBot, AppConversationList } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
 import { LIST_ENTRY, emitLiveVersions, goblinFeedResponse, goblinLive } from "./testkit.ts";
 
@@ -41,6 +41,7 @@ describe("home screen", () => {
 	let phone: boolean;
 	let hidden: boolean;
 	let conversations: Conv[];
+	let bots: AppBot[];
 	let chain: Conv[];
 	let attention: AppAttentionItem[];
 	let otherBusy: number;
@@ -92,9 +93,24 @@ describe("home screen", () => {
 			listGets++;
 			if (tokenDead) return Response.json({ error: "unauthorized" }, { status: 401 });
 			return Response.json(
-				{ conversations, rolling: { chain } } satisfies AppConversationList,
+				{ conversations, rolling: { chain }, bots } satisfies AppConversationList,
 				{ headers: { "x-goblin-version": `v${listVersion}` } },
 			);
+		}
+		if (path === "/api/app/conversations/workshop/convert-to-bot" && method === "POST") {
+			const body = JSON.parse(String(init?.body)) as { name: string };
+			const bot: AppBot = {
+				id: "bot-1", name: body.name, mainConversationId: "app/workshop",
+				sideConversationIds: [], canMoveBack: true,
+			};
+			bots = [bot];
+			listVersion++;
+			return Response.json(bot, { status: 201 });
+		}
+		if (path === "/api/app/bots/bot-1/move-back" && method === "POST") {
+			bots = [];
+			listVersion++;
+			return Response.json({ conversationId: "app/workshop" });
 		}
 		if (path === "/api/app/projects") return Response.json({ projects: [] });
 		if (path === "/api/app/notes") return Response.json({ notes: [], truncated: false });
@@ -146,6 +162,7 @@ describe("home screen", () => {
 		phone = false;
 		hidden = false;
 		conversations = [];
+		bots = [];
 		chain = [];
 		attention = [];
 		otherBusy = 0;
@@ -168,6 +185,7 @@ describe("home screen", () => {
 			["CustomEvent", win.CustomEvent],
 			["getComputedStyle", win.getComputedStyle],
 			["HTMLElement", win.HTMLElement],
+			["HTMLButtonElement", win.HTMLButtonElement],
 			["HTMLFieldSetElement", win.HTMLFieldSetElement],
 			["HTMLInputElement", win.HTMLInputElement],
 			["HTMLSelectElement", win.HTMLSelectElement],
@@ -274,6 +292,90 @@ describe("home screen", () => {
 			return item.querySelector(":scope > .conv .conv-title")?.textContent ?? null;
 		})
 		.filter((label) => label !== null);
+
+	test("a side chat becomes a bot in place and moves back from its settings page", async () => {
+		conversations = [conv("workshop", { title: "Repair workshop" })];
+		await open("/app/c/workshop");
+		await click("button.title-trigger");
+		const chooseConversion = async () => {
+			const item = [...container.querySelectorAll('[role="menuitem"]')].find(
+				(element) => element.textContent === "Convert to bot…",
+			);
+			expect(item).toBeDefined();
+			await act(async () => {
+				item?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			});
+		};
+		await chooseConversion();
+		expect(container.querySelector<HTMLInputElement>('[role="dialog"] input')?.value).toBe("Repair workshop");
+		await click('[role="dialog"] .confirm-cancel');
+		expect(container.querySelector('[role="dialog"]')).toBeNull();
+		expect(posts).toEqual([]);
+
+		await click("button.title-trigger");
+		await chooseConversion();
+		await act(async () => {
+			container.querySelector('[role="dialog"] form')?.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await waitFor(() => container.querySelector('[role="dialog"]') === null, "the conversion dialog to close");
+		expect(posts).toContain("/api/app/conversations/workshop/convert-to-bot");
+		expect(bots[0]).toMatchObject({ name: "Repair workshop", mainConversationId: "app/workshop" });
+		expect(win.location.pathname).toBe("/app/c/workshop");
+		await click("button.title-trigger");
+		expect([...container.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent))
+			.not.toContain("Convert to bot…");
+		const settings = [...container.querySelectorAll('[role="menuitem"]')].find(
+			(item) => item.textContent === "Bot settings",
+		);
+		expect(list()).toEqual(["Little Goblin", "# Bots", "Repair workshop", "# Projects"]);
+		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Repair workshop");
+		expect(settings).toBeDefined();
+		await act(async () => {
+			settings?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await waitFor(() => win.location.pathname === "/app/b/bot-1", "bot settings route");
+		expect(container.querySelector<HTMLInputElement>(".bot-settings input")?.value).toBe("Repair workshop");
+		await click(".rail-body .bot-row a");
+		expect(win.location.pathname).toBe("/app/c/workshop");
+		await click('.goblin-profile-button[aria-label="Settings for Repair workshop"]');
+		expect(win.location.pathname).toBe("/app/b/bot-1");
+		await click(".bot-settings .danger");
+		await waitFor(() => container.querySelector(".bot-row") === null, "the bot row to disappear");
+		expect(win.location.pathname).toBe("/app/c/workshop");
+		expect(list()).toEqual(["Little Goblin", "Repair workshop", "# Projects"]);
+		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Little Goblin");
+	});
+
+	test("a collapsed bot shows the side chat's unread mark after its main chat is seen", async () => {
+		conversations = [conv("main", { newReply: 2 }), conv("branch", { newReply: 3 })];
+		bots = [{
+			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
+			sideConversationIds: ["app/branch"], canMoveBack: false,
+		}];
+		await open("/app/c/main");
+		expect(reads.map((read) => read.id)).toEqual(["main"]);
+		expect(markOf("main")).toBeNull();
+		expect(markOf("branch")).toBe("new");
+		await click('.rail-body [aria-label="Side chats for Workshop"]');
+		expect(container.querySelector('.rail-body [href="/app/c/branch"]')).toBeNull();
+		expect(markOf("main")).toBe("new");
+		expect(container.querySelector(".bot-row .conv-preview")?.textContent).toBe(conversations[1]?.preview);
+	});
+
+	test("the phone list is empty only before its first bot appears", async () => {
+		phone = true;
+		await open("/app/");
+		expect(container.querySelector(".chatlist-screen .empty")?.textContent).toContain("Nothing here yet");
+		bots = [{
+			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
+			sideConversationIds: [], canMoveBack: true,
+		}];
+		await publish({ conversations: [conv("main")] });
+		expect(container.querySelector(".chatlist-screen .bot-row")?.textContent).toContain("Workshop");
+		expect(container.querySelector(".chatlist-screen .empty")).toBeNull();
+	});
 
 	test("T14: an open chat with a new reply is marked read once, and the list is read again", async () => {
 		conversations = [conv("one", { newReply: 42 })];

@@ -1,4 +1,4 @@
-import type { AppAttentionItem, AppConversationList } from "../../src/http/app-wire.ts";
+import type { AppAttentionItem, AppBot, AppConversationList } from "../../src/http/app-wire.ts";
 import { flatTitle } from "./flatText.ts";
 
 type Conv = AppConversationList["conversations"][number];
@@ -46,6 +46,8 @@ export interface RollingRow {
 export interface HomeList {
 	rolling: RollingRow;
 	side: ChatRow[];
+	bots: { bot: AppBot; main: ChatRow; side: ChatRow[] }[];
+	botByChatId: ReadonlyMap<string, AppBot>;
 	active: (ChatRow | LooseRow)[];
 	openInGoblin: boolean;
 }
@@ -53,6 +55,7 @@ export interface HomeList {
 export interface HomeInput {
 	conversations: readonly Conv[];
 	chain: readonly Conv[];
+	bots?: readonly AppBot[];
 	projects: readonly { id: string; name: string; archivedAt: string | null }[];
 	attention: readonly AppAttentionItem[];
 	delegations: readonly { appConversation: string | null; status: string }[];
@@ -87,16 +90,25 @@ export function buildHome(
 	const chatsById = new Map(conversations.map((conv) => [conv.id, conv]));
 	const rollIds = new Set(input.chain.map((conv) => conv.id));
 	const owners = findOwners(conversations, chatsById, rollIds);
+	const botByChatId = new Map<string, AppBot>();
+	for (const bot of input.bots ?? []) {
+		for (const id of [bot.mainConversationId, ...bot.sideConversationIds]) {
+			botByChatId.set(id, bot);
+		}
+	}
 	const descendantsByRow = new Map<string, Conv[]>();
 	for (const candidate of conversations) {
 		const row = owners.get(candidate.id)?.row;
 		if (row == null || row === candidate.id) continue;
+		const bot = botByChatId.get(row);
+		if (bot !== undefined) botByChatId.set(candidate.id, bot);
 		const group = descendantsByRow.get(row) ?? [];
 		group.push(candidate);
 		descendantsByRow.set(row, group);
 	}
 	const openOwner = input.open === null ? undefined : owners.get(input.open);
-	const openRow = openOwner?.roll === null ? openOwner.row : null;
+	const openRow = openOwner?.roll === null && openOwner.row !== null && !botByChatId.has(openOwner.row)
+		? openOwner.row : null;
 	const activeHold = prev?.id === openRow ? prev : null;
 	const attentionByConversation = groupAttention(input.attention);
 	const runningByConversation = groupRunning(input.delegations);
@@ -150,7 +162,7 @@ export function buildHome(
 		left.place.rank - right.place.rank || right.place.at - left.place.at
 	);
 
-	const side = [...rowById.values()]
+	const loose = [...rowById.values()]
 		.filter((row) => row.conv.projectId == null)
 		.sort((left, right) => {
 			const rankOrder = left.place.rank - right.place.rank;
@@ -160,6 +172,12 @@ export function buildHome(
 				: 0;
 			return pinOrder || right.place.at - left.place.at;
 		});
+	const side = loose.filter((row) => !botByChatId.has(row.id));
+	const bots = (input.bots ?? []).flatMap((bot) => {
+		const main = rowById.get(bot.mainConversationId);
+		if (main === undefined) return [];
+		return [{ bot, main, side: loose.filter((row) => row !== main && botByChatId.get(row.id) === bot) }];
+	});
 
 	const rolling = makeRollingRow(
 		input,
@@ -169,9 +187,7 @@ export function buildHome(
 		runningByConversation,
 	);
 	if (!input.sideChatsOpen) {
-		const winner = side.find((row) => row.mark === "needs") ??
-			side.find((row) => row.mark === "new") ??
-			side.find((row) => row.mark === "working");
+		const winner = mostUrgentChat(side);
 		const mark = winner?.mark ?? null;
 		if (winner && mark !== null && (rolling.mark === null || rankOf(mark) < rankOf(rolling.mark))) {
 			const title = flatTitle(winner.conv.title) ?? "a side chat";
@@ -185,11 +201,12 @@ export function buildHome(
 	const openInGoblin = input.open !== null && (() => {
 		const owner = owners.get(input.open);
 		return rollIds.has(input.open) || (owner !== undefined && owner.roll !== null) ||
-			(owner?.row != null && chatsById.get(owner.row)?.projectId == null);
+			(owner?.row != null && chatsById.get(owner.row)?.projectId == null &&
+				!botByChatId.has(owner.row));
 	})();
 	const hold = makeHold(openRow, rowById, prev);
 
-	return { list: { rolling, active, side, openInGoblin }, hold };
+	return { list: { rolling, active, side, bots, botByChatId, openInGoblin }, hold };
 }
 
 function findOwners(
@@ -416,7 +433,13 @@ function makeRollingRow(
 	};
 }
 
-function rankOf(mark: Mark): number {
+export function mostUrgentChat(rows: readonly ChatRow[]): ChatRow | undefined {
+	return rows.find((row) => row.mark === "needs") ??
+		rows.find((row) => row.mark === "new") ??
+		rows.find((row) => row.mark === "working");
+}
+
+export function rankOf(mark: Mark): number {
 	if (mark === "needs") return 0;
 	if (mark === "new") return 1;
 	return 2;

@@ -208,6 +208,7 @@ describe("app conversations", () => {
 			const response = await call("/api/app/conversations");
 			expect(response.status).toBe(200);
 			expect(await response.json()).toEqual({
+				bots: [],
 				conversations: [expect.objectContaining({ id: ordinary.id })],
 				rolling: {
 					chain: [

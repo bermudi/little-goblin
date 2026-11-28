@@ -244,6 +244,7 @@ export async function recallMemory(options: {
 	// in-flight recall returns, and exclusion no longer bumps the
 	// epoch for assertAuthority to catch.
 	isExcluded(): boolean;
+	recallNew: boolean;
 	memory: MemoryTurnDeps | undefined;
 }): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
 	const { conv, anchorSeq, history, signal, assertAuthority, isExcluded } = options;
@@ -258,6 +259,7 @@ export async function recallMemory(options: {
 		});
 		prior = [];
 	}
+	if (!options.recallNew) return { prior, current: null };
 	const query = buildRecallQuery(history);
 	if (query === "") {
 		log.debug("memory recall skipped — no text to query", { conversation: conv.id });

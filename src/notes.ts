@@ -84,6 +84,7 @@ type NoteWriteOptions = NoteEditMessage & {
 };
 
 type NoteCreate = NoteEditMessage & {
+	conversation?: string | undefined;
 	title: string;
 	body?: string | undefined;
 	projectId?: string | null | undefined;
@@ -434,9 +435,13 @@ export function openNotes(
 		}
 	}
 
-	function recordEdit(previous: Pick<Note, "title" | "body">, next: Note, message: NoteEditMessage) {
+	function recordEdit(previous: Pick<Note, "title" | "body">, next: Note, message: NoteWriteOptions) {
 		const title = previous.title === next.title ? null : { before: previous.title, after: next.title };
 		const body = noteBodyChange(previous.body, next.body);
+		const membership = next.lastSource === "agent" && message.conversation !== undefined
+			? store.bots.membership(message.conversation)
+			: null;
+		const authorBotId = next.lastSource === "agent" ? membership?.botId ?? LITTLE_GOBLIN_NOTE_OWNER : null;
 		db.run(
 			`INSERT INTO note_edits
 			 (note_id, rev, at, author_bot_id, what, reason, title_change, body_change)
@@ -445,7 +450,7 @@ export function openNotes(
 				next.id,
 				next.rev,
 				next.updatedAt,
-				next.lastSource === "agent" ? LITTLE_GOBLIN_NOTE_OWNER : null,
+				authorBotId,
 				message.what?.trim() || null,
 				message.reason?.trim() || null,
 				title === null ? null : JSON.stringify(title),
@@ -570,17 +575,22 @@ export function openNotes(
 		const title = input.title.trim();
 		if (title === "") throw new NoteInputError("note title is empty");
 		checkBodySize(input.body ?? "");
-		checkProjectId(input.projectId ?? null);
+		const projectId = input.projectId ?? null;
+		checkProjectId(projectId);
 		const id = randomUUID();
 		const at = now().toISOString();
 		db.run(
-			`INSERT INTO notes (id, project_id, title, body_md, rev, state_rev, last_source, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`,
-			[id, input.projectId ?? null, title, input.body ?? "", source, at, at],
+			`INSERT INTO notes (id, project_id, bot_id, title, body_md, rev, state_rev, last_source, created_at, updated_at)
+			 VALUES (?, ?, COALESCE((SELECT bot_id FROM bot_chats WHERE conversation_id = ?), ?),
+				?, ?, 1, 1, ?, ?, ?)`,
+			[
+				id, projectId, projectId === null ? input.conversation ?? null : null,
+				LITTLE_GOBLIN_NOTE_OWNER, title, input.body ?? "", source, at, at,
+			],
 		);
 		const created = mustGet(id);
 		recordEdit({ title: "", body: "" }, created, input);
-		log.info("note created", { note: id, project: input.projectId ?? null, title });
+		log.info("note created", { note: id, project: projectId, bot: created.botId, title });
 		return created;
 	});
 

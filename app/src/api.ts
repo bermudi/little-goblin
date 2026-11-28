@@ -15,6 +15,9 @@ import type {
 	AppAttentionResponse,
 	AppActivityResponse,
 	AppPostsResponse,
+	AppBot,
+	AppBotMoveBack,
+	AppBotName,
 	AppCompactResponse,
 	AppRollResponse,
 	AppSuggestTitleResponse,
@@ -34,6 +37,7 @@ import type {
 	AppMessageList,
 	AppNote,
 	AppNoteBatch,
+	AppNoteCreate,
 	AppNoteList,
 	AppNoteRewriteRequest,
 	AppNoteRewriteResponse,
@@ -205,6 +209,30 @@ async function request<T>(token: string | null, path: string, init?: RequestInit
 
 export function listConversations(token: string | null): Promise<AppConversationList> {
 	return request(token, "/api/app/conversations");
+}
+
+export function convertSideChat(token: string | null, id: string, body: AppBotName): Promise<AppBot> {
+	return request(token, `/api/app/conversations/${seg(id)}/convert-to-bot`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function renameBot(token: string | null, id: string, body: AppBotName): Promise<AppBot> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function moveBotChatBack(token: string | null, id: string): Promise<AppBotMoveBack> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}/move-back`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
+	});
 }
 
 export function markConversationRead(token: string | null, id: string, seq: number): Promise<{ ok: true }> {
@@ -388,7 +416,7 @@ export function batchNotes(token: string | null, body: AppNoteBatch): Promise<{ 
 
 export function createNote(
 	token: string | null,
-	body: { title: string; body?: string; projectId?: string | null },
+	body: AppNoteCreate,
 ): Promise<AppNote> {
 	return request(token, "/api/app/notes", {
 		method: "POST",

@@ -8,9 +8,26 @@ import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
 import type { NoteBatchAction, NoteSelection } from "../note-owner.ts";
 
+export interface AppBot {
+	id: string;
+	name: string;
+	mainConversationId: string;
+	sideConversationIds: string[];
+	canMoveBack: boolean;
+}
+
+export interface AppBotName {
+	name: string;
+}
+
+export interface AppBotMoveBack {
+	conversationId: string;
+}
+
 export interface AppConversationList {
 	conversations: AppConversationListItem[];
 	rolling: { chain: AppConversationListItem[] };
+	bots: AppBot[];
 }
 
 export interface AppRollResponse {
@@ -55,6 +72,13 @@ export interface AppProject {
 
 export interface AppProjectList {
 	projects: AppProject[];
+}
+
+export interface AppNoteCreate {
+	title: string;
+	body?: string | undefined;
+	projectId?: string | null | undefined;
+	conversation?: string | undefined;
 }
 
 export interface AppNote {

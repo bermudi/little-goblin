@@ -19,7 +19,8 @@ import { channelOf } from "../conversation-address.ts";
 import { paths } from "../home-layout.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
-import { projectWorkdir, type ProjectStore } from "../projects.ts";
+import type { ProjectStore } from "../projects.ts";
+import { bashDeclarationWorkdir, conversationWorkdir } from "../conversation-workdir.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
@@ -39,7 +40,6 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
-import { promptHasProject } from "./prompt.ts";
 import { noteHistoryAvailable } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
@@ -131,15 +131,13 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		const provider = conv.model === null
 			? undefined
 			: configRef.current.providers?.[splitModelRef(conv.model).provider];
-		const toolProjectId =
-			snapshot === null || promptHasProject(snapshot) ? conv.projectId : null;
 		const { mail, desktops, agents } = deps;
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
 		const channel = channelOf(conv.id);
-		const workdir = projectWorkdir(projects, conv);
-		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
+		const workdir = conversationWorkdir(store, projects, conv, snapshot);
+		const bashDescriptionCwd = bashDeclarationWorkdir(workdir, snapshot);
 		const delegate = delegateDeps(conv, workdir);
 		// A child conversation's bound desktop (computer type) — the
 		// engine's row is the source; null for parents and other types.

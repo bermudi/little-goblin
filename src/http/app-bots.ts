@@ -1,9 +1,18 @@
 import { z } from "zod";
+import { isAbsolute } from "node:path";
 import { log } from "../log.ts";
 import { type AppChannelDeps, conversationFromSegment, NO_STORE, parsedJson } from "./app-shared.ts";
-import type { AppBot, AppBotMoveBack, AppBotName } from "./app-wire.ts";
+import type { AppBot, AppBotMoveBack, AppBotName, AppBotPatch } from "./app-wire.ts";
 
-const nameBody: z.ZodType<AppBotName> = z.object({ name: z.string().trim().min(1).max(200) }).strict();
+const name = z.string().trim().min(1).max(200);
+const nameBody: z.ZodType<AppBotName> = z.strictObject({ name });
+const settingsBody: z.ZodType<AppBotPatch> = z.strictObject({
+	name: name.optional(),
+	instructions: z.string().max(20_000).optional(),
+	folder: z.string().max(4096).refine((path) => isAbsolute(path) && !path.includes("\0"), {
+		message: "Use an absolute folder path.",
+	}).nullable().optional(),
+}).refine((patch) => Object.values(patch).some((value) => value !== undefined));
 const botId = z.uuidv4();
 const emptyBody = z.strictObject({});
 
@@ -64,11 +73,11 @@ async function handleBotSettings(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 	if (!moveBack) {
-		const body = await parsedJson(req, nameBody);
+		const body = await parsedJson(req, settingsBody);
 		if (body instanceof Response) return body;
-		const bot = store.bots.rename(id, body.name);
+		const bot = store.bots.patch(id, body);
 		if (bot === null) return missing();
-		log.info("app bot renamed", { bot: bot.id });
+		log.info("app bot settings changed", { bot: bot.id, fields: Object.keys(body) });
 		return Response.json(bot satisfies AppBot, { headers: NO_STORE });
 	}
 	const body = await parsedJson(req, emptyBody);

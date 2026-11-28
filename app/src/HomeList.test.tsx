@@ -26,7 +26,6 @@ const conv = (id: string, parentId: string | null = null): Conv => ({
 const input = (conversations: Conv[], open: string | null = null): HomeInput => ({
 	conversations,
 	chain: [],
-	projects: [],
 	attention: conversations.some((row) => row.id === "app/needs") ? [{
 		id: "needs",
 		kind: "program-approval",
@@ -105,21 +104,15 @@ test("HomeList never renders subagents as chat rows", async () => {
 	setup();
 	function Fixture() {
 		const data = { ...input([parent, kid, secondKid, sibling], kid.id), sideChatsOpen: true };
-		const home = useHomeList(data, [], true, null);
+		const home = useHomeList(data, null);
 		return <HomeList
 			home={home}
-			projects={[]}
-			projectsOpen
-			currentFolderId={null}
 			currentConversationId={null}
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => {}}
 			onNewSideChat={() => {}}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}
@@ -147,18 +140,12 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 	]), sideChatsOpen: true }, null).list;
 	const html = renderToStaticMarkup(<HomeList
 		home={staticHome(list)}
-		projects={[]}
-		projectsOpen={false}
-		currentFolderId={null}
 		currentConversationId={null}
 		expandedBotId={null}
 		rollingCurrent={false}
 		sideChatsOpen
-		onToggleProjects={() => {}}
 		onToggleSideChats={() => {}}
 		onNewSideChat={() => {}}
-		onNewProject={() => {}}
-		onOpenProject={() => {}}
 		onOpenTarget={() => {}}
 		onOpenRolling={() => {}}
 		onOpenConversation={() => {}}
@@ -169,15 +156,12 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 				{...options}
 				current={null}
 				token={null}
-				moveTargets={[]}
 				onOpen={() => {}}
 				onRenamed={() => {}}
 				onToggleArchived={() => {}}
 				onTogglePinned={() => {}}
 				onDelete={() => {}}
 				onError={() => {}}
-				onMove={() => {}}
-				onMoveToNewProject={() => {}}
 			/>
 		)}
 	/>);
@@ -212,21 +196,15 @@ test("the side-chat list opens with five rows and Show more adds five", async ()
 	const rows = Array.from({ length: 12 }, (_, index) => conv(`chat-${index + 1}`));
 	setup();
 	function Fixture() {
-		const home = useHomeList({ ...input(rows), sideChatsOpen: true }, [], false, null);
+		const home = useHomeList({ ...input(rows), sideChatsOpen: true }, null);
 		return <HomeList
 			home={home}
-			projects={[]}
-			projectsOpen={false}
-			currentFolderId={null}
 			currentConversationId={null}
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => {}}
 			onNewSideChat={() => {}}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}
@@ -255,21 +233,15 @@ test("marked and open side chats stay visible past the five-row opening page", a
 	for (const row of rows.slice(0, 6)) row.newReply = 1;
 	setup();
 	function Fixture() {
-		const home = useHomeList({ ...input(rows, "app/chat-12"), sideChatsOpen: true }, [], false, null);
+		const home = useHomeList({ ...input(rows, "app/chat-12"), sideChatsOpen: true }, null);
 		return <HomeList
 			home={home}
-			projects={[]}
-			projectsOpen={false}
-			currentFolderId={null}
 			currentConversationId="app/chat-12"
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => {}}
 			onNewSideChat={() => {}}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}
@@ -288,21 +260,15 @@ test("Show more adds five hidden rows even when pinned rows overlap the page", a
 	for (const row of rows.slice(0, 6)) row.pinnedAt = at;
 	setup();
 	function Fixture() {
-		const home = useHomeList({ ...input(rows), sideChatsOpen: true }, [], false, null);
+		const home = useHomeList({ ...input(rows), sideChatsOpen: true }, null);
 		return <HomeList
 			home={home}
-			projects={[]}
-			projectsOpen={false}
-			currentFolderId={null}
 			currentConversationId={null}
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => {}}
 			onNewSideChat={() => {}}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}
@@ -326,21 +292,15 @@ test("the owner row of an open subagent stays visible past the opening page", as
 	rows.push(conv("agent-child", "app/chat-12"));
 	setup();
 	function Fixture() {
-		const home = useHomeList({ ...input(rows, "app/agent-child"), sideChatsOpen: true }, [], false, null);
+		const home = useHomeList({ ...input(rows, "app/agent-child"), sideChatsOpen: true }, null);
 		return <HomeList
 			home={home}
-			projects={[]}
-			projectsOpen={false}
-			currentFolderId={null}
 			currentConversationId="app/agent-child"
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => {}}
 			onNewSideChat={() => {}}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}
@@ -361,18 +321,12 @@ test("T-C1: side-chat disclosure and nested rows are visible only when open", as
 	const render = (open: boolean) => (
 		<HomeList
 			home={staticHome(buildHome({ ...input([main, side]), sideChatsOpen: open }, null).list)}
-			projects={[]}
-			projectsOpen={false}
-			currentFolderId={null}
 			currentConversationId={null}
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen={open}
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => { toggles++; }}
 			onNewSideChat={() => { creates++; }}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}

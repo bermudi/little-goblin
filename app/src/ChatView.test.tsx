@@ -6128,10 +6128,10 @@ describe("composer staged memory toggle (happy-dom)", () => {
     expect(toggled()).toBe(true);
   });
 
-  test("a memory-off project locks the toggle excluded and disabled", async () => {
-    const toggled = await mount({ excluded: true, locked: true });
-    expect(knob()?.textContent).toBe("memory off");
-    expect(knob()?.getAttribute("title")).toBe("This project's memory is off");
+  test("the waiting composer cannot change memory before the chat starts", async () => {
+    const toggled = await mount({ excluded: false, locked: true });
+    expect(knob()?.textContent).toBe("memory on");
+    expect(knob()?.getAttribute("title")).toBe("Memory settings are available after the chat starts");
     expect((knob() as HTMLButtonElement | null)?.disabled).toBe(true);
     await click(knob());
     expect(toggled()).toBeNull();

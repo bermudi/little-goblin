@@ -52,11 +52,9 @@ Questions: send `[ask When should the nudge fire?|9:00|11:00]` in an ordinary ch
 
 An older roll: make a second roll ([rolling.md](rolling.md)), open an ordinary chat, then set the first roll's `read_seq` to 0. The Little Goblin row gets the dot and opens that roll.
 
-Project chat: give a chat a `project_id` and `read_seq = 0`. Its row in Active ends with "in <project>", also when its last line is long.
-
 Phone: `ab set viewport 390 844`. A fresh `$URL` shows Little Goblin's main chat, Back shows the list, and a reload there stays on the list.
 
-Side chats: every chat outside a project shows under the Little Goblin row as a `.side-chat` row. The `Side chats` chevron (`button[aria-label="Side chats"]`, `aria-expanded`) folds and opens them; on a phone it is the only way to reach them from the list. Opening Little Goblin's main chat or a side chat opens them; opening a project chat or project page folds them. While folded, the Little Goblin row carries the most urgent side-chat mark, with a line such as `New reply in alpha` or `Working in gamma`.
+Side chats: chats that are not part of another bot show under Little Goblin. The `Side chats` chevron (`button[aria-label="Side chats"]`, `aria-expanded`) folds and opens them. Opening Little Goblin's main chat or a side chat opens them; opening another bot folds them. While folded, the Little Goblin row carries the most urgent side-chat mark, with a line such as `New reply in alpha` or `Working in gamma`.
 
 Convert a side chat: open it, open the menu in its title, choose **Convert to bot…**, enter a name, and confirm. Its row moves to **Bots**. Click the row to open the same conversation and see the bot in the right panel. Open **Bot settings** from the title menu or select the avatar in the panel. After renaming, the row and panel use the new name. **Move back to Little Goblin** returns the chat to Little Goblin’s side chats with the same URL and transcript. Branching from the bot chat adds a bot side chat and hides **Move back to Little Goblin**. Check active bots with `sqlite3 -readonly "$DB" 'SELECT name, conversation_id FROM bots JOIN bot_chats ON bots.id = bot_chats.bot_id'`.
 

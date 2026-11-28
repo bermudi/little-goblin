@@ -595,7 +595,6 @@ export function hasUiPart(parts: UIMessage["parts"]): boolean {
 function MessagePartsView({
   parts,
   token,
-  noteProjectId,
   onAction,
   onOpenNote,
   clipFences,
@@ -608,8 +607,6 @@ function MessagePartsView({
 }: {
   parts: UIMessage["parts"];
   token?: string | null;
-  // The conversation's project — a note-card "New note" binds to it.
-  noteProjectId?: string | null | undefined;
   // ui block actions (choices, form submits) post through the
   // caller's sendMessage; busy disables them while a turn runs.
   onAction?: ((text: string) => void) | undefined;
@@ -684,7 +681,6 @@ function MessagePartsView({
           chips={chipNodes}
           chipLabels={chipLabels}
           token={token}
-          noteProjectId={noteProjectId}
           onOpenNote={onOpenNote}
           streaming={streaming}
           clipFences={clipFences}
@@ -700,7 +696,6 @@ function MessagePartsView({
           <MessagePartsView
             parts={remaining}
             token={token ?? null}
-            noteProjectId={noteProjectId}
             onAction={onAction}
             onOpenNote={onOpenNote}
             clipFences={clipFences}
@@ -735,7 +730,6 @@ function MessagePartsView({
           onAction={onAction}
           busy={busy}
           token={token}
-          noteProjectId={noteProjectId}
           onOpenNote={onOpenNote}
           messages={messages}
           streaming={streaming}
@@ -811,7 +805,6 @@ function MessagePartsView({
               key={`media:${media.id}`}
               parts={media.parts}
               token={token ?? null}
-              noteProjectId={noteProjectId}
               onOpenNote={onOpenNote}
             />,
           );
@@ -841,7 +834,6 @@ function MessagePartsView({
           key={i}
           text={p.text}
           token={token}
-          noteProjectId={noteProjectId}
           onOpenNote={onOpenNote}
           streaming={streaming}
           clipFences={clipFences}

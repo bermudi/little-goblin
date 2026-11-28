@@ -534,14 +534,14 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		expect(sheet?.textContent).toContain("Trip plan");
 	});
 
-	test("a chat that does not exist yet stages pins locally from scoped candidates", async () => {
+	test("a chat that does not exist yet stages pins locally from candidates", async () => {
 		const changes: StagedPin[][] = [];
 		function Staged() {
 			const [pins, setPins] = useState<StagedPin[]>([]);
 			return (
 				<ComposerHarness
 					onSend={(parts) => { sent.push(parts); }}
-					notes={{ kind: "staged", projectId: "p1", pins, onPinsChange: (next) => { changes.push(next); setPins(next); } }}
+					notes={{ kind: "staged", pins, onPinsChange: (next) => { changes.push(next); setPins(next); } }}
 				/>
 			);
 		}
@@ -551,7 +551,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		expect(candidateUrls).toEqual([]);
 		await click(notesButton());
 		await settle();
-		expect(candidateUrls[0]).toContain("projectId=p1");
+		expect(candidateUrls[0]).toContain("/api/app/note-pin-candidates?q=");
 		await click(inDocument('button[aria-label="Pin Budget"]'));
 		expect(changes).toEqual([[{ id: "n1", title: "Budget", owner: "Global" }]]);
 		expect(pinCalls).toEqual([]);

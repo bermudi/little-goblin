@@ -53,8 +53,11 @@ main bot, bots with one job each, and no projects.
   Goblin. Project chats become ordinary chats, so they also become side
   chats of Little Goblin, and the Archive page needs no change. A project
   the operator names becomes a bot instead, and its chats become that bot's
-  side chats. A project's instructions become the instructions of the bot
-  it turns into; when it turns into side chats, they are kept as a note.
+  side chats. The bot starts with a fresh, empty main chat (operator,
+  2026-11-28, #1003). A project's instructions become the instructions of
+  the bot it turns into; otherwise they are kept as a Little Goblin note.
+  Project notes move to the same owner as the chats. Pins stay if the chat
+  can still reach the note, and otherwise show one loss notice.
   A moved chat keeps what its project gave it:
   - **Memory.** A chat that the project kept out of memory stays out. The
     operator can turn memory on for each chat later.

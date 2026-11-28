@@ -22,7 +22,6 @@ export type NotesTarget =
 	| { kind: "chat"; conversationId: string; rolling: boolean }
 	| {
 		kind: "staged";
-		projectId: string | null;
 		pins: StagedPin[];
 		onPinsChange: (pins: StagedPin[]) => void;
 	};
@@ -56,7 +55,7 @@ export function useNotePins(
 	const notesVersion = useLiveVersionIfLive("notes");
 	const conversationsVersion = useLiveVersionIfLive("conversations");
 	const conversationId = target?.kind === "chat" ? target.conversationId : null;
-	const stagedScope = target?.kind === "staged" ? target.projectId ?? "" : null;
+	const staged = target?.kind === "staged";
 	useEffect(() => {
 		const onFocus = () => setRefresh((previous) => previous + 1);
 		window.addEventListener("focus", onFocus);
@@ -64,7 +63,7 @@ export function useNotePins(
 	}, []);
 	useEffect(() => {
 		if (busy) return;
-		if (conversationId === null && (stagedScope === null || !open)) return;
+		if (conversationId === null && (!staged || !open)) return;
 		let active = true;
 		const asked = open ? query : null;
 		const load = async () => {
@@ -74,7 +73,7 @@ export function useNotePins(
 					if (!active) return;
 					setView({ pins: next.pins, matches: next.matches, truncated: next.truncated, query: asked });
 				} else {
-					const next = await listNotePinCandidates(token, stagedScope === "" ? null : stagedScope, query);
+					const next = await listNotePinCandidates(token, query);
 					if (!active) return;
 					setView({ pins: null, matches: next.matches, truncated: next.truncated, query: asked });
 				}
@@ -88,7 +87,7 @@ export function useNotePins(
 			active = false;
 			clearTimeout(timer);
 		};
-	}, [token, conversationId, stagedScope, open, query, refresh, busy, notesVersion, conversationsVersion]);
+	}, [token, conversationId, staged, open, query, refresh, busy, notesVersion, conversationsVersion]);
 
 	const pins: PinnedRow[] = target?.kind === "staged"
 		? target.pins.map((pin) => ({ ...pin, rev: 0, changes: [] }))

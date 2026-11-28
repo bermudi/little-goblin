@@ -29,13 +29,13 @@ describe("app notes", () => {
 		postJson(call, "/api/app/notes", body);
 
 	test("chat note pins stay in their chat and survive compaction, with a fresh roll empty", async () => {
-		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store, notes, projects, configRef } = setup({ token: APP_TOKEN_NAME });
 		try {
 			const roll = store.rollApp(configRef.current);
 			const pathFor = (id: string) => `/api/app/conversations/${id.slice(4)}/note-pins`;
 			const path = pathFor(roll.id);
 			const project = projects.create({ name: "Private project" });
-			const privateNote = (await (await create(call, { title: "Reading private", projectId: project.id })).json()) as AppNote;
+			const privateNote = notes.create({ title: "Reading private", projectId: project.id });
 			const note = (await (await create(call, { title: "Reading list" })).json()) as AppNote;
 			const list = async (url: string) => await (await call(url)).json() as ChatNotePinsView;
 			expect((await list(`${path}?q=reading`)).matches.map(({ id }) => id)).toEqual([note.id]);
@@ -58,17 +58,17 @@ describe("app notes", () => {
 	});
 
 	test("a new chat is created with its pinned notes, refused notes create nothing, and candidates follow the scope", async () => {
-		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store, notes, projects } = setup({ token: APP_TOKEN_NAME });
 		try {
 			const project = projects.create({ name: "Private project" });
-			const privateNote = (await (await create(call, { title: "Reading private", projectId: project.id })).json()) as AppNote;
+			const privateNote = notes.create({ title: "Reading private", projectId: project.id });
 			const note = (await (await create(call, { title: "Reading list" })).json()) as AppNote;
 			const archived = (await (await create(call, { title: "Reading old" })).json()) as AppNote;
 			expect((await patchJson(call, `/api/app/notes/${archived.id}`, { archived: true })).status).toBe(200);
 			const candidates = async (query: string) =>
 				((await (await call(`/api/app/note-pin-candidates?${query}`)).json()) as ChatNotePinCandidates).matches.map(({ id }) => id);
 			expect(await candidates("q=reading")).toEqual([note.id]);
-			expect(await candidates(`projectId=${project.id}&q=`)).toEqual([privateNote.id]);
+			expect(await candidates("q=")).toEqual([note.id]);
 
 			const created = await postJson(call, "/api/app/conversations", { id: "pinned-chat", pinnedNoteIds: [note.id] });
 			expect(created.status).toBe(201);
@@ -84,12 +84,6 @@ describe("app notes", () => {
 			expect(store.get("app/refused-chat")).toBeNull();
 			expect(store.get("app/pinned-chat")).not.toBeNull();
 
-			const inProject = await postJson(call, "/api/app/conversations", {
-				id: "project-chat",
-				projectId: project.id,
-				pinnedNoteIds: [privateNote.id],
-			});
-			expect(inProject.status).toBe(201);
 			expect((await postJson(call, "/api/app/conversations", { pinnedNoteIds: [note.id, note.id] })).status).toBe(422);
 		} finally {
 			http.stop();
@@ -204,16 +198,11 @@ describe("app notes", () => {
 		}
 	});
 
-	test("create, get with etag, list with project/q/archived filters", async () => {
-		const { http, call, projects } = setup({ token: APP_TOKEN_NAME });
+	test("create, get with etag, list with owner/q filters", async () => {
+		const { http, call, notes } = setup({ token: APP_TOKEN_NAME });
 		try {
-			const proj = projects.create({ name: "p" });
-			const inProject = await create(call, {
-				title: "project note",
-				body: "pancakes",
-				projectId: proj.id,
-			});
-			expect(inProject.status).toBe(201);
+			const global = notes.create({ title: "global note", body: "pancakes" });
+			notes.batch([{ id: global.id, stateRev: global.stateRev }], { action: "move", owner: { botId: null } });
 			const loose = await create(call, { title: "loose note", body: "waffles" });
 			expect(loose.status).toBe(201);
 			const looseNote = (await loose.json()) as { id: string; rev: number; body: string };
@@ -230,18 +219,18 @@ describe("app notes", () => {
 				notes: { title: string }[];
 			};
 			expect(all.notes).toHaveLength(2);
-			const looseOnly = (await (await call("/api/app/notes?project=loose")).json()) as {
+			const looseOnly = (await (await call("/api/app/notes?owner=little-goblin")).json()) as {
 				notes: { title: string; projectId: string | null }[];
 			};
 			expect(looseOnly.notes.map((n) => n.title)).toEqual(["loose note"]);
-			const projOnly = (await (await call(`/api/app/notes?project=${proj.id}`)).json()) as {
+			const projOnly = (await (await call("/api/app/notes?owner=global")).json()) as {
 				notes: { title: string }[];
 			};
-			expect(projOnly.notes.map((n) => n.title)).toEqual(["project note"]);
+			expect(projOnly.notes.map((n) => n.title)).toEqual(["global note"]);
 			const found = (await (await call("/api/app/notes?q=pancake")).json()) as {
 				notes: { title: string }[];
 			};
-			expect(found.notes.map((n) => n.title)).toEqual(["project note"]);
+			expect(found.notes.map((n) => n.title)).toEqual(["global note"]);
 		} finally {
 			http.stop();
 		}
@@ -652,24 +641,13 @@ describe("app notes", () => {
 		}
 	});
 
-	test("delete is archived-only and removes versions; move re-scopes", async () => {
-		const { http, call, projects } = setup({ token: APP_TOKEN_NAME });
+	test("delete is archived-only and removes versions", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {
-			const proj = projects.create({ name: "p" });
 			const created = await create(call, { title: "t" });
 			const note = (await created.json()) as { id: string };
 			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "x" });
 			expect((await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status).toBe(422);
-			const moved = await patchJson(call, `/api/app/notes/${note.id}`, {
-				projectId: proj.id,
-			});
-			expect(moved.status).toBe(200);
-			expect(((await moved.json()) as { projectId: string | null }).projectId).toBe(proj.id);
-			const unbound = await patchJson(call, `/api/app/notes/${note.id}`, {
-				projectId: null,
-			});
-			expect(((await unbound.json()) as { projectId: string | null }).projectId).toBeNull();
-
 			await patchJson(call, `/api/app/notes/${note.id}`, { archived: true });
 			expect((await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status).toBe(200);
 			expect((await call(`/api/app/notes/${note.id}`)).status).toBe(404);

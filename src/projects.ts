@@ -122,6 +122,10 @@ export function ensureProjectsSchema(db: Database): void {
 			created_at TEXT NOT NULL,
 			archived_at TEXT
 		)`);
+	db.run(`CREATE TABLE IF NOT EXISTS project_retirements (
+		project_id TEXT PRIMARY KEY REFERENCES projects(id),
+		bot_id TEXT NOT NULL REFERENCES bots(id)
+	)`);
 }
 
 interface ProjectRow {
@@ -154,7 +158,7 @@ function toProject(r: ProjectRow): Project {
 // A vanished dir fails the turn — never a silent fall-back to the
 // workspace (the makeTools call site runs inside the turn's admission
 // try, so the throw lands as a failed turn, not a crash).
-export function projectWorkdir(projects: ProjectStore, conv: Conversation): string {
+export function projectWorkdir(projects: Pick<ProjectStore, "get">, conv: Conversation): string {
 	if (conv.projectId === null) return paths.workspace();
 	const project = projects.get(conv.projectId);
 	if (project === null) {

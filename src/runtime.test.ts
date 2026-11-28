@@ -20,7 +20,8 @@ import type { Config } from "./config-schema.ts";
 import { openNotes } from "./notes.ts";
 import { noteTool } from "./agent/tools/note.ts";
 import { openProjects } from "./projects.ts";
-import { projectWorkdir } from "./projects.ts";
+import { bashDeclarationWorkdir, conversationWorkdir } from "./conversation-workdir.ts";
+import { applyProjectRetirement, previewProjectRetirement } from "./project-retirement.ts";
 import { moveIntoProject } from "./conversation-move.ts";
 import { paths } from "./home-layout.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
@@ -5671,10 +5672,11 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 	}
 });
 
-test("moving an app chat keeps its request prefix and tool definitions byte-identical", async () => {
+test("moving and retiring a project chat keeps its request prefix and tool definitions byte-identical", async () => {
 	const home = useHome("goblin-move-runtime-");
 	mkdirSync(join(home, "state"), { recursive: true });
-	const store = openStore(join(home, "state", "goblin.sqlite"));
+	const dbPath = join(home, "state", "goblin.sqlite");
+	const store = openStore(dbPath);
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const workspace = join(home, "workspace");
@@ -5726,10 +5728,10 @@ test("moving an app chat keeps its request prefix and tool definitions byte-iden
 		},
 	});
 	runtime.mount({
-		makeTools: (target) => ({
-			probe,
-			bash: bashTool(projectWorkdir(projects, target), paths.workspace()),
-		}),
+		makeTools: (target) => {
+			const cwd = conversationWorkdir(store, projects, target);
+			return { probe, bash: bashTool(cwd, bashDeclarationWorkdir(cwd, store.promptSnapshot(target.id))) };
+		},
 	});
 	try {
 		const first = new RecordingSink();
@@ -5823,6 +5825,23 @@ test("moving an app chat keeps its request prefix and tool definitions byte-iden
 		await waitUntil(() => !runtime.busy(conv.id), "third turn drains");
 		expect(systemTexts[2]?.includes(`## project — ${project.name}`)).toBe(true);
 		expect(systemTexts[2]?.includes("Ship the thing.")).toBe(true);
+		const before = store.history(conv.id);
+		const plan = previewProjectRetirement(dbPath, [project.id]);
+		applyProjectRetirement(dbPath, [project.id], plan.approval, new Date("2026-11-28T07:00:00Z"));
+		const retired = store.get(conv.id)!;
+		expect(retired.projectId).toBeNull();
+		expect(store.history(conv.id)).toEqual(before);
+		expect(conversationWorkdir(store, projects, retired)).toBe(project.dir);
+		script.script({ kind: "reply", parts: [{ type: "text", text: "fourth answer" }] });
+		const fourth = new RecordingSink();
+		runtime.submit(retired, userMessage([{ type: "text", text: "fourth question" }]), fourth);
+		expect(await fourth.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "fourth turn drains");
+		const thirdCall = JSON.parse(script.callOptions()[3]!) as typeof firstRequest;
+		const fourthCall = JSON.parse(script.callOptions()[4]!) as typeof firstRequest;
+		expect(systemTexts[3]).toBe(systemTexts[2]);
+		expect(JSON.stringify(fourthCall.tools)).toBe(JSON.stringify(thirdCall.tools));
+		expect(JSON.stringify(fourthCall.prompt.slice(0, thirdCall.prompt.length))).toBe(JSON.stringify(thirdCall.prompt));
 	} finally {
 		await runtime.shutdown();
 		store.close();

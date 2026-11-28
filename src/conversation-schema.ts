@@ -95,6 +95,9 @@ export function ensureConversationSchema(db: Database): void {
 	if (!convCols.has("project_id")) {
 		db.run("ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id)");
 	}
+	if (!convCols.has("fixed_workdir")) {
+		db.run("ALTER TABLE conversations ADD COLUMN fixed_workdir TEXT");
+	}
 	// Native subagents (design/agents.md → agent): a child conversation
 	// names its origin. SET NULL — a child outlives its parent's delete
 	// (its history stays readable; settlement then just has nowhere to

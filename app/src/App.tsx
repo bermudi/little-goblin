@@ -6,9 +6,6 @@ import {
 	MenuContent,
 	MenuItem,
 	MenuCheckboxItem,
-	MenuSub,
-	MenuSubContent,
-	MenuSubTrigger,
 	MenuTrigger,
 } from "@ui-sdk/react/menu";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
@@ -18,7 +15,6 @@ import type {
 	AppModelSettings,
 	AppNote,
 	AppNoteSummary,
-	AppProject,
 	AppAttentionTarget,
 } from "../../src/http/app-wire.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../../src/note-owner.ts";
@@ -50,7 +46,7 @@ import { Composer } from "./chat/Composer.tsx";
 import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
 import { conversationActions } from "./conversationActions.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
-import { loadProjectsOpen, loadSideChatsOpen, saveProjectsOpen, saveSideChatsOpen } from "./railFolders.ts";
+import { loadSideChatsOpen, saveSideChatsOpen } from "./railFolders.ts";
 import { ConversationRow, relTime } from "./ConversationList.tsx";
 import { HomeList, type RenderRow, useHomeList } from "./HomeList.tsx";
 import { useMarkRead } from "./useMarkRead.ts";
@@ -67,7 +63,6 @@ import { NoteView } from "./NoteView.tsx";
 import { NotesIndex } from "./NotesIndex.tsx";
 import type { NotesTarget, StagedPin } from "./chat/ComposerNotes.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
-import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import {
 	type Page,
 	PAGES,
@@ -220,19 +215,17 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const goblin = useGoblinActivity();
 	const [panelOpen, setPanelOpen] = useState(loadPanelOpen);
 	const conversationsLive = useLive("conversations");
-	const projectsLive = useLive("projects");
 	const notesLive = useLive("notes");
 	const conversations = conversationsLive.data?.conversations ?? null;
 	const bots = conversationsLive.data?.bots ?? [];
 	const rollingChain = conversationsLive.data?.rolling.chain ?? EMPTY_CHAIN;
-	const projects = projectsLive.data?.projects ?? null;
 	const notes = notesLive.data?.notes ?? null;
 	const notesError = notesLive.error !== null;
 	const convError = conversationsLive.error;
 	const listError =
 		convError instanceof ApiError && convError.status === 401
 			? "unauthorized"
-			: convError !== null || projectsLive.error !== null
+			: convError !== null
 				? "list failed"
 				: null;
 	const [rollingViewing, setRollingViewing] = useState<string | null>(null);
@@ -247,12 +240,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
 	const [chatWidth, setChatWidthState] = useState<ChatWidth>(loadChatWidth);
-	const [projectsOpen, setProjectsOpenState] = useState(loadProjectsOpen);
 	const [sideChatsOpen, setSideChatsOpenState] = useState(loadSideChatsOpen);
-	const setProjectsOpen = (open: boolean) => {
-		setProjectsOpenState(open);
-		saveProjectsOpen(open);
-	};
 	const setSideChatsOpen = (open: boolean) => {
 		setSideChatsOpenState(open);
 		saveSideChatsOpen(open);
@@ -280,11 +268,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		id: string;
 		parts: UIMessage["parts"];
 	} | null>(null);
-	// The pre-creation memory choice — the conversation doesn't exist to
-	// PATCH until the first send creates it, so the exclusion stages
-	// here and rides into createConversation. Sticky like the staged
-	// chips: an operator who excludes a chat shouldn't be re-asked per
-	// start. Memory-off projects force it at their own composer.
 	const [stagedMemoryExcluded, setStagedMemoryExcluded] = useState(false);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
@@ -294,9 +277,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const [pinRefusal, setPinRefusal] = useState<string | null>(null);
 	const setStagedPinsFor = (scope: string, pins: StagedPin[]) =>
 		setStagedPins((previous) => ({ ...previous, [scope]: pins }));
-	const stagedNotes = (scope: string, projectId: string | null): NotesTarget => ({
+	const stagedNotes = (scope: string): NotesTarget => ({
 		kind: "staged",
-		projectId,
 		pins: stagedPins[scope] ?? [],
 		onPinsChange: (pins) => setStagedPinsFor(scope, pins),
 	});
@@ -353,16 +335,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		}
 	}, [route]);
 	useEffect(() => setHeaderRenaming(false), [current]);
-	const projectId = route.kind === "project" ? route.id : null;
-	const currentFolderId =
-		(route.kind === "conversation"
-			? conversations?.find((conversation) => conversation.id === route.id)?.projectId
-			: null) ?? (route.kind === "project" ? route.id : null);
-	useEffect(() => {
-		if (currentFolderId === null) return;
-		setProjectsOpenState(true);
-		saveProjectsOpen(true);
-	}, [currentFolderId]);
 	const noteId = route.kind === "note" ? route.id : null;
 	const settingsBot = route.kind === "bot" ? bots.find((bot) => bot.id === route.id) : undefined;
 	const windowConv = route.kind === "window" ? route.id : null;
@@ -374,11 +346,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		? "chat"
 		: route.kind === "page" ? route.page : route.kind;
 	useEffect(() => setSourcesOpen(false), [route]);
-	const [createProjectOpen, setCreateProjectOpen] = useState(false);
-	const [createProjectMoveFor, setCreateProjectMoveFor] = useState<string | null>(null);
-	const [createProjectMoveOrigin, setCreateProjectMoveOrigin] = useState<"list" | "chat" | "rolling">("chat");
-	const [moveError, setMoveError] = useState<string | null>(null);
-	useEffect(() => setMoveError(null), [current, rollingId]);
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
@@ -616,22 +583,16 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	}, [route]);
 
 	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
-	const unbound = all.filter((c) => (c.projectId ?? null) === null);
-	const projectList = projects ?? [];
-	const activeProjects = projectList
-		.filter((p) => p.archivedAt === null)
-		.sort((a, b) => a.name.localeCompare(b.name));
 	const home = useHomeList({
 		conversations: all,
 		chain: rollingChain,
 		bots,
-		projects: projectList.map(({ id, name, archivedAt }) => ({ id, name, archivedAt })),
 		attention: goblin.attention ?? [],
 		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
 		open: railCurrent ?? settingsBot?.mainConversationId ?? null,
 		seen,
 		sideChatsOpen,
-	}, activeProjects, projectsOpen, expandedBotId);
+	}, expandedBotId);
 	const currentBot = settingsBot ?? (railCurrent === null ? undefined : home.list.botByChatId.get(railCurrent));
 	const currentBotId = currentBot?.id;
 	const currentMainBot = currentBot?.mainConversationId === current ? currentBot : undefined;
@@ -661,14 +622,13 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		};
 	}
 	const inGoblin = page === "rolling" || home.list.openInGoblin;
-	const inProject = currentFolderId !== null;
 	const inBot = currentBot !== undefined;
 	useEffect(() => {
-		if (!inGoblin && !inProject && !inBot) return;
+		if (!inGoblin && !inBot) return;
 		setSideChatsOpenState(inGoblin);
 		saveSideChatsOpen(inGoblin);
 		setExpandedBotId(currentBotId ?? null);
-	}, [inGoblin, inProject, inBot, railCurrent, currentFolderId, currentBotId]);
+	}, [inGoblin, inBot, railCurrent, currentBotId]);
 	const desktopFlipRef = useFlip(home.orderSignature);
 	const phoneFlipRef = useFlip(home.orderSignature);
 
@@ -695,11 +655,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		);
 	};
 
-	const openProject = (id: string) => navigate({ kind: "project", id });
 	const openPanelProfile = () => currentBot === undefined
 		? openPage("status")
 		: navigate({ kind: "bot", id: currentBot.id });
-	const openProjectsIndex = () => navigate({ kind: "page", page: "projects" });
 	const openArchive = () => navigate({ kind: "page", page: "archive" });
 	const openNotesIndex = () => navigate({ kind: "page", page: "notes" });
 	const openNote = (id: string) => navigate({ kind: "note", id });
@@ -813,7 +771,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	};
 
 	const startChat = async (
-		projectId: string | null,
 		parts: UIMessage["parts"],
 		composerScope: string,
 		initialModelSettings?: AppModelSettings,
@@ -831,7 +788,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		const pinned = stagedPins[composerScope] ?? [];
 		try {
 			const created = await createConversation(token, {
-				...(projectId === null ? {} : { projectId }),
 				memoryExcluded: stagedMemoryExcluded,
 				...(initialModelSettings === undefined ? {} : { initialModelSettings }),
 				...(pinned.length === 0 ? {} : { pinnedNoteIds: pinned.map((pin) => pin.id) }),
@@ -881,13 +837,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 
 	const currentTitle = currentMainBot?.name ?? conversations?.find((c) => c.id === current)?.title ?? null;
 
-	const archived = unbound
+	const archived = all
 		.filter((c) => c.archivedAt !== null && c.parentId == null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 
-	const currentProject =
-		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
-	// The crumb's name rides the same pool the rail lists.
 	const currentConv = all.find((c) => c.id === current);
 	const rowActionCallbacks = (c: AppConversationList["conversations"][number]) => ({
 		onToggleArchived: (id: string, isArchived: boolean) => {
@@ -918,29 +871,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				});
 	const parentConv =
 		currentConv?.parentId == null ? undefined : all.find((c) => c.id === currentConv.parentId);
-	const currentConvProject =
-		currentConv?.projectId != null
-			? projectList.find((p) => p.id === currentConv.projectId)
-			: undefined;
-	const moveChatToProject = async (
-		conversationId: string,
-		targetProjectId: string,
-		origin: "list" | "chat" | "rolling",
-	) => {
-		if (origin === "list") setRowError(null);
-		else setMoveError(null);
-		try {
-			await patchConversation(token, conversationId, { projectId: targetProjectId });
-			setProjectsOpen(true);
-			await acted("conversations");
-			if (origin === "rolling") openConversation(conversationId);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			if (origin === "list") setRowError(message);
-			else setMoveError(message);
-		}
-	};
-
 	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
 
 	const renderRow: RenderRow = (conv, options) => {
@@ -949,19 +879,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			<ConversationRow
 				conv={conv}
 				{...options}
-				botChat={home.list.botByChatId.has(conv.id)}
 				current={railCurrent}
 				token={token}
-				moveTargets={activeProjects.map(({ id, name }) => ({ id, name }))}
-				onMove={(conversationId, targetProjectId) =>
-					void moveChatToProject(conversationId, targetProjectId, "list")
-				}
-				onMoveToNewProject={(conversationId) => {
-					setRowError(null);
-					setCreateProjectMoveFor(conversationId);
-					setCreateProjectMoveOrigin("list");
-					setCreateProjectOpen(true);
-				}}
 				onOpen={openConversation}
 				onRenamed={() => {
 					void acted("conversations");
@@ -1002,18 +921,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const renderHomeList = (navRef: (node: HTMLElement | null) => void) => (
 		<HomeList
 			home={home}
-			projects={activeProjects}
-			projectsOpen={projectsOpen}
-			currentFolderId={currentFolderId}
 			currentConversationId={railCurrent}
 			expandedBotId={expandedBotId}
 			rollingCurrent={page === "rolling"}
 			sideChatsOpen={sideChatsOpen}
-			onToggleProjects={() => setProjectsOpen(!projectsOpen)}
 			onToggleSideChats={() => setSideChatsOpen(!sideChatsOpen)}
 			onNewSideChat={newConversation}
-			onNewProject={() => setCreateProjectOpen(true)}
-			onOpenProject={(id) => void openProject(id)}
 			onOpenTarget={openAttentionTarget}
 			onOpenRolling={openRollingFromList}
 			onOpenConversation={openConversation}
@@ -1113,14 +1026,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		<Menu
 			onAction={(value) => {
 				if (value === "settings") void openPage("settings");
-				if (value === "projects") void openProjectsIndex();
 				if (value === "archive") void openArchive();
 			}}
 		>
 			<MenuTrigger className="rail-you" aria-label="You">You</MenuTrigger>
 			<MenuContent className="title-menu">
 				<MenuItem value="settings">Settings</MenuItem>
-				<MenuItem value="projects">Projects</MenuItem>
 				<MenuItem value="archive">Archive</MenuItem>
 			</MenuContent>
 		</Menu>
@@ -1197,17 +1108,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							type="button"
 							className="mobile-back"
 							aria-label={
-								page === "project"
-									? "Back to projects"
-									: page === "note"
-										? "Back to notes"
-										: page === "window" || settingsBot !== undefined
-											? "Back to conversation"
-											: "Back to chats"
+								page === "note"
+									? "Back to notes"
+									: page === "window" || settingsBot !== undefined
+										? "Back to conversation"
+										: "Back to chats"
 							}
 							onClick={() => {
-								if (page === "project") void openProjectsIndex();
-								else if (page === "note") void openNotesIndex();
+								if (page === "note") void openNotesIndex();
 								else if (page === "window") backFromWindow();
 								else if (settingsBot !== undefined) openConversation(settingsBot.mainConversationId);
 								else void navigate({ kind: "home", composing: false });
@@ -1254,18 +1162,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									else if (value === "archive" || value === "unarchive")
 										void headerActions.toggleArchived();
 									else if (value === "delete") headerActions.remove();
-									else if (value === "new-project") {
-										setMoveError(null);
-										setCreateProjectMoveFor(currentConv.id);
-										setCreateProjectMoveOrigin("chat");
-										setCreateProjectOpen(true);
-									} else if (value.startsWith("project:")) {
-										void moveChatToProject(
-											currentConv.id,
-											value.slice("project:".length),
-											"chat",
-										);
-									}
 								}}
 							>
 								<MenuTrigger className={`header-title title-trigger${page === "chat" ? " main-title" : ""}`}>
@@ -1281,21 +1177,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											{currentMainBot === undefined
 												? <MenuItem value="rename">Rename</MenuItem>
 												: <MenuItem value="bot-settings">Bot settings</MenuItem>}
-											{currentBot === undefined && currentConv.projectId === null && currentConv.parentId === null && (
+											{currentBot === undefined && currentConv.parentId === null && (
 												<MenuItem value="convert-to-bot">Convert to bot…</MenuItem>
-											)}
-											{currentBot === undefined && currentConv.projectId === null && currentConv.parentId === null && (
-												<MenuSub>
-													<MenuSubTrigger>Move to project</MenuSubTrigger>
-													<MenuSubContent className="move-menu">
-														{activeProjects.map((project) => (
-														<MenuItem key={project.id} value={`project:${project.id}`}>
-															{project.name}
-														</MenuItem>
-														))}
-														<MenuItem value="new-project">New project…</MenuItem>
-													</MenuSubContent>
-												</MenuSub>
 											)}
 											{currentMainBot === undefined && <MenuItem value="archive">Archive</MenuItem>}
 										</>
@@ -1331,48 +1214,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						</a>
 					)}
 					{page === "window" && <span className="header-title">Context window</span>}
-					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
-					{page === "rolling" &&
-						(rollingCurrent !== null && rollingId === rollingCurrent.id ? (
-							<Menu
-								onAction={(value) => {
-									if (value === "new-project") {
-										setMoveError(null);
-										setCreateProjectMoveFor(rollingCurrent.id);
-										setCreateProjectMoveOrigin("rolling");
-										setCreateProjectOpen(true);
-									} else if (value.startsWith("project:")) {
-										void moveChatToProject(
-											rollingCurrent.id,
-											value.slice("project:".length),
-											"rolling",
-										);
-									}
-								}}
-							>
-								<MenuTrigger className="header-title title-trigger main-title">
-									Little Goblin
-									<ChevronDownGlyph />
-								</MenuTrigger>
-								<MenuContent className="title-menu">
-									<MenuSub>
-										<MenuSubTrigger>Move to project</MenuSubTrigger>
-										<MenuSubContent className="move-menu">
-											{activeProjects.map((project) => (
-												<MenuItem key={project.id} value={`project:${project.id}`}>
-													{project.name}
-												</MenuItem>
-											))}
-											<MenuItem value="new-project">New project…</MenuItem>
-										</MenuSubContent>
-									</MenuSub>
-								</MenuContent>
-							</Menu>
-						) : (
-							<span className="header-title">Little Goblin</span>
-						))}
-					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
+					{page === "rolling" && <span className="header-title main-title">Little Goblin</span>}
 					{page === "bot" && <span className="header-title">{settingsBot?.name}</span>}
 					{page === "notes" && <span className="header-title">Notes</span>}
 					{page === "note" && <span className="header-title">Note</span>}
@@ -1454,7 +1297,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								{renderHomeList(phoneFlipRef)}
 								{archivedRows}
 								{conversations !== null && home.list.active.length === 0 && home.list.side.length === 0 &&
-									home.list.bots.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
+									home.list.bots.length === 0 && archived.length === 0 && (
 									<p className="empty">Nothing here yet — start a conversation.</p>
 								)}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
@@ -1517,13 +1360,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						onBack={backFromWindow}
 					/>
 				)}
-				{page === "projects" && (
-					<ProjectsIndex
-						projects={projectList}
-						onOpen={openProject}
-						onNew={() => setCreateProjectOpen(true)}
-					/>
-				)}
 				{page === "archive" && (
 					<ArchiveView
 						rows={archived.map((c) => ({
@@ -1551,7 +1387,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				{page === "notes" && (
 					<NotesIndex
 						token={token}
-						projects={projectList}
 						bots={bots}
 						onOpen={openNote}
 						onSettings={() => void openPage("settings")}
@@ -1568,12 +1403,11 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									key={noteId}
 									token={token}
 									noteId={noteId}
-									projects={projectList}
 									bots={bots}
 									discardRef={noteDiscard}
 									onChanged={() => void acted("notes")}
 									onChat={(note: AppNote) => {
-										const ownerBot = note.projectId === null ? bots.find((bot) => bot.id === note.botId) : undefined;
+										const ownerBot = bots.find((bot) => bot.id === note.botId);
 										if (ownerBot !== undefined) {
 											setPinRefusal(null);
 											void setChatNotePin(token, ownerBot.mainConversationId, note.id, true).then(
@@ -1582,19 +1416,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											);
 											return;
 										}
-										const scope = note.projectId ?? "chat";
-										const owner = (note.projectId === null ? undefined : projectList.find((p) => p.id === note.projectId)?.name)
-											?? bots.find((bot) => bot.id === note.botId)?.name ?? note.botId ?? "Global";
+										const scope = "chat";
+										const owner = note.botId === null ? "Global" : "Little Goblin";
 										setStagedPinsFor(scope, [
 											...(stagedPins[scope] ?? []).filter((pin) => pin.id !== note.id),
 											{ id: note.id, title: note.title, owner },
 										]);
 										setPinRefusal(null);
-										if (note.projectId === null) newConversation();
-										else {
-											setComposerFocus((t) => t + 1);
-											void openProject(note.projectId);
-										}
+										newConversation();
 									}}
 									// A deleted note has no draft left to guard — clear
 									// the bit before the index navigation runs the check.
@@ -1636,66 +1465,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						</div>
 					)
 				)}
-				{page === "project" && (
-					<div className="chat">
-						{currentProject === undefined ? (
-							<p className="empty">{projects === null ? "Loading…" : "No such project."}</p>
-						) : (
-							<>
-								<ProjectView
-									key={currentProject.id}
-									token={token}
-									project={currentProject}
-									conversations={all}
-									renderRow={(conversation) => renderRow(conversation)}
-									onChanged={() => void acted("projects", "conversations", "notes")}
-									onOpenNote={openNote}
-									onConversation={openConversation}
-								/>
-								{startFailed && (
-									<p className="error">
-										Couldn't start a conversation — check the tailnet, then resend.
-									</p>
-								)}
-								{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
-								{currentProject.archivedAt === null ? (
-									<Composer
-										key={`composer:${currentProject.id}`}
-										token={token}
-										draftScope={currentProject.id}
-										focusSignal={composerFocus}
-										notes={stagedNotes(currentProject.id, currentProject.id)}
-										busy={starting}
-										stagedMemory={{
-											excluded: currentProject.memory === "off" || stagedMemoryExcluded,
-											locked: currentProject.memory === "off",
-										}}
-										onStagedMemoryToggle={setStagedMemoryExcluded}
-										draftRestore={draftRestores[currentProject.id] ?? null}
-										onDraftRestored={() => consumeRestore(currentProject.id)}
-										onSend={(parts, _whenBusy, initialModelSettings) =>
-											startChat(
-												currentProject.id,
-												parts,
-												currentProject.id,
-												initialModelSettings,
-											).catch(
-												(err: unknown) => {
-													reportStartRefusal(err);
-													return false;
-												},
-											)
-										}
-									/>
-								) : (
-									<p className="empty">
-										This project is archived — unarchive it to start new chats here.
-									</p>
-								)}
-							</>
-						)}
-					</div>
-				)}
 				{page === "chat" &&
 					(current === null ? (
 						<div className="chat">
@@ -1716,7 +1485,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								key={`home-composer:${composerFocus}`}
 								token={token}
 								draftScope="new"
-								notes={stagedNotes("chat", null)}
+								notes={stagedNotes("chat")}
 								busy={starting}
 								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
 								onStagedMemoryToggle={setStagedMemoryExcluded}
@@ -1724,7 +1493,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}
 								onSend={(parts, _whenBusy, initialModelSettings) =>
-									startChat(null, parts, "chat", initialModelSettings).catch((err: unknown) => {
+									startChat(parts, "chat", initialModelSettings).catch((err: unknown) => {
 										reportStartRefusal(err);
 										return false;
 									})
@@ -1732,28 +1501,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							/>
 						</div>
 					) : (
-						<>
-							{currentConvProject !== undefined && (
-								<button
-									type="button"
-									className="crumb"
-									onClick={() => openProject(currentConvProject.id)}
-								>
-									{currentConvProject.name}
-								</button>
-							)}
-							{moveError !== null && (
-								<p className="error" role="alert">
-									{moveError}
-								</p>
-							)}
 							<ChatView
 								key={current}
 								token={token}
 								conversationId={current}
 								title={flatTitle(currentTitle)}
 								seed={seed !== null && seed.id === current ? seed.parts : null}
-								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
 								onSendAccepted={() => void acted("conversations")}
 								onOpenNote={openNote}
@@ -1763,7 +1516,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									openConversation(id);
 								}}
 							/>
-						</>
 					))}
 				{page === "rolling" &&
 					(rollingId === null ? (
@@ -1781,7 +1533,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								busy={starting}
 								stagedMemory={{ excluded: false, locked: true }}
 								onStagedMemoryToggle={() => {}}
-								notes={stagedNotes("rolling", null)}
+								notes={stagedNotes("rolling")}
 								onSend={async (parts, _whenBusy, initialModelSettings) => {
 									setStarting(true);
 									setStartFailed(false);
@@ -1838,7 +1590,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							conversationId={rollingId}
 							title="Little Goblin"
 							seed={null}
-							noteProjectId={null}
 							rolling
 							notePins={notesChat === rollingId}
 							onRoll={rollChat}
@@ -1864,11 +1615,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							}
 							header={
 								<>
-									{moveError !== null && (
-										<p className="error" role="alert">
-											{moveError}
-										</p>
-									)}
 									<div className="rolling-history-bar">
 										{rollingViewing !== null && (
 										<>
@@ -1991,29 +1737,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					onConverted={() => {
 						setConvertSource((source) => source === convertSource ? null : source);
 						void acted("conversations");
-					}}
-				/>
-			)}
-			{createProjectOpen && (
-				<NewProjectDialog
-					token={token}
-					onClose={() => {
-						setCreateProjectOpen(false);
-						setCreateProjectMoveFor(null);
-						setCreateProjectMoveOrigin("chat");
-					}}
-					onCreated={(p) => {
-						setCreateProjectOpen(false);
-						const moveFor = createProjectMoveFor;
-						const moveOrigin = createProjectMoveOrigin;
-						setCreateProjectMoveFor(null);
-						if (moveFor !== null) {
-							void acted("projects");
-							void moveChatToProject(moveFor, p.id, moveOrigin);
-						} else {
-							void acted("projects");
-							void openProject(p.id);
-						}
 					}}
 				/>
 			)}

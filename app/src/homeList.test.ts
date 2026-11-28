@@ -22,7 +22,6 @@ const conv = (id: string, fields: Partial<Conv> = {}): Conv => ({
 const base = (conversations: Conv[], extra: Partial<HomeInput> = {}): HomeInput => ({
 	conversations,
 	chain: [],
-	projects: [],
 	attention: [],
 	delegations: [],
 	open: null,
@@ -46,16 +45,13 @@ const item = (
 });
 const chatRows = (input: HomeInput) => buildHome(input, null).list;
 
-test("T1: sections stay ordered, pinned chats lead, archived and unpinned project chats stay out", () => {
+test("T1: sections stay ordered, pinned chats lead, archived chats stay out", () => {
 	const list = chatRows(base([
 		conv("server-first"),
 		conv("pinned", { pinnedAt: time(1) }),
-		conv("project-hidden", { projectId: "garden" }),
 		conv("archived", { archivedAt: time(2) }),
 		conv("server-last"),
-	], {
-		projects: [{ id: "garden", name: "Garden", archivedAt: null }],
-	}));
+	]));
 
 	expect(list.active).toEqual([]);
 	expect(list.side.map((row) => row.id)).toEqual([
@@ -117,32 +113,6 @@ test("T4: a pinned side chat appears once, marked or not, and never in Active", 
 	expect(marked.active).toEqual([]);
 	expect(marked.side.map((row) => row.id)).toEqual(["app/one"]);
 	expect(clear.side.map((row) => row.id)).toEqual(["app/one"]);
-});
-
-test("T5: project placement, names, pins, and archived-project eligibility stay distinct", () => {
-	const conversations = [
-		conv("marked", { projectId: "active", newReply: 1 }),
-		conv("hidden", { projectId: "active" }),
-		conv("pinned", { projectId: "active", pinnedAt: time(1) }),
-		conv("archived-project-pin", { projectId: "archived", pinnedAt: time(1) }),
-	];
-	const projects = [
-		{ id: "active", name: "Garden", archivedAt: null },
-		{ id: "archived", name: "Old Garden", archivedAt: time(8) },
-	];
-	const list = chatRows(base(conversations, { projects }));
-
-	expect(list.active.map((row) => row.id)).toEqual(["app/marked"]);
-	expect(list.active[0]?.kind === "chat" && list.active[0].projectName).toBe("Garden");
-	expect(list.side.map((row) => row.id)).toEqual([]);
-	expect(list.active.map((row) => row.id)).toEqual(["app/marked"]);
-	expect(list.side.some((row) => row.id === "app/archived-project-pin")).toBe(false);
-
-	const archivedProjectMarked = chatRows(base([
-		conv("archived-project-pin", { projectId: "archived", pinnedAt: time(1), newReply: 5 }),
-	], { projects }));
-	expect(archivedProjectMarked.active[0]?.kind === "chat" &&
-		archivedProjectMarked.active[0].projectName).toBe("Old Garden");
 });
 
 test("T6: needs wins over busy and new, stays open, and uses the newest item title", () => {
@@ -240,47 +210,9 @@ test("T9: an open, seen new reply keeps its raw side place until the operator le
 	expect(left.list.side.map((row) => row.id)).toContain("app/one");
 });
 
-test("T10: an open side chat holds its place, while an unplaced project chat takes its first mark", () => {
-	const chats = [conv("plain")];
-	const first = buildHome(base(chats, { open: "app/plain", seen: "app/plain" }), null);
-	const marked = buildHome(base([conv("plain", { newReply: 1 })], {
-		open: "app/plain",
-		seen: "app/plain",
-	}), first.hold);
-	const projectFirst = buildHome(base([conv("project", { projectId: "p" })], {
-		projects: [{ id: "p", name: "P", archivedAt: null }],
-		open: "app/project",
-		seen: "app/project",
-	}), null);
-	const projectMarked = buildHome(base([conv("project", { projectId: "p", newReply: 2 })], {
-		projects: [{ id: "p", name: "P", archivedAt: null }],
-		open: "app/project",
-		seen: "app/project",
-	}), projectFirst.hold);
-	const moved = buildHome(base([
-		conv("project", { projectId: "p", newReply: 2 }),
-		conv("other"),
-	], {
-		projects: [{ id: "p", name: "P", archivedAt: null }],
-		open: "app/other",
-		seen: "app/other",
-	}), projectMarked.hold);
-
-	expect(marked.list.side.map((row) => row.id)).toContain("app/plain");
-	expect(projectFirst.hold).toBeNull();
-	expect(projectMarked.hold?.place.section).toBe("active");
-	expect(projectMarked.list.active.map((row) => row.id)).toContain("app/project");
-	expect(moved.hold?.id).toBe("app/other");
-});
-
-test("T11: pin and project changes invalidate a side hold; archived chats disappear; kid holds parent", () => {
+test("T11: pin changes invalidate a side hold; archived chats disappear; kid holds parent", () => {
 	const start = buildHome(base([conv("one")], { open: "app/one", seen: "app/one" }), null);
 	const pinned = buildHome(base([conv("one", { pinnedAt: time(2) })], {
-		open: "app/one",
-		seen: "app/one",
-	}), start.hold);
-	const movedToProject = buildHome(base([conv("one", { projectId: "p" })], {
-		projects: [{ id: "p", name: "P", archivedAt: null }],
 		open: "app/one",
 		seen: "app/one",
 	}), start.hold);
@@ -295,7 +227,6 @@ test("T11: pin and project changes invalidate a side hold; archived chats disapp
 	const stable = buildHome(base([conv("one")], { open: "app/one", seen: "app/one" }), start.hold);
 
 	expect(pinned.list.side[0]?.conv.pinnedAt).not.toBeNull();
-	expect(movedToProject.list.side).toEqual([]);
 	expect(archived.list.active).toEqual([]);
 	expect(parent.hold?.id).toBe("app/parent");
 	expect(stable.hold).toBe(start.hold);
@@ -317,15 +248,6 @@ test("T-B1: side chats stay out of Active and sort marks before pinned and unmar
 	]);
 });
 
-test("T-B2: project marks stay Active and an unmarked project pin is omitted", () => {
-	const list = chatRows(base([
-		conv("marked", { projectId: "p", newReply: 1 }),
-		conv("pinned", { projectId: "p", pinnedAt: time(1) }),
-	], { projects: [{ id: "p", name: "Project", archivedAt: null }] }));
-	expect(list.active.map((row) => row.id)).toEqual(["app/marked"]);
-	expect(list.side).toEqual([]);
-});
-
 test("T-B3: closed Little Goblin folds urgent side marks; open keeps roll mark only", () => {
 	const sideNeeds = conv("needs", { title: "Need chat" });
 	const sideNew = conv("new", { title: "Reply chat", newReply: 2 });
@@ -343,19 +265,19 @@ test("T-B3: closed Little Goblin folds urgent side marks; open keeps roll mark o
 	expect(open.rolling).toMatchObject({ mark: "new", line: "roll reply", sideTarget: null });
 });
 
-test("T-B4: open Goblin context includes rolls and loose chats, not project chats", () => {
+test("T-B4: open Goblin context includes rolls and loose chats, not bot chats", () => {
 	const roll = conv("roll");
 	const rollKid = conv("roll-kid", { parentId: roll.id });
 	const side = conv("side");
 	const sideKid = conv("side-kid", { parentId: side.id });
-	const project = conv("project", { projectId: "p" });
+	const bot = conv("bot");
 	const make = (open: string | null, conversations: Conv[], chain: Conv[] = []) =>
-		chatRows(base(conversations, { open, chain, projects: [{ id: "p", name: "P", archivedAt: null }] })).openInGoblin;
+		chatRows(base(conversations, { open, chain, bots: [{ id: "b", name: "B", instructions: "", folder: null, mainConversationId: bot.id, sideConversationIds: [], canMoveBack: false }] })).openInGoblin;
 	expect(make(roll.id, [roll], [roll])).toBe(true);
 	expect(make(rollKid.id, [roll, rollKid], [roll])).toBe(true);
 	expect(make(side.id, [side])).toBe(true);
 	expect(make(sideKid.id, [side, sideKid])).toBe(true);
-	expect(make(project.id, [project])).toBe(false);
+	expect(make(bot.id, [bot])).toBe(false);
 	expect(make(null, [])).toBe(false);
 });
 

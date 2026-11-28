@@ -17,7 +17,6 @@ import type {
 	AppNoteSummary,
 	AppNoteVersion,
 	AppNoteVersionMeta,
-	AppProject,
 	AppSearchHit,
 } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
@@ -151,9 +150,6 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 				const d = deferredUpload();
 				uploads.push(d);
 				return d.promise;
-			}
-			if (url === "/api/app/projects") {
-				return Promise.resolve(jsonResponse({ projects: [] }));
 			}
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
@@ -356,9 +352,6 @@ describe("rail row actions and the pinned pool", () => {
 			const feed = goblinFeedResponse(url);
 			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-			if (url === "/api/app/projects") {
-				return Promise.resolve(jsonResponse({ projects: [] }));
-			}
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
 			if (url === "/api/app/attention")
@@ -707,7 +700,6 @@ describe("rename editor with the AI button", () => {
 			const feed = goblinFeedResponse(url);
 			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
 			if (url === "/api/app/attention")
@@ -1033,7 +1025,6 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				}
 				return Promise.resolve(jsonResponse({ conversations: snapshot, rolling: { chain: [] } }));
 			}
-			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
 			if (url === "/api/app/attention")
@@ -2421,15 +2412,13 @@ describe("App telegram door", () => {
 	});
 });
 
-// Projects: same happy-dom mount + fetch-at-the-edge fake as above.
-describe("app projects surface", () => {
+describe("app notes and chat navigation", () => {
 	let win: Window;
 	let container: HTMLElement;
 	let root: Root | null = null;
 	let installed: string[] = [];
 	let convs: AppConversationList["conversations"];
 	let rollingRows: AppConversationList["rolling"]["chain"];
-	let projs: AppProject[];
 	let notes: AppNoteSummary[];
 	let notesTruncated: boolean;
 	let attentionItems: AppAttentionItem[];
@@ -2447,11 +2436,7 @@ describe("app projects surface", () => {
 	let noteGetOverride: AppNote | null;
 	// PATCH attempts — a blur during conflict must not even try.
 	let patchCalls: number;
-	// Recorded PATCHes: note writes carry their If-Match rev, project
-	// writes their id — a draft stranded on the previous page must
-	// never reach the wire under the next page's identity.
 	let notePatches: { id: string; ifMatch: string | null; body: unknown }[];
-	let projectPatches: { id: string; body: unknown }[];
 	// Per-note bodies for the GET — the summary rows carry none.
 	let noteBodies: Record<string, string>;
 	let versionRows: AppNoteVersionMeta[];
@@ -2507,18 +2492,6 @@ describe("app projects surface", () => {
 		...over,
 	});
 
-	const projRow = (name: string, over: Partial<AppProject> = {}): AppProject => ({
-		id: `p-${name.split(" ")[0]!.toLowerCase()}`,
-		name,
-		slug: name.toLowerCase().replaceAll(" ", "-"),
-		dir: `/tmp/${name}`,
-		managed: true,
-		instructions: "",
-		memory: "shared",
-		createdAt: "2026-10-08T00:00:00.000Z",
-		archivedAt: null,
-		...over,
-	});
 
 	const noteRow = (title: string, over: Partial<AppNoteSummary> = {}): AppNoteSummary => ({
 		id: `n-${title.split(" ")[0]!.toLowerCase()}`,
@@ -2549,7 +2522,6 @@ describe("app projects surface", () => {
 		installed = [];
 		convs = [];
 		rollingRows = [];
-		projs = [];
 		notes = [];
 		notesTruncated = false;
 		attentionItems = [];
@@ -2563,7 +2535,6 @@ describe("app projects surface", () => {
 		noteGetOverride = null;
 		patchCalls = 0;
 		notePatches = [];
-		projectPatches = [];
 		noteBodies = {};
 		versionRows = [];
 		versionPreview = null;
@@ -2672,20 +2643,9 @@ describe("app projects surface", () => {
 						: Promise.resolve(jsonResponse({ hits: script?.hits ?? [] }));
 				return script?.hold !== undefined ? script.hold.then(reply) : reply();
 			}
-			if (url === "/api/app/projects") {
-				if (method === "POST") {
-					posts.push({ url, body });
-					const req = body as { name: string };
-					const project = projRow(req.name, { id: "p-new" });
-					projs.push(project);
-					return Promise.resolve(jsonResponse(project, 201));
-				}
-				return Promise.resolve(jsonResponse({ projects: projs }));
-			}
 			const conversationPatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
 			if (conversationPatch !== null && method === "PATCH") {
 				posts.push({ url, body });
-				if (movePatchFail) return Promise.resolve(jsonResponse({ error: "move refused" }, 409));
 				const id = `app/${decodeURIComponent(conversationPatch[1]!)}`;
 				let conversation = convs.find((item) => item.id === id);
 				if (conversation === undefined && rollingRows[0]?.id === id) {
@@ -2695,8 +2655,7 @@ describe("app projects surface", () => {
 				}
 				if (conversation === undefined)
 					return Promise.resolve(jsonResponse({ error: "no such conversation" }, 404));
-				const request = body as { projectId?: string; pinned?: boolean };
-				if (request.projectId !== undefined) conversation.projectId = request.projectId;
+				const request = body as { pinned?: boolean };
 				if (request.pinned !== undefined)
 					conversation.pinnedAt = request.pinned ? "2026-10-10T00:00:00.000Z" : null;
 				return Promise.resolve(jsonResponse({}));
@@ -2705,25 +2664,6 @@ describe("app projects surface", () => {
 				return Promise.resolve(jsonResponse({ items: attentionItems, unavailable: [] }));
 			if (url === "/api/app/push")
 				return Promise.resolve(jsonResponse({ configured: false, subscriptions: [] }));
-			const projPatchMatch = /^\/api\/app\/projects\/([^/]+)$/.exec(url);
-			if (projPatchMatch !== null && method === "PATCH") {
-				const id = decodeURIComponent(projPatchMatch[1]!);
-				projectPatches.push({ id, body });
-				const p = projs.find((x) => x.id === id);
-				if (p === undefined) return Promise.resolve(jsonResponse({ error: "not found" }, 404));
-				const req = body as {
-					name?: string;
-					instructions?: string;
-					memory?: "shared" | "off";
-					archived?: boolean;
-				};
-				if (req.name !== undefined) p.name = req.name;
-				if (req.instructions !== undefined) p.instructions = req.instructions;
-				if (req.memory !== undefined) p.memory = req.memory;
-				if (req.archived !== undefined)
-					p.archivedAt = req.archived ? "2026-10-11T00:00:00.000Z" : null;
-				return Promise.resolve(jsonResponse(p));
-			}
 			if (url.startsWith("/api/app/notes/")) {
 				const id = decodeURIComponent(url.slice("/api/app/notes/".length).split("/")[0]!);
 				if (url.endsWith("/rewrite") && method === "POST") {
@@ -3125,22 +3065,12 @@ describe("app projects surface", () => {
 		expect(rail.querySelector('input[aria-label="Search history"]')).not.toBeNull();
 		expect(rail.querySelector('button[aria-label="New side chat"]')).not.toBeNull();
 		expect(rail.querySelector('button[aria-label="You"]')).not.toBeNull();
-		expect(rail.textContent).toContain("Projects");
+		expect(rail.textContent).not.toContain("Projects");
 		const rolling = rail.querySelector('a[href="/app/rolling"]')!;
 		expect(rolling.querySelector(".conv-title")?.textContent).toBe("Little Goblin");
 		expect(rolling.querySelector("img")).not.toBeNull();
 		await click(rolling);
 		expect(win.location.pathname).toBe("/app/rolling");
-	});
-
-	test("T3: You → Projects opens the index and New project opens its dialog", async () => {
-		await mount();
-		await click(container.querySelector('button[aria-label="You"]'));
-		await click([...container.querySelectorAll('[role="menuitem"]')]
-			.find((item) => item.textContent === "Projects"));
-		expect(win.location.pathname).toBe("/app/projects");
-		await click(container.querySelector('button[aria-label="New project"]'));
-		expect(container.querySelector(".msheet form")).not.toBeNull();
 	});
 
 	for (const [item, path] of [["Settings", "/app/settings"], ["Archive", "/app/archive"]] as const) {
@@ -3186,359 +3116,6 @@ describe("app projects surface", () => {
 		expect(profile.querySelector('a[href="/app/memory"]')?.getAttribute("aria-current")).toBe("page");
 		await click(profile.querySelector('a[href="/app/log"]'));
 		expect(win.location.pathname).toBe("/app/log");
-	});
-
-	test("the chats pane lists active project links before loose chats", async () => {
-		projs = [
-			projRow("Goblin Work"),
-			projRow("Old Stuff", { archivedAt: "2026-10-09T00:00:00.000Z" }),
-		];
-		convs = [convRow("loose chat"), convRow("inside chat", { projectId: "p-goblin" })];
-		await mount();
-		const section = container.querySelector(".rail-section-toggle")!;
-		expect(section.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".rail-project")).toBeNull();
-		await click(section);
-		expect(win.location.pathname).toBe("/app/");
-
-		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
-			(t) => t.textContent,
-		);
-		expect(railTitles).toContain("loose chat");
-		const projectLink = container.querySelector<HTMLAnchorElement>('.rail-project a[href="/app/p/p-goblin"]')!;
-		expect(projectLink.textContent).toContain("Goblin Work");
-		expect(container.querySelector(".rail")!.textContent).not.toContain("Old Stuff");
-		expect(container.querySelector(".rail")!.textContent).not.toContain("inside chat");
-		expect(container.querySelector(".rail")!.textContent!.indexOf("Goblin Work")).toBeGreaterThan(
-			container.querySelector(".rail")!.textContent!.indexOf("loose chat"),
-		);
-		expect(projectLink.getAttribute("href")).toBe("/app/p/p-goblin");
-
-		await openPage("Projects");
-		expect(win.location.pathname).toBe("/app/projects");
-		expect(container.querySelector(".rail-project")).not.toBeNull();
-		expect(container.querySelector("main .tuning")?.textContent).toContain("Archived projects (1)");
-		const details = container.querySelector("main .tuning");
-		expect(details).not.toBeNull();
-		expect(details!.textContent).toContain("Archived projects (1)");
-		expect((details as HTMLDetailsElement).open).toBe(false);
-		expect(details!.textContent).toContain("Old Stuff");
-	});
-
-	test("the projects section open state survives an App remount in localStorage", async () => {
-		projs = [projRow("Goblin Work")];
-		await mount();
-		await click(container.querySelector(".rail-section-toggle"));
-		expect(container.querySelector(".rail-section-toggle")?.getAttribute("aria-expanded")).toBe("true");
-		await act(async () => {
-			root?.unmount();
-		});
-		root = null;
-		await mount();
-		expect(container.querySelector(".rail-section-toggle")?.getAttribute("aria-expanded")).toBe("true");
-	});
-
-	test("project and project-chat routes mark the project link current; loose chats do not", async () => {
-		projs = [projRow("Goblin Work")];
-		convs = [convRow("inside chat", { id: "app/inside", projectId: "p-goblin" })];
-		win.history.replaceState(null, "", "/app/c/inside");
-		await mount();
-		const projectLink = () => container.querySelector<HTMLAnchorElement>(".rail-project-main");
-		expect(container.querySelector(".rail-section-toggle")?.getAttribute("aria-expanded")).toBe("true");
-		expect(projectLink()?.getAttribute("aria-current")).toBe("page");
-		expect(container.querySelector(".rail")?.textContent).not.toContain("inside chat");
-		await click(projectLink());
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
-		expect(projectLink()?.getAttribute("aria-current")).toBe("page");
-		win.history.replaceState(null, "", "/app/c/loose");
-		convs = [convRow("loose chat", { id: "app/loose" })];
-		await mount();
-		expect(projectLink()?.getAttribute("aria-current")).toBeNull();
-	});
-
-	test("the projects section starts collapsed and folds back up", async () => {
-		projs = [projRow("Goblin Work")];
-		await mount();
-		const section = container.querySelector(".rail-section-toggle")!;
-		expect(section.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".rail-project")).toBeNull();
-		await click(section);
-		expect(section.getAttribute("aria-expanded")).toBe("true");
-		expect(container.querySelector(".rail-project")?.textContent).toContain("Goblin Work");
-		await click(section);
-		expect(section.getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector(".rail-project")).toBeNull();
-		expect(win.location.pathname).toBe("/app/");
-	});
-
-	test("the project link opens that project's page", async () => {
-		projs = [projRow("Goblin Work")];
-		await mount();
-		await click(container.querySelector(".rail-section-toggle"));
-		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
-	});
-
-	test("unmarked pinned project chats stay out of the rail while loose chats stay under Little Goblin", async () => {
-		projs = [
-			projRow("Goblin Work"),
-			projRow("Old Project", { archivedAt: "2026-10-09T00:00:00.000Z" }),
-		];
-		convs = [
-			convRow("pinned project", {
-				id: "app/project-pinned",
-				projectId: "p-goblin",
-				pinnedAt: "2026-10-09T00:00:00.000Z",
-			}),
-			convRow("pinned loose", {
-				id: "app/loose-pinned",
-				pinnedAt: "2026-10-09T00:00:00.000Z",
-			}),
-			convRow("unpinned project", { id: "app/project-unpinned", projectId: "p-goblin" }),
-			convRow("archived project pin", {
-				id: "app/archived-project-pinned",
-				projectId: "p-old",
-				pinnedAt: "2026-10-09T00:00:00.000Z",
-			}),
-			convRow("loose chat", { id: "app/loose" }),
-		];
-		await mount();
-
-		const rail = container.querySelector(".rail")!;
-		const titles = [...rail.querySelectorAll(".conv:not(.rolling-row) .conv-title")]
-			.map((title) => title.textContent);
-		expect(titles).toEqual(["pinned loose", "loose chat"]);
-		expect(rail.textContent).not.toContain("pinned project");
-		expect(rail.textContent).not.toContain("unpinned project");
-		expect(rail.textContent).not.toContain("archived project pin");
-
-	});
-
-	test("pinning an unmarked project chat does not add it to the rail", async () => {
-		projs = [projRow("Goblin Work")];
-		convs = [
-			convRow("project chat", { id: "app/project-chat", projectId: "p-goblin" }),
-		];
-		win.history.replaceState(null, "", "/app/c/project-chat");
-		await mount();
-
-		await click(container.querySelector("button.title-trigger"));
-		await click([...container.querySelectorAll('[role="menuitem"]')]
-			.find((item) => item.textContent === "Pin"));
-		expect(posts).toContainEqual({
-			url: "/api/app/conversations/project-chat",
-			body: { pinned: true },
-		});
-		const pinnedProject = [...container.querySelectorAll(".rail .conv")].find(
-			(row) => row.querySelector(".conv-title")?.textContent === "project chat",
-		);
-		expect(pinnedProject).toBeUndefined();
-	});
-
-	test("only a loose parent conversation offers the move action", async () => {
-		convs = [
-			convRow("loose chat", { id: "app/loose" }),
-			convRow("bound chat", { id: "app/bound", projectId: "p-goblin" }),
-			convRow("child chat", { id: "app/child", parentId: "app/loose" }),
-			convRow("archived chat", { id: "app/archived", archivedAt: "2026-10-24T00:00:00Z" }),
-		];
-		projs = [projRow("Goblin Work", { id: "p-goblin" })];
-		await mount();
-		const hasMoveItem = () =>
-			[...container.querySelectorAll('[role="menuitem"]')].some(
-				(item) => item.textContent === "Move to project",
-			);
-		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector(".title-trigger"));
-		expect(container.querySelector('[role="menuitem"]')?.textContent).toBeTruthy();
-		expect(hasMoveItem()).toBe(true);
-
-		await click(container.querySelector(".title-trigger"));
-		win.history.replaceState(null, "", "/app/c/child");
-		await act(async () => {
-			win.dispatchEvent(new win.PopStateEvent("popstate"));
-		});
-		await settle();
-		expect(hasMoveItem()).toBe(false);
-
-		win.history.replaceState(null, "", "/app/c/bound");
-		await act(async () => {
-			win.dispatchEvent(new win.PopStateEvent("popstate"));
-		});
-		await settle();
-		expect(hasMoveItem()).toBe(false);
-
-		win.history.replaceState(null, "", "/app/c/archived");
-		await act(async () => {
-			win.dispatchEvent(new win.PopStateEvent("popstate"));
-		});
-		await settle();
-		await click(container.querySelector(".title-trigger"));
-		expect(hasMoveItem()).toBe(false);
-	});
-
-	test("move into an existing project patches the same chat and refreshes its crumb", async () => {
-		convs = [convRow("loose chat", { id: "app/loose" })];
-		projs = [projRow("Goblin Work", { id: "p-goblin" })];
-		await mount();
-		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Goblin Work",
-			),
-		);
-		expect(posts).toContainEqual({
-			url: "/api/app/conversations/loose",
-			body: { projectId: "p-goblin" },
-		});
-		expect(win.location.pathname).toBe("/app/c/loose");
-		expect(container.querySelector(".crumb")?.textContent).toBe("Goblin Work");
-	});
-
-	test("the Move to project menu has its own popover class", async () => {
-		convs = [convRow("loose chat", { id: "app/loose" })];
-		projs = [projRow("Goblin Work", { id: "p-goblin" })];
-		await mount();
-		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		expect(container.querySelector('[role="menu"].move-menu')).not.toBeNull();
-		expect(container.querySelector('[aria-label="Move to project"]:not([role="menuitem"])')).toBeNull();
-	});
-
-	test("creating a project from the move menu moves the chat and stays on its route", async () => {
-		convs = [convRow("loose chat", { id: "app/loose" })];
-		await mount();
-		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "New project…",
-			),
-		);
-		const form = container.querySelector<HTMLFormElement>(".msheet form");
-		expect(form).not.toBeNull();
-		await typeInto(
-			form!.querySelector("input")!,
-			"Side Hustle",
-			win.HTMLInputElement.prototype,
-		);
-		await act(async () => {
-			form!.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await settle();
-		expect(posts.findIndex((post) => post.url === "/api/app/projects")).toBeLessThan(
-			posts.findIndex((post) => post.url === "/api/app/conversations/loose"),
-		);
-		expect(posts).toContainEqual({
-			url: "/api/app/conversations/loose",
-			body: { projectId: "p-new" },
-		});
-		expect(win.location.pathname).toBe("/app/c/loose");
-		expect(container.querySelector(".crumb")?.textContent).toBe("Side Hustle");
-	});
-
-	test("a refused move displays the server error in the header alert", async () => {
-		convs = [convRow("loose chat", { id: "app/loose" })];
-		projs = [projRow("Goblin Work", { id: "p-goblin" })];
-		movePatchFail = true;
-		await mount();
-		await click(container.querySelector('.conv-main[href="/app/c/loose"]'));
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Goblin Work",
-			),
-		);
-		expect(container.querySelector('[role="alert"]')?.textContent).toBe("move refused");
-	});
-
-	test("the create dialog posts its fields and lands on the new project's page", async () => {
-		await mount();
-		const newProject = container.querySelector('.rail-project-head button[aria-label="New project"]');
-		expect(newProject?.querySelector('svg path[d^="M3 7"]')).not.toBeNull();
-		await click(newProject);
-		const sheet = container.querySelector(".msheet form");
-		expect(sheet).not.toBeNull();
-		const nameInput = sheet!.querySelector("input")!;
-		await typeInto(nameInput, "Side Hustle", win.HTMLInputElement.prototype);
-		expect((nameInput as HTMLInputElement).value).toBe("Side Hustle");
-		await typeInto(
-			sheet!.querySelector("textarea")!,
-			"Ship the thing.",
-			win.HTMLTextAreaElement.prototype,
-		);
-		await act(async () => {
-			sheet!.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await settle();
-		expect(posts).toHaveLength(1);
-		// Managed home and shared memory are the defaults — they ride
-		// only when the operator asks for something else.
-		expect(posts[0]).toEqual({
-			url: "/api/app/projects",
-			body: { name: "Side Hustle", instructions: "Ship the thing." },
-		});
-		expect(win.location.pathname).toBe("/app/p/p-new");
-		expect(container.querySelector("main")!.textContent).toContain("Side Hustle");
-	});
-
-	test("the project page composer binds the new conversation at creation", async () => {
-		projs = [projRow("Goblin Work")];
-		win.history.replaceState(null, "", "/app/p/p-goblin");
-		await mount();
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
-
-		const composer = container.querySelector("form.composer");
-		expect(composer).not.toBeNull();
-		await typeInto(
-			composer!.querySelector(".message-box")!,
-			"hello project",
-			win.HTMLTextAreaElement.prototype,
-		);
-		await act(async () => {
-			composer!.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await settle();
-		const created = posts.find((p) => p.url === "/api/app/conversations");
-		expect(created?.body).toEqual({ projectId: "p-goblin", memoryExcluded: false });
-	});
-
-	test("an archived project shows a note instead of the composer", async () => {
-		projs = [projRow("Goblin Work", { archivedAt: "2026-10-10T00:00:00.000Z" })];
-		win.history.replaceState(null, "", "/app/p/p-goblin");
-		await mount();
-
-		expect(container.querySelector("form.composer")).toBeNull();
-		expect(container.querySelector("main")!.textContent).toContain(
-			"This project is archived — unarchive it to start new chats here.",
-		);
 	});
 
 	const newNoteOnIndex = async () =>
@@ -3771,42 +3348,6 @@ describe("app projects surface", () => {
 		expect(status).not.toContain("Created");
 	});
 
-	test("the append card's New note binds to the conversation's project", async () => {
-		projs = [projRow("goblin")];
-		notes = [noteRow("Shopping")];
-		convs = [convRow("inside chat", { projectId: "p-goblin" })];
-		stored = [
-			{
-				id: "m1",
-				role: "assistant",
-				parts: [{ type: "text", text: '````note title="Ideas"\nbread\n````' }],
-			},
-		];
-		// Bound chats live on their project page, not the rail — deep-link.
-		win.history.replaceState(null, "", "/app/c/inside");
-		await mount();
-		const card = container.querySelector(".note-card");
-		expect(card).not.toBeNull();
-		await click(
-			[...card!.querySelectorAll("button")].find((b) => b.textContent === "Append to note…"),
-		);
-		await settleSlow();
-		await click(
-			[...card!.querySelectorAll(".note-pick [role=option] button")].find(
-				(b) => b.textContent === "New note “Ideas”",
-			),
-		);
-		await settle();
-		const created = posts.find((p) => p.url === "/api/app/notes");
-		expect((created!.body as { projectId?: string }).projectId).toBe("p-goblin");
-		expect(await libraryRows()).toContain("Ideas");
-		const status = card!.querySelector(".note-card-status")!;
-		expect(status.textContent).toContain("Created");
-		expect(status.textContent).not.toContain("Appended to");
-		await click(status.querySelector("button.link"));
-		expect(win.location.pathname).toBe("/app/n/n-new");
-	});
-
 	test("the append note picker discloses truncation until a complete search returns", async () => {
 		notes = [noteRow("Shopping")];
 		notesTruncated = true;
@@ -3870,14 +3411,14 @@ describe("app projects surface", () => {
 			pm!.querySelector("p")!.firstChild!.textContent = "paragraph to discard";
 			await new Promise((resolve) => setTimeout(resolve, 280));
 		});
-		await openPage("Projects");
+		await openPage("Archive");
 		expect(confirmText(container)).toBe("Discard unsaved note edits and any conflict?");
 		await answerConfirm(false);
 		expect(win.location.pathname).toBe("/app/n/n-shopping");
 		expect(container.querySelector(".ProseMirror")?.textContent).toContain("paragraph to discard");
-		await openPage("Projects");
+		await openPage("Archive");
 		await answerConfirm(true);
-		expect(win.location.pathname).toBe("/app/projects");
+		expect(win.location.pathname).toBe("/app/archive");
 		await settleSlow();
 		expect(patchCalls).toBe(0);
 	});
@@ -4627,14 +4168,12 @@ describe("app projects surface", () => {
 		}
 		expect(pm).not.toBeNull();
 		const title = container.querySelector("input.note-title")! as HTMLInputElement;
-		const flagsSelect = container.querySelector(".note-flags select")! as HTMLSelectElement;
 		const flagButton = (label: string) =>
 			[...container.querySelectorAll(".note-flags button")].find(
 				(b) => b.textContent === label,
 			) as HTMLButtonElement;
 		const chat = flagButton("Chat with this note");
 		expect(title.disabled).toBe(false);
-		expect(flagsSelect.disabled).toBe(false);
 		expect(chat.disabled).toBe(false);
 
 		// A real DOM selection inside the doc — ProseMirror maps it to a
@@ -4661,7 +4200,6 @@ describe("app projects surface", () => {
 		await settle();
 		expect(container.querySelector(".note-rewrite")).not.toBeNull();
 		expect(title.disabled).toBe(true);
-		expect(flagsSelect.disabled).toBe(true);
 		expect(flagButton("Pin").disabled).toBe(true);
 		expect(flagButton("Archive").disabled).toBe(true);
 		expect(chat.disabled).toBe(true);
@@ -4687,44 +4225,37 @@ describe("app projects surface", () => {
 		expect(chat.disabled).toBe(false);
 	});
 
-	for (const [variant, projectId] of [
-		["loose", null],
-		["project", "p-goblin"],
-	] as const) {
-		test(`Chat with this note on a ${variant} note page stages it on that composer and sends nothing`, async () => {
-			if (projectId !== null) projs = [projRow("Goblin")];
-			notes = [noteRow("Shopping", { projectId })];
-			win.history.replaceState(null, "", "/app/n/n-shopping");
-			await mount();
-			let pm: Element | null = null;
-			for (let i = 0; i < 20 && pm === null; i++) {
-				pm = container.querySelector(".ProseMirror");
-				if (pm === null) await settle();
-			}
-			expect(pm).not.toBeNull();
+	test("Chat with this note stages a Little Goblin note and sends nothing", async () => {
+		notes = [noteRow("Shopping")];
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		let pm: Element | null = null;
+		for (let i = 0; i < 20 && pm === null; i++) {
+			pm = container.querySelector(".ProseMirror");
+			if (pm === null) await settle();
+		}
+		expect(pm).not.toBeNull();
 
-			await click(
-				[...container.querySelectorAll("button")].find(
-					(b) => b.textContent === "Chat with this note",
-				),
-			);
-			await settle();
-			expect(win.location.pathname).toBe(projectId === null ? "/app/" : "/app/p/p-goblin");
-			expect(posts.some((p) => p.url === "/api/app/conversations" || p.url === "/api/app/chat")).toBe(false);
-			expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
-			expect(notesTrigger()?.getAttribute("title")).toBe("Pinned notes\n• Shopping");
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Chat with this note",
+			),
+		);
+		await settle();
+		expect(win.location.pathname).toBe("/app/");
+		expect(posts.some((p) => p.url === "/api/app/conversations" || p.url === "/api/app/chat")).toBe(false);
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
+		expect(notesTrigger()?.getAttribute("title")).toBe("Pinned notes\n• Shopping");
 
-			await sendComposer("what is left?");
-			const create = posts.find((p) => p.url === "/api/app/conversations");
-			expect(create?.body).toMatchObject({
-				pinnedNoteIds: ["n-shopping"],
-				...(projectId === null ? {} : { projectId }),
-			});
+		await sendComposer("what is left?");
+		const create = posts.find((p) => p.url === "/api/app/conversations");
+		expect(create?.body).toMatchObject({
+			pinnedNoteIds: ["n-shopping"],
 		});
-	}
+	});
 
 	test("Chat with this note on a bot's note pins it to that bot's chat and creates nothing", async () => {
-		listBots = [{ id: "bot-cook", name: "Cook", mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
+		listBots = [{ id: "bot-cook", name: "Cook", mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false, instructions: "", folder: null }];
 		convs = [convRow("Cook", { id: "app/cook-main" })];
 		notes = [noteRow("Recipes", { botId: "bot-cook" })];
 		win.history.replaceState(null, "", "/app/n/n-recipes");
@@ -4961,78 +4492,6 @@ describe("app projects surface", () => {
 		await settle();
 	};
 
-	test("the current rolling chat moves to a project and opens its project conversation", async () => {
-		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
-		projs = [projRow("Goblin Work", { id: "p-goblin" })];
-		win.history.replaceState(null, "", "/app/rolling");
-		await mount();
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Goblin Work",
-			),
-		);
-		expect(posts).toContainEqual({
-			url: "/api/app/conversations/roll-1",
-			body: { projectId: "p-goblin" },
-		});
-		expect(win.location.pathname).toBe("/app/c/roll-1");
-		expect(container.querySelector(".crumb")?.textContent).toBe("Goblin Work");
-	});
-
-	test("creating a project from the rolling chat moves the current roll into it", async () => {
-		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
-		win.history.replaceState(null, "", "/app/rolling");
-		await mount();
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "New project…",
-			),
-		);
-		const form = container.querySelector<HTMLFormElement>(".msheet form");
-		expect(form).not.toBeNull();
-		await typeInto(form!.querySelector("input")!, "Lasting Work", win.HTMLInputElement.prototype);
-		await act(async () => {
-			form!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
-		});
-		await settle();
-		expect(posts.findIndex((post) => post.url === "/api/app/projects")).toBeLessThan(
-			posts.findIndex((post) => post.url === "/api/app/conversations/roll-1"),
-		);
-		expect(posts).toContainEqual({
-			url: "/api/app/conversations/roll-1",
-			body: { projectId: "p-new" },
-		});
-		expect(win.location.pathname).toBe("/app/c/roll-1");
-		expect(container.querySelector(".crumb")?.textContent).toBe("Lasting Work");
-	});
-
-	test("an earlier rolling conversation has no project move menu", async () => {
-		rollingRows = [
-			convRow("roll two", { id: "app/roll-2" }),
-			convRow("roll one", { id: "app/roll-1" }),
-		];
-		projs = [projRow("Goblin Work", { id: "p-goblin" })];
-		win.history.replaceState(null, "", "/app/rolling");
-		await mount();
-		await click([...container.querySelectorAll(".rolling-history-bar button")].find((button) =>
-			button.textContent?.includes("Previous conversation"),
-		));
-		expect(container.querySelector(".title-trigger")).toBeNull();
-		expect(container.textContent).toContain("Earlier conversation");
-	});
-
 	test("returning to the app shows a roll that began while it was hidden", async () => {
 		rollingRows = [convRow("roll one", { id: "app/roll-1" })];
 		stored = [textMessage("old-u", "user", "old roll message")];
@@ -5252,61 +4711,16 @@ describe("app projects surface", () => {
 		});
 	}
 
-	test("a start failure clears when navigating from the empty state to a project", async () => {
-		projs = [projRow("Goblin")];
-		failCreate = true;
-		await mount();
-		await sendComposer("hi");
-		expect(startAlert()).toContain("Couldn't start a conversation");
-
-		await click(container.querySelector(".rail-section-toggle"));
-		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
-		expect(startAlert()).toBeNull();
-	});
-
-	test("a start failure on a project page clears on opening one of its notes", async () => {
-		projs = [projRow("Goblin")];
-		notes = [noteRow("Spec", { projectId: "p-goblin" })];
-		failCreate = true;
-		win.history.replaceState(null, "", "/app/p/p-goblin");
-		await mount();
-		await sendComposer("hi");
-		expect(startAlert()).toContain("Couldn't start a conversation");
-
-		await click(
-			[...container.querySelectorAll("button.dt-row")].find((b) =>
-				b.textContent?.startsWith("Spec"),
-			),
-		);
-		expect(win.location.pathname).toBe("/app/n/n-spec");
-		expect(startAlert()).toBeNull();
-	});
-
-	test("a start failure on a project page clears on New conversation", async () => {
-		projs = [projRow("Goblin")];
-		failCreate = true;
-		win.history.replaceState(null, "", "/app/p/p-goblin");
-		await mount();
-		await sendComposer("hi");
-		expect(startAlert()).toContain("Couldn't start a conversation");
-
-		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
-		expect(win.location.pathname).toBe("/app/");
-		expect(startAlert()).toBeNull();
-	});
-
 	test("a cleared start failure stays gone through index and operator pages, and reopening the source", async () => {
 		notes = [noteRow("Shopping")];
-		projs = [projRow("Goblin")];
 		failCreate = true;
 		await mount();
 		await openNewChat();
 		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		await openPage("Projects");
-		expect(win.location.pathname).toBe("/app/projects");
+		await openPage("Archive");
+		expect(win.location.pathname).toBe("/app/archive");
 		expect(startAlert()).toBeNull();
 		await openPage("Settings");
 		expect(win.location.pathname).toBe("/app/settings");
@@ -5346,7 +4760,6 @@ describe("app projects surface", () => {
 	});
 
 	test("a create that fails after navigating away can't post its alert on the destination", async () => {
-		projs = [projRow("Goblin")];
 		notes = [noteRow("Shopping")];
 		await mount();
 		await openNewChat();
@@ -5356,58 +4769,13 @@ describe("app projects surface", () => {
 		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(true);
 		expect(startAlert()).toBeNull();
 
-		await click(container.querySelector(".rail-section-toggle"));
-		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		await openDesktopPage(container, click, "Archive");
+		expect(win.location.pathname).toBe("/app/archive");
 		failCreate = true;
 		gate.resolve();
 		await settle();
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		expect(win.location.pathname).toBe("/app/archive");
 		expect(startAlert()).toBeNull();
-	});
-
-	// The keyed remounts in App.tsx (`key={noteId}` on NoteView,
-	// `key={currentProject.id}` on ProjectView) are load-bearing:
-	// without them the previous page's component instance is reused
-	// and its dirty state lands on the next page — a draft written
-	// under the wrong id or If-Match rev. Drop a key and these fail.
-	test("navigating between projects remounts the view — A's drafts never reach B", async () => {
-		projs = [
-			projRow("Alpha", { instructions: "inst A" }),
-			projRow("Beta", { instructions: "inst B" }),
-		];
-		win.history.replaceState(null, "", "/app/p/p-alpha");
-		await mount();
-		const instr = () => container.querySelector<HTMLTextAreaElement>(".projfields textarea")!;
-		const saveBtn = () =>
-			[...container.querySelectorAll<HTMLButtonElement>(".projfields button")].find(
-				(b) => b.textContent === "Save",
-			)!;
-		expect(instr().value).toBe("inst A");
-
-		// Leave A dirty on purpose: an unsaved instructions draft and
-		// the rename box open with an uncommitted draft.
-		await typeInto(instr(), "A DRAFT", win.HTMLTextAreaElement.prototype);
-		await click(container.querySelector('button[aria-label="Rename project"]'));
-		await typeInto(
-			container.querySelector<HTMLInputElement>(".proj-rename input")!,
-			"Alpha renamed",
-			win.HTMLInputElement.prototype,
-		);
-
-		await click(container.querySelector('.rail-project-main[href="/app/p/p-beta"]'));
-		expect(win.location.pathname).toBe("/app/p/p-beta");
-		// B's own fresh state — and nothing of A's on the wire.
-		expect(instr().value).toBe("inst B");
-		expect(container.querySelector(".proj-rename")).toBeNull();
-		expect(container.querySelector(".proj-name")!.textContent).toBe("Beta");
-		expect(saveBtn().disabled).toBe(true);
-		expect(projectPatches).toEqual([]);
-
-		// B's save lands at B's id with B's draft.
-		await typeInto(instr(), "inst B v2", win.HTMLTextAreaElement.prototype);
-		await click(saveBtn());
-		expect(projectPatches).toEqual([{ id: "p-beta", body: { instructions: "inst B v2" } }]);
 	});
 
 	test("navigating between notes remounts the editor — the autosave writes B at B's rev", async () => {
@@ -5545,7 +4913,6 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 				gets.push(g);
 				return g.promise;
 			}
-			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
 			if (url === "/api/app/attention")
@@ -5759,9 +5126,6 @@ describe("notes and attention load failures surface (issue #213)", () => {
 			const feed = goblinFeedResponse(url);
 			if (feed !== null) return Promise.resolve(feed);
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-			if (url === "/api/app/projects") {
-				return Promise.resolve(jsonResponse({ projects: [] }));
-			}
 			if (url === "/api/app/notes") {
 				if (notesFail) return Promise.resolve(jsonResponse({ error: "notes endpoint down" }, 500));
 				return Promise.resolve(jsonResponse({ notes: notesRows, truncated: false }));
@@ -5971,7 +5335,6 @@ describe("chat width selector", () => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const feed = goblinFeedResponse(url);
 			if (feed !== null) return Promise.resolve(feed);
-			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
 			if (url === "/api/app/attention")

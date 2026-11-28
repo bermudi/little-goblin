@@ -1,6 +1,5 @@
 export const APP_LIVE_TOPICS = [
 	"conversations",
-	"projects",
 	"notes",
 	"attention",
 	"approvals",

@@ -62,7 +62,6 @@ export function withLive(node: ReactNode, store?: LiveStore): ReactElement {
 export type DesktopPage =
 	| "Settings"
 	| "Archive"
-	| "Projects"
 	| "Notes"
 	| "Status"
 	| "Memory"
@@ -76,7 +75,7 @@ function byText(root: ParentNode, selector: string, text: string): Element | und
 }
 
 export async function openDesktopPage(root: ParentNode, click: Click, page: DesktopPage): Promise<void> {
-	if (page === "Settings" || page === "Projects" || page === "Archive") {
+	if (page === "Settings" || page === "Archive") {
 		await click(root.querySelector('nav[aria-label="Sidebar"] button[aria-label="You"]'));
 		await click(byText(root, '[role="menuitem"]', page));
 		return;

@@ -1477,7 +1477,7 @@ describe("app deep links (Notes)", () => {
 				const idPaths = [
 					"/app/c/spun-1_valid",
 					"/app/c/spun-1_valid/window",
-					`/app/p/${crypto.randomUUID()}`,
+					`/app/b/${crypto.randomUUID()}`,
 					`/app/n/${crypto.randomUUID()}`,
 				];
 				for (const path of [...pagePaths, ...idPaths]) {
@@ -1494,6 +1494,8 @@ describe("app deep links (Notes)", () => {
 					"/app/c/valid/extra",
 					"/app/c/valid/window/",
 					"/app/p/valid/window",
+					"/app/p/valid",
+					"/app/projects",
 					"/app/n/valid/window",
 					"/app/c//window",
 				]) {

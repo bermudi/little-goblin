@@ -22,7 +22,6 @@ export interface ChatRow {
 	conv: Conv;
 	mark: Mark | null;
 	line: string;
-	projectName?: string;
 	place: Place;
 }
 
@@ -48,7 +47,7 @@ export interface HomeList {
 	side: ChatRow[];
 	bots: { bot: AppBot; main: ChatRow; side: ChatRow[] }[];
 	botByChatId: ReadonlyMap<string, AppBot>;
-	active: (ChatRow | LooseRow)[];
+	active: LooseRow[];
 	openInGoblin: boolean;
 	openRow: string | null;
 }
@@ -57,7 +56,6 @@ export interface HomeInput {
 	conversations: readonly Conv[];
 	chain: readonly Conv[];
 	bots?: readonly AppBot[];
-	projects: readonly { id: string; name: string; archivedAt: string | null }[];
 	attention: readonly AppAttentionItem[];
 	delegations: readonly { appConversation: string | null; status: string }[];
 	open: string | null;
@@ -113,7 +111,6 @@ export function buildHome(
 	const activeHold = prev?.id === openRow ? prev : null;
 	const attentionByConversation = groupAttention(input.attention);
 	const runningByConversation = groupRunning(input.delegations);
-	const projects = new Map(input.projects.map((project) => [project.id, project.name]));
 	const rowById = new Map<string, ChatRow>();
 
 	for (const conv of chatsById.values()) {
@@ -138,12 +135,13 @@ export function buildHome(
 			runningByConversation,
 			input.seen,
 		);
-		const rawPlace = getRawPlace(conv, rawResult.mark);
-		const place = getPlacedPlace(conv, rawPlace, activeHold);
-		if (!place) continue;
+		const place: Place = activeHold?.id === conv.id ? activeHold.place : {
+			section: "side",
+			rank: rawResult.mark === null ? UNMARKED_RANK : rankOf(rawResult.mark),
+			at: timestamp(conv.updatedAt),
+		};
 
 		const line = getChatLine(conv, visibleResult);
-		const projectName = conv.projectId == null ? undefined : projects.get(conv.projectId);
 
 		rowById.set(conv.id, {
 			kind: "chat",
@@ -151,20 +149,16 @@ export function buildHome(
 			conv,
 			mark: visibleResult.mark,
 			line,
-			...(projectName === undefined ? {} : { projectName }),
 			place,
 		});
 	}
 
-	const active: (ChatRow | LooseRow)[] = [...rowById.values()]
-		.filter((row) => row.place.section === "active" && row.conv.projectId != null);
-	active.push(...makeLooseRows(input, owners, rollIds));
+	const active = makeLooseRows(input, owners, rollIds);
 	active.sort((left, right) =>
 		left.place.rank - right.place.rank || right.place.at - left.place.at
 	);
 
 	const loose = [...rowById.values()]
-		.filter((row) => row.conv.projectId == null)
 		.sort((left, right) => {
 			const rankOrder = left.place.rank - right.place.rank;
 			if (rankOrder !== 0) return rankOrder;
@@ -202,8 +196,7 @@ export function buildHome(
 	const openInGoblin = input.open !== null && (() => {
 		const owner = owners.get(input.open);
 		return rollIds.has(input.open) || (owner !== undefined && owner.roll !== null) ||
-			(owner?.row != null && chatsById.get(owner.row)?.projectId == null &&
-				!botByChatId.has(owner.row));
+			(owner?.row != null && !botByChatId.has(owner.row));
 	})();
 	const hold = makeHold(openRow, rowById, prev);
 
@@ -333,33 +326,6 @@ function newestAttention(
 		}
 	}
 	return newest;
-}
-
-function getRawPlace(
-	conv: Conv,
-	mark: Mark | null,
-): Place | null {
-	if (conv.projectId == null) {
-		return {
-			section: "side",
-			rank: mark === null ? UNMARKED_RANK : rankOf(mark),
-			at: timestamp(conv.updatedAt),
-		};
-	}
-	if (mark !== null) {
-		return { section: "active", rank: rankOf(mark), at: timestamp(conv.updatedAt) };
-	}
-	return null;
-}
-
-function getPlacedPlace(
-	conv: Conv,
-	raw: Place | null,
-	prev: Hold | null,
-): Place | null {
-	if (prev?.id !== conv.id) return raw;
-	if (prev.place.section === "side" && conv.projectId != null) return raw;
-	return prev.place;
 }
 
 function getChatLine(conv: Conv, result: MarkResult): string {

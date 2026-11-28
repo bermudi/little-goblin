@@ -11,7 +11,6 @@ import { handleConversationsRoute } from "./app-conversations.ts";
 import { handleLiveRoute } from "./app-live.ts";
 import { handleNotesRoute } from "./app-notes.ts";
 import { handleProgramRoutes } from "./app-programs.ts";
-import { handleProjectsRoute } from "./app-projects.ts";
 import { handleAppPushRoute } from "./app-push.ts";
 import { handleSearchRoute } from "./app-search.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
@@ -102,7 +101,6 @@ export async function handleAppApi(
 		(await handleBotsRoute(req, url, deps)) ??
 		(await handleConversationsRoute(req, url, deps)) ??
 		(await handleTurnsRoute(req, url, deps)) ??
-		(await handleProjectsRoute(req, url, deps)) ??
 		(await handleNotesRoute(req, url, deps)) ??
 		(await handleConfigRoute(req, url, deps)) ??
 		(await handleChatRoute(req, url, deps)) ??

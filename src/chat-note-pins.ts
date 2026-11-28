@@ -114,6 +114,18 @@ export function ensureChatNotePinsSchema(db: Database): void {
 	}
 }
 
+export function reconcilePinsAfterOwnershipChange(db: Database, change: () => void): void {
+	if (!db.inTransaction) throw new Error("pin reconciliation needs a transaction");
+	db.run("DROP TRIGGER chat_note_pins_note_change");
+	db.run("DROP TRIGGER chat_note_pins_membership_insert");
+	db.run("DROP TRIGGER chat_note_pins_project_bind");
+	change();
+	ensureChatNotePinsSchema(db);
+	db.run(`UPDATE notes SET bot_id = bot_id WHERE id IN (
+		SELECT note_id FROM chat_note_pins WHERE removed IS NULL
+	)`);
+}
+
 interface PinRow {
 	noteId: string;
 	pinnedRev: number;
@@ -177,10 +189,10 @@ export function openChatNotePins(db: Database) {
 		)
 		ORDER BY n.updated_at DESC, n.id LIMIT 51
 	`);
-	const candidates = db.query<PinNote, [string | null, string | null, string | null]>(`
+	const candidates = db.query<PinNote, [string | null, string | null]>(`
 		SELECT ${noteSelect} FROM notes n ${ownerJoins}
-		WHERE ${availableIn("n", "?1", `'${LITTLE_GOBLIN_NOTE_OWNER}'`)} AND (
-			?2 IS NULL OR n.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?3)
+		WHERE ${availableIn("n", "NULL", `'${LITTLE_GOBLIN_NOTE_OWNER}'`)} AND (
+			?1 IS NULL OR n.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?2)
 		)
 		ORDER BY n.updated_at DESC, n.id LIMIT 51
 	`);
@@ -248,9 +260,9 @@ export function openChatNotePins(db: Database) {
 				: search.all(conversation, match, match);
 			return { pins, matches: matches.slice(0, 50), truncated: matches.length > 50 };
 		},
-		candidates(projectId: string | null, query: string): ChatNotePinCandidates {
+		candidates(query: string): ChatNotePinCandidates {
 			const match = toFtsQuery(query);
-			const found = query.trim() !== "" && match === null ? [] : candidates.all(projectId, match, match);
+			const found = query.trim() !== "" && match === null ? [] : candidates.all(match, match);
 			return { matches: found.slice(0, 50), truncated: found.length > 50 };
 		},
 		set,

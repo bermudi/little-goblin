@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ownedReader, tempDir } from "./dispose.ts";
 
 const MKDTEMP_ALLOWLIST = new Map([
+	["project-retirement.ts", "the backup is retained by the operator and must outlive the migration"],
 	// The hc install stage must share the binary's filesystem for atomic rename.
 	["hc-install.ts", "stage dir sits beside the binary for same-filesystem rename"],
 	// Cache staging must share cacheRoot's filesystem for atomic publish.

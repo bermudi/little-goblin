@@ -33,7 +33,7 @@ function streamedText(body: string): string {
 
 describe("app conversations", () => {
 	test("draft model choice is captured before the first turn and never changes defaults", async () => {
-		const { http, call, store, projects, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
 		try {
 			const created = await call("/api/app/conversations", {
 				method: "POST",
@@ -79,21 +79,6 @@ describe("app conversations", () => {
 			expect(store.readAppSettings("app/default-draft-model", configRef.current)).toEqual({
 				model: "zai/m",
 				thinking: "medium",
-			});
-			const project = projects.create({ name: "draft-model-project" });
-			const projectChat = await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					id: "project-draft-model",
-					projectId: project.id,
-					initialModelSettings: { model: "zai/m2", thinking: "high" },
-				}),
-			});
-			expect(projectChat.status).toBe(201);
-			expect(store.readAppSettings("app/project-draft-model", configRef.current)).toEqual({
-				model: "zai/m2",
-				thinking: "high",
 			});
 		} finally {
 			http.stop();
@@ -528,7 +513,6 @@ describe("app conversations", () => {
 			expect(off.status).toBe(200);
 			expect(await off.json()).toEqual({
 				memoryExcluded: true,
-				projectMemory: null,
 				cancelled: 1,
 			});
 			const excluded = store.get("app/chat-01")!;
@@ -545,7 +529,6 @@ describe("app conversations", () => {
 			expect(on.status).toBe(200);
 			expect(await on.json()).toEqual({
 				memoryExcluded: false,
-				projectMemory: null,
 				cancelled: 0,
 			});
 			expect(store.get("app/chat-01")!.memoryExcluded).toBe(false);
@@ -555,7 +538,7 @@ describe("app conversations", () => {
 	});
 
 	test("create accepts memoryExcluded — the toggle exists before the first message", async () => {
-		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
 			const off = await call("/api/app/conversations", {
 				method: "POST",
@@ -573,23 +556,13 @@ describe("app conversations", () => {
 			expect(on.status).toBe(201);
 			expect(store.get("app/pre-on")!.memoryExcluded).toBe(false);
 
-			// A memory-off project wins over an explicit include — same rule
-			// as the PATCH refusal, decided at creation.
-			const project = projects.create({ name: "vault", memory: "off" });
-			const bound = await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "pre-bound", projectId: project.id, memoryExcluded: false }),
-			});
-			expect(bound.status).toBe(201);
-			expect(store.get("app/pre-bound")!.memoryExcluded).toBe(true);
 		} finally {
 			http.stop();
 		}
 	});
 
 	test("create on an existing id refuses a conflicting memory setting", async () => {
-		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
@@ -616,58 +589,6 @@ describe("app conversations", () => {
 			});
 			expect(same.status).toBe(201);
 
-			const moveTarget = projects.create({ name: "move-target" });
-			const binding = await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "chat-01", projectId: moveTarget.id }),
-			});
-			expect(binding.status).toBe(409);
-			expect(await binding.json()).toEqual({
-				error: "conversation app/chat-01 has no project; use PATCH to move it into one",
-			});
-			expect(store.get("app/chat-01")?.projectId).toBeNull();
-
-			// Project-off counts as excluded: an include assertion on a
-			// bound row conflicts even when its own flag was never set.
-			const project = projects.create({ name: "vault", memory: "off" });
-			await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "chat-02", projectId: project.id }),
-			});
-			const include = await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					id: "chat-02",
-					projectId: project.id,
-					memoryExcluded: false,
-				}),
-			});
-			expect(include.status).toBe(409);
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("project memory off stays a hard boundary", async () => {
-		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
-		try {
-			const project = projects.create({ name: "vault", memory: "off" });
-			await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "chat-01", projectId: project.id }),
-			});
-			expect(store.get("app/chat-01")!.memoryExcluded).toBe(true);
-			const res = await call("/api/app/conversations/chat-01/memory", {
-				method: "PATCH",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ memoryExcluded: false }),
-			});
-			expect(res.status).toBe(409);
-			expect(store.get("app/chat-01")!.memoryExcluded).toBe(true);
 		} finally {
 			http.stop();
 		}
@@ -1325,150 +1246,18 @@ describe("app conversations", () => {
 		}
 	});
 
-	test("PATCH moves a loose chat in place and returns mapped move refusals", async () => {
-		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
-		const patch = (id: string, body: unknown) =>
-			call(`/api/app/conversations/${id}`, {
-				method: "PATCH",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify(body),
-			});
+	test("retired project routes and chat binding writes are refused", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const request = (path: string, method: string, body: unknown) =>
+			call(path, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 		try {
+			expect((await call("/api/app/projects")).status).toBe(404);
+			expect((await request("/api/app/conversations", "POST", { id: "new-chat", projectId: "retired" })).status).toBe(422);
+			expect(store.get("app/new-chat")).toBeNull();
 			await createAndChat(call);
-			const project = projects.create({ name: "Move Target", instructions: "Ship the thing." });
-			const moved = await patch("chat-01", { projectId: project.id });
-			expect(moved.status).toBe(200);
-			expect(await moved.json()).toEqual({});
-			expect(store.get("app/chat-01")?.projectId).toBe(project.id);
-			expect(store.history("app/chat-01").at(-1)?.parts[0]).toMatchObject({
-				type: "text",
-				text: expect.stringContaining("[project: moved into Move Target]"),
-			});
-			expect((await patch("chat-01", { projectId: project.id })).status).toBe(200);
-			expect(store.history("app/chat-01")).toHaveLength(3);
-
-			expect((await patch("chat-01", { projectId: project.id, title: "not allowed" })).status).toBe(
-				422,
-			);
-			expect((await patch("chat-01", { projectId: "no-such-project" })).status).toBe(404);
-			const archived = projects.create({ name: "Archived Target" });
-			projects.patch(archived.id, { archived: true });
-			expect((await patch("chat-01", { projectId: archived.id })).status).toBe(409);
-			const other = projects.create({ name: "Other Target" });
-			expect((await patch("chat-01", { projectId: other.id })).status).toBe(409);
-			expect(
-				(
-					await call("/api/app/conversations/missing", {
-						method: "PATCH",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({ projectId: project.id }),
-					})
-				).status,
-			).toBe(404);
-			const child = store.resolve(appAddress("move-child"), "/w");
-			store.db.run("UPDATE conversations SET parent_conversation_id = ? WHERE id = ?", [
-				"app/chat-01",
-				child.id,
-			]);
-			expect((await patch("move-child", { projectId: project.id })).status).toBe(422);
-			const olderRoll = store.rollApp(configRef.current);
-			store.rollApp(configRef.current);
-			const refusedRoll = await patch(olderRoll.id.slice("app/".length), { projectId: project.id });
-			expect(refusedRoll.status).toBe(422);
-			expect(await refusedRoll.json()).toEqual({
-				error: "only the current rolling chat conversation can move into a project",
-			});
-			expect(store.get(olderRoll.id)?.projectId).toBeNull();
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("PATCH moves the current rolling conversation and mints a fresh roll", async () => {
-		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
-		try {
-			const roll = store.rollApp(configRef.current);
-			store.append(roll.id, [
-				{ id: "roll-message", role: "user", parts: [{ type: "text", text: "lasting work" }] },
-			]);
-			const project = projects.create({ name: "Rolling Target" });
-			const response = await call(`/api/app/conversations/${roll.id.slice("app/".length)}`, {
-				method: "PATCH",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ projectId: project.id }),
-			});
-			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({});
-
-			expect(store.get(roll.id)?.projectId).toBe(project.id);
-			expect(store.isAppRoll(roll.id)).toBe(false);
-			const fresh = store.currentAppRoll();
-			expect(fresh).not.toBeNull();
-			expect(fresh!.id).not.toBe(roll.id);
-			expect(store.history(roll.id).map((m) => m.id)).toEqual(["roll-message", expect.any(String)]);
-
-			const listResponse = await call("/api/app/conversations");
-			expect(listResponse.status).toBe(200);
-			const list = (await listResponse.json()) as {
-				conversations: { id: string; projectId: string | null }[];
-				rolling: { chain: { id: string }[] };
-			};
-			expect(list.rolling.chain.map((row) => row.id)).toEqual([fresh!.id]);
-			expect(list.conversations.find((row) => row.id === roll.id)?.projectId).toBe(project.id);
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("PATCH refuses a move while the app turn is running", async () => {
-		const entered = deferred<void>();
-		const gate = deferred<void>();
-		const model = sdkScript();
-		model.script({
-			kind: "hold",
-			parts: [],
-			gate: gate.promise,
-			entered: () => entered.resolve(),
-		});
-		const { http, call, store, projects, runtime } = setup({
-			token: APP_TOKEN_NAME,
-			scriptedModel: model,
-		});
-		try {
-			await call("/api/app/conversations", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "chat-01" }),
-			});
-			const project = projects.create({ name: "Busy Target" });
-			const chat = await call("/api/app/chat", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					conversationId: "app/chat-01",
-					message: { id: "busy-message", role: "user", parts: [{ type: "text", text: "hold" }] },
-				}),
-			});
-			expect(chat.status).toBe(202);
-			await entered.promise;
-			const refused = await call("/api/app/conversations/chat-01", {
-				method: "PATCH",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ projectId: project.id }),
-			});
-			expect(refused.status).toBe(409);
+			expect((await request("/api/app/conversations/chat-01", "PATCH", { projectId: "retired" })).status).toBe(422);
 			expect(store.get("app/chat-01")?.projectId).toBeNull();
-			expect(
-				store.history("app/chat-01").some((message) =>
-					message.parts.some(
-						(part) => part.type === "text" && part.text.startsWith("[project: moved into"),
-					),
-				),
-			).toBe(false);
-			gate.resolve();
-			await waitUntil(() => !runtime.busy("app/chat-01"), "held turn drains");
 		} finally {
-			gate.resolve();
 			http.stop();
 		}
 	});
@@ -2577,42 +2366,6 @@ describe("app conversation branch", () => {
 			});
 			expect(again.status).toBe(201);
 			expect(((await again.json()) as { id: string }).id).not.toBe(body.id);
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("a branch keeps the source's project binding; an archived project refuses", async () => {
-		const { http, call } = setup({ token: APP_TOKEN_NAME });
-		try {
-			const project = (await (
-				await postJson(call, "/api/app/projects", { name: "Work" })
-			).json()) as { id: string };
-			await createConv(call, { id: "chat-01", projectId: project.id });
-			await createAndChat(call, "hi");
-			const messages = await history(call, "chat-01");
-			const reply = messages.messages.find((m) => m.role === "assistant")!;
-
-			const res = await postJson(call, "/api/app/conversations/chat-01/branch", {
-				messageId: reply.id,
-			});
-			expect(res.status).toBe(201);
-			const branch = (await res.json()) as { id: string };
-			const list = (await (await call("/api/app/conversations")).json()) as {
-				conversations: { id: string; projectId: string | null }[];
-			};
-			expect(list.conversations.find((c) => c.id === branch.id)?.projectId).toBe(project.id);
-
-			await call(`/api/app/projects/${project.id}`, {
-				method: "PATCH",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ archived: true }),
-			});
-			const refused = await postJson(call, "/api/app/conversations/chat-01/branch", {
-				messageId: reply.id,
-			});
-			expect(refused.status).toBe(422);
-			expect(((await refused.json()) as { error: string }).error).toContain("archived");
 		} finally {
 			http.stop();
 		}

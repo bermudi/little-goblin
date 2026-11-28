@@ -62,6 +62,7 @@ import { startProgramOps } from "./program-ops.ts";
 import { openPrograms } from "./programs.ts";
 import { startAgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
+import { requireRetiredProjects } from "./project-retirement.ts";
 import { wireReviewer } from "./reviewer-wiring.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
@@ -157,6 +158,7 @@ async function boot() {
 	}
 	const wallClock = (): Date => new Date();
 	const store = openStore(paths.db());
+	requireRetiredProjects(store.db);
 	const watches = makeWatches(store.db, wallClock);
 	const posts = makePosts(store.db, wallClock);
 	const asks = makeAsks(store.db, wallClock);

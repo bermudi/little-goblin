@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { loadProjectsOpen, loadSideChatsOpen, saveProjectsOpen, saveSideChatsOpen } from "./railFolders.ts";
+import { loadSideChatsOpen, saveSideChatsOpen } from "./railFolders.ts";
 
 let win: Window | null = null;
 const oldStorage = Reflect.get(globalThis, "localStorage");
@@ -18,14 +18,6 @@ function storage() {
 	return win.localStorage;
 }
 
-test("the projects section loads closed until saved open", () => {
-	storage();
-	expect(loadProjectsOpen()).toBe(false);
-	saveProjectsOpen(true);
-	expect(loadProjectsOpen()).toBe(true);
-	saveProjectsOpen(false);
-	expect(loadProjectsOpen()).toBe(false);
-});
 
 test("side chats load closed until saved open", () => {
 	storage();

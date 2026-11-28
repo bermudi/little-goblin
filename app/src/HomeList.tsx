@@ -14,13 +14,11 @@ import {
 	type Mark,
 } from "./homeList.ts";
 import { flatLine, flatTitle } from "./flatText.ts";
-import { NewProjectGlyph } from "./glyphs.tsx";
 import { pathOfRoute } from "./routing.ts";
 
 export interface RowOptions {
 	mark?: Mark | null;
 	line?: string;
-	projectName?: string;
 }
 
 export type RenderRow = (
@@ -42,15 +40,8 @@ export interface Home {
 	sidePage: SideChatPage;
 }
 
-interface ProjectLink {
-	id: string;
-	name: string;
-}
-
 export function useHomeList(
 	input: HomeInput,
-	projects: readonly ProjectLink[],
-	projectsOpen: boolean,
 	expandedBotId: string | null,
 ): Home {
 	const [hold, setHold] = useState<Hold | null>(null);
@@ -62,7 +53,6 @@ export function useHomeList(
 	const pagedSide = pageSideChats(side, revealedHiddenRows, built.list.openRow);
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
-		projectsOpen ? projects.map((project) => project.id) : [],
 		input.sideChatsOpen ? pagedSide.rows.map((row) => row.id) : [],
 		bots.map(({ bot, side }) => [bot.id, ...(bot.id === expandedBotId ? side.map((row) => row.id) : [])]),
 	]);
@@ -96,18 +86,12 @@ function pageSideChats(
 
 export function HomeList({
 	home,
-	projects,
-	projectsOpen,
-	currentFolderId,
 	currentConversationId,
 	expandedBotId,
 	rollingCurrent,
 	sideChatsOpen,
-	onToggleProjects,
 	onToggleSideChats,
 	onNewSideChat,
-	onNewProject,
-	onOpenProject,
 	onOpenTarget,
 	onOpenRolling,
 	onOpenConversation,
@@ -116,18 +100,12 @@ export function HomeList({
 	navRef,
 }: {
 	home: Home;
-	projects: readonly ProjectLink[];
-	projectsOpen: boolean;
-	currentFolderId: string | null;
 	currentConversationId: string | null;
 	expandedBotId: string | null;
 	rollingCurrent: boolean;
 	sideChatsOpen: boolean;
-	onToggleProjects: () => void;
 	onToggleSideChats: () => void;
 	onNewSideChat: () => void;
-	onNewProject: () => void;
-	onOpenProject: (id: string) => void;
 	onOpenTarget: (target: AppAttentionTarget) => void;
 	onOpenRolling: () => void;
 	onOpenConversation: (id: string) => void;
@@ -191,58 +169,7 @@ export function HomeList({
 				);
 			})}
 			{active.length > 0 && <li className="rail-chats-label">Active</li>}
-			{active.map((row) => row.kind === "chat"
-				? <ChatListItem key={row.id} row={row} renderRow={renderRow} />
-				: <LooseListItem key={row.id} row={row} onOpenTarget={onOpenTarget} />)}
-			<li className="rail-project-head">
-				<button
-					type="button"
-					className="rail-section-toggle"
-					aria-expanded={projectsOpen}
-					onClick={onToggleProjects}
-				>
-					<ChevronGlyph />
-					Projects
-				</button>
-				<button
-					type="button"
-					aria-label="New project"
-					onClick={onNewProject}
-				>
-					<NewProjectGlyph />
-				</button>
-			</li>
-			{projectsOpen && projects.map((project) => (
-				<li
-					key={project.id}
-					data-flip={`project:${project.id}`}
-					className={`conv rail-project${currentFolderId === project.id ? " current" : ""}`}
-				>
-					<a
-						className="conv-main rail-project-main"
-						href={`/app/p/${project.id}`}
-						aria-current={currentFolderId === project.id ? "page" : undefined}
-						onClick={(event) => {
-							if (
-								event.metaKey ||
-								event.ctrlKey ||
-								event.shiftKey ||
-								event.altKey ||
-								event.button !== 0
-							) return;
-							event.preventDefault();
-							onOpenProject(project.id);
-						}}
-					>
-						<span className="conv-gutter"><ChevronGlyph /></span>
-						<span className="conv-copy">
-							<span className="conv-head">
-								<span className="conv-title">{project.name}</span>
-							</span>
-						</span>
-					</a>
-				</li>
-			))}
+			{active.map((row) => <LooseListItem key={row.id} row={row} onOpenTarget={onOpenTarget} />)}
 		</ConversationNav>
 	);
 }
@@ -304,24 +231,6 @@ function BotListRows({ name, main, mark, line, current, side, expanded, onToggle
 				</li>
 			))}
 		</>
-	);
-}
-
-function ChatListItem({
-	row,
-	renderRow,
-}: {
-	row: ChatRow;
-	renderRow: RenderRow;
-}) {
-	return (
-		<li data-flip={row.id}>
-			{renderRow(row.conv, {
-				mark: row.mark,
-				line: row.line,
-				...(row.projectName === undefined ? {} : { projectName: row.projectName }),
-			})}
-		</li>
 	);
 }
 

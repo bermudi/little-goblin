@@ -5,7 +5,6 @@ import type {
 	AppAttentionResponse,
 	AppConversationList,
 	AppNoteList,
-	AppProjectList,
 } from "../../src/http/app-wire.ts";
 import type {
 	OperatorDelegationsResponse,
@@ -17,7 +16,6 @@ import { makeSseParser } from "./sse.ts";
 
 export interface LiveData {
 	conversations: AppConversationList;
-	projects: AppProjectList;
 	notes: AppNoteList;
 	attention: AppAttentionResponse;
 	approvals: AppApprovalsResponse;
@@ -38,7 +36,6 @@ type Topic = keyof LiveData;
 
 const TOPIC_PATH: Record<Topic, string> = {
 	conversations: "/api/app/conversations",
-	projects: "/api/app/projects",
 	notes: "/api/app/notes",
 	attention: "/api/app/attention",
 	approvals: "/api/app/approvals",
@@ -113,7 +110,6 @@ export class LiveStore {
 
 	private readonly topics: { [K in Topic]: TopicRun<LiveData[K]> } = {
 		conversations: run(),
-		projects: run(),
 		notes: run(),
 		attention: run(),
 		approvals: run(),

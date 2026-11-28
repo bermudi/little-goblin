@@ -24,7 +24,7 @@ Later automatic rolls use the current app defaults.
 
 The fake decision model answers `follow_up` with 0.05 when `state.next`
 contains `[new topic]`, otherwise 0.9. This affects rolling-chat routing;
-ordinary chat and project behavior still use the scripted chat-completion
+ordinary chats still use the scripted chat-completion
 endpoint.
 
 ## Starting a new roll by hand

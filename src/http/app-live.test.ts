@@ -205,7 +205,7 @@ describe("app live feed", () => {
 				expect(got.status, topic).toBe(200);
 				expect(got.headers.get(APP_LIVE_VERSION_HEADER), topic).toBe(first.versions[topic]);
 			}
-			expect(await header("/api/app/notes?project=loose")).toBeNull();
+			expect(await header("/api/app/notes?owner=little-goblin")).toBeNull();
 			expect(await header("/api/app/notes?archived=1")).toBeNull();
 
 			const seen = events.length;
@@ -300,23 +300,6 @@ describe("app live feed", () => {
 				"conversations",
 				() => call("/api/app/conversations/live-t2", { method: "DELETE" }),
 				"/api/app/conversations",
-			);
-
-			const fromProject = events.length;
-			const project = (await (
-				await postJson(call, "/api/app/projects", { name: "live project" })
-			).json()) as { id: string };
-			await moved(events, fromProject, "projects", prev.projects, "create project announced");
-			const afterProject = events.at(-1)!.versions;
-			expect(
-				(await call("/api/app/projects")).headers.get(APP_LIVE_VERSION_HEADER),
-			).toBe(afterProject.projects);
-			prev = afterProject;
-			await step(
-				"rename project",
-				"projects",
-				() => patchJson(`/api/app/projects/${project.id}`, { name: "live project 2" }),
-				"/api/app/projects",
 			);
 
 			const fromNote = events.length;

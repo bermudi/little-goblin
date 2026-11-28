@@ -8,7 +8,7 @@ import { NoteView } from "./NoteView.tsx";
 import { LiveStore } from "./live.ts";
 import { NotesIndex } from "./NotesIndex.tsx";
 import { rawNoteDraft, writeNoteDraft } from "./noteDraft.ts";
-import type { AppNote, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
+import type { AppNote, AppNoteSummary } from "../../src/http/app-wire.ts";
 import { emitLiveVersions, goblinFeedResponse, goblinLive, withLive } from "./testkit.ts";
 
 describe("main branch regressions", () => {
@@ -147,7 +147,6 @@ describe("main branch regressions", () => {
 					<NoteView
 						token={null}
 						noteId={note.id}
-						projects={[]}
 						onChat={onChat}
 						onDeleted={() => {}}
 						discardRef={discardRef}
@@ -481,7 +480,6 @@ describe("quiet harbor regressions", () => {
 				<NoteView
 					token={null}
 					noteId="n1"
-					projects={[]}
 					onChat={() => {
 						chatted = true;
 					}}
@@ -504,7 +502,7 @@ describe("quiet harbor regressions", () => {
 
 		test("the versions list shows a readable time, not the stored ISO stamp", async () => {
 			await mount(
-				<NoteView token={null} noteId="n1" projects={[]} onChat={() => {}} onDeleted={() => {}} />,
+				<NoteView token={null} noteId="n1" onChat={() => {}} onDeleted={() => {}} />,
 			);
 			const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
 				(b) => b.textContent === "Versions",
@@ -538,7 +536,7 @@ describe("quiet harbor regressions", () => {
 			(el) => el.textContent === label,
 		);
 		await mount(
-			<NoteView token={null} noteId="n1" projects={[]} onChat={() => {}} onDeleted={() => {}} />,
+			<NoteView token={null} noteId="n1" onChat={() => {}} onDeleted={() => {}} />,
 		);
 		await act(async () => button("Versions")!.click());
 		await waitFor(() => button("View diff · rev 3") !== undefined, "revision 3");
@@ -560,7 +558,7 @@ describe("quiet harbor regressions", () => {
 
 		test("the versions popover sits in the Versions button's wrapper and closes on outside press or Escape", async () => {
 			await mount(
-				<NoteView token={null} noteId="n1" projects={[]} onChat={() => {}} onDeleted={() => {}} />,
+				<NoteView token={null} noteId="n1" onChat={() => {}} onDeleted={() => {}} />,
 			);
 			const toggle = () =>
 				[...container.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -607,7 +605,6 @@ describe("quiet harbor regressions", () => {
 				<NoteView
 					token={null}
 					noteId="n1"
-					projects={[]}
 					onChat={() => {}}
 					onDeleted={() => {}}
 					onDirtyChange={(d) => reports.push(d)}
@@ -657,7 +654,6 @@ describe("quiet harbor regressions", () => {
 				<NoteView
 					token={null}
 					noteId="n1"
-					projects={[]}
 					onChat={() => {}}
 					onDeleted={() => {}}
 					discardRef={discard}
@@ -804,7 +800,7 @@ describe("quiet harbor regressions", () => {
 			await waitFor(() => container.querySelector(".note-list-title") !== null, "a rendered note row");
 		};
 
-		test("a bot's note names its bot, and bots sit between Little Goblin and projects in the owner filter", async () => {
+		test("a bot's note names its bot, and bots appear in the owner filter", async () => {
 			listBodies.active = { notes: [{ ...SUMMARY, title: "Lisbon itinerary", botId: "b1" }], truncated: false };
 			const urls: string[] = [];
 			const listFetch = globalThis.fetch;
@@ -812,16 +808,15 @@ describe("quiet harbor regressions", () => {
 				urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 				return listFetch(input, init);
 			}) as typeof fetch;
-			const bot = { id: "b1", name: "Trip Planner", mainConversationId: "app/trip", sideConversationIds: [], canMoveBack: false };
-			const project = { id: "p1", name: "Kitchen reno" } as AppProject;
-			await mount(<NotesIndex token={null} projects={[project]} bots={[bot]} onOpen={() => {}} />);
+			const bot = { id: "b1", name: "Trip Planner", instructions: "", folder: null, mainConversationId: "app/trip", sideConversationIds: [], canMoveBack: false };
+			await mount(<NotesIndex token={null} bots={[bot]} onOpen={() => {}} />);
 			expect([...container.querySelectorAll("td")].map((cell) => cell.textContent)).toContain("Trip Planner");
 			const filter = container.querySelector<HTMLSelectElement>('select[aria-label="Filter notes by owner"]')!;
 			expect([...filter.children].map((child) =>
 				child.tagName === "OPTGROUP"
 					? `${child.getAttribute("label")}: ${[...child.children].map((option) => option.textContent).join(", ")}`
 					: child.textContent,
-			)).toEqual(["All owners", "Global", "Little Goblin", "Bots: Trip Planner", "Projects: Kitchen reno"]);
+			)).toEqual(["All owners", "Global", "Little Goblin", "Bots: Trip Planner"]);
 			await act(async () => {
 				filter.value = "b1";
 				filter.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
@@ -838,7 +833,7 @@ describe("quiet harbor regressions", () => {
 					truncated: true,
 				},
 			};
-			await mount(<NotesIndex token={null} projects={[]} onOpen={() => {}} />);
+			await mount(<NotesIndex token={null} onOpen={() => {}} />);
 			expect(container.textContent).toContain("Showing the first 1 matching notes");
 			expect(container.textContent).not.toContain("gone");
 			const status = container.querySelector<HTMLSelectElement>('select[aria-label="Filter notes by status"]')!;
@@ -866,7 +861,7 @@ describe("quiet harbor regressions", () => {
 			const store = new LiveStore(null);
 			root = createRoot(container);
 			await act(async () => {
-				root?.render(withLive(<NotesIndex token={null} projects={[]} onOpen={() => {}} />, store));
+				root?.render(withLive(<NotesIndex token={null} onOpen={() => {}} />, store));
 			});
 			await waitFor(() => container.querySelector('[role="alert"]') !== null, "the list error");
 			expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't list notes");
@@ -892,7 +887,7 @@ describe("quiet harbor regressions", () => {
 					truncated: false,
 				},
 			};
-			await mount(<NotesIndex token={null} projects={[]} onOpen={() => {}} />);
+			await mount(<NotesIndex token={null} onOpen={() => {}} />);
 			expect(container.textContent).not.toContain("Showing the first");
 			expect(container.textContent).not.toContain("gone");
 		});

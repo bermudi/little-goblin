@@ -11,7 +11,6 @@ import {
 	type AppLiveVersions,
 } from "./app-live-topics.ts";
 import { noteListVersioned } from "./app-notes.ts";
-import { projectListBody } from "./app-projects.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import { eventStream } from "./app-sse.ts";
 import { type AppLive, versionOf } from "./live-version.ts";
@@ -52,7 +51,6 @@ export function openAppLive(
 
 	const readers: Record<AppLiveTopic, () => unknown> = {
 		conversations: () => conversationListBody(deps),
-		projects: () => projectListBody(deps),
 		notes: () => noteListVersioned(deps),
 		attention: () => attentionBody(deps, proposed()),
 		approvals: () => approvalsBody(deps),

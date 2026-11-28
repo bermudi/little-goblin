@@ -96,9 +96,6 @@ function rowElement(conversation = conv) {
 			onTogglePinned={() => {}}
 			onDelete={() => {}}
 			onError={() => {}}
-			moveTargets={[]}
-			onMove={() => {}}
-			onMoveToNewProject={() => {}}
 			token={null}
 		/>
 	);
@@ -184,13 +181,13 @@ test("rolling row keeps its avatar and places a mark after the title", () => {
 
 test("conversation marks and pins sit between title and time without a gutter", () => {
 	const marked = renderToStaticMarkup(<ConversationNav loop={false}><li>{<ConversationRow {...{
-		conv, current: null, onOpen: () => {}, onRenamed: () => {}, onToggleArchived: () => {}, onTogglePinned: () => {}, onDelete: () => {}, onError: () => {}, moveTargets: [], onMove: () => {}, onMoveToNewProject: () => {}, token: null, mark: "new",
+		conv, current: null, onOpen: () => {}, onRenamed: () => {}, onToggleArchived: () => {}, onTogglePinned: () => {}, onDelete: () => {}, onError: () => {}, token: null, mark: "new",
 	}} />}</li></ConversationNav>);
 	expect(marked).not.toContain("conv-gutter");
 	expect(marked.indexOf('class="conv-title"')).toBeLessThan(marked.indexOf('class="conv-mark"'));
 	expect(marked.indexOf('class="conv-mark"')).toBeLessThan(marked.indexOf('class="conv-time"'));
 	const pinned = renderToStaticMarkup(<ConversationNav loop={false}><li>{<ConversationRow {...{
-		conv: { ...conv, pinnedAt: "2026-10-09T00:00:00.000Z" }, current: null, onOpen: () => {}, onRenamed: () => {}, onToggleArchived: () => {}, onTogglePinned: () => {}, onDelete: () => {}, onError: () => {}, moveTargets: [], onMove: () => {}, onMoveToNewProject: () => {}, token: null,
+		conv: { ...conv, pinnedAt: "2026-10-09T00:00:00.000Z" }, current: null, onOpen: () => {}, onRenamed: () => {}, onToggleArchived: () => {}, onTogglePinned: () => {}, onDelete: () => {}, onError: () => {}, token: null,
 	}} />}</li></ConversationNav>);
 	expect(pinned).toContain("conv-mark");
 	expect(pinned).toContain("conv-pin");

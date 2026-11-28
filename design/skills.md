@@ -254,6 +254,19 @@ job (tune it, don't duplicate it).
   accepted, not locked. The queue holds at most `reviewer.queueCap`
   (default 3) queued reviews; a full queue drops the incoming review
   and logs the drop (the newest turn is the most re-gateable).
+- **A new skill needs expected reuse (ruling 2026-11-25, issue #943).** A
+  review that wrote a skill absent from both the catalog and the pending
+  drafts asks System One one more question: is the operator likely to
+  need the procedure again? Below `reviewer.thresholds.reuse` (default
+  0.6, independent of `reviewer.threshold`), the new skill is dropped;
+  edits in the same review still propose. Every answer is logged as
+  "reviewer reuse" with the review id. An unanswered question lets the
+  skill through: an outage keeps the earlier behaviour. Its own call,
+  not a third gate question: in one call it moved `procedure` by up to
+  0.07 near the 0.8 threshold, so it would change which edits happen.
+  Chosen on 8 past decisions (7 of 8 right at any cutoff from 0.34 to
+  0.78), so the cutoff is provisional. Rejected: raising `procedure`
+  (the discarded drafts score highest), and schedule facts in the state.
 - **/stop cancels the conversation's reviews.** Ruling 2026-09-28:
   /stop is the operator's panic lever, and a background skill-write from
   a topic the operator just fenced must not outlive it. Queued reviews

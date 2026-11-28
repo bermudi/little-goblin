@@ -659,7 +659,7 @@ const digest = { tool: "bash", args: "{}", result: "listed", ok: true };
 function reviewerDeps(decide?: ReviewerDeps["gate"]["decide"]): ReviewerDeps {
 	return {
 		gate: { decide: decide ?? (async () => ({ answers: {}, inputTokens: null, cost: null })) },
-		thresholds: { correction: 0.8, procedure: 0.8 },
+		thresholds: { correction: 0.8, procedure: 0.8, reuse: 0.6 },
 		queueCap: 3,
 		evidence: { calls: 8, argChars: 300, outChars: 300 },
 		reviewModel: async () => {

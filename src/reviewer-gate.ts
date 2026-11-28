@@ -27,6 +27,18 @@ export const GATE_QUESTIONS: Record<string, System1Question> = {
 	},
 };
 
+export const REUSE_QUESTION: Record<string, System1Question> = {
+	reuse: {
+		type: "noul",
+		instructions: "Is this operator likely to need this same procedure again?",
+		criteria: {
+			true: "The task is likely to come back: it runs on a schedule, belongs to the operator's routine, or handles a kind of request the operator will make again",
+			false: "One-off: an investigation, comparison or question about one specific thing, with no reason to expect the same task again",
+		},
+	},
+};
+export const DEFAULT_REUSE_THRESHOLD = 0.6;
+
 // The decision model's context is 32k tokens — the state stays well
 // under it. Operator text reads tail-first (a correction lands in the
 // latest message); the reply reads head-first. Names and counts only —

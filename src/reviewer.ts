@@ -41,6 +41,7 @@ import {
 	GATE_QUESTIONS,
 	MAX_OPERATOR_CHARS,
 	MAX_REPLY_CHARS,
+	REUSE_QUESTION,
 } from "./reviewer-gate.ts";
 import { proposeSkill } from "./reviewer-propose.ts";
 import {
@@ -60,7 +61,7 @@ export type Trigger = "correction" | "procedure";
 
 export interface ReviewerDeps {
 	gate: Pick<System1Client, "decide">;
-	thresholds: { correction: number; procedure: number };
+	thresholds: { correction: number; procedure: number; reuse: number };
 	// Queued (not running) review cap; a full queue drops the incoming.
 	queueCap: number;
 	evidence: EvidenceLimits;
@@ -463,6 +464,38 @@ async function runReview(entry: QueueEntry, signal: AbortSignal): Promise<void> 
 	}
 }
 
+async function holdNewSkills(entry: QueueEntry, skills: string[]): Promise<boolean> {
+	const { deps, turn, reviewId } = entry;
+	const threshold = deps.thresholds.reuse;
+	const line = { review_id: reviewId, conversation: turn.conversationId, skills, threshold };
+	try {
+		const decision = await deps.gate.decide(buildGateState(turn), REUSE_QUESTION);
+		const reuse = decision.answers["reuse"] ?? 0;
+		const held = reuse < threshold;
+		log.info("reviewer reuse", {
+			...line,
+			reuse,
+			held,
+			fallback: false,
+			inputTokens: decision.inputTokens,
+			cost: decision.cost,
+		});
+		return held;
+	} catch (err) {
+		if (!(err instanceof System1Error)) throw err;
+		log.info("reviewer reuse", {
+			...line,
+			reuse: null,
+			held: false,
+			fallback: true,
+			reason: err.message,
+			inputTokens: null,
+			cost: null,
+		});
+		return false;
+	}
+}
+
 async function runStagedReview(
 	entry: QueueEntry,
 	signal: AbortSignal,
@@ -613,7 +646,28 @@ async function runStagedReview(
 		}
 		// Every top-level dir among the review's changed paths is a skill
 		// to validate — against the staged copy, before anything lands.
-		const skills = [...new Set(changed.map((rel) => rel.split("/")[0]!))].sort();
+		const touched = [...new Set(changed.map((rel) => rel.split("/")[0]!))].sort();
+		const known = new Set([...manifest.keys()].map((rel) => rel.split("/")[0]!));
+		const fresh = touched.filter((skill) => !known.has(skill));
+		const held = fresh.length > 0 && (await holdNewSkills(entry, fresh));
+		if (entry.cancelled) {
+			log.info("reviewer review cancelled — staging discarded", {
+				review_id: reviewId,
+				conversation: conv,
+			});
+			return;
+		}
+		const skills = held ? touched.filter((skill) => known.has(skill)) : touched;
+		if (skills.length === 0) {
+			log.info("reviewer review done", {
+				review_id: reviewId,
+				conversation: conv,
+				changed: false,
+				skills: [],
+				written: [...written].sort(),
+			});
+			return;
+		}
 		const validated: { skill: string; ok: boolean; output: string }[] = [];
 		for (const skill of skills) {
 			const outcome = await validateSkill(deps, reviewDir, skill);

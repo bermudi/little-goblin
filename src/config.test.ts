@@ -375,10 +375,10 @@ describe("goblin.json5", () => {
 		],
 		[
 			"parses thresholds, queueCap and evidence overrides",
-			`,reviewer:{auth:"openrouter",thresholds:{correction:0.7},queueCap:5,evidence:{calls:12}}`,
+			`,reviewer:{auth:"openrouter",thresholds:{correction:0.7,reuse:0.5},queueCap:5,evidence:{calls:12}}`,
 			{
 				threshold: 0.8,
-				thresholds: { correction: 0.7 },
+				thresholds: { correction: 0.7, reuse: 0.5 },
 				queueCap: 5,
 				evidence: { calls: 12, argChars: 300, outChars: 300 },
 				auth: "openrouter",
@@ -387,6 +387,7 @@ describe("goblin.json5", () => {
 	]);
 	throwRows("reviewer", P_ZAI, [
 		["queueCap must be positive", `,reviewer:{auth:"openrouter",queueCap:0}`],
+		["reuse threshold must be at most one", `,reviewer:{auth:"openrouter",thresholds:{reuse:1.1}}`],
 		[
 			"model is provider-validated",
 			`,reviewer:{auth:"openrouter",model:"other/x"}`,

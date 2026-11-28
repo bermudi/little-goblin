@@ -171,6 +171,7 @@ function seedHome(home: string, fakePort: number): void {
 					},
 				}
 			: {}),
+		...(process.env.GOBLIN_TRY_REVIEWER === "1" ? { reviewer: { auth: "fake-system1" } } : {}),
 		operators: [],
 		telegram: { enabled: false, dmGapMinutes: 1 },
 		tts: "",

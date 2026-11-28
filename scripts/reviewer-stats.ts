@@ -50,6 +50,8 @@ interface ReviewRecord {
 	rejected: string | null;
 	discarded: string | null;
 	proposed: string[];
+	reuse: number | null;
+	held: string[];
 	skipped: unknown[];
 	cancelled: string | null;
 	dropped: boolean;
@@ -75,6 +77,8 @@ function review(reviewId: string): ReviewRecord {
 			rejected: null,
 			discarded: null,
 			proposed: [],
+			reuse: null,
+			held: [],
 			skipped: [],
 			cancelled: null,
 			dropped: false,
@@ -125,6 +129,10 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
 	const r = review(rid);
 	r.conv = str(rec.conversation) ?? r.conv;
 	switch (msg) {
+		case "reviewer reuse":
+			r.reuse = num(rec.reuse);
+			r.held = rec.held === true ? arr(rec.skills).flatMap((s) => str(s) ?? []) : [];
+			break;
 		case "reviewer queue full — review dropped":
 			r.dropped = true;
 			break;
@@ -223,6 +231,7 @@ bucket("dropped (queue full)", (r) => r.dropped);
 bucket("cancelled (/stop)", (r) => r.cancelled !== null);
 bucket("discarded (model/budget)", (r) => r.discarded !== null);
 bucket("rejected (validation)", (r) => r.rejected !== null);
+bucket("held back (new skill, reuse)", (r) => r.held.length > 0);
 bucket("proposed", (r) => r.proposed.length > 0);
 const proposedReviews = rs.filter((r) => r.proposed.length > 0);
 
@@ -278,12 +287,15 @@ for (const r of rs.slice(-15).reverse()) {
 				: r.rejected !== null
 					? "rejected(validation)"
 					: r.proposed.length > 0
-						? `proposed: ${r.proposed.join(", ")}`
-						: r.started
-							? "ran, saved nothing"
-							: "queued";
+						? `proposed: ${r.proposed.join(", ")}${r.held.length > 0 ? ` +held back ${r.held.join(", ")}` : ""}`
+						: r.held.length > 0
+							? `held back: ${r.held.join(", ")}`
+							: r.started
+								? "ran, saved nothing"
+								: "queued";
+	const score = r.reuse === null ? "" : ` reuse ${f2(r.reuse)}`;
 	const extra = r.skipped.length > 0 ? ` +skipped ${r.skipped.length}` : "";
-	p(`  ${r.reviewId.slice(0, 8)} ${r.trigger ?? "?"} ${state}${extra}`);
+	p(`  ${r.reviewId.slice(0, 8)} ${r.trigger ?? "?"} ${state}${score}${extra}`);
 }
 
 process.stdout.write(`${out.join("\n")}\n`);

@@ -30,16 +30,19 @@ import {
 import { buildGateState } from "./reviewer-gate.ts";
 import { confineTools, reviewTools, stagingRoot } from "./reviewer-staging.ts";
 import { Reviewer, type ReviewerDeps } from "./reviewer.ts";
-import { tmpDir, waitUntil } from "./testkit.ts";
+import { deferred, tmpDir, waitUntil } from "./testkit.ts";
 
 afterEach(() => {
 	setLogFile(null);
 });
 
 // Fake skills-ref: records its argv + cwd, exits the planted code.
-function fakeSkillsRef(dir: string, code: number): string {
+function fakeSkillsRef(dir: string, code: number, failSkill?: string): string {
 	const bin = join(dir, "skills-ref");
-	writeFileSync(bin, `#!/bin/sh\necho "$PWD $@" >> "$(dirname "$0")/calls"\nexit ${code}\n`);
+	writeFileSync(
+		bin,
+		`#!/bin/sh\necho "$PWD $@" >> "$(dirname "$0")/calls"\n${failSkill === undefined ? "" : `case "$@" in *${failSkill}*) exit 1;; esac\n`}exit ${code}\n`,
+	);
 	chmodSync(bin, 0o755);
 	return bin;
 }
@@ -121,10 +124,13 @@ interface Harness {
 	proposed: string;
 	staging: string;
 	notified: { conversationId: string; skills: string[] }[];
+	asked: string[][];
 	depsFor(o: {
 		nouls?: { correction: number; procedure: number } | System1Error | Error;
+		reuse?: number | System1Error | Error;
 		script?: { text?: string; calls?: { name: string; input: unknown }[]; error?: string }[];
 		validateCode?: number;
+		validateFailSkill?: string;
 		queueCap?: number;
 		evidence?: EvidenceLimits;
 		thresholds?: { correction: number; procedure: number };
@@ -141,6 +147,7 @@ function harness(): Harness {
 	const store = openStore(join(root, "goblin.sqlite"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const notified: Harness["notified"] = [];
+	const asked: string[][] = [];
 	const binDir = join(root, "bin");
 	mkdirSync(binDir, { recursive: true });
 	return {
@@ -151,17 +158,26 @@ function harness(): Harness {
 		proposed,
 		staging: stagingRoot(workspace),
 		notified,
+		asked,
 		depsFor(o) {
 			const gate = {
-				decide: async () => {
-					const n = o.nouls ?? { correction: 0, procedure: 0 };
+				decide: async (_state: string, questions: Record<string, unknown>) => {
+					const ids = Object.keys(questions);
+					asked.push(ids);
+					const n = ids.includes("reuse")
+						? (o.reuse ?? 1)
+						: (o.nouls ?? { correction: 0, procedure: 0 });
 					if (n instanceof Error) throw n;
-					return { answers: { ...n }, inputTokens: 100, cost: 0.00001 };
+					return {
+						answers: typeof n === "number" ? { reuse: n } : { ...n },
+						inputTokens: 100,
+						cost: 0.00001,
+					};
 				},
 			};
 			return {
 				gate,
-				thresholds: o.thresholds ?? { correction: 0.8, procedure: 0.8 },
+				thresholds: { ...(o.thresholds ?? { correction: 0.8, procedure: 0.8 }), reuse: 0.6 },
 				queueCap: o.queueCap ?? 3,
 				evidence: o.evidence ?? EVIDENCE,
 				reviewModel: async () => ({
@@ -175,7 +191,7 @@ function harness(): Harness {
 				notify: async (conversationId, skills) => {
 					notified.push({ conversationId, skills });
 				},
-				skillsRefBin: fakeSkillsRef(binDir, o.validateCode ?? 0),
+				skillsRefBin: fakeSkillsRef(binDir, o.validateCode ?? 0, o.validateFailSkill),
 			};
 		},
 	};
@@ -369,6 +385,138 @@ describe("reviewer gate", () => {
 });
 
 describe("review run — staging and publication", () => {
+	const writeSkill = (name: string, extra = "") => ({
+		name: "write_file",
+		input: { path: `${name}/SKILL.md`, content: SKILL_MD(name, extra) },
+	});
+	const writes = (...calls: ReturnType<typeof writeSkill>[]) => [{ calls }, { text: "saved" }];
+	const captureLog = (h: Harness) => {
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		return (msg: string) =>
+			readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.filter((e) => e.msg === msg);
+	};
+
+	test.each([
+		["procedure", { correction: 0, procedure: 0.9 }, 1],
+		["correction", { correction: 0.9, procedure: 0 }, 1],
+		["outage fallback", new System1Error("timeout"), 8],
+	])("reuse below the cutoff holds a new skill (%s trigger)", async (_label, nouls, calls) => {
+		const h = harness();
+		const lines = captureLog(h);
+		const deps = h.depsFor({ nouls, reuse: 0.59, script: writes(writeSkill("one-off")) });
+		const recorded: string[][] = [];
+		deps.recordSources = (_conv, _review, skills) => recorded.push(skills);
+		await new Reviewer(deps).considerTurn(turn({ toolNames: Array<string>(calls).fill("bash") }));
+		expect(existsSync(join(h.proposed, "one-off"))).toBe(false);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		expect(h.notified).toEqual([]);
+		expect(recorded).toEqual([]);
+		expect(skillsRefCalls(join(deps.workspaceDir, "..", "bin"))).toEqual([]);
+		expect(readdirSync(h.staging)).toEqual([]);
+		expect(h.asked).toEqual([["correction", "procedure"], ["reuse"]]);
+		const [gate] = lines("reviewer gate");
+		expect(gate!.thresholds).toEqual({ correction: 0.8, procedure: 0.8 });
+		expect(lines("reviewer reuse")).toMatchObject([
+			{
+				review_id: gate!.review_id,
+				conversation: "dm:1",
+				skills: ["one-off"],
+				reuse: 0.59,
+				threshold: 0.6,
+				held: true,
+				fallback: false,
+				inputTokens: 100,
+				cost: 0.00001,
+			},
+		]);
+		h.store.close();
+	});
+
+	test("reuse exactly at the cutoff proposes a new skill", async () => {
+		const h = harness();
+		const lines = captureLog(h);
+		const deps = h.depsFor({
+			nouls: { correction: 0, procedure: 0.9 },
+			reuse: 0.6,
+			script: writes(writeSkill("routine")),
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(existsSync(join(h.proposed, "routine", "SKILL.md"))).toBe(true);
+		expect(lines("reviewer reuse")).toMatchObject([
+			{ skills: ["routine"], reuse: 0.6, threshold: 0.6, held: false, fallback: false },
+		]);
+		h.store.close();
+	});
+
+	test.each(["installed skill", "pending draft"])(
+		"an edit never asks the reuse question (%s)",
+		async (kind) => {
+			const h = harness();
+			const base = kind === "pending draft" ? h.proposed : h.skills;
+			mkdirSync(join(base, "existing"), { recursive: true });
+			writeFileSync(join(base, "existing", "SKILL.md"), SKILL_MD("existing"));
+			const deps = h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				reuse: 0,
+				script: writes(writeSkill("existing", "updated")),
+			});
+			await new Reviewer(deps).considerTurn(turn());
+			expect(h.asked).toEqual([["correction", "procedure"]]);
+			expect(readFileSync(join(h.proposed, "existing", "SKILL.md"), "utf8")).toContain("updated");
+			h.store.close();
+		},
+	);
+
+	test("holding an invalid new skill still proposes the edit beside it", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "existing"), { recursive: true });
+		writeFileSync(join(h.skills, "existing", "SKILL.md"), SKILL_MD("existing"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			reuse: 0.1,
+			validateFailSkill: "new-invalid",
+			script: writes(writeSkill("existing", "updated"), writeSkill("new-invalid")),
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(readFileSync(join(h.proposed, "existing", "SKILL.md"), "utf8")).toContain("updated");
+		expect(existsSync(join(h.proposed, "new-invalid"))).toBe(false);
+		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["existing"] }]);
+		h.store.close();
+	});
+
+	test("an unanswered reuse question lets the new skill through", async () => {
+		const h = harness();
+		const lines = captureLog(h);
+		const deps = h.depsFor({
+			nouls: { correction: 0, procedure: 0.9 },
+			reuse: new System1Error("timeout"),
+			script: writes(writeSkill("outage")),
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(existsSync(join(h.proposed, "outage", "SKILL.md"))).toBe(true);
+		expect(lines("reviewer reuse")).toMatchObject([
+			{ reuse: null, held: false, fallback: true, reason: "System1 timeout failure" },
+		]);
+		h.store.close();
+	});
+
+	test("a bug in the reuse call propagates without proposing", async () => {
+		const h = harness();
+		const deps = h.depsFor({
+			nouls: { correction: 0, procedure: 0.9 },
+			reuse: new Error("unexpected"),
+			script: writes(writeSkill("error")),
+		});
+		await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow("unexpected");
+		expect(existsSync(join(h.proposed, "error"))).toBe(false);
+		h.store.close();
+	});
+
 	test("a validated skill is proposed — parked in skills-proposed/, never installed, landed in history, and notified", async () => {
 		const h = harness();
 		const deps = h.depsFor({
@@ -1706,6 +1854,45 @@ describe("review queue", () => {
 });
 
 describe("/stop cancellation", () => {
+	test("stop while the reuse decision is held prevents proposal and notification", async () => {
+		const h = harness();
+		const deps = h.depsFor({
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "stopped-reuse/SKILL.md", content: SKILL_MD("stopped-reuse") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		const atReuse = deferred<void>();
+		const held = deferred<void>();
+		deps.gate = {
+			decide: async (_state, questions) => {
+				if ("reuse" in questions) {
+					atReuse.resolve();
+					await held.promise;
+					return { answers: { reuse: 1 }, inputTokens: 1, cost: 0 };
+				}
+				return { answers: { correction: 0.9, procedure: 0 }, inputTokens: 1, cost: 0 };
+			},
+		};
+		const reviewer = new Reviewer(deps);
+		const pending = reviewer.considerTurn(turn());
+		await atReuse.promise;
+		expect(reviewer.cancelReviews("dm:1")).toBe(1);
+		held.resolve();
+		await pending;
+		expect(existsSync(join(h.proposed, "stopped-reuse"))).toBe(false);
+		expect(h.notified).toEqual([]);
+		expect(skillsRefCalls(join(deps.workspaceDir, "..", "bin"))).toEqual([]);
+		h.store.close();
+	});
+
 	test("a held gate resolving after stop cannot start a review", async () => {
 		const h = harness();
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });

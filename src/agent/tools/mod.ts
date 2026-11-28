@@ -1,5 +1,7 @@
 import type { Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
+import { log } from "../../log.ts";
+import { skillUnderPath } from "../../turn/skill-attribution.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
 import { type AskToolDeps, askTool } from "./ask.ts";
@@ -8,6 +10,7 @@ import { bashTool, type SkillWrites } from "./bash.ts";
 import { type ComputerToolDeps, computerTools } from "./computer.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
+import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
 import { type HistorySearchDeps, historySearchTool } from "./history.ts";
 import { type ImageToolDeps, imageTool } from "./image.ts";
@@ -20,6 +23,7 @@ import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { type WatchToolDeps, watchTool } from "./watch.ts";
 import { type PostToolDeps, postTool } from "./post.ts";
+import { readFileTool } from "./read.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -28,6 +32,7 @@ import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { type VisionToolDeps, visionTool } from "./vision.ts";
 import type { WebToolDeps } from "./web.ts";
+import { writeFileTool } from "./write.ts";
 
 export interface VoiceToolDeps {
 	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
@@ -73,9 +78,12 @@ export function toolNames(tools: Tools): string[] {
 	return Object.keys(tools);
 }
 
+export const BASH_ONLY_SOURCE = "bash-only-file-tools";
+
 export interface MakeToolsOptions {
 	cwd: string;
 	bashDescriptionCwd?: string;
+	legacyFileTools?: boolean;
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
 	watch?: WatchToolDeps | undefined;
@@ -115,6 +123,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 	const {
 		cwd,
 		bashDescriptionCwd = cwd,
+		legacyFileTools = false,
 		voice,
 		program,
 		watch,
@@ -140,8 +149,25 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		askOperator,
 		ui,
 	} = options;
+	const onWrite = skillWrites === undefined ? undefined : (abs: string, toolCallId: string) => {
+		const skill = skillUnderPath(skillWrites.dirs, abs);
+		if (skill === null) return;
+		try {
+			skillWrites.record(skill);
+		} catch (err) {
+			log.error("skill provenance record failed", err, { toolCallId, skill });
+		}
+	};
 	return {
+		...(legacyFileTools
+			? {
+					read_file: readFileTool(cwd, vision !== undefined, onRead),
+					write_file: writeFileTool(cwd, onWrite),
+					edit_file: editFileTool(cwd, onWrite),
+				}
+			: {}),
 		bash: bashTool(cwd, bashDescriptionCwd, {
+			legacyFileTools,
 			...(onRead !== undefined ? { onRead } : {}),
 			...(skillWrites !== undefined ? { skillWrites } : {}),
 		}),
@@ -149,7 +175,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),
 		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
-		...(vision ? { vision: visionTool(cwd, vision) } : {}),
+		...(vision ? { vision: visionTool(cwd, vision, legacyFileTools) } : {}),
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		...(watch ? { watch: watchTool(watch) } : {}),
@@ -173,7 +199,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 					}),
 				}
 			: {}),
-		...(web ? { fetch: fetchTool(web) } : {}),
+		...(web ? { fetch: fetchTool(web, legacyFileTools) } : {}),
 		...(hostedSearch !== undefined
 			? {
 					web_search: {

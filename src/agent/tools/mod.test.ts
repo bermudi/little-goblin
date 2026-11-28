@@ -217,6 +217,7 @@ describe("toolNames ↔ makeTools", () => {
 		expect(hosted).toContain("web_search");
 		expect(hosted).not.toContain("search");
 		mounted.push("web_search");
+		mounted.push(...Object.keys(makeTools({ cwd: "/tmp", legacyFileTools: true })));
 		for (const name of mounted) {
 			expect(TOOL_NAMES as readonly string[], `${name} needs a TOOL_POLICY row`).toContain(name);
 		}

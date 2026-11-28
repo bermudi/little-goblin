@@ -46,6 +46,9 @@ const BASE: ToolPolicy = {
 const P = (over: Partial<ToolPolicy>): ToolPolicy => ({ ...BASE, ...over });
 
 export const TOOL_NAMES = [
+	"read_file",
+	"write_file",
+	"edit_file",
 	"bash",
 	"speak",
 	"transcribe",
@@ -75,6 +78,9 @@ export const TOOL_NAMES = [
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
+	read_file: P({ replay: "safe", scriptable: true }),
+	write_file: P({ scriptable: true }),
+	edit_file: P({ scriptable: true }),
 	bash: P({ scriptable: true }),
 	speak: P({ guestChannel: false }),
 	transcribe: P({ scriptable: true }),

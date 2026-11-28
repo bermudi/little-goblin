@@ -14,6 +14,9 @@ const OUTPUT_BUDGET = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 
+export const BASH_FILE_WORK_DESCRIPTION =
+	" It is also the file tool: read with cat or sed -n, and write or edit with heredocs, sed or a short script.";
+
 export interface SkillWrites {
 	dirs: string[];
 	conversation: string;
@@ -112,13 +115,14 @@ function skillReadCandidates(command: string, cwd: string): string[] {
 export const bashTool = (
 	cwd: string,
 	descriptionCwd = cwd,
-	hooks: { onRead?: (abs: string) => void; skillWrites?: SkillWrites } = {},
+	hooks: { onRead?: (abs: string) => void; skillWrites?: SkillWrites; legacyFileTools?: boolean } = {},
 ) =>
 	defineTool({
 		description:
-			descriptionCwd === paths.workspace()
-				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts. It is also the file tool: read with cat or sed -n, and write or edit with heredocs, sed or a short script."
-				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts. It is also the file tool: read with cat or sed -n, and write or edit with heredocs, sed or a short script.`,
+			(descriptionCwd === paths.workspace()
+				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts."
+				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts.`) +
+			(hooks.legacyFileTools === true ? "" : BASH_FILE_WORK_DESCRIPTION),
 		input: z.object({
 			command: z.string(),
 			timeout_ms: z.number().int().positive().optional(),

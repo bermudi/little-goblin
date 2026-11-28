@@ -8,6 +8,7 @@
 // resumed attempt would actually get.
 
 import type { TurnToolMaker } from "../turn/tool-authority.ts";
+import { restoreToolSet } from "../turn/ai-sdk-tools.ts";
 
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type Config } from "../config-schema.ts";
@@ -29,11 +30,15 @@ import { targetOf } from "../targets.ts";
 import { synthesizeSpeech } from "./tts.ts";
 import type { HindsightClient } from "../memory/hindsight.ts";
 import {
+	BASH_ONLY_SOURCE,
 	type DelegateToolDeps,
 	makeTools,
 	type TranscribeToolDeps,
 	type VisionToolDeps,
 } from "./tools/mod.ts";
+import { BASH_FILE_WORK_DESCRIPTION } from "./tools/bash.ts";
+import { FETCH_BASH_PAGING } from "./tools/fetch.ts";
+import { VISION_BASH_IMAGES } from "./tools/vision.ts";
 import { withAgent } from "./tools/agent.ts";
 import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
@@ -110,6 +115,30 @@ export function screenshotCapable(conv: Conversation, cfg: Config): boolean {
 	return modalities !== null && modalities.has("image");
 }
 
+function usesLegacyFileTools(
+	store: ConversationStore,
+	id: string,
+	snapshot: ReturnType<ConversationStore["promptSnapshot"]>,
+	kind: string | undefined,
+): boolean {
+	if (
+		snapshot === null ||
+		snapshot.sources.includes(BASH_ONLY_SOURCE) ||
+		kind === undefined || kind === "codex" || kind === "claude-code"
+	) return false;
+	const stored = store.lastTurnTools(id);
+	if (stored === null) return true;
+	const tools = restoreToolSet(stored.tools);
+	return !([
+		["bash", BASH_FILE_WORK_DESCRIPTION],
+		["fetch", FETCH_BASH_PAGING],
+		["vision", VISION_BASH_IMAGES],
+	] as const).some(([name, wording]) => {
+		const description = tools[name]?.description;
+		return typeof description === "string" && description.includes(wording);
+	});
+}
+
 export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 	const {
 		configRef,
@@ -159,6 +188,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				: undefined,
 			cwd: workdir,
 			bashDescriptionCwd,
+			legacyFileTools: usesLegacyFileTools(store, conv.id, snapshot, provider?.kind),
 			...(deps.noteSkillRead !== undefined || deps.noteSkillWrite !== undefined
 				? {
 						onRead: deps.noteSkillRead,

@@ -22,7 +22,7 @@ import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
 import { NOTE_HISTORY_DESCRIPTION, NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
 import { toToolSet } from "../turn/ai-sdk-tools.ts";
-import { toolNames } from "./tools/mod.ts";
+import { BASH_ONLY_SOURCE, toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
 import type { MediaPosition } from "./attachments.ts";
@@ -60,7 +60,7 @@ export function makeStepBuilder(
 	const promptStore = {
 		promptSnapshot: (id: string) => store.promptSnapshot(id),
 		savePromptSnapshot: (id: string, text: string, sources: string[]) =>
-			store.savePromptSnapshot(id, text, [...sources, NOTE_HISTORY_SOURCE]),
+			store.savePromptSnapshot(id, text, [...sources, NOTE_HISTORY_SOURCE, BASH_ONLY_SOURCE]),
 	};
 	// Both a turn and a cache-prefix summary use this one API-lane
 	// construction, so model setup cannot drift between their requests.

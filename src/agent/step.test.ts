@@ -17,6 +17,7 @@ import { openProjects } from "../projects.ts";
 import { openTestStore, useHome } from "../testkit.ts";
 import { _resetCodexModelsForTest, ensureCodexModels } from "./codex/models.ts";
 import { makeStepBuilder } from "./step.ts";
+import { BASH_ONLY_SOURCE } from "./tools/mod.ts";
 
 function writeCodexAuth(dir: string): string {
 	mkdirSync(join(dir, "state"), { recursive: true });
@@ -183,6 +184,7 @@ describe("step builder tool declarations", () => {
 				const step = await r.buildStep(r.conv, {});
 				expect(step.engine).toBe("ai-sdk");
 				expect("toolsInInput" in step && step.toolsInInput).toBe(true);
+				expect(r.store.promptSnapshot(r.conv.id)?.sources).toContain(BASH_ONLY_SOURCE);
 			} finally {
 				r.store.close();
 			}

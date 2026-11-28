@@ -373,10 +373,12 @@ function thinChars(extracted: Extracted | Rejected): number | null {
 
 export { extractors };
 
-export const fetchTool = (deps: WebToolDeps) =>
+export const FETCH_BASH_PAGING = "the saved file to page through with bash";
+
+export const fetchTool = (deps: WebToolDeps, legacyFileTools = false) =>
 	defineTool({
 		description:
-			"Fetch one URL and return readable text (head+tail window of ~15k chars by default; overflow is saved to disk and the footer names the saved file to page through with bash). Handles HTML, text-ish payloads, and PDFs — a PDF is saved and answered with its saved-file path. JavaScript-heavy sites that render nothing should go through the browser skill instead.",
+			`Fetch one URL and return readable text (head+tail window of ~15k chars by default; overflow is saved to disk and the footer names ${legacyFileTools ? "the read_file call to page through" : FETCH_BASH_PAGING}). Handles HTML, text-ish payloads, and PDFs — a PDF is saved and answered with its saved-file path. JavaScript-heavy sites that render nothing should go through the browser skill instead.`,
 		input: z.object({
 			url: z.string().regex(/^https?:\/\//, "url must be http(s)"),
 			maxChars: z.number().int().min(2000).max(50_000).optional(),

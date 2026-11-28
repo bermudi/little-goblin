@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
@@ -8,6 +8,10 @@ import type { Conversation } from "../conversation-read.ts";
 import type { JSONObject, Message } from "../message.ts";
 import { declarationsOf, TOOLS_PART } from "./tool-declarations.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import { readFileTool } from "./tools/read.ts";
+import { writeFileTool } from "./tools/write.ts";
+import { editFileTool } from "./tools/edit.ts";
+import type { VisionToolDeps } from "./tools/vision.ts";
 import { NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
 import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
@@ -27,7 +31,7 @@ import { openWakeStore } from "../wake-store.ts";
 import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { claudeScript } from "../testkit/turn-script-claude.ts";
 import type { ScriptCall } from "../testkit/turn-script.ts";
-import { deferred, HeadlessSink, tmpDir, useHome, waitUntil } from "../testkit.ts";
+import { deferred, HeadlessSink, openTestStore, tmpDir, useHome, waitUntil } from "../testkit.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "../wake-dispatcher.ts";
 import { makeTurnTools, screenshotCapable } from "./turn-tools.ts";
 import type { DelegateToolDeps } from "./tools/delegate.ts";
@@ -38,6 +42,8 @@ import {
 import { policyOf } from "./tool-policy.ts";
 import { storeFence } from "../testkit/store-fence.ts";
 import { paths } from "../home-layout.ts";
+import { systemPromptFor } from "./prompt.ts";
+import { isHosted, type Tools } from "../tool.ts";
 
 setLogFile(null);
 
@@ -93,11 +99,12 @@ describe("hosted web_search mount", () => {
 		conv: Conversation,
 		snapshot: ReturnType<ConversationStore["promptSnapshot"]> = null,
 		noteSkillWrite?: (conversationId: string, skill: string) => void,
+		options?: { store: ConversationStore; vision: VisionToolDeps },
 	) =>
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: { promptSnapshot: () => snapshot } as unknown as ConversationStore,
+			store: options?.store ?? { promptSnapshot: () => snapshot, lastTurnTools: () => null } as ConversationStore,
 			projects: { get: () => ({ dir: tmpDir("goblin-turn-tools-project-") }) } as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -112,7 +119,7 @@ describe("hosted web_search mount", () => {
 			github: {} as unknown as GitHub,
 			mail: ({}) as never,
 			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
-			visionDepsFor: () => undefined,
+			visionDepsFor: () => options?.vision,
 			sandboxes: {} as unknown as Sandboxes,
 			desktops: null,
 			agents: null,
@@ -122,6 +129,90 @@ describe("hosted web_search mount", () => {
 
 	const conv = (model: string) =>
 		({ id: "dm:1", model, projectId: null, persona: "operator", agentType: null }) as unknown as Conversation;
+
+	test("bash-only rollout keeps the full-tool request bytes until a prompt reset", async () => {
+		useHome("goblin-frozen-file-tools-");
+		const workspace = paths.workspace();
+		mkdirSync(workspace, { recursive: true });
+		const { store } = openTestStore("goblin-frozen-file-tools-");
+		const conversation = store.resolve({ kind: "dm", chatId: 1 }, workspace);
+		const model = "zai/glm-5.3";
+		const target = { ...conversation, model };
+		const config = { ...cfgFor("off"), scripting: { maxCalls: 50 } };
+		const mount = rigTools(config, target, null, undefined, {
+			store,
+			vision: { configRef: { current: config }, auth: {} as AuthStore, conversation: target.id },
+		});
+		const descriptions = {
+			bash: "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts.",
+			fetch: "Fetch one URL and return readable text (head+tail window of ~15k chars by default; overflow is saved to disk and the footer names the read_file call to page through). Handles HTML, text-ish payloads, and PDFs — a PDF is saved and answered with its saved-file path. JavaScript-heavy sites that render nothing should go through the browser skill instead.",
+			vision: "Ask a vision model a specific question about an image file and get a text answer. This is the only way to see an image's content — read_file cannot show images. Ask targeted questions ('what error does the dialog show?', 'which element is highlighted?'), and pass followUp=true to continue the previous thread about the same image.",
+		};
+		const old: Tools = {
+			read_file: readFileTool(workspace, true),
+			write_file: writeFileTool(workspace),
+			edit_file: editFileTool(workspace),
+			...mount(target),
+		};
+		for (const [name, description] of Object.entries(descriptions)) {
+			const tool = old[name];
+			if (tool === undefined || isHosted(tool)) throw new Error(`missing ${name}`);
+			old[name] = { ...tool, description };
+		}
+		const scriptTool = old.script;
+		if (scriptTool === undefined || isHosted(scriptTool)) throw new Error("missing script");
+		scriptTool.description = scriptTool.description.replace(
+			"- Callable: tools.bash",
+			"- Callable: tools.read_file, tools.write_file, tools.edit_file, tools.bash",
+		);
+		const script = sdkScript({ label: model });
+		const runtime = new Runtime({
+			store,
+			engines: script.engines,
+			buildStep: (c, tools) => ({ ...script.step(), system: systemPromptFor(store, c, Object.keys(tools)).text }),
+		});
+		let beforeRollout = true;
+		runtime.mount({ makeTools: (c, ...args) => beforeRollout ? old : mount(c, ...args) });
+		const send = async (text: string) => {
+			const sink = new HeadlessSink();
+			runtime.submit(target, userMessage([{ type: "text", text }]), sink);
+			await waitUntil(() => !runtime.busy(target.id), `${text} drains`);
+		};
+		const request = (index: number) =>
+			JSON.parse(script.callOptions()[index]!) as { prompt: unknown[]; tools: { name: string }[] };
+		try {
+			const path = "frozen.txt";
+			script.script(
+				reply("before"),
+				toolReply(toolCall("write", "write_file", { path, content: "before\n" })),
+				toolReply(toolCall("edit", "edit_file", { path, old_string: "before", new_string: "after" })),
+				toolReply(toolCall("read", "read_file", { path })),
+				reply("continued"),
+				reply("reset"),
+			);
+			await send("first turn");
+			expect(request(0).tools.slice(0, 4).map((tool) => tool.name)).toEqual([
+				"read_file", "write_file", "edit_file", "bash",
+			]);
+			beforeRollout = false;
+			await send("ordinary continuation");
+			expect(JSON.stringify(request(1).tools)).toBe(JSON.stringify(request(0).tools));
+			expect(request(1).prompt.slice(0, request(0).prompt.length)).toEqual(request(0).prompt);
+			expect(readFileSync(join(workspace, path), "utf8")).toBe("after\n");
+			expect(JSON.stringify(request(4).prompt)).toContain("1\\tafter\\n");
+
+			store.clearPromptSnapshot(target.id);
+			await send("after prompt reset");
+			expect(JSON.stringify(request(5).tools)).toBe(JSON.stringify(request(5).tools.filter(
+				(tool) => !["read_file", "write_file", "edit_file"].includes(tool.name),
+			)));
+			expect(request(5).tools[0]?.name).toBe("bash");
+			expect(JSON.stringify(request(5).tools)).toContain("It is also the file tool");
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
 
 	test("note edit history keeps the legacy declaration on frozen full-tool requests", () => {
 		const existing = { text: "frozen", sources: ["SOUL.md"] };

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import {
+	getBotConfig,
 	getConfig,
 	getConversationConfig,
 	getConversationMemory,
@@ -64,6 +65,7 @@ export function Composer({
 	draftRestore,
 	onDraftRestored,
 	placeholder,
+	newBotId,
 }: {
 	token: string | null;
 	conversationId?: string;
@@ -71,6 +73,7 @@ export function Composer({
 	// the project id, "new" for the empty start state.
 	draftScope: string;
 	placeholder?: string;
+	newBotId?: string | undefined;
 	busy: boolean;
 	// The in-flight turn's window occupancy, streamed over the chat
 	// wire — the gauge's numbers while a turn runs.
@@ -186,7 +189,7 @@ export function Composer({
 		setModelSheetOpen(false);
 		const load =
 			conversationId === undefined
-				? getConfig(token)
+				? (newBotId === undefined ? getConfig(token) : getBotConfig(token, newBotId))
 				: getConversationConfig(token, conversationId);
 		load.then(
 			(c) => live && setCfg(c),
@@ -196,7 +199,7 @@ export function Composer({
 			live = false;
 			save.seq++;
 		};
-	}, [token, conversationId, draftScope]);
+	}, [token, conversationId, draftScope, newBotId]);
 	const setKnob = (patch: { model?: string; thinking?: string }) => {
 		if (cfg === null) return;
 		const scope = configSave.current;

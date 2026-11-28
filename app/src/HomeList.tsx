@@ -1,4 +1,4 @@
-import { useState, type ReactNode, type Ref } from "react";
+import { useId, useRef, useState, type ReactNode, type Ref } from "react";
 import type { AppAttentionTarget, AppConversationList } from "../../src/http/app-wire.ts";
 import { ChatMark } from "./ChatMark.tsx";
 import { BotAvatar } from "./BotAvatar.tsx";
@@ -36,10 +36,17 @@ interface SideChatPage {
 	showMore: () => void;
 }
 
+interface BotRequest {
+	draft: string;
+	setDraft(text: string): void;
+	submit(text: string): Promise<boolean>;
+}
+
 export interface Home {
 	list: HomeListModel;
 	orderSignature: string;
 	sidePage: SideChatPage;
+	botPages: ReadonlyMap<string, SideChatPage>;
 }
 
 interface ProjectLink {
@@ -55,21 +62,27 @@ export function useHomeList(
 ): Home {
 	const [hold, setHold] = useState<Hold | null>(null);
 	const [revealedHiddenRows, setRevealedHiddenRows] = useState(0);
+	const [revealedByBot, setRevealedByBot] = useState<Record<string, number>>({});
 	const built = buildHome(input, hold);
 	if (built.hold !== hold) setHold(built.hold);
 
 	const { active, side, bots } = built.list;
 	const pagedSide = pageSideChats(side, revealedHiddenRows, built.list.openRow);
+	const botPages = new Map(bots.map(({ bot, side }) => [bot.id, {
+		...pageSideChats(side, revealedByBot[bot.id] ?? 0, built.list.openRow),
+		showMore: () => setRevealedByBot((prev) => ({ ...prev, [bot.id]: (prev[bot.id] ?? 0) + SIDE_CHAT_PAGE_ROWS })),
+	}]));
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
 		projectsOpen ? projects.map((project) => project.id) : [],
 		input.sideChatsOpen ? pagedSide.rows.map((row) => row.id) : [],
-		bots.map(({ bot, side }) => [bot.id, ...(bot.id === expandedBotId ? side.map((row) => row.id) : [])]),
+		bots.map(({ bot }) => [bot.id, ...(bot.id === expandedBotId ? botPages.get(bot.id)!.rows.map((row) => row.id) : [])]),
 	]);
 
 	return {
 		list: built.list,
 		orderSignature,
+		botPages,
 		sidePage: {
 			...pagedSide,
 			showMore: () => setRevealedHiddenRows((count) => count + SIDE_CHAT_PAGE_ROWS),
@@ -106,7 +119,7 @@ export function HomeList({
 	onToggleProjects,
 	onToggleSideChats,
 	onNewSideChat,
-	onAskBot,
+	botRequest,
 	onNewProject,
 	onOpenProject,
 	onOpenTarget,
@@ -127,7 +140,7 @@ export function HomeList({
 	onToggleProjects: () => void;
 	onToggleSideChats: () => void;
 	onNewSideChat: (botId?: string) => void;
-	onAskBot?: (text: string) => Promise<boolean>;
+	botRequest?: BotRequest;
 	onNewProject: () => void;
 	onOpenProject: (id: string) => void;
 	onOpenTarget: (target: AppAttentionTarget) => void;
@@ -155,16 +168,7 @@ export function HomeList({
 					{renderRow(row.conv, { mark: row.mark, line: row.line })}
 				</li>
 			))}
-			{sideChatsOpen && sidePage.hidden > 0 && (
-				<li className="side-chat side-chat-more">
-					<button type="button" onClick={(event) => {
-						sidePage.showMore();
-						if (sidePage.hidden <= SIDE_CHAT_PAGE_ROWS) {
-							event.currentTarget.closest("ul")?.querySelector<HTMLButtonElement>(".new-side-chat button")?.focus();
-						}
-					}}>Show more ({sidePage.hidden} left)</button>
-				</li>
-			)}
+			{sideChatsOpen && <MoreSideChats page={sidePage} />}
 			<li className="side-chat new-side-chat">
 				<button type="button" aria-label="New side chat" onClick={() => onNewSideChat()}>New side chat</button>
 			</li>
@@ -184,7 +188,7 @@ export function HomeList({
 						mark={display.mark}
 						line={display.line}
 						current={current}
-						side={side}
+						sidePage={home.botPages.get(bot.id)!}
 						expanded={open}
 						onToggleSideChats={() => onToggleBotSideChats(bot.id)}
 						onOpen={() => onOpenConversation(main.id)}
@@ -193,7 +197,7 @@ export function HomeList({
 					/>
 				);
 			})}
-			<li className="bot-ask-row"><AskBotBox onSubmit={onAskBot ?? (async () => false)} /></li>
+			{botRequest !== undefined && <li className="bot-ask-row"><AskBotBox {...botRequest} /></li>}
 			{active.length > 0 && <li className="rail-chats-label">Active</li>}
 			{active.map((row) => row.kind === "chat"
 				? <ChatListItem key={row.id} row={row} renderRow={renderRow} />
@@ -251,29 +255,53 @@ export function HomeList({
 	);
 }
 
-function AskBotBox({ onSubmit }: { onSubmit(text: string): Promise<boolean> }) {
-	const [text, setText] = useState("");
-	const [error, setError] = useState(false);
+function AskBotBox({ draft, setDraft, submit: send }: BotRequest) {
+	const input = useId();
+	const [error, setError] = useState<string | null>(null);
+	const submitting = useRef(false);
+	const [pending, setPending] = useState(false);
 	const submit = async () => {
-		const value = text.trim();
-		if (value === "") return;
-		setError(false);
-		if (await onSubmit(value)) setText("");
-		else setError(true);
+		const value = draft.trim();
+		if (value === "" || submitting.current) return;
+		submitting.current = true;
+		setPending(true);
+		setError(null);
+		try {
+			await send(value);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "Couldn't send. Try again.");
+		} finally {
+			submitting.current = false;
+			setPending(false);
+		}
 	};
 	return <form className="bot-ask-box" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-		<input aria-label="Ask Little Goblin for a new bot" placeholder="Ask Little Goblin for a new bot" value={text} onChange={(event) => setText(event.target.value)} />
-		{error && <span className="error" role="alert">Couldn't send. Try again.</span>}
+		<label htmlFor={input}>Ask Little Goblin for a new bot</label>
+		<input id={input} placeholder="Describe its job" value={draft} onInput={(event) => setDraft(event.currentTarget.value)} />
+		{draft.trim() !== "" && <button type="submit" disabled={pending}>{pending ? "Sending…" : "Send request"}</button>}
+		{error !== null && <span className="error" role="alert">{error}</span>}
 	</form>;
 }
 
-function BotListRows({ name, main, mark, line, current, side, expanded, onToggleSideChats, onOpen, onNewSideChat, renderRow }: {
+function MoreSideChats({ page }: { page: SideChatPage }) {
+	if (page.hidden === 0) return null;
+	return <li className="side-chat side-chat-more">
+		<button type="button" onClick={(event) => {
+			page.showMore();
+			if (page.hidden <= SIDE_CHAT_PAGE_ROWS) {
+				event.currentTarget.closest("li")?.nextElementSibling?.querySelector<HTMLButtonElement>("button")?.focus();
+			}
+		}}>Show more ({page.hidden} left)</button>
+	</li>;
+}
+
+function BotListRows({ name, main, mark, line, current, sidePage, expanded, onToggleSideChats, onOpen, onNewSideChat, renderRow }: {
 	name: string;
 	main: ChatRow;
 	mark: Mark | null;
 	line: string;
 	current: boolean;
-	side: ChatRow[];
+	sidePage: SideChatPage;
 	expanded: boolean;
 	onToggleSideChats: () => void;
 	onOpen: () => void;
@@ -306,8 +334,7 @@ function BotListRows({ name, main, mark, line, current, side, expanded, onToggle
 							{line !== "" && <span className="conv-preview">{flatLine(line)}</span>}
 						</span>
 					</ConversationNavLink>
-					{side.length > 0 && (
-						<button
+					<button
 							type="button"
 							className={`rolling-disclosure${expanded ? " open" : ""}`}
 							aria-expanded={expanded}
@@ -315,16 +342,16 @@ function BotListRows({ name, main, mark, line, current, side, expanded, onToggle
 							onClick={onToggleSideChats}
 						>
 							<ChevronGlyph />
-						</button>
-					)}
+					</button>
 				</div>
 			</li>
-			{expanded && side.map((row) => (
+			{expanded && sidePage.rows.map((row) => (
 				<li key={row.id} data-flip={row.id} className="side-chat">
 					{renderRow(row.conv, { mark: row.mark, line: row.line })}
 				</li>
 			))}
-			{expanded && <li className="side-chat new-side-chat"><button type="button" onClick={() => onNewSideChat()}>New side chat</button></li>}
+			{expanded && <MoreSideChats page={sidePage} />}
+			{expanded && <li className="side-chat new-side-chat"><button type="button" aria-label={`New side chat for ${name}`} onClick={onNewSideChat}>New side chat</button></li>}
 		</>
 	);
 }

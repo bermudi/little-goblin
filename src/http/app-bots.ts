@@ -1,9 +1,11 @@
 import { z } from "zod";
-import { isAbsolute, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
+import { botMemoryPath } from "../bot-memory.ts";
 import { log } from "../log.ts";
 import { thinkingLevels } from "../config-schema.ts";
-import { resolveModelSettings } from "./app-shared.ts";
+import { configView, resolveModelSettings } from "./app-shared.ts";
 import { type AppChannelDeps, conversationFromSegment, NO_STORE, parsedJson } from "./app-shared.ts";
 import type { AppBot, AppBotMemory, AppBotMoveBack, AppBotName } from "./app-wire.ts";
 
@@ -36,17 +38,44 @@ export async function handleBotsRoute(
 ): Promise<Response | null> {
 	const settings = url.pathname.match(/^\/api\/app\/bots\/([^/]+)(\/move-back)?$/);
 	if (settings !== null) return handleBotSettings(req, settings[1]!, settings[2] !== undefined, deps);
+	const config = url.pathname.match(/^\/api\/app\/bots\/([^/]+)\/config$/);
+	if (config !== null) {
+		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const bot = deps.store.bots.get(config[1]!);
+		if (bot === null) return Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
+		const cfg = deps.configRef.current;
+		return Response.json(configView(cfg, { model: bot.model ?? cfg.model, thinking: bot.thinking ?? cfg.thinking }), {
+			headers: NO_STORE,
+		});
+	}
 	const memory = url.pathname.match(/^\/api\/app\/bots\/([^/]+)\/memory$/);
 	if (memory !== null) {
 		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		const bot = deps.store.bots.get(memory[1]!);
 		if (bot === null) return Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
-		const path = bot.folder === null ? null : join(bot.folder, "MEMORY.md");
+		const path = botMemoryPath(bot.folder);
 		let text: string | null = null;
+		let truncated = false;
 		if (path !== null) {
 			try {
-				const contents = readFileSync(path);
-				text = contents.length > 64 * 1024 ? contents.subarray(0, 64 * 1024).toString("utf8") : contents.toString("utf8");
+				const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+				try {
+					const file = fstatSync(fd);
+					if (!file.isFile()) throw new Error("not a regular file");
+					const contents = Buffer.alloc(Math.min(file.size, 64 * 1024));
+					let n = 0;
+					while (n < contents.length) {
+						const read = readSync(fd, contents, n, contents.length - n, n);
+						if (read === 0) break;
+						n += read;
+					}
+					const decoder = new StringDecoder("utf8");
+					text = decoder.write(contents.subarray(0, n));
+					if (n === file.size) text += decoder.end();
+					truncated = file.size > contents.length;
+				} finally {
+					closeSync(fd);
+				}
 			} catch (error) {
 				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
 					log.error("app bot memory read failed", error, { bot: bot.id, path });
@@ -54,7 +83,7 @@ export async function handleBotsRoute(
 				}
 			}
 		}
-		return Response.json({ path, text } satisfies AppBotMemory, { headers: NO_STORE });
+		return Response.json({ path, text, ...(truncated ? { truncated: true } : {}) } satisfies AppBotMemory, { headers: NO_STORE });
 	}
 
 	const match = url.pathname.match(/^\/api\/app\/conversations\/([^/]+)\/convert-to-bot$/);
@@ -100,14 +129,16 @@ async function handleBotSettings(
 	if (!moveBack) {
 		const body = await parsedJson(req, settingsBody);
 		if (body instanceof Response) return body;
-		if (body.model !== undefined && body.model !== null) {
+		let model = body.model;
+		if (model !== undefined && model !== null) {
 			const resolved = resolveModelSettings(configRef.current, {
-				model: body.model,
+				model,
 				thinking: configRef.current.thinking,
 			});
 			if (resolved instanceof Response) return resolved;
+			model = resolved.settings.model;
 		}
-		const bot = store.bots.patch(id, body);
+		const bot = store.bots.patch(id, { ...body, model });
 		if (bot === null) return missing();
 		log.info("app bot settings changed", { bot: bot.id, fields: Object.keys(body) });
 		return Response.json(bot satisfies AppBot, { headers: NO_STORE });

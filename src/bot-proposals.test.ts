@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
 import { appAddress } from "./conversation-address.ts";
 import { makeBotProposals } from "./bot-proposals.ts";
+import { tmpDir } from "./testkit.ts";
 
-function fixture(workspace = mkdtempSync(join(tmpdir(), "goblin-bot-proposals-"))) {
+function fixture(workspace = tmpDir("goblin-bot-proposals-")) {
 	const store = openStore(join(workspace, "goblin.sqlite"));
 	const source = store.resolve(appAddress("proposal-source"), workspace);
 	const proposals = makeBotProposals(
@@ -21,7 +21,6 @@ function fixture(workspace = mkdtempSync(join(tmpdir(), "goblin-bot-proposals-")
 
 function cleanup(f: ReturnType<typeof fixture>): void {
 	f.store.close();
-	rmSync(f.workspace, { recursive: true, force: true });
 }
 
 test("approval creates the bot, an empty main chat, and its folder; repeated approval settles", () => {
@@ -34,6 +33,7 @@ test("approval creates the bot, an empty main chat, and its folder; repeated app
 			model: null,
 			thinking: null,
 		});
+		if (proposal === null) throw new Error("expected a proposal");
 		const approved = f.proposals.approve(proposal.id, 1_800_000_000_000);
 		expect(approved.kind).toBe("approved");
 		if (approved.kind !== "approved") return;
@@ -42,8 +42,10 @@ test("approval creates the bot, an empty main chat, and its folder; repeated app
 			instructions: "Track stock.",
 			model: null,
 			thinking: null,
-			folder: join(f.workspace, "bots", approved.bot.id),
+			folder: join(f.workspace, "bots", String(proposal.id)),
+			canMoveBack: false,
 		});
+		expect(f.store.bots.get(approved.bot.id)?.canMoveBack).toBe(false);
 		expect(existsSync(approved.bot.folder!)).toBe(true);
 		expect(typeof approved.bot.mainConversationId).toBe("string");
 		expect(approved.bot.mainConversationId.startsWith("app/")).toBe(true);
@@ -75,6 +77,7 @@ test("decline settles a proposal without creating a bot", () => {
 			model: null,
 			thinking: null,
 		});
+		if (proposal === null) throw new Error("expected a proposal");
 		expect(f.proposals.decline(proposal.id, 1_800_000_000_000).kind).toBe("declined");
 		expect(f.proposals.get(proposal.id)?.state).toBe("declined");
 		expect(f.store.bots.list()).toEqual([]);
@@ -93,6 +96,7 @@ test("a folder creation failure leaves proposal and bot state untouched", () => 
 			model: null,
 			thinking: null,
 		});
+		if (proposal === null) throw new Error("expected a proposal");
 		const blockedPath = join(f.workspace, "not-a-directory");
 		writeFileSync(blockedPath, "file");
 		const blocked = makeBotProposals(

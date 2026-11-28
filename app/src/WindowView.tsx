@@ -23,6 +23,7 @@ const SEGMENTS: { key: keyof Segments; label: string }[] = [
 	{ key: "environment", label: "environment" },
 	{ key: "project", label: "project" },
 	{ key: "agentsMd", label: "AGENTS.md" },
+	{ key: "botMemory", label: "Bot memory" },
 	{ key: "userMd", label: "USER.md" },
 	{ key: "skills", label: "skills" },
 	{ key: "toolDefs", label: "tool schemas" },
@@ -242,7 +243,7 @@ function Breakdown({
 	segments: Segments;
 	tokens: Map<string, number> | null;
 }) {
-	const rows = SEGMENTS.map(({ key, label }) => ({ key, label, n: segments[key] }))
+	const rows = SEGMENTS.map(({ key, label }) => ({ key, label, n: segments[key] ?? 0 }))
 		.filter((r) => r.n > 0)
 		.sort((a, b) => b.n - a.n);
 	const total = rows.reduce((sum, r) => sum + r.n, 0);
@@ -352,7 +353,7 @@ function WindowSummary({
 function WindowBreakdown({ view, ctx }: { view: AppWindowView; ctx: AppContextView | null }) {
 	const segments = view.segments;
 	if (segments === null) return null;
-	const totalChars = SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
+	const totalChars = SEGMENTS.reduce((sum, { key }) => sum + (segments[key] ?? 0), 0);
 	if (totalChars === 0) return null;
 	const tokens =
 		ctx?.segments != null && ctx.segments.length > 0

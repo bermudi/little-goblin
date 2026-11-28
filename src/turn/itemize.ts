@@ -7,6 +7,7 @@ export interface PromptSegments {
 	identity: number;
 	environment: number;
 	project: number;
+	botMemory?: number;
 	agentsMd: number;
 	userMd: number;
 	skills: number;
@@ -18,6 +19,7 @@ export interface PromptSegments {
 const SYSTEM_ORDER = [
 	{ segment: "environment", heading: "environment" },
 	{ segment: "project", heading: "project" },
+	{ segment: "botMemory", heading: "botMemory" },
 	{ segment: "agentsMd", heading: "agents" },
 	{ segment: "userMd", heading: "user" },
 	{ segment: "skills", heading: "skills" },
@@ -28,8 +30,10 @@ const SYSTEM_ORDER = [
 
 export function splitSystemPrompt(
 	text: string,
-): Pick<PromptSegments, "identity" | "environment" | "project" | "agentsMd" | "userMd" | "skills"> {
-	const segments = { identity: 0, environment: 0, project: 0, agentsMd: 0, userMd: 0, skills: 0 };
+): Pick<PromptSegments, "identity" | "environment" | "project" | "botMemory" | "agentsMd" | "userMd" | "skills"> {
+	const segments: Pick<PromptSegments, "identity" | "environment" | "project" | "botMemory" | "agentsMd" | "userMd" | "skills"> = {
+		identity: 0, environment: 0, project: 0, agentsMd: 0, userMd: 0, skills: 0,
+	};
 	const markers = SYSTEM_ORDER.map(({ segment, heading }) => ({
 		key: segment,
 		needle: `\n${PROMPT_SECTIONS[heading]}`,

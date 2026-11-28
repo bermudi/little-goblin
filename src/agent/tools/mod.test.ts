@@ -199,7 +199,6 @@ describe("toolNames ↔ makeTools", () => {
 			ask: { asks: {} as never, conversationId: "c" },
 			bot: {
 				proposals: {} as never,
-				store: {} as never,
 				conversationId: "c",
 				configRef: {} as never,
 			},

@@ -450,6 +450,14 @@ const server = Bun.serve({
 			return longReply();
 		}
 		if (!toolAfterLastUser) {
+			const botMatch = /\[bot ([^\]|]+)\|([^\]]+)\]/.exec(lastUserText);
+			if (botMatch !== null) {
+				return toolCallResponse(
+					"bot",
+					{ action: "propose", name: botMatch[1]!.trim(), instructions: botMatch[2]!.trim() },
+					parsed.data.stream === true,
+				);
+			}
 			if (askMarker !== null) {
 				const [question, ...options] = askMarker[1]!.split("|");
 				return toolCallResponse(

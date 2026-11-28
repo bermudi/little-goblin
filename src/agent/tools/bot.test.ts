@@ -22,7 +22,6 @@ test("bot propose stores and presents a proposal; invalid models create nothing"
 		);
 		const tool = botTool({
 			proposals,
-			store: h.store,
 			conversationId: conversation.id,
 			configRef: h.configRef,
 		});
@@ -43,6 +42,12 @@ test("bot propose stores and presents a proposal; invalid models create nothing"
 			model: "ghost/nope",
 		}, { toolCallId: "invalid" });
 		expect(invalid).toHaveProperty("error");
+		expect(h.store.bots.convertSideChat(conversation.id, "Converted", Date.now(), () => false).kind).toBe("converted");
+		expect(tool.execute({
+			action: "propose",
+			name: "Not allowed",
+			instructions: "Stay in this bot.",
+		}, { toolCallId: "held-tool" })).toMatchObject({ error: expect.stringContaining("Only Little Goblin") });
 		expect(proposals.pending()).toHaveLength(1);
 	} finally {
 		h.http.stop();

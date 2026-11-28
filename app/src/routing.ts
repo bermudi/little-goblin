@@ -10,6 +10,7 @@ export type Route =
 			// On phones, "+" stages the empty-state composer from the chats
 			// list. Desktop /app is always the composer and ignores this flag.
 			composing: boolean;
+			botId?: string;
 		}
 	| { kind: "conversation"; id: string }
 	| { kind: "window"; id: string }
@@ -25,6 +26,8 @@ export function routeFromPath(pathname: string): Route {
 		case "conversation":
 		case "window":
 			return { kind: parsed.kind, id: `app/${parsed.id}` };
+		case "bot-compose":
+			return { kind: "home", composing: true, botId: parsed.id };
 		case "project":
 		case "bot":
 		case "note":
@@ -37,7 +40,7 @@ export function routeFromPath(pathname: string): Route {
 export function openingRoute(pathname: string, historyState: unknown): Route {
 	const route = routeFromPath(pathname);
 	if (route.kind === "conversation") return { kind: "home", composing: false };
-	if (route.kind === "home" && historyPosition(historyState) === null)
+	if (route.kind === "home" && !route.composing && historyPosition(historyState) === null)
 		return { kind: "page", page: "rolling" };
 	return route;
 }
@@ -45,7 +48,7 @@ export function openingRoute(pathname: string, historyState: unknown): Route {
 export function pathOfRoute(route: Route): string {
 	switch (route.kind) {
 		case "home":
-			return "/app/";
+			return route.botId === undefined ? "/app/" : `/app/b/${route.botId}/new`;
 		case "conversation":
 			return `/app/c/${route.id.slice("app/".length)}`;
 		case "window":
@@ -65,7 +68,7 @@ export function sameRoute(a: Route, b: Route): boolean {
 	if (a.kind !== b.kind) return false;
 	switch (a.kind) {
 		case "home":
-			return b.kind === "home" && a.composing === b.composing;
+			return b.kind === "home" && a.composing === b.composing && a.botId === b.botId;
 		case "page":
 			return b.kind === "page" && a.page === b.page;
 		case "conversation":

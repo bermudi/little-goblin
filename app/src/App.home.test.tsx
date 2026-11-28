@@ -50,6 +50,7 @@ describe("home screen", () => {
 	let tokenDead: boolean;
 	let messageGets: string[];
 	let posts: string[];
+	let botRequests: unknown[];
 	let reads: { id: string; body: unknown; settle: (ok: boolean) => Promise<void> }[];
 	const realFetch = globalThis.fetch;
 
@@ -85,6 +86,10 @@ describe("home screen", () => {
 			});
 		}
 		if (path === "/api/app/activity") return Response.json({ busy: [], otherBusy, posts: [] });
+		if (path === "/api/app/chat" && method === "POST") {
+			botRequests.push(JSON.parse(String(init?.body)) as unknown);
+			return Response.json({ error: "In Little Goblin’s main chat, choose New conversation, then send this request again." }, { status: 409 });
+		}
 		if (path === "/api/app/attention")
 			return Response.json({ items: attention, unavailable: [] });
 		const feed = goblinFeedResponse(path);
@@ -173,6 +178,7 @@ describe("home screen", () => {
 		tokenDead = false;
 		messageGets = [];
 		posts = [];
+		botRequests = [];
 		reads = [];
 		goblinLive.feed = null;
 		for (const [name, value] of [
@@ -364,6 +370,28 @@ describe("home screen", () => {
 		expect(container.querySelector('.rail-body [href="/app/c/branch"]')).toBeNull();
 		expect(markOf("main")).toBe("new");
 		expect(container.querySelector(".bot-row .conv-preview")?.textContent).toBe(conversations[1]?.preview);
+	});
+
+	test("the bot request box shows the fresh-main-chat refusal and keeps the draft", async () => {
+		await open("/app/rolling");
+		const box = container.querySelector(".rail-body .bot-ask-box");
+		const input = box?.querySelector("input");
+		if (input === undefined || input === null) throw new Error("the bot request box is missing");
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(input, "  Keep stock  ");
+			input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {
+			box?.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		expect(botRequests).toEqual([{
+			rolling: true,
+			requireBotTool: true,
+			message: { id: expect.any(String), role: "user", parts: [{ type: "text", text: "New bot: Keep stock" }] },
+		}]);
+		expect(box?.querySelector("[role=alert]")?.textContent).toContain("choose New conversation");
+		expect(input.value).toBe("  Keep stock  ");
+		expect(win.location.pathname).toBe("/app/rolling");
 	});
 
 	test("the phone list is empty only before its first bot appears", async () => {

@@ -64,11 +64,12 @@ export function goblinStatusText(working: number): string {
 	return `Working · ${working} ${working === 1 ? "job" : "jobs"}`;
 }
 
-export function GoblinProfileHeader({ page, working, onPage, onSettings }: {
+export function GoblinProfileHeader({ page, working, onPage, onSettings, onMain }: {
 	page: "settings" | "status" | "memory" | "skills" | "log";
 	working: number;
 	onPage(page: AppPageKey): void;
-	onSettings?: () => void;
+	onSettings: () => void;
+	onMain: () => void;
 }) {
 	const pages = ["status", "memory", "skills", "log"] as const;
 	return (
@@ -76,10 +77,14 @@ export function GoblinProfileHeader({ page, working, onPage, onSettings }: {
 			<GoblinAvatar size="md" working={working > 0} />
 			<strong>Little Goblin</strong>
 			<span>{goblinStatusText(working)}</span>
-			<a href="/app/rolling">Open main chat</a>
+			<a href="/app/rolling" onClick={(event) => {
+				if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+				event.preventDefault();
+				onMain();
+			}}>Open main chat</a>
 			<nav aria-label="Little Goblin's profile">
 				<a href="/app/b/little-goblin" aria-current={page === "settings" ? "page" : undefined} onClick={(event) => {
-					if (onSettings === undefined || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+					if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
 					event.preventDefault(); onSettings();
 				}}>Settings</a>
 				{pages.map((key) => (
@@ -457,10 +462,12 @@ export function GoblinPanel(props: GoblinPanelProps) {
 	const [hindsight, setHindsight] = useState<{ id: string; text: string }[] | null>(null);
 	useEffect(() => {
 		if (tab !== "memory") return;
+		let active = true;
 		setBotMemoryError(false);
+		const failed = () => { if (active) setBotMemoryError(true); };
 		if (props.botId !== undefined) {
 			setBotMemory(null);
-			void getBotMemory(props.token ?? null, props.botId).then(setBotMemory, () => setBotMemoryError(true));
+			void getBotMemory(props.token ?? null, props.botId).then((value) => { if (active) setBotMemory(value); }, failed);
 		} else {
 			setHindsight(null);
 			void listMemoryDocuments(props.token ?? null, { limit: 5 }).then(async (result) => {
@@ -468,9 +475,10 @@ export function GoblinPanel(props: GoblinPanelProps) {
 					const detail = await getMemoryDocument(props.token ?? null, item.id);
 					return { id: item.id, text: detail.originalText ?? detail.facts.map((fact) => fact.text).join("\n") };
 				}));
-				setHindsight(documents);
-			}, () => setBotMemoryError(true));
+				if (active) setHindsight(documents);
+			}).catch(failed);
 		}
+		return () => { active = false; };
 	}, [props.botId, props.token, tab]);
 	const selectTab = (value: string | null) => {
 		if (value !== "activity" && value !== "scheduled" && value !== "memory" && value !== "library") return;

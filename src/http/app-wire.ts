@@ -32,6 +32,7 @@ export type AppBotPatch = {
 export interface AppBotMemory {
 	path: string | null;
 	text: string | null;
+	truncated?: true;
 }
 
 export interface AppBotProposal {
@@ -516,6 +517,7 @@ export interface AppWindowView {
 		identity: number;
 		environment: number;
 		project: number;
+		botMemory?: number;
 		agentsMd: number;
 		userMd: number;
 		skills: number;

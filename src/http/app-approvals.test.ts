@@ -97,6 +97,7 @@ describe("app approval routes", () => {
 				model: null,
 				thinking: null,
 			});
+			if (proposal === null) throw new Error("expected a proposal");
 			const body = await (await h.call("/api/app/approvals")).json() as AppApprovalsResponse;
 			expect(body.bots.map(({ id }) => id)).toContain(proposal.id);
 			const post = (id: number, action: "approve" | "decline") => h.call(`/api/app/approvals/bot/${id}`, {
@@ -113,6 +114,7 @@ describe("app approval routes", () => {
 				model: null,
 				thinking: null,
 			});
+			if (declined === null) throw new Error("expected a proposal");
 			expect(await (await post(declined.id, "decline")).json()).toMatchObject({ status: "rejected" });
 			expect(await (await post(999999, "approve")).json()).toMatchObject({ status: "gone" });
 		} finally {

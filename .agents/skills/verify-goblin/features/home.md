@@ -60,7 +60,11 @@ Side chats: every chat outside a project shows under the Little Goblin row as a 
 
 Convert a side chat: open it, open the menu in its title, choose **Convert to bot…**, enter a name, and confirm. Its row moves to **Bots**. Click the row to open the same conversation and see the bot in the right panel. The chat header and panel both have **Bot page**. Open `/app/b/<bot-id>` for Settings or `/app/b/<bot-id>/memory` for Memory. Settings saves the bot name, default model, thinking level and instructions; changes apply to fresh conversations. **Move back to Little Goblin** returns the chat to Little Goblin’s side chats with the same URL and transcript. Branching from the bot chat adds a bot side chat and hides **Move back to Little Goblin**. Expand a bot row and choose **New side chat** to stage a bot chat; its first send creates the chat under that bot.
 
-The **Bots** section always appears, even before the first bot. At its end, **Ask Little Goblin for a new bot** sends `New bot: <text>` to the Rolling chat and opens it. The bot proposal appears in the chat as **New bot · waiting for you** and as a Needs you item. Approve or decline it in the proposal card. Little Goblin's bot page is `/app/b/little-goblin`; its Settings, Status, Memory, Skills and Log tabs link to the app defaults, operator files and existing profile pages.
+The **Bots** section always appears, even before the first bot. In **Ask Little Goblin for a new bot**, enter `[bot Inventory|Track the stockroom.]` and send. The fake model calls the real `bot` tool. The proposal appears in the chat as **New bot · waiting for you** and in Needs you. Approve it and check that Inventory's main chat is empty and has a folder on its **Bot page**. Submit another proposal and decline it; its bot must not appear.
+
+For an upgrade case, first send a normal message and wait for the reply. On this throwaway instance only, remove the `bot-tool` entry from its saved prompt sources to stand in for an older release. The box asks you to choose **New conversation** and keeps the request. Check that no message or chat was created, then choose **New conversation** from the main chat's context gauge and send the same draft again.
+
+Little Goblin's bot page is `/app/b/little-goblin`; its Settings, Status, Memory, Skills and Log tabs link to the app defaults, operator files and existing profile pages.
 
 Lost line: see [live.md](live.md). The marks turn grey.
 

@@ -9,7 +9,6 @@ import type { ConversationStore } from "./conversation.ts";
 import type { MailApprovalLane } from "./mail-approval.ts";
 import type { OutboxEntry } from "./mail-outbox.ts";
 import type { ProgramProposal } from "./program-proposals.ts";
-import type { AppBotProposal } from "./http/app-wire.ts";
 import { appConversationOf } from "./targets.ts";
 
 export const APPROVAL_PART = "data-approval";
@@ -49,7 +48,7 @@ export function presentProgramApproval(
 
 export function presentBotApproval(
 	store: Pick<ConversationStore, "append" | "get">,
-	proposal: AppBotProposal,
+	proposal: { id: number; conversationId: string },
 ): void {
 	if (store.get(proposal.conversationId) === null) {
 		throw new Error(`bot proposal ${proposal.id} is addressed to a missing conversation`);

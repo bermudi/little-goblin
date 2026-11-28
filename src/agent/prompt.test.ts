@@ -9,6 +9,7 @@ import { paths } from "../home-layout.ts";
 import { setLogFile } from "../log.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore } from "../conversation.ts";
+import { appAddress } from "../conversation-address.ts";
 import {
 	_resetPromptSourcesForTest,
 	buildSystemPrompt,
@@ -364,6 +365,39 @@ describe("workspace file injection", () => {
 		} finally {
 			store.close();
 			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("a bot's MEMORY.md is scoped to its own new conversations and never rewrites a sent prompt", () => {
+		const home = useHome("goblin-bot-memory-");
+		const folder = join(home, "bot");
+		mkdirSync(folder);
+		const memory = join(folder, "MEMORY.md");
+		const store = openStore(join(home, "goblin.sqlite"));
+		try {
+			const converted = store.resolve(appAddress("converted"), paths.workspace());
+			const previous = systemPromptFor(store, converted, tools);
+			const outcome = store.bots.convertSideChat(converted.id, "Desk", Date.now(), () => false);
+			if (outcome.kind !== "converted") throw new Error(`conversion returned ${outcome.kind}`);
+			store.bots.patch(outcome.bot.id, { folder });
+			const side = (id: string) => {
+				const chat = store.resolve(appAddress(id), paths.workspace());
+				store.bots.attachSideChat(chat.id, outcome.bot.id);
+				return chat;
+			};
+			writeFileSync(memory, "Desk memory first edition");
+			const first = side("first-side");
+			const frozen = systemPromptFor(store, first, tools);
+			expect(frozen.text).toContain("Desk memory first edition");
+			expect(frozen.sources).toContain("MEMORY.md");
+			writeFileSync(memory, "Desk memory second edition");
+			expect(systemPromptFor(store, first, tools)).toEqual(frozen);
+			expect(systemPromptFor(store, converted, tools)).toEqual(previous);
+			expect(systemPromptFor(store, side("second-side"), tools).text).toContain("Desk memory second edition");
+			const other = store.resolve(appAddress("unrelated"), paths.workspace());
+			expect(systemPromptFor(store, other, tools).text).not.toContain("Desk memory");
+		} finally {
+			store.close();
 		}
 	});
 	test("the shell carries the memory model, verify, and act-vs-ask rules", () => {

@@ -58,6 +58,7 @@ export function makeStepBuilder(
 ): Pick<RuntimeDeps, "buildStep" | "compaction"> {
 	const { configRef, auth, store, projects, notes, observation } = deps;
 	const promptStore = {
+		bots: store.bots,
 		promptSnapshot: (id: string) => store.promptSnapshot(id),
 		savePromptSnapshot: (id: string, text: string, sources: string[]) =>
 			store.savePromptSnapshot(id, text, [...sources, NOTE_HISTORY_SOURCE]),

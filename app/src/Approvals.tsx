@@ -69,15 +69,15 @@ export function BotApprovalCard({ token, proposal, onDone }: {
 	proposal: AppBotProposal;
 	onDone(): Promise<void>;
 }) {
-	const [decision, setDecision] = useState<"approved" | "declined" | null>(proposal.state === "pending" ? null : proposal.state);
+	const [decision, setDecision] = useState<"approved" | "declined" | "settled" | null>(proposal.state === "pending" ? null : proposal.state);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const act = async (action: "approve" | "decline") => {
 		if (busy || decision !== null) return;
 		setBusy(true); setError(null);
 		try {
-			await decideBotApproval(token, proposal.id, action);
-			setDecision(action === "approve" ? "approved" : "declined");
+			const result = await decideBotApproval(token, proposal.id, action);
+			setDecision(result.status === "activated" ? "approved" : result.status === "rejected" ? "declined" : "settled");
 			await onDone();
 		} catch (err) { setError(err instanceof Error ? err.message : String(err)); }
 		finally { setBusy(false); }

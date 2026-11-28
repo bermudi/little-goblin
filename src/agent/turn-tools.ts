@@ -40,7 +40,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
-import { promptHasProject } from "./prompt.ts";
+import { BOT_TOOL_SOURCE, promptHasProject } from "./prompt.ts";
 import { noteHistoryAvailable } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
@@ -205,10 +205,12 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 						}
 					: undefined,
 			bot:
-				botProposals !== undefined && channel === "app" && conv.agentType === null && store.bots.membership(conv.id) === null
+				botProposals !== undefined && (snapshot === null
+					? channel === "app" && conv.persona !== "guest" && conv.agentType === null &&
+						conv.projectId === null && store.bots.membership(conv.id) === null
+					: snapshot.sources.includes(BOT_TOOL_SOURCE))
 					? {
 							proposals: botProposals,
-							store,
 							conversationId: conv.id,
 							configRef,
 						}

@@ -8853,6 +8853,11 @@ button.link:hover {
 	grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr);
 	align-items: center;
 }
+.bot-settings-fields dd,
+.bot-settings-fields p {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
 .bot-settings-fields input,
 .bot-settings-fields select,
 .bot-settings-fields textarea {
@@ -8868,6 +8873,17 @@ button.link:hover {
 	overflow: auto;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
+}
+.bot-ask-box {
+	display: grid;
+	gap: 0.4rem;
+	padding: 0.65rem;
+	font-size: 0.82rem;
+	border: 1px dashed var(--app-border);
+	border-radius: 0.5rem;
+}
+.bot-ask-box label {
+	color: var(--app-fg-muted);
 }
 .bot-ask-box input {
 	width: 100%;

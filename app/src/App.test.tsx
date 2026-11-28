@@ -4724,7 +4724,7 @@ describe("app projects surface", () => {
 	}
 
 	test("Chat with this note on a bot's note pins it to that bot's chat and creates nothing", async () => {
-		listBots = [{ id: "bot-cook", name: "Cook", mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
+		listBots = [{ id: "bot-cook", name: "Cook", instructions: "", folder: null, model: null, thinking: null, mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
 		convs = [convRow("Cook", { id: "app/cook-main" })];
 		notes = [noteRow("Recipes", { botId: "bot-cook" })];
 		win.history.replaceState(null, "", "/app/n/n-recipes");

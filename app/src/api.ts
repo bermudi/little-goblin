@@ -20,6 +20,7 @@ import type {
 	AppBotMemory,
 	AppBotMoveBack,
 	AppBotName,
+	AppChatResponse,
 	AppCompactResponse,
 	AppRollResponse,
 	AppSuggestTitleResponse,
@@ -213,6 +214,22 @@ async function request<T>(token: string | null, path: string, init?: RequestInit
 
 export function listConversations(token: string | null): Promise<AppConversationList> {
 	return request(token, "/api/app/conversations");
+}
+
+export function requestBot(token: string | null, id: string, text: string): Promise<AppChatResponse> {
+	return request(token, "/api/app/chat", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			rolling: true,
+			requireBotTool: true,
+			message: { id, role: "user", parts: [{ type: "text", text: `New bot: ${text}` }] },
+		}),
+	});
+}
+
+export function getBotConfig(token: string | null, id: string): Promise<AppConfigView> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}/config`);
 }
 
 export function convertSideChat(token: string | null, id: string, body: AppBotName): Promise<AppBot> {

@@ -117,7 +117,8 @@ export function makeBotStore(db: Database) {
 			(bot_chats.main_ordinal = 1 AND NOT EXISTS (
 				SELECT 1 FROM bot_chats AS other
 				WHERE other.bot_id = bots.id AND other.conversation_id <> bot_chats.conversation_id
-			) AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.bot_id = bots.id)) AS canMoveBack
+			) AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.bot_id = bots.id)
+			  AND NOT EXISTS (SELECT 1 FROM bot_proposals WHERE bot_id = bots.id)) AS canMoveBack
 		FROM bots JOIN bot_chats ON bot_chats.bot_id = bots.id
 		WHERE bot_chats.main_ordinal = (
 			SELECT MAX(main_ordinal) FROM bot_chats WHERE bot_id = bots.id
@@ -218,7 +219,7 @@ export function makeBotStore(db: Database) {
 				thinking: input.thinking,
 				mainConversationId,
 				sideConversationIds: [],
-				canMoveBack: true,
+				canMoveBack: false,
 			};
 		}).immediate,
 		membership: (id: string) => membership.get(id),

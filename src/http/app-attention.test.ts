@@ -145,6 +145,7 @@ describe("app attention", () => {
 			model: null,
 			thinking: null,
 		});
+		if (botProposal === null) throw new Error("expected a proposal");
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			approvals: {

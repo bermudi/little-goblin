@@ -26,18 +26,28 @@ export interface ChatNotePinsView {
 	truncated: boolean;
 }
 
-const available = (note: "n" | "NEW", conversation: string) => `
-	${note}.archived_at IS NULL AND EXISTS (
-		SELECT 1 FROM conversations c LEFT JOIN bot_chats bc ON bc.conversation_id = c.id
-		WHERE c.id = ${conversation} AND (
-			${note}.project_id = c.project_id OR (
-				${note}.project_id IS NULL AND (
-					${note}.bot_id IS NULL OR (
-						c.project_id IS NULL AND ${note}.bot_id = COALESCE(bc.bot_id, '${LITTLE_GOBLIN_NOTE_OWNER}')
-					)
-				)
+export interface ChatNotePinCandidates {
+	matches: PinNote[];
+	truncated: boolean;
+}
+
+const availableIn = (note: "n" | "NEW", project: string, bot: string) => `
+	${note}.archived_at IS NULL AND (
+		${note}.project_id = ${project} OR (
+			${note}.project_id IS NULL AND (
+				${note}.bot_id IS NULL OR (${project} IS NULL AND ${note}.bot_id = ${bot})
 			)
 		)
+	)`;
+
+const available = (note: "n" | "NEW", conversation: string) => `
+	EXISTS (
+		SELECT 1 FROM conversations c LEFT JOIN bot_chats bc ON bc.conversation_id = c.id
+		WHERE c.id = ${conversation} AND ${availableIn(
+			note,
+			"c.project_id",
+			`COALESCE(bc.bot_id, '${LITTLE_GOBLIN_NOTE_OWNER}')`,
+		)}
 	)`;
 
 export function ensureChatNotePinsSchema(db: Database): void {
@@ -161,6 +171,13 @@ export function openChatNotePins(db: Database) {
 		)
 		ORDER BY n.updated_at DESC, n.id LIMIT 51
 	`);
+	const candidates = db.query<PinNote, [string | null, string | null, string | null]>(`
+		SELECT ${noteSelect} FROM notes n ${ownerJoins}
+		WHERE ${availableIn("n", "?1", `'${LITTLE_GOBLIN_NOTE_OWNER}'`)} AND (
+			?2 IS NULL OR n.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?3)
+		)
+		ORDER BY n.updated_at DESC, n.id LIMIT 51
+	`);
 	const changes = db.query<ChatNoteChange, [string, number, number]>(
 		`${changeSelect} AND e.rev <= ? ORDER BY e.rev`,
 	);
@@ -212,6 +229,11 @@ export function openChatNotePins(db: Database) {
 				? []
 				: search.all(conversation, match, match);
 			return { pins, matches: matches.slice(0, 50), truncated: matches.length > 50 };
+		},
+		candidates(projectId: string | null, query: string): ChatNotePinCandidates {
+			const match = toFtsQuery(query);
+			const found = query.trim() !== "" && match === null ? [] : candidates.all(projectId, match, match);
+			return { matches: found.slice(0, 50), truncated: found.length > 50 };
 		},
 		set: db.transaction((conversation: string, id: string, pinned: boolean): boolean => {
 			const n = note.get(id, conversation);

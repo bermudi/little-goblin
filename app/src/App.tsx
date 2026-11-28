@@ -64,7 +64,7 @@ import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NoteView } from "./NoteView.tsx";
 import { NotesIndex } from "./NotesIndex.tsx";
-import { ChatNotePins } from "./chat/ChatNotePins.tsx";
+import type { NotesTarget, StagedPin } from "./chat/ComposerNotes.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import {
@@ -99,6 +99,12 @@ export function App() {
 }
 
 const CRAMPED_COLUMN_PX = 400;
+
+function refusedNoteIds(body: unknown): string[] | null {
+	if (typeof body !== "object" || body === null || !("noteIds" in body)) return null;
+	const ids: unknown = body.noteIds;
+	return Array.isArray(ids) && ids.every((id) => typeof id === "string") ? ids : null;
+}
 
 function observeColumnWidth(column: HTMLElement | null, setCramped: (value: boolean) => void) {
 	if (column === null || typeof window.ResizeObserver !== "function") return;
@@ -283,6 +289,16 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
+	const [stagedPins, setStagedPins] = useState<Record<string, StagedPin[]>>({});
+	const [pinRefusal, setPinRefusal] = useState<string | null>(null);
+	const setStagedPinsFor = (scope: string, pins: StagedPin[]) =>
+		setStagedPins((previous) => ({ ...previous, [scope]: pins }));
+	const stagedNotes = (scope: string, projectId: string | null): NotesTarget => ({
+		kind: "staged",
+		projectId,
+		pins: stagedPins[scope] ?? [],
+		onPinsChange: (pins) => setStagedPinsFor(scope, pins),
+	});
 	const [startFailed, setStartFailed] = useState(false);
 	// A cancelled send belongs only to the composer that dispatched it.
 	const [draftRestores, setDraftRestores] = useState<
@@ -793,40 +809,32 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	const startChat = async (
 		projectId: string | null,
 		parts: UIMessage["parts"],
-		composerScope?: string,
+		composerScope: string,
 		initialModelSettings?: AppModelSettings,
 	): Promise<boolean> => {
 		if (!(await leaveDirty())) return false;
 		if (startBusyRef.current) {
-			// Refuse loudly — a silent no-op reads as success to awaited
-			// callers. A composer-scoped send parks its parts back in the
-			// draft first, the same shape as the fenced path —
-			// note-originated starts carry no scope and restore nothing.
-			if (composerScope !== undefined) {
-				setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
-			}
+			setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
 			throw new Error("a conversation is still starting — resend once it finishes");
 		}
 		startBusyRef.current = true;
 		const seq = ++startSeq.current;
 		setStarting(true);
 		setStartFailed(false);
+		setPinRefusal(null);
+		const pinned = stagedPins[composerScope] ?? [];
 		try {
 			const created = await createConversation(token, {
 				...(projectId === null ? {} : { projectId }),
-				// Only a composer start carries the staged memory toggle —
-				// note-originated chats have no visible toggle and must not
-				// inherit a sticky exclusion.
-				...(composerScope === undefined ? {} : { memoryExcluded: stagedMemoryExcluded }),
+				memoryExcluded: stagedMemoryExcluded,
 				...(initialModelSettings === undefined ? {} : { initialModelSettings }),
+				...(pinned.length === 0 ? {} : { pinnedNoteIds: pinned.map((pin) => pin.id) }),
 			});
 			// A navigation while the create was in flight bumped the
 			// sequence — this continuation closes over the old page, so
 			// its select would skip the dirty-settings guard entirely.
 			if (seq !== startSeq.current) {
-				if (composerScope !== undefined) {
-					setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
-				}
+				setDraftRestores((prev) => ({ ...prev, [composerScope]: { messages: [parts] } }));
 				try {
 					await deleteConversation(token, created.id);
 					await acted("conversations");
@@ -837,14 +845,23 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				}
 				return false;
 			}
+			setStagedPinsFor(composerScope, []);
 			setSeed({ id: created.id, parts });
 			// The guard above already asked — select's own check would
 			// confirm the still-dirty page a second time.
 			void select(created.id, { skipDirtyGuard: true });
 			await acted("conversations");
 			return true;
-		} catch {
-			if (seq === startSeq.current) setStartFailed(true);
+		} catch (err) {
+			if (seq !== startSeq.current) return false;
+			const refused = err instanceof ApiError && err.status === 409 ? refusedNoteIds(err.data) : null;
+			if (refused !== null) {
+				const titles = pinned.filter((pin) => refused.includes(pin.id)).map((pin) => pin.title);
+				setStagedPinsFor(composerScope, pinned.filter((pin) => !refused.includes(pin.id)));
+				setPinRefusal(`This chat can't use ${titles.join(", ")}, so ${titles.length === 1 ? "it was" : "they were"} unpinned. Send again to start without ${titles.length === 1 ? "it" : "them"}.`);
+			} else {
+				setStartFailed(true);
+			}
 			return false;
 		} finally {
 			startBusyRef.current = false;
@@ -1373,10 +1390,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 					<div className="header-tools">
-					{notesChat !== null && (
-						<ChatNotePins key={notesChat} token={token} conversationId={notesChat}
-							phone={phone} rolling={page === "rolling"} onOpenNote={openNote} />
-					)}
 					{chatTools && (
 						<Menu onAction={(value) => {
 							if (chatToolsId === null) return;
@@ -1569,14 +1582,21 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									bots={bots}
 									discardRef={noteDiscard}
 									onChanged={() => void acted("notes")}
-									onChat={(note: AppNote) =>
-										startChat(note.projectId, [
-											{
-												type: "data-note",
-												data: { id: note.id, title: note.title },
-											} as UIMessage["parts"][number],
-										])
-									}
+									onChat={(note: AppNote) => {
+										const scope = note.projectId ?? "chat";
+										const owner = (note.projectId === null ? undefined : projectList.find((p) => p.id === note.projectId)?.name)
+											?? bots.find((bot) => bot.id === note.botId)?.name ?? note.botId ?? "Global";
+										setStagedPinsFor(scope, [
+											...(stagedPins[scope] ?? []).filter((pin) => pin.id !== note.id),
+											{ id: note.id, title: note.title, owner },
+										]);
+										setPinRefusal(null);
+										if (note.projectId === null) newConversation();
+										else {
+											setComposerFocus((t) => t + 1);
+											void openProject(note.projectId);
+										}
+									}}
 									// A deleted note has no draft left to guard — clear
 									// the bit before the index navigation runs the check.
 									onDeleted={() => {
@@ -1637,11 +1657,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 										Couldn't start a conversation — check the tailnet, then resend.
 									</p>
 								)}
+								{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 								{currentProject.archivedAt === null ? (
 									<Composer
 										key={`composer:${currentProject.id}`}
 										token={token}
 										draftScope={currentProject.id}
+										focusSignal={composerFocus}
+										notes={stagedNotes(currentProject.id, currentProject.id)}
 										busy={starting}
 										stagedMemory={{
 											excluded: currentProject.memory === "off" || stagedMemoryExcluded,
@@ -1686,12 +1709,14 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											Couldn't start a conversation — check the tailnet, then resend.
 										</p>
 									)}
+									{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 								</div>
 							</div>
 							<Composer
 								key={`home-composer:${composerFocus}`}
 								token={token}
 								draftScope="new"
+								notes={stagedNotes("chat", null)}
 								busy={starting}
 								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
 								onStagedMemoryToggle={setStagedMemoryExcluded}
@@ -1732,6 +1757,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								onSeeded={() => setSeed(null)}
 								onSendAccepted={() => void acted("conversations")}
 								onOpenNote={openNote}
+								notePins={notesChat === current}
 								onBranched={(id) => {
 									void acted("conversations");
 									openConversation(id);
@@ -1801,6 +1827,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							seed={null}
 							noteProjectId={null}
 							rolling
+							notePins={notesChat === rollingId}
 							onRoll={rollChat}
 							focusSignal={rollFocus}
 							rollDisabled={rollingCurrent?.busy === true}

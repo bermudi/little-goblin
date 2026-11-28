@@ -26,14 +26,14 @@ export type AppPageKey = (typeof APP_PAGES)[number];
 const ID = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}";
 
 const PAGE_RE = new RegExp(`^/(app|t)/(${APP_PAGES.join("|")})/?$`);
-const ID_ROUTE_RE = new RegExp(`^/app/(c|p|n|b)/(${ID})(/window)?$`);
+const ID_ROUTE_RE = new RegExp(`^/app/(c|p|n|b)/(${ID})(/window|/memory)?$`);
 
 export type AppPath =
 	| { kind: "page"; page: AppPageKey }
 	| { kind: "conversation"; id: string }
 	| { kind: "window"; id: string }
 	| { kind: "project"; id: string }
-	| { kind: "bot"; id: string }
+	| { kind: "bot"; id: string; tab: "settings" | "memory" }
 	| { kind: "note"; id: string };
 
 /** Parses a client URL path; null when it is not a page of the client. */
@@ -47,9 +47,9 @@ export function parseAppPath(pathname: string, door: "app" | "t" = "app"): AppPa
 	const m = ID_ROUTE_RE.exec(pathname);
 	if (m === null) return null;
 	const id = m[2]!;
-	const window = m[3] !== undefined;
+	const window = m[3] === "/window";
 	if (m[1] === "c") return window ? { kind: "window", id } : { kind: "conversation", id };
-	if (window) return null;
-	if (m[1] === "b") return { kind: "bot", id };
+	if (window || (m[3] === "/memory" && m[1] !== "b")) return null;
+	if (m[1] === "b") return { kind: "bot", id, tab: m[3] === "/memory" ? "memory" : "settings" };
 	return m[1] === "p" ? { kind: "project", id } : { kind: "note", id };
 }

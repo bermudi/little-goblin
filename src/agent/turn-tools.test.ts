@@ -16,6 +16,7 @@ import type { Watches } from "../watches.ts";
 import { log, setLogFile, setLogWriter } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
+import type { BotProposals } from "../bot-proposals.ts";
 import type { NoteStore } from "../notes.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { openProjects, type ProjectStore } from "../projects.ts";
@@ -91,10 +92,17 @@ describe("hosted web_search mount", () => {
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: { promptSnapshot: () => snapshot } as unknown as ConversationStore,
+			store: {
+				promptSnapshot: () => snapshot,
+				bots: {
+					membership: (id: string) =>
+						id === "app/bot-chat" ? { botId: "bot-1", mainOrdinal: 1 } : null,
+				},
+			} as unknown as ConversationStore,
 			projects: { get: () => ({ dir: tmpDir("goblin-turn-tools-project-") }) } as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
+			botProposals: {} as BotProposals,
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
@@ -109,7 +117,9 @@ describe("hosted web_search mount", () => {
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
 			desktops: null,
-			agents: null,
+			agents: conv.agentType === null
+				? null
+				: { allowlistFor: () => [], desktopFor: () => null } as unknown as AgentChildren,
 			filterGuests: (_c, t) => t,
 		});
 
@@ -200,6 +210,20 @@ describe("hosted web_search mount", () => {
 		expect("ask" in rigTools(config, app)(app)).toBe(true);
 		expect("ask" in rigTools(config, telegram)(telegram)).toBe(false);
 		expect(policyOf("ask")).toMatchObject({ guestChannel: false });
+	});
+
+	test("bot proposal mounts only on Little Goblin app chats", () => {
+		const config = cfgFor("off");
+		const app = { ...conv("zai/glm-5"), id: "app/parent" } as Conversation;
+		const botChat = { ...conv("zai/glm-5"), id: "app/bot-chat" } as Conversation;
+		const child = { ...app, agentType: "general" } as Conversation;
+		const telegram = conv("zai/glm-5");
+		const tools = (conversation: Conversation) => rigTools(config, conversation)(conversation);
+		expect("bot" in tools(app)).toBe(true);
+		expect("bot" in tools(botChat)).toBe(false);
+		expect("bot" in tools(child)).toBe(false);
+		expect("bot" in tools(telegram)).toBe(false);
+		expect(policyOf("bot").guestChannel).toBe(false);
 	});
 
 	test("guests keep web_search exactly like local search", () => {

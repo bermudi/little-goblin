@@ -15,6 +15,7 @@ import { makeSpeaker } from "./agent/tts.ts";
 import { makeTurnTools as makeTurnToolsFactory } from "./agent/turn-tools.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
 import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
+import { makeBotProposals } from "./bot-proposals.ts";
 import { openAppPush } from "./app-push.ts";
 import { appendAuthRecord, loadAuth } from "./auth.ts";
 import { wireDelivery } from "./boot/delivery.ts";
@@ -452,6 +453,17 @@ async function boot() {
 		publicUrl: () => configRef.current.publicUrl || undefined,
 		requestApproval: (proposal, signal) => programApproval.requestApproval(proposal, signal),
 	});
+	const botProposals = makeBotProposals(
+		store.db,
+		store.bots,
+		store,
+		paths.workspace,
+		() => ({
+			model: configRef.current.model,
+			thinking: configRef.current.thinking,
+			providers: configRef.current.providers,
+		}),
+	);
 
 	// Save notices read the live api at call time — absent while detached.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
@@ -553,6 +565,7 @@ async function boot() {
 		projects,
 		notes,
 		programs,
+		botProposals,
 		// The one send composed outside tg/ — same deadline as every tg/
 		// sender, or a wedged API stalls the program turn's tool call.
 		...(sendPrivate === undefined ? {} : { sendPrivate }),
@@ -682,7 +695,7 @@ async function boot() {
 		operator: operatorSeams,
 		// Both doors reach the same durable CAS owners; this route
 		// supplies the authenticated app actor, never transport authority.
-		approvals: { program: programApproval, mail: mailApproval },
+		approvals: { program: programApproval, mail: mailApproval, bot: botProposals },
 		programOps,
 		push: appPush,
 		// Same intake seam as the tg lane — speech uploads transcribe before submit.

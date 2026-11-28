@@ -8833,6 +8833,50 @@ button.link:hover {
 	margin: 0 0 0.75rem;
 	color: var(--app-fg-muted);
 }
+.bot-page-header {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+}
+.bot-page-header h1,
+.bot-page-header p {
+	margin: 0;
+}
+.bot-page-header p {
+	color: var(--app-fg-muted);
+}
+.bot-settings-fields {
+	display: grid;
+	grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr);
+	align-items: center;
+}
+.bot-settings-fields input,
+.bot-settings-fields select,
+.bot-settings-fields textarea {
+	width: 100%;
+	min-width: 0;
+}
+.bot-settings-fields textarea {
+	min-height: 7rem;
+	resize: vertical;
+}
+.goblin-panel-memory {
+	max-height: 16rem;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.bot-ask-box input {
+	width: 100%;
+	min-width: 0;
+}
+@media (max-width: 520px) {
+	.bot-settings-fields {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 0.4rem;
+	}
+}
 .goblin-avatar img {
 	position: absolute;
 	top: 0;

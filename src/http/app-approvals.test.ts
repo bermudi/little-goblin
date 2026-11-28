@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appAddress } from "../conversation-address.ts";
+import { makeBotProposals } from "../bot-proposals.ts";
+import { paths } from "../home-layout.ts";
 import { makeAppMailLane, presentProgramApproval } from "../app-approvals.ts";
 import { startMailApproval, type MailApproval } from "../mail-approval.ts";
 import { openOutbox } from "../mail-outbox.ts";
@@ -65,7 +67,15 @@ function harness(opts: { publicUrl?: string; sender?: MailSender } = {}) {
 		token: APP_TOKEN_NAME,
 		approvals: { program, mail },
 	});
-	return { ...app, programs, programsPath, outbox, program, mail, sent };
+	const bot = makeBotProposals(
+		app.store.db,
+		app.store.bots,
+		app.store,
+		paths.workspace,
+		() => ({ model: app.configRef.current.model, thinking: app.configRef.current.thinking, providers: app.configRef.current.providers }),
+	);
+	app.appDeps.approvals = { program, mail, bot };
+	return { ...app, programs, programsPath, outbox, program, mail, sent, botProposals: bot };
 }
 
 async function cleanup(h: ReturnType<typeof harness>): Promise<void> {
@@ -76,6 +86,40 @@ async function cleanup(h: ReturnType<typeof harness>): Promise<void> {
 }
 
 describe("app approval routes", () => {
+	test("bot proposals appear in approvals and resolve as approve, decline, settled, or gone", async () => {
+		const h = harness();
+		try {
+			const chat = h.store.resolve(appAddress("bot-approval-source"), paths.workspace());
+			const proposal = h.botProposals.propose({
+				conversationId: chat.id,
+				name: "Research",
+				instructions: "Keep research notes.",
+				model: null,
+				thinking: null,
+			});
+			const body = await (await h.call("/api/app/approvals")).json() as AppApprovalsResponse;
+			expect(body.bots.map(({ id }) => id)).toContain(proposal.id);
+			const post = (id: number, action: "approve" | "decline") => h.call(`/api/app/approvals/bot/${id}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action }),
+			});
+			expect(await (await post(proposal.id, "approve")).json()).toMatchObject({ status: "activated" });
+			expect(await (await post(proposal.id, "decline")).json()).toMatchObject({ status: "settled" });
+			const declined = h.botProposals.propose({
+				conversationId: chat.id,
+				name: "Later",
+				instructions: "Keep later notes.",
+				model: null,
+				thinking: null,
+			});
+			expect(await (await post(declined.id, "decline")).json()).toMatchObject({ status: "rejected" });
+			expect(await (await post(999999, "approve")).json()).toMatchObject({ status: "gone" });
+		} finally {
+			await cleanup(h);
+		}
+	});
+
 	test("corrupt pending proposals fail the approval and attention requests rather than disappear", async () => {
 		const h = harness();
 		try {

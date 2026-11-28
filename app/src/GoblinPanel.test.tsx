@@ -80,13 +80,15 @@ test("needs-you opens its evidence target and makes no request", async () => {
 	globalThis.fetch = original;
 });
 
-test("tabs are Activity, Scheduled and Library; avatar opens profile", async () => {
+test("tabs are Activity, Scheduled, Memory and Library; avatar and Bot page open profile", async () => {
 	let profile = 0;
 	await mount(0, [], { onOpenProfile: () => { profile += 1; } });
-	expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Activity", "Scheduled", "Library"]);
+	expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Activity", "Scheduled", "Memory", "Library"]);
 	expect(container.querySelector(".goblin-profile-button .goblin-avatar img")?.getAttribute("src")).toBe("/app/goblin-portrait.webp");
 	await act(async () => container.querySelector(".goblin-profile-button")?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
 	expect(profile).toBe(1);
+	await act(async () => container.querySelector(".goblin-panel-header > button:last-child")?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+	expect(profile).toBe(2);
 });
 
 test("activity keeps delegations before finished work and omits subagent rows", async () => {

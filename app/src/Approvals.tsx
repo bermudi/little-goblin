@@ -6,8 +6,9 @@ import type {
 	AppMailDraft,
 	AppProgramChange,
 	AppProgramProposal,
+	AppBotProposal,
 } from "../../src/http/app-wire.ts";
-import { decideMailApproval, decideProgramApproval } from "./api.ts";
+import { decideBotApproval, decideMailApproval, decideProgramApproval } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { describe } from "./opsShared.tsx";
 import { useLive, useLiveStore } from "./useLive.tsx";
@@ -26,7 +27,7 @@ export function useApprovals(): ApprovalState {
 		data,
 		err: error === null ? null : describe(error),
 		loading: data === null && error === null,
-		refresh: () => store.refresh("approvals", "attention", "programs"),
+		refresh: () => store.refresh("approvals", "attention", "programs", "conversations"),
 	};
 }
 
@@ -36,7 +37,7 @@ export function ApprovalCard({
 	id,
 }: {
 	token: string | null;
-	kind: "program" | "mail";
+	kind: "program" | "mail" | "bot";
 	id: number;
 }) {
 	const approvals = useApprovals();
@@ -45,11 +46,14 @@ export function ApprovalCard({
 	const item =
 		kind === "program"
 			? approvals.data?.programs.find((p) => p.id === id)
-			: approvals.data?.mail.find((m) => m.id === id);
+			: kind === "bot" ? approvals.data?.bots.find((p) => p.id === id)
+				: approvals.data?.mail.find((m) => m.id === id);
 	if (item === undefined) {
 		return <div className="approval-card settled">Approval #{id} is no longer pending.</div>;
 	}
-	return kind === "program" ? (
+	return kind === "bot" ? (
+		<BotApprovalCard token={token} proposal={item as AppBotProposal} onDone={approvals.refresh} />
+	) : kind === "program" ? (
 		<ProgramApprovalCard
 			token={token}
 			proposal={item as AppProgramProposal}
@@ -58,6 +62,32 @@ export function ApprovalCard({
 	) : (
 		<MailApprovalCard token={token} draft={item as AppMailDraft} onDone={approvals.refresh} />
 	);
+}
+
+export function BotApprovalCard({ token, proposal, onDone }: {
+	token: string | null;
+	proposal: AppBotProposal;
+	onDone(): Promise<void>;
+}) {
+	const [decision, setDecision] = useState<"approved" | "declined" | null>(proposal.state === "pending" ? null : proposal.state);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const act = async (action: "approve" | "decline") => {
+		if (busy || decision !== null) return;
+		setBusy(true); setError(null);
+		try {
+			await decideBotApproval(token, proposal.id, action);
+			setDecision(action === "approve" ? "approved" : "declined");
+			await onDone();
+		} catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+		finally { setBusy(false); }
+	};
+	return <article className="approval-card">
+		<h3>New bot · {decision ?? "waiting for you"}</h3>
+		<dl><dt>Name</dt><dd>{proposal.name}</dd><dt>Instructions</dt><dd>{proposal.instructions}</dd><dt>Model</dt><dd>{proposal.model ?? "App default"}</dd><dt>Thinking</dt><dd>{proposal.thinking ?? "App default"}</dd></dl>
+		{decision === null && <div><button type="button" disabled={busy} onClick={() => void act("approve")}>Approve</button> <button type="button" disabled={busy} onClick={() => void act("decline")}>Decline</button></div>}
+		{error !== null && <p className="error" role="alert">{error}</p>}
+	</article>;
 }
 
 export function ApprovalsPanel({

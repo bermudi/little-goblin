@@ -76,6 +76,7 @@ interface MarkResult {
 
 const NEEDS_KINDS = new Set([
 	"program-approval",
+	"bot-approval",
 	"mail-approval",
 	"skill-proposal",
 	"delegation-input",

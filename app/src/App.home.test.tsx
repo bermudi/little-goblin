@@ -102,6 +102,7 @@ describe("home screen", () => {
 			const bot: AppBot = {
 				id: "bot-1", name: body.name, mainConversationId: "app/workshop",
 				instructions: "", folder: null,
+				model: null, thinking: null,
 				sideConversationIds: [], canMoveBack: true,
 			};
 			bots = [bot];
@@ -332,20 +333,18 @@ describe("home screen", () => {
 		);
 		expect(list()).toEqual(["Little Goblin", "# Bots", "Repair workshop", "# Projects"]);
 		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Repair workshop");
-		expect(settings).toBeDefined();
-		await act(async () => {
-			settings?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
-		});
+		expect(settings).toBeUndefined();
+		await click(".bot-page-link");
 		await waitFor(() => win.location.pathname === "/app/b/bot-1", "bot settings route");
-		expect(container.querySelector<HTMLInputElement>(".bot-settings input")?.value).toBe("Repair workshop");
+		expect(container.querySelector<HTMLInputElement>("#bot-name")?.value).toBe("Repair workshop");
 		await click(".rail-body .bot-row a");
 		expect(win.location.pathname).toBe("/app/c/workshop");
-		await click('.goblin-profile-button[aria-label="Settings for Repair workshop"]');
+		await click('.goblin-profile-button[aria-label="Bot page"]');
 		expect(win.location.pathname).toBe("/app/b/bot-1");
 		await click(".bot-settings .danger");
 		await waitFor(() => container.querySelector(".bot-row") === null, "the bot row to disappear");
 		expect(win.location.pathname).toBe("/app/c/workshop");
-		expect(list()).toEqual(["Little Goblin", "Repair workshop", "# Projects"]);
+		expect(list()).toEqual(["Little Goblin", "Repair workshop", "# Bots", "# Projects"]);
 		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Little Goblin");
 	});
 
@@ -354,6 +353,7 @@ describe("home screen", () => {
 		bots = [{
 			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
 			instructions: "", folder: null,
+			model: null, thinking: null,
 			sideConversationIds: ["app/branch"], canMoveBack: false,
 		}];
 		await open("/app/c/main");
@@ -373,6 +373,7 @@ describe("home screen", () => {
 		bots = [{
 			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
 			instructions: "", folder: null,
+			model: null, thinking: null,
 			sideConversationIds: [], canMoveBack: true,
 		}];
 		await publish({ conversations: [conv("main")] });
@@ -508,6 +509,7 @@ describe("home screen", () => {
 			expect(container.querySelector('[aria-label="New side chat"]')).not.toBeNull();
 			expect(list()).toEqual([
 				"Little Goblin",
+				"# Bots",
 				"# Active",
 				"Review program",
 				"fresh",

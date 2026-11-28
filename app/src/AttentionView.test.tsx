@@ -77,7 +77,7 @@ async function mount(onPage: (p: string) => void = () => {}) {
 }
 
 const noSkills: SkillsResponse = { skills: [], proposed: [] } as unknown as SkillsResponse;
-const noApprovals: AppApprovalsResponse = { programs: [], mail: [], serverTimeZone: "UTC" };
+const noApprovals: AppApprovalsResponse = { programs: [], bots: [], mail: [], serverTimeZone: "UTC" };
 
 test("Attention has no work feed", async () => {
 	const seen = stubFetch({
@@ -285,6 +285,7 @@ test("a program approval shows its changes open and approves from the card", asy
 				},
 			],
 			mail: [],
+			bots: [],
 			serverTimeZone: "UTC",
 		} satisfies AppApprovalsResponse,
 		"/api/app/approvals/program/7": { status: "activated", message: "ok" },

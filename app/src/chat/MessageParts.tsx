@@ -749,7 +749,7 @@ function MessagePartsView({
           ? (p.data as { kind?: unknown; id?: unknown })
           : null;
       if (
-        (data?.kind === "program" || data?.kind === "mail") &&
+        (data?.kind === "program" || data?.kind === "mail" || data?.kind === "bot") &&
         typeof data.id === "number"
       ) {
         out.push(

@@ -32,6 +32,85 @@ function streamedText(body: string): string {
 }
 
 describe("app conversations", () => {
+	test("bot side chats inherit bot defaults and reject conflicting memberships", async () => {
+		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			store.resolve(appAddress("bot-side-main"), "/w");
+			const promoted = await call("/api/app/conversations/bot-side-main/convert-to-bot", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ name: "Side bot" }),
+			});
+			const bot = await promoted.json() as { id: string };
+			const patch = await call(`/api/app/bots/${bot.id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "zai/m2", thinking: "high" }),
+			});
+			expect(patch.status).toBe(200);
+			const created = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "bot-side-chat", botId: bot.id }),
+			});
+			expect(created.status).toBe(201);
+			expect(store.bots.get(bot.id)?.sideConversationIds).toContain("app/bot-side-chat");
+			expect(store.readAppSettings("app/bot-side-chat", configRef.current)).toEqual({
+				model: "zai/m2",
+				thinking: "high",
+			});
+			store.resolve(appAddress("bot-side-other"), "/w");
+			const otherPromoted = await call("/api/app/conversations/bot-side-other/convert-to-bot", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ name: "Other bot" }),
+			});
+			const otherBot = await otherPromoted.json() as { id: string };
+			expect((await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "bot-side-chat", botId: otherBot.id }),
+			})).status).toBe(409);
+
+			store.bots.patch(bot.id, { model: null, thinking: "high" });
+			const nullModel = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "bot-side-null-model", botId: bot.id }),
+			});
+			expect(nullModel.status).toBe(201);
+			expect(store.readAppSettings("app/bot-side-null-model", configRef.current)).toEqual({
+				model: configRef.current.model,
+				thinking: "high",
+			});
+			store.bots.patch(bot.id, { model: null, thinking: null });
+			const defaults = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "bot-side-defaults-2", botId: bot.id }),
+			});
+			expect(defaults.status).toBe(201);
+			expect(store.readAppSettings("app/bot-side-defaults-2", configRef.current)).toEqual({
+				model: configRef.current.model,
+				thinking: configRef.current.thinking,
+			});
+			expect((await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "missing-bot-chat", botId: "00000000-0000-4000-8000-000000000000" }),
+			})).status).toBe(404);
+			const project = projects.create({ name: "not a bot chat" });
+			expect((await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ botId: bot.id, projectId: project.id }),
+			})).status).toBe(422);
+		} finally {
+			http.stop();
+			store.close();
+		}
+	});
+
 	test("draft model choice is captured before the first turn and never changes defaults", async () => {
 		const { http, call, store, projects, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
 		try {

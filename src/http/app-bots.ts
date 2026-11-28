@@ -1,17 +1,22 @@
 import { z } from "zod";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
+import { thinkingLevels } from "../config-schema.ts";
+import { resolveModelSettings } from "./app-shared.ts";
 import { type AppChannelDeps, conversationFromSegment, NO_STORE, parsedJson } from "./app-shared.ts";
-import type { AppBot, AppBotMoveBack, AppBotName, AppBotPatch } from "./app-wire.ts";
+import type { AppBot, AppBotMemory, AppBotMoveBack, AppBotName } from "./app-wire.ts";
 
 const name = z.string().trim().min(1).max(200);
 const nameBody: z.ZodType<AppBotName> = z.strictObject({ name });
-const settingsBody: z.ZodType<AppBotPatch> = z.strictObject({
+const settingsBody = z.strictObject({
 	name: name.optional(),
 	instructions: z.string().max(20_000).optional(),
 	folder: z.string().max(4096).refine((path) => isAbsolute(path) && !path.includes("\0"), {
 		message: "Use an absolute folder path.",
 	}).nullable().optional(),
+	model: z.string().min(1).nullable().optional(),
+	thinking: z.enum(thinkingLevels).nullable().optional(),
 }).refine((patch) => Object.values(patch).some((value) => value !== undefined));
 const botId = z.uuidv4();
 const emptyBody = z.strictObject({});
@@ -26,11 +31,31 @@ const conversionErrors = {
 export async function handleBotsRoute(
 	req: Request,
 	url: URL,
-	deps: Pick<AppChannelDeps, "store" | "runtime">,
+	deps: Pick<AppChannelDeps, "store" | "runtime" | "configRef">,
 	now = Date.now,
 ): Promise<Response | null> {
 	const settings = url.pathname.match(/^\/api\/app\/bots\/([^/]+)(\/move-back)?$/);
 	if (settings !== null) return handleBotSettings(req, settings[1]!, settings[2] !== undefined, deps);
+	const memory = url.pathname.match(/^\/api\/app\/bots\/([^/]+)\/memory$/);
+	if (memory !== null) {
+		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const bot = deps.store.bots.get(memory[1]!);
+		if (bot === null) return Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
+		const path = bot.folder === null ? null : join(bot.folder, "MEMORY.md");
+		let text: string | null = null;
+		if (path !== null) {
+			try {
+				const contents = readFileSync(path);
+				text = contents.length > 64 * 1024 ? contents.subarray(0, 64 * 1024).toString("utf8") : contents.toString("utf8");
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+					log.error("app bot memory read failed", error, { bot: bot.id, path });
+					throw new Error(`read bot memory ${path}: ${String(error)}`, { cause: error });
+				}
+			}
+		}
+		return Response.json({ path, text } satisfies AppBotMemory, { headers: NO_STORE });
+	}
 
 	const match = url.pathname.match(/^\/api\/app\/conversations\/([^/]+)\/convert-to-bot$/);
 	if (match === null) return null;
@@ -65,7 +90,7 @@ async function handleBotSettings(
 	req: Request,
 	id: string,
 	moveBack: boolean,
-	{ store, runtime }: Pick<AppChannelDeps, "store" | "runtime">,
+	{ store, runtime, configRef }: Pick<AppChannelDeps, "store" | "runtime" | "configRef">,
 ): Promise<Response> {
 	const missing = () => Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
 	if (!botId.safeParse(id).success) return missing();
@@ -75,6 +100,13 @@ async function handleBotSettings(
 	if (!moveBack) {
 		const body = await parsedJson(req, settingsBody);
 		if (body instanceof Response) return body;
+		if (body.model !== undefined && body.model !== null) {
+			const resolved = resolveModelSettings(configRef.current, {
+				model: body.model,
+				thinking: configRef.current.thinking,
+			});
+			if (resolved instanceof Response) return resolved;
+		}
 		const bot = store.bots.patch(id, body);
 		if (bot === null) return missing();
 		log.info("app bot settings changed", { bot: bot.id, fields: Object.keys(body) });

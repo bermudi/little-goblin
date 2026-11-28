@@ -63,6 +63,7 @@ const createBody = z.object({
 	id: appIdSchema.optional(),
 	title: z.string().min(1).max(200).optional(),
 	projectId: z.string().min(1).optional(),
+	botId: z.uuidv4().optional(),
 	memoryExcluded: z.boolean().optional(),
 	initialModelSettings: modelSettingsBody.optional(),
 });
@@ -391,10 +392,24 @@ export async function handleConversationsRoute(
 					{ status: 422, headers: NO_STORE },
 				);
 			}
+			if (parsed.data.botId !== undefined && parsed.data.projectId !== undefined) {
+				return Response.json({ error: "botId and projectId cannot be combined" }, { status: 422, headers: NO_STORE });
+			}
 			const cfg = deps.configRef.current;
+			const bot = parsed.data.botId === undefined ? null : store.bots.get(parsed.data.botId);
+			if (parsed.data.botId !== undefined && bot === null) {
+				return Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
+			}
 			let initialSettings: ModelSettings | undefined;
 			if (parsed.data.initialModelSettings !== undefined) {
 				const resolved = resolveModelSettings(cfg, parsed.data.initialModelSettings);
+				if (resolved instanceof Response) return resolved;
+				initialSettings = resolved.settings;
+			} else if (bot !== null) {
+				const resolved = resolveModelSettings(cfg, {
+					model: bot.model ?? cfg.model,
+					thinking: clampThinkingFor(cfg.providers, bot.model ?? cfg.model, bot.thinking ?? cfg.thinking),
+				});
 				if (resolved instanceof Response) return resolved;
 				initialSettings = resolved.settings;
 			}
@@ -406,9 +421,14 @@ export async function handleConversationsRoute(
 					| { kind: "conflict"; bound: string | null }
 					| { kind: "memoryConflict" }
 					| { kind: "settingsConflict" }
+					| { kind: "botConflict" }
 					| { kind: "noProject" }
 					| { kind: "archived" } => {
 					const existing = store.get(convId);
+					const existingBot = store.bots.membership(convId);
+					if (existing !== null && (existingBot?.botId ?? null) !== (parsed.data.botId ?? null)) {
+						return { kind: "botConflict" };
+					}
 					if (existing !== null && existing.projectId !== (parsed.data.projectId ?? null)) {
 						return { kind: "conflict", bound: existing.projectId };
 					}
@@ -451,6 +471,7 @@ export async function handleConversationsRoute(
 					if (existing === null && project !== null) {
 						store.bindProject(row.id, project.id);
 					}
+					if (existing === null && bot !== null) store.bots.attachSideChat(row.id, bot.id);
 					if (existing === null && project?.memory === "off") {
 						// The gate's stamp, marked so a re-open recomputes it.
 						store.setMeta(row.id, { memoryExcluded: true, memoryExcludedByProject: true });
@@ -473,6 +494,9 @@ export async function handleConversationsRoute(
 					},
 					{ status: 409, headers: NO_STORE },
 				);
+			}
+			if (outcome.kind === "botConflict") {
+				return Response.json({ error: "conversation belongs to a different bot" }, { status: 409, headers: NO_STORE });
 			}
 			if (outcome.kind === "memoryConflict") {
 				return Response.json(

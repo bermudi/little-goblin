@@ -8,6 +8,8 @@ describe("route conversion", () => {
 		"/app/c/abc/window",
 		"/app/p/abc",
 		"/app/n/abc",
+		"/app/b/abc",
+		"/app/b/abc/memory",
 		"/app/settings",
 		"/app/archive",
 		"/app/rolling",
@@ -41,6 +43,11 @@ describe("route conversion", () => {
 	test("conversation and window ids include their channel prefix", () => {
 		expect(routeFromPath("/app/c/abc")).toEqual({ kind: "conversation", id: "app/abc" });
 		expect(routeFromPath("/app/c/abc/window")).toEqual({ kind: "window", id: "app/abc" });
+	});
+
+	test("bot memory tab survives a direct URL and reload path", () => {
+		expect(routeFromPath("/app/b/abc/memory")).toEqual({ kind: "bot", id: "abc", tab: "memory" });
+		expect(pathOfRoute(routeFromPath("/app/b/abc/memory"))).toBe("/app/b/abc/memory");
 	});
 
 	test("home equality includes staged composer state", () => {

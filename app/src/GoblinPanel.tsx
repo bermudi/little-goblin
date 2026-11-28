@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
 import type { AppAttentionTarget, AppConversationListItem, AppNoteSummary, AppPost } from "../../src/http/app-wire.ts";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
@@ -11,9 +11,10 @@ import { ts } from "./opsShared.tsx";
 import { triggerWords } from "./ProgramsView.tsx";
 import type { useGoblinActivity } from "./useGoblinActivity.ts";
 import { flatLine, flatTitle } from "./flatText.ts";
+import { getBotMemory, getMemoryDocument, listMemoryDocuments } from "./api.ts";
 
 export type ActivityData = ReturnType<typeof useGoblinActivity>;
-type GoblinPanelTab = "activity" | "scheduled" | "library";
+type GoblinPanelTab = "activity" | "scheduled" | "memory" | "library";
 
 const TAB_KEY = "goblin.panelTab";
 const ACTIVE: readonly OperatorDelegationItem["status"][] = ["starting", "running", "needs_input"];
@@ -26,7 +27,7 @@ const NEEDS_ROWS = 3;
 function loadTab(): GoblinPanelTab {
 	try {
 		const value = localStorage.getItem(TAB_KEY);
-		return value === "scheduled" || value === "library" ? value : "activity";
+		return value === "scheduled" || value === "memory" || value === "library" ? value : "activity";
 	} catch {
 		return "activity";
 	}
@@ -63,10 +64,11 @@ export function goblinStatusText(working: number): string {
 	return `Working · ${working} ${working === 1 ? "job" : "jobs"}`;
 }
 
-export function GoblinProfileHeader({ page, working, onPage }: {
-	page: "status" | "memory" | "skills" | "log";
+export function GoblinProfileHeader({ page, working, onPage, onSettings }: {
+	page: "settings" | "status" | "memory" | "skills" | "log";
 	working: number;
 	onPage(page: AppPageKey): void;
+	onSettings?: () => void;
 }) {
 	const pages = ["status", "memory", "skills", "log"] as const;
 	return (
@@ -74,7 +76,12 @@ export function GoblinProfileHeader({ page, working, onPage }: {
 			<GoblinAvatar size="md" working={working > 0} />
 			<strong>Little Goblin</strong>
 			<span>{goblinStatusText(working)}</span>
+			<a href="/app/rolling">Open main chat</a>
 			<nav aria-label="Little Goblin's profile">
+				<a href="/app/b/little-goblin" aria-current={page === "settings" ? "page" : undefined} onClick={(event) => {
+					if (onSettings === undefined || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+					event.preventDefault(); onSettings();
+				}}>Settings</a>
 				{pages.map((key) => (
 					<a
 						key={key}
@@ -102,12 +109,16 @@ export interface GoblinPanelProps {
 	notes: AppNoteSummary[] | null;
 	notesError?: boolean;
 	botName?: string | undefined;
+	botId?: string | undefined;
+	token?: string | null;
+	hasCustomBots?: boolean;
 	variant: "column" | "sheet";
 	onOpenTarget(target: AppAttentionTarget): void;
 	onOpenConversation(id: string): void;
 	onOpenPage(page: AppPageKey): void;
 	onOpenNote(id: string): void;
 	onOpenProfile(): void;
+	onOpenBotMemory?(): void;
 }
 
 interface PanelRowData {
@@ -441,8 +452,28 @@ export function otherBusyRow(otherBusy: number): ActivityItem {
 export function GoblinPanel(props: GoblinPanelProps) {
 	const { data } = props;
 	const [tab, setTab] = useState<GoblinPanelTab>(loadTab);
+	const [botMemory, setBotMemory] = useState<{ path: string | null; text: string | null } | null>(null);
+	const [botMemoryError, setBotMemoryError] = useState(false);
+	const [hindsight, setHindsight] = useState<{ id: string; text: string }[] | null>(null);
+	useEffect(() => {
+		if (tab !== "memory") return;
+		setBotMemoryError(false);
+		if (props.botId !== undefined) {
+			setBotMemory(null);
+			void getBotMemory(props.token ?? null, props.botId).then(setBotMemory, () => setBotMemoryError(true));
+		} else {
+			setHindsight(null);
+			void listMemoryDocuments(props.token ?? null, { limit: 5 }).then(async (result) => {
+				const documents = await Promise.all(result.items.map(async (item) => {
+					const detail = await getMemoryDocument(props.token ?? null, item.id);
+					return { id: item.id, text: detail.originalText ?? detail.facts.map((fact) => fact.text).join("\n") };
+				}));
+				setHindsight(documents);
+			}, () => setBotMemoryError(true));
+		}
+	}, [props.botId, props.token, tab]);
 	const selectTab = (value: string | null) => {
-		if (value !== "activity" && value !== "scheduled" && value !== "library") return;
+		if (value !== "activity" && value !== "scheduled" && value !== "memory" && value !== "library") return;
 		setTab(value);
 		saveTab(value);
 	};
@@ -489,7 +520,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				<button
 					type="button"
 					className="goblin-profile-button"
-					aria-label={props.botName === undefined ? "Little Goblin's profile" : `Settings for ${name}`}
+					aria-label="Bot page"
 					onClick={props.onOpenProfile}
 				>
 					{props.botName === undefined
@@ -498,11 +529,12 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				</button>
 				<strong>{name}</strong>
 				<span>{goblinStatusText(data.working)}</span>
+				<button type="button" className="goblin-panel-footer" onClick={props.onOpenProfile}>Bot page</button>
 			</header>
 			{showNeeds && (
 				<section className="goblin-needs" aria-label="Needs you">
 					<h2>
-						{data.attentionError ? "Couldn't load what needs you." : `Needs you · ${attention.length}`}
+						{data.attentionError ? "Couldn't load what needs you." : `Needs you · ${attention.length}${props.hasCustomBots ? " · all bots" : ""}`}
 					</h2>
 					{attention.slice(0, NEEDS_ROWS).map((item) => (
 						<button
@@ -526,6 +558,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				<TabsList aria-label={`${name}'s work`}>
 					<TabsTab value="activity">Activity</TabsTab>
 					<TabsTab value="scheduled">Scheduled</TabsTab>
+					<TabsTab value="memory">Memory</TabsTab>
 					<TabsTab value="library">Library</TabsTab>
 				</TabsList>
 				<TabsPanel value="activity">
@@ -565,6 +598,23 @@ export function GoblinPanel(props: GoblinPanelProps) {
 							onClick={() => props.onOpenPage("delegations")}
 						>
 							All delegations
+						</button>
+					</div>
+				</TabsPanel>
+				<TabsPanel value="memory">
+					{props.botId !== undefined
+						? botMemoryError ? <p className="empty">Couldn't load memory.</p>
+							: botMemory === null ? <p className="empty">Loading memory…</p>
+								: botMemory.path === null ? <p className="empty">This bot has no folder, so it has no memory file.</p>
+									: botMemory.text === null ? <p className="empty">No MEMORY.md yet. The bot writes it as it learns.</p>
+										: <pre className="goblin-panel-memory">{botMemory.text.split("\n").slice(0, 12).join("\n")}</pre>
+						: botMemoryError ? <p className="empty">Couldn't load memory.</p>
+							: hindsight === null ? <p className="empty">Loading memory…</p>
+								: hindsight.length === 0 ? <p className="empty">No memories yet.</p>
+									: hindsight.map((item) => <p key={item.id} className="goblin-panel-memory-item">{item.text}</p>)}
+					<div className="goblin-panel-footer-group">
+						<button type="button" className="goblin-panel-footer" onClick={() => props.botId === undefined ? props.onOpenPage("memory") : props.onOpenBotMemory?.()}>
+							{props.botId === undefined ? "All memories" : "Open on bot page"}
 						</button>
 					</div>
 				</TabsPanel>

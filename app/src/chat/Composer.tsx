@@ -62,12 +62,14 @@ export function Composer({
 	stealFocus,
 	draftRestore,
 	onDraftRestored,
+	placeholder,
 }: {
 	token: string | null;
 	conversationId?: string;
 	// Durable-draft key — one per composer home: the conversation id,
 	// the project id, "new" for the empty start state.
 	draftScope: string;
+	placeholder?: string;
 	busy: boolean;
 	// The in-flight turn's window occupancy, streamed over the chat
 	// wire — the gauge's numbers while a turn runs.
@@ -483,7 +485,7 @@ export function Composer({
 				onUploadFailed={noteUploadError}
 				token={token}
 				ariaLabel="Message draft"
-				placeholder="Message goblin"
+				placeholder={placeholder ?? "Message goblin"}
 			/>
 			<div className="composer-bar">
 				{phoneWidth ? (

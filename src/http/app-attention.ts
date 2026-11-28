@@ -68,6 +68,17 @@ export function attentionBody(
 	if (deps.approvals === undefined) {
 		unavailable.push("approvals");
 	} else {
+		for (const proposal of deps.approvals.bot?.pending() ?? []) {
+			items.push({
+				id: `bot-approval:${proposal.id}`,
+				kind: "bot-approval",
+				title: `New bot — ${proposal.name}`,
+				detail: "needs approval",
+				createdAt: proposal.createdAt,
+				conversationId: proposal.conversationId,
+				target: { kind: "conversation", conversationId: proposal.conversationId },
+			});
+		}
 		for (const proposal of deps.approvals.program.pending()) {
 			const candidate = deps.approvals.program.candidate(proposal);
 			const base = deps.approvals.program.base(proposal);

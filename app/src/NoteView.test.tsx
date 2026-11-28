@@ -812,7 +812,7 @@ describe("quiet harbor regressions", () => {
 				urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 				return listFetch(input, init);
 			}) as typeof fetch;
-			const bot = { id: "b1", name: "Trip Planner", instructions: "", folder: null, mainConversationId: "app/trip", sideConversationIds: [], canMoveBack: false };
+			const bot = { id: "b1", name: "Trip Planner", instructions: "", folder: null, model: null, thinking: null, mainConversationId: "app/trip", sideConversationIds: [], canMoveBack: false };
 			const project = { id: "p1", name: "Kitchen reno" } as AppProject;
 			await mount(<NotesIndex token={null} projects={[project]} bots={[bot]} onOpen={() => {}} />);
 			expect([...container.querySelectorAll("td")].map((cell) => cell.textContent)).toContain("Trip Planner");

@@ -16,6 +16,8 @@ import type {
 	AppActivityResponse,
 	AppPostsResponse,
 	AppBot,
+	AppBotPatch,
+	AppBotMemory,
 	AppBotMoveBack,
 	AppBotName,
 	AppCompactResponse,
@@ -228,6 +230,18 @@ export function renameBot(token: string | null, id: string, body: AppBotName): P
 	});
 }
 
+export function patchBot(token: string | null, id: string, body: AppBotPatch): Promise<AppBot> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function getBotMemory(token: string | null, id: string): Promise<AppBotMemory> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}/memory`);
+}
+
 export function moveBotChatBack(token: string | null, id: string): Promise<AppBotMoveBack> {
 	return request(token, `/api/app/bots/${encodeURIComponent(id)}/move-back`, {
 		method: "POST",
@@ -263,6 +277,7 @@ export function createConversation(
 	opts?: {
 		title?: string;
 		projectId?: string;
+		botId?: string;
 		memoryExcluded?: boolean;
 		initialModelSettings?: AppModelSettings;
 	},
@@ -318,6 +333,14 @@ export function decideProgramApproval(
 	action: "approve" | "reject",
 ): Promise<AppApprovalDecisionResponse> {
 	return request(token, `/api/app/approvals/program/${id}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
+	});
+}
+
+export function decideBotApproval(token: string | null, id: number, action: "approve" | "decline"): Promise<AppApprovalDecisionResponse> {
+	return request(token, `/api/app/approvals/bot/${id}`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ action }),

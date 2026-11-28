@@ -26,7 +26,7 @@ import { ArchiveView } from "./ArchiveView.tsx";
 import { ActivityView } from "./ActivityView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
 import { BotConversionDialog } from "./BotConversionDialog.tsx";
-import { BotSettingsView } from "./BotSettingsView.tsx";
+import { BotPage } from "./BotPage.tsx";
 import {
 	ApiError,
 	clearToken,
@@ -279,6 +279,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// chips: an operator who excludes a chat shouldn't be re-asked per
 	// start. Memory-off projects force it at their own composer.
 	const [stagedMemoryExcluded, setStagedMemoryExcluded] = useState(false);
+	const [stagedBotId, setStagedBotId] = useState<string | null>(null);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
@@ -674,9 +675,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	};
 
 	const openProject = (id: string) => navigate({ kind: "project", id });
-	const openPanelProfile = () => currentBot === undefined
-		? openPage("status")
-		: navigate({ kind: "bot", id: currentBot.id });
+	const openPanelProfile = () => navigate({ kind: "bot", id: currentBot?.id ?? "little-goblin", tab: "settings" });
 	const openProjectsIndex = () => navigate({ kind: "page", page: "projects" });
 	const openArchive = () => navigate({ kind: "page", page: "archive" });
 	const openNotesIndex = () => navigate({ kind: "page", page: "notes" });
@@ -777,7 +776,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// created lazily, on the first send — an untouched composer never
 	// leaves an empty row in the store. On phone widths "+" is tapped from
 	// the chats list, so staging the composer is the mobile bit.
-	const newConversation = () => {
+	const newConversation = (botId?: string) => {
+		setStagedBotId(botId ?? null);
 		setComposerFocus((t) => t + 1);
 		void navigate({ kind: "home", composing: true });
 	};
@@ -795,6 +795,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		parts: UIMessage["parts"],
 		composerScope?: string,
 		initialModelSettings?: AppModelSettings,
+		botId?: string,
 	): Promise<boolean> => {
 		if (!(await leaveDirty())) return false;
 		if (startBusyRef.current) {
@@ -814,6 +815,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		try {
 			const created = await createConversation(token, {
 				...(projectId === null ? {} : { projectId }),
+				...(botId === undefined ? {} : { botId }),
 				// Only a composer start carries the staged memory toggle —
 				// note-originated chats have no visible toggle and must not
 				// inherit a sticky exclusion.
@@ -838,6 +840,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				return false;
 			}
 			setSeed({ id: created.id, parts });
+			setStagedBotId(null);
 			// The guard above already asked — select's own check would
 			// confirm the still-dirty page a second time.
 			void select(created.id, { skipDirtyGuard: true });
@@ -978,6 +981,32 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			return err instanceof Error ? err.message : String(err);
 		}
 	};
+	const askForBot = async (text: string): Promise<boolean> => {
+		setStarting(true);
+		setStartFailed(false);
+		try {
+			const message = { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: `New bot: ${text}` }] };
+			const response = await fetch("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json", ...(token === null ? {} : { authorization: `Bearer ${token}` }) },
+				body: JSON.stringify({ rolling: true, message }),
+			});
+			if (response.status !== 202) throw new Error(`send failed (${response.status})`);
+			const result = await response.json() as AppChatResponse;
+			if (!("conversationId" in result)) throw new Error("rolling send returned no conversation id");
+			setRollingViewing(null);
+			setRollingRouted(result.conversationId);
+			setRollingFollow({ conversationId: result.conversationId, messageId: message.id });
+			await navigate({ kind: "page", page: "rolling" });
+			await acted("conversations");
+			return true;
+		} catch {
+			setStartFailed(true);
+			return false;
+		} finally {
+			setStarting(false);
+		}
+	};
 	const renderHomeList = (navRef: (node: HTMLElement | null) => void) => (
 		<HomeList
 			home={home}
@@ -991,6 +1020,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			onToggleProjects={() => setProjectsOpen(!projectsOpen)}
 			onToggleSideChats={() => setSideChatsOpen(!sideChatsOpen)}
 			onNewSideChat={newConversation}
+			onAskBot={askForBot}
 			onNewProject={() => setCreateProjectOpen(true)}
 			onOpenProject={(id) => void openProject(id)}
 			onOpenTarget={openAttentionTarget}
@@ -1121,7 +1151,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
-						<button type="button" aria-label="New side chat" onClick={newConversation}>
+						<button type="button" aria-label="New side chat" onClick={() => newConversation()}>
 							<svg
 								viewBox="0 0 24 24"
 								fill="none"
@@ -1243,7 +1273,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									if (value === "pin") void headerActions.togglePinned();
 									else if (value === "rename") setHeaderRenaming(true);
 									else if (value === "convert-to-bot") setConvertSource(currentConv.id);
-									else if (value === "bot-settings") void openPanelProfile();
 									else if (value === "archive" || value === "unarchive")
 										void headerActions.toggleArchived();
 									else if (value === "delete") headerActions.remove();
@@ -1271,9 +1300,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											<MenuItem value="pin">
 												{currentConv.pinnedAt === null ? "Pin" : "Unpin"}
 											</MenuItem>
-											{currentMainBot === undefined
-												? <MenuItem value="rename">Rename</MenuItem>
-												: <MenuItem value="bot-settings">Bot settings</MenuItem>}
+											{currentMainBot === undefined && <MenuItem value="rename">Rename</MenuItem>}
 											{currentBot === undefined && currentConv.projectId === null && currentConv.parentId === null && (
 												<MenuItem value="convert-to-bot">Convert to bot…</MenuItem>
 											)}
@@ -1322,6 +1349,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						>
 							↑ {flatTitle(parentConv.title) ?? "parent conversation"}
 						</a>
+					)}
+					{(page === "rolling" || (page === "chat" && currentBot !== undefined)) && (
+						<button type="button" className="header-action bot-page-link" onClick={() => void openPanelProfile()}>Bot page</button>
 					)}
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
@@ -1418,7 +1448,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								className="header-action"
 								title="New side chat"
 								aria-label="New side chat"
-								onClick={newConversation}
+								onClick={() => newConversation()}
 							>
 								<svg
 									viewBox="0 0 24 24"
@@ -1494,7 +1524,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					/>
 				)}
 				{(page === "status" || page === "memory" || page === "skills" || page === "log") && (
-					<GoblinProfileHeader page={page} working={goblin.working} onPage={openPage} />
+					<GoblinProfileHeader page={page} working={goblin.working} onPage={openPage} onSettings={() => void navigate({ kind: "bot", id: "little-goblin", tab: "settings" })} />
 				)}
 				{page === "memory" && <MemoryView token={token} onConversation={openConversation} />}
 				{page === "delegations" && (
@@ -1598,16 +1628,23 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				)}
 				{page === "bot" && (
 					settingsBot !== undefined ? (
-						<BotSettingsView
+						<BotPage
 							key={settingsBot.id}
 							token={token}
 							bot={settingsBot}
+							tab={route.kind === "bot" ? route.tab : "settings"}
+							onTab={(tab) => void navigate({ kind: "bot", id: settingsBot.id, tab })}
 							onChanged={() => acted("conversations")}
 							onMovedBack={(id) => {
 								if (routeRef.current === route) openConversation(id);
 								void acted("conversations");
 							}}
 						/>
+					) : route.kind === "bot" && route.id === "little-goblin" ? (
+						<div className="ops">
+							<GoblinProfileHeader page={route.tab === "memory" ? "memory" : "settings"} working={goblin.working} onPage={(p) => void openPage(p)} onSettings={() => {}} />
+							{route.tab === "settings" ? <section className="bot-settings-fields"><label>Name</label><p>Little Goblin (fixed)</p><label>Default model</label><p>App default · <button type="button" className="link" onClick={() => void openPage("settings")}>Settings</button></p><label>Instructions</label><p>SOUL.md, AGENTS.md, USER.md · <button type="button" className="link" onClick={() => void openPage("files")}>Files</button></p><label>Folder</label><p>workspace/ — shared by its side chats</p><label>Memory</label><p>Hindsight bank · <button type="button" className="link" onClick={() => void navigate({ kind: "bot", id: "little-goblin", tab: "memory" })}>Memory</button></p></section> : <MemoryView token={token} onConversation={openConversation} />}
+						</div>
 					) : (
 						<div className="ops">
 							{convError !== null
@@ -1691,6 +1728,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							<Composer
 								key={`home-composer:${composerFocus}`}
 								token={token}
+								{...(stagedBotId === null ? {} : { placeholder: `Message ${bots.find((bot) => bot.id === stagedBotId)?.name ?? "bot"}` })}
 								draftScope="new"
 								busy={starting}
 								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
@@ -1699,7 +1737,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}
 								onSend={(parts, _whenBusy, initialModelSettings) =>
-									startChat(null, parts, "chat", initialModelSettings).catch((err: unknown) => {
+									startChat(null, parts, "chat", initialModelSettings, stagedBotId ?? undefined).catch((err: unknown) => {
 										reportStartRefusal(err);
 										return false;
 									})
@@ -1873,6 +1911,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<GoblinPanel
 						variant="column"
 						botName={currentBot?.name}
+						botId={currentBot?.id}
+						token={token}
+						hasCustomBots={bots.length > 0}
 						data={panelData}
 						conversations={panelConversations}
 						openConversationId={railCurrent ?? openRoll}
@@ -1884,6 +1925,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						onOpenPage={openPage}
 						onOpenNote={openNote}
 						onOpenProfile={() => void openPanelProfile()}
+						onOpenBotMemory={() => void navigate({ kind: "bot", id: currentBot!.id, tab: "memory" })}
 					/>
 				</aside>
 			)}
@@ -1899,7 +1941,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<DrawerTitle className="goblin-sheet-title">{panelName}</DrawerTitle>
 						<GoblinPanel
 							variant="sheet"
-							botName={currentBot?.name}
+						botName={currentBot?.name}
+						botId={currentBot?.id}
+						token={token}
+						hasCustomBots={bots.length > 0}
 							data={panelData}
 							conversations={panelConversations}
 							openConversationId={railCurrent ?? openRoll}
@@ -1925,6 +1970,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							onOpenProfile={() => {
 								setGoblinSheetOpen(false);
 								void openPanelProfile();
+							}}
+							onOpenBotMemory={() => {
+								setGoblinSheetOpen(false);
+								void navigate({ kind: "bot", id: currentBot!.id, tab: "memory" });
 							}}
 						/>
 					</DrawerContent>

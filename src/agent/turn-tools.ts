@@ -21,6 +21,7 @@ import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
 import { projectWorkdir, type ProjectStore } from "../projects.ts";
 import type { ProgramsStore } from "../programs.ts";
+import type { BotProposals } from "../bot-proposals.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
 import type { MailApproval } from "../mail-approval.ts";
@@ -57,6 +58,7 @@ export interface TurnToolsDeps {
 	projects: ProjectStore;
 	notes: NoteStore;
 	programs: ProgramsStore;
+	botProposals?: BotProposals;
 	// DM-per-operator send for program hooks; conv-independent by
 	// construction. Absent when Telegram is disabled.
 	sendPrivate?(text: string): Promise<void>;
@@ -120,6 +122,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		projects,
 		notes,
 		programs,
+		botProposals,
 		sendPrivate,
 		memory,
 		transcribe,
@@ -196,6 +199,15 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 							requestApproval: async (proposal, signal) => {
 								await deps.programApproval.requestApproval(proposal, signal);
 							},
+						}
+					: undefined,
+			bot:
+				botProposals !== undefined && channel === "app" && conv.agentType === null && store.bots.membership(conv.id) === null
+					? {
+							proposals: botProposals,
+							store,
+							conversationId: conv.id,
+							configRef,
 						}
 					: undefined,
 			file: deliverFile ? { deliver: deliverFile } : undefined,

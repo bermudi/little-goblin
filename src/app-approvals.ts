@@ -9,10 +9,11 @@ import type { ConversationStore } from "./conversation.ts";
 import type { MailApprovalLane } from "./mail-approval.ts";
 import type { OutboxEntry } from "./mail-outbox.ts";
 import type { ProgramProposal } from "./program-proposals.ts";
+import type { AppBotProposal } from "./http/app-wire.ts";
 import { appConversationOf } from "./targets.ts";
 
 export const APPROVAL_PART = "data-approval";
-export type ApprovalPartKind = "program" | "mail";
+export type ApprovalPartKind = "program" | "mail" | "bot";
 
 export interface ApprovalPartData {
 	kind: ApprovalPartKind;
@@ -44,6 +45,16 @@ export function presentProgramApproval(
 		throw new Error(`proposal ${proposal.id} is not addressed to an app conversation`);
 	}
 	store.append(conversationId, [approvalMessage("program", proposal.id)]);
+}
+
+export function presentBotApproval(
+	store: Pick<ConversationStore, "append" | "get">,
+	proposal: AppBotProposal,
+): void {
+	if (store.get(proposal.conversationId) === null) {
+		throw new Error(`bot proposal ${proposal.id} is addressed to a missing conversation`);
+	}
+	store.append(proposal.conversationId, [approvalMessage("bot", proposal.id)]);
 }
 
 export function makeAppMailLane(

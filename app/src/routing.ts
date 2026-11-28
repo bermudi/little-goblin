@@ -14,7 +14,7 @@ export type Route =
 	| { kind: "conversation"; id: string }
 	| { kind: "window"; id: string }
 	| { kind: "project"; id: string }
-	| { kind: "bot"; id: string }
+	| { kind: "bot"; id: string; tab: "settings" | "memory" }
 	| { kind: "note"; id: string }
 	| { kind: "page"; page: AppPageKey };
 
@@ -53,7 +53,7 @@ export function pathOfRoute(route: Route): string {
 		case "project":
 			return `/app/p/${route.id}`;
 		case "bot":
-			return `/app/b/${route.id}`;
+			return `/app/b/${route.id}${route.tab === "memory" ? "/memory" : ""}`;
 		case "note":
 			return `/app/n/${route.id}`;
 		case "page":
@@ -71,9 +71,10 @@ export function sameRoute(a: Route, b: Route): boolean {
 		case "conversation":
 		case "window":
 		case "project":
-		case "bot":
 		case "note":
 			return b.kind === a.kind && a.id === b.id;
+		case "bot":
+			return b.kind === "bot" && a.id === b.id && a.tab === b.tab;
 	}
 }
 

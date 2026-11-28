@@ -15,6 +15,7 @@ const programDecisionBody = z.object({
 const mailDecisionBody = z.object({
 	action: z.enum(["send", "cancel"]),
 });
+const botDecisionBody = z.strictObject({ action: z.enum(["approve", "decline"]) });
 
 const askCloseBody = z.object({ by: z.enum(["tap", "dismiss"]) }).strict();
 
@@ -63,6 +64,7 @@ export function approvalsBody(
 			decidedBy: row.decidedBy,
 			sentId: row.sentId,
 		})),
+		bots: deps.approvals.bot?.pending() ?? [],
 		serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 	};
 }
@@ -174,6 +176,30 @@ export async function handleApprovalsRoute(
 			status: outcome.kind,
 			message: describeMailDecision(outcome),
 		};
+		return Response.json(response, { headers: NO_STORE });
+	}
+
+	const botApprovalMatch = path.match(/^\/api\/app\/approvals\/bot\/(\d+)$/);
+	if (botApprovalMatch !== null) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals?.bot === undefined) return approvalUnavailable();
+		const body = await parsedJson(req, botDecisionBody);
+		if (body instanceof Response) return body;
+		const id = Number(botApprovalMatch[1]);
+		const outcome = body.action === "approve"
+			? deps.approvals.bot.approve(id)
+			: deps.approvals.bot.decline(id);
+		log.info("app bot proposal decision", { proposal: id, action: body.action, outcome: outcome.kind });
+		const response: AppApprovalDecisionResponse =
+			outcome.kind === "approved"
+				? { status: "activated", message: `Bot "${outcome.proposal.name}" was created.` }
+				: outcome.kind === "declined"
+					? { status: "rejected", message: `Bot proposal "${outcome.proposal.name}" was declined.` }
+					: outcome.kind === "settled"
+						? { status: "settled", message: `Bot proposal "${outcome.proposal.name}" was already decided.` }
+						: { status: "gone", message: "Bot proposal not found." };
 		return Response.json(response, { headers: NO_STORE });
 	}
 

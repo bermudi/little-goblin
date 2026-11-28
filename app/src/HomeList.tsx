@@ -71,6 +71,7 @@ export function HomeList({
 	onToggleProjects,
 	onToggleSideChats,
 	onNewSideChat,
+	onAskBot,
 	onNewProject,
 	onOpenProject,
 	onOpenTarget,
@@ -90,7 +91,8 @@ export function HomeList({
 	sideChatsOpen: boolean;
 	onToggleProjects: () => void;
 	onToggleSideChats: () => void;
-	onNewSideChat: () => void;
+	onNewSideChat: (botId?: string) => void;
+	onAskBot?: (text: string) => Promise<boolean>;
 	onNewProject: () => void;
 	onOpenProject: (id: string) => void;
 	onOpenTarget: (target: AppAttentionTarget) => void;
@@ -119,10 +121,10 @@ export function HomeList({
 			))}
 			{sideChatsOpen && (
 				<li className="side-chat new-side-chat">
-					<button type="button" onClick={onNewSideChat}>New side chat</button>
+					<button type="button" onClick={() => onNewSideChat()}>New side chat</button>
 				</li>
 			)}
-			{bots.length > 0 && <li className="rail-chats-label">Bots</li>}
+			<li className="rail-chats-label">Bots</li>
 			{bots.map(({ bot, main, side }) => {
 				const open = bot.id === expandedBotId;
 				const markedSide = open ? undefined : mostUrgentChat(side);
@@ -142,10 +144,12 @@ export function HomeList({
 						expanded={open}
 						onToggleSideChats={() => onToggleBotSideChats(bot.id)}
 						onOpen={() => onOpenConversation(main.id)}
+						onNewSideChat={() => onNewSideChat(bot.id)}
 						renderRow={renderRow}
 					/>
 				);
 			})}
+			<li className="bot-ask-row"><AskBotBox onSubmit={onAskBot ?? (async () => false)} /></li>
 			{active.length > 0 && <li className="rail-chats-label">Active</li>}
 			{active.map((row) => row.kind === "chat"
 				? <ChatListItem key={row.id} row={row} renderRow={renderRow} />
@@ -203,7 +207,23 @@ export function HomeList({
 	);
 }
 
-function BotListRows({ name, main, mark, line, current, side, expanded, onToggleSideChats, onOpen, renderRow }: {
+function AskBotBox({ onSubmit }: { onSubmit(text: string): Promise<boolean> }) {
+	const [text, setText] = useState("");
+	const [error, setError] = useState(false);
+	const submit = async () => {
+		const value = text.trim();
+		if (value === "") return;
+		setError(false);
+		if (await onSubmit(value)) setText("");
+		else setError(true);
+	};
+	return <form className="bot-ask-box" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+		<input aria-label="Ask Little Goblin for a new bot" placeholder="Ask Little Goblin for a new bot" value={text} onChange={(event) => setText(event.target.value)} />
+		{error && <span className="error" role="alert">Couldn't send. Try again.</span>}
+	</form>;
+}
+
+function BotListRows({ name, main, mark, line, current, side, expanded, onToggleSideChats, onOpen, onNewSideChat, renderRow }: {
 	name: string;
 	main: ChatRow;
 	mark: Mark | null;
@@ -213,6 +233,7 @@ function BotListRows({ name, main, mark, line, current, side, expanded, onToggle
 	expanded: boolean;
 	onToggleSideChats: () => void;
 	onOpen: () => void;
+	onNewSideChat: () => void;
 	renderRow: RenderRow;
 }) {
 	return (
@@ -259,6 +280,7 @@ function BotListRows({ name, main, mark, line, current, side, expanded, onToggle
 					{renderRow(row.conv, { mark: row.mark, line: row.line })}
 				</li>
 			))}
+			{expanded && <li className="side-chat new-side-chat"><button type="button" onClick={() => onNewSideChat()}>New side chat</button></li>}
 		</>
 	);
 }

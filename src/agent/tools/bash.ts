@@ -16,10 +16,13 @@ const MAX_TIMEOUT_MS = 10 * 60_000;
 
 export interface SkillWrites {
 	dirs: string[];
+	conversation: string;
 	record(skill: string): void;
 }
 
 type Fingerprint = string;
+
+const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === "ENOENT";
 
 function skillSnapshot(dirs: string[]): Map<string, Fingerprint> {
 	const snapshot = new Map<string, Fingerprint>();
@@ -28,7 +31,7 @@ function skillSnapshot(dirs: string[]): Map<string, Fingerprint> {
 		try {
 			names = readdirSync(dir);
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+			if (isMissing(err)) return;
 			throw err;
 		}
 		for (const name of names) {
@@ -37,21 +40,35 @@ function skillSnapshot(dirs: string[]): Map<string, Fingerprint> {
 			try {
 				if (!lstatSync(root).isDirectory()) continue;
 			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+				if (isMissing(err)) continue;
 				throw err;
 			}
 			const files: [string, number, number][] = [];
-			const walk = (path: string): void => {
-				for (const entry of readdirSync(path)) {
+			const walk = (path: string): boolean => {
+				let entries: string[];
+				try {
+					entries = readdirSync(path);
+				} catch (err) {
+					if (isMissing(err)) return false;
+					throw err;
+				}
+				for (const entry of entries) {
 					const abs = join(path, entry);
-					const stat = lstatSync(abs);
+					let stat;
+					try {
+						stat = lstatSync(abs);
+					} catch (err) {
+						if (isMissing(err)) continue;
+						throw err;
+					}
 					if (stat.isSymbolicLink()) continue;
 					const rel = relative(root, abs).split(sep).join("/");
 					if (stat.isDirectory()) walk(abs);
 					else if (stat.isFile()) files.push([rel, stat.size, stat.mtimeMs]);
 				}
+				return true;
 			};
-			walk(root);
+			if (!walk(root)) continue;
 			files.sort(([a], [b]) => a.localeCompare(b));
 			snapshot.set(`${dirIndex}/${name}`, JSON.stringify(files));
 		}
@@ -84,6 +101,7 @@ function recordSkillWrites(
 	for (const name of names) {
 		try {
 			writes.record(name);
+			log.info("skill write attributed", { conversation: writes.conversation, tool: "bash", toolCallId, skill: name });
 		} catch (err) {
 			log.error("skill provenance record failed", err, { tool: "bash", toolCallId, skill: name });
 		}

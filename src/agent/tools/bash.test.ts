@@ -91,7 +91,7 @@ describe("bash", () => {
 		mkdirSync(proposed, { recursive: true });
 		const records: string[] = [];
 		const tool = bashTool(root, root, {
-			skillWrites: { dirs: [skills, proposed], record: (name) => records.push(name) },
+			skillWrites: { dirs: [skills, proposed], conversation: "c", record: (name) => records.push(name) },
 		});
 		const run = async (command: string) => tool.execute({ command }, opts);
 		await run("mkdir -p skills/demo; echo x > skills/demo/SKILL.md");
@@ -123,6 +123,30 @@ describe("bash", () => {
 		records.length = 0;
 		await run("mkdir -p outside/target; echo s > outside/target/SKILL.md; ln -s ../outside/target skills/linked");
 		expect(records).toEqual([]);
+	});
+
+	test("files vanishing in another skill during a snapshot do not drop this call's writes", async () => {
+		const root = join(home, "project");
+		const skills = join(root, "skills");
+		const proposed = join(root, "proposed");
+		mkdirSync(join(skills, "churn"), { recursive: true });
+		mkdirSync(proposed, { recursive: true });
+		const churner = Bun.spawn(["/bin/bash", "-c", "while :; do for i in $(seq 1 200); do : > f$i; done; rm -f f*; done"], {
+			cwd: join(skills, "churn"),
+		});
+		try {
+			const records: string[] = [];
+			const tool = bashTool(root, root, {
+				skillWrites: { dirs: [skills, proposed], conversation: "c", record: (name) => records.push(name) },
+			});
+			for (let i = 0; i < 20; i++) {
+				await tool.execute({ command: `mkdir -p skills/w${i}; echo hi > skills/w${i}/SKILL.md` }, opts);
+			}
+			expect(Array.from({ length: 20 }, (_, i) => `w${i}`).filter((name) => !records.includes(name))).toEqual([]);
+		} finally {
+			churner.kill();
+			await churner.exited;
+		}
 	});
 
 	test("a flooded stream is reported as truncated, not silently cut", async () => {

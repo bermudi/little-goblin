@@ -164,6 +164,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 						onRead: deps.noteSkillRead,
 						skillWrites: {
 							dirs: [paths.skills(), paths.skillsProposed()],
+							conversation: conv.id,
 							record: (skill: string) => deps.noteSkillWrite?.(conv.id, skill),
 						},
 					}

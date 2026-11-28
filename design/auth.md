@@ -29,12 +29,18 @@ owner-session fallback. Failed refresh preserves the last good snapshot;
 age alone does not expire it. Missing keys, inaccessible snapshots and locked
 wallets fail loud. Linger does not unlock a wallet, and PAM auto-unlock is
 not assumed. Successful resolutions are memoized until an approved restart.
-Provisioning and refreshing credentials are operator actions, not diagnostic
-side effects. See [Setup](../docs/setup.md) and
+Provisioning credentials and refreshing snapshots are operator actions,
+not diagnostic side effects. See [Setup](../docs/setup.md) and
 [Configuration](../docs/configuration.md).
 
 Task secret access uses a separate scoped agent session; expired task auth
-does not fall back to the owner or expose the bootstrap token.
+does not fall back to the owner or expose the bootstrap token. Goblin
+renews an expired task session itself with `pass-keys login` (operator,
+2026-11-28, #1016). The bootstrap token stays inside pass-keys; Goblin and
+its shell only learn whether the login worked. Accepted: Goblin can use its
+granted items whenever its token is valid, not only after an operator
+refresh. Rejected: manual refresh, which made every scheduled job that
+needs a secret fail.
 
 The boundary is not same-user isolation: Goblin has full bash access as the
 same user, and OS-store encryption cannot protect an unlocked wallet from

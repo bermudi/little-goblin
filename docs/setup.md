@@ -149,6 +149,21 @@ installer renders one warm line per profile) plus the MCP lane's profile;
 twice daily; Goblin does not wait for remote warm. A failed sync preserves
 last-good snapshots; age is information, not expiry.
 
+The task session gets its own profile in the pass-keys config:
+
+```jsonc
+"goblin-task": {
+  "patKey": "goblin-dev",
+  "agent": "goblin-dev",
+  "sessionDir": "~/goblin/state/pass-cli-task",
+  "refs": {}
+}
+```
+
+The profile has no keys: it exists only so Goblin can renew its task
+session, and it needs the pass-keys build with `login`. Check it with
+`pass-keys login goblin-task`.
+
 Missing snapshots/keys or a locked/unavailable wallet fail loud. Persistent
 snapshots survive reboot only with an available, unlocked wallet. Linger is
 not wallet unlock, and PAM auto-unlock is unverified. Bootstrap/profile/auth

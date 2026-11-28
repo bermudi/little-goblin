@@ -199,6 +199,9 @@ unit sources must also be installed/reloaded separately with approval;
 editing `deploy/` alone does not alter installed units. The pass-cli task
 skill is seeded write-if-absent, so an existing workspace copy needs a
 separately reviewed operator update; it is not overwritten by deployment.
+The task session renews itself through `pass-keys login goblin-task`; a
+failed renewal means a dead token or a locked wallet — read the pass-keys
+error.
 
 ## Deploying
 

@@ -18,6 +18,7 @@ import type { MemorySearchDeps } from "./memory.ts";
 import { memorySearchTool } from "./memory.ts";
 import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
+import { passFillTool, type PassFillDeps } from "./pass-fill.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { type WatchToolDeps, watchTool } from "./watch.ts";
 import { type PostToolDeps, postTool } from "./post.ts";
@@ -69,6 +70,7 @@ export type {
 	ImageToolDeps,
 	MailToolDeps,
 	NoteToolDeps,
+	PassFillDeps,
 	SandboxToolDeps,
 	VisionToolDeps,
 };
@@ -105,6 +107,7 @@ export interface MakeToolsOptions {
 	computer?: ComputerToolDeps | undefined;
 	askOperator?: AskOperatorToolDeps | undefined;
 	ui?: boolean | undefined;
+	passFill?: PassFillDeps | undefined;
 	// Codex conversations mount the backend's hosted web_search instead of
 	// the local search tool — the mode only decides external_web_access.
 	hostedSearch?: { externalWebAccess: boolean } | undefined;
@@ -144,6 +147,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		computer,
 		askOperator,
 		ui,
+		passFill,
 		onRead,
 		contextFill,
 	} = options;
@@ -198,5 +202,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(computer ? computerTools(computer) : {}),
 		...(askOperator ? { ask_operator: askOperatorTool(askOperator) } : {}),
 		...(ui === true ? { ui: uiTool() } : {}),
+		...(passFill ? { pass_fill: passFillTool(passFill) } : {}),
 	};
 }

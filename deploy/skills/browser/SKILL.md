@@ -69,6 +69,14 @@ export AGENT_BROWSER_CDP=9222 AGENT_BROWSER_PIN_TAB=1
   handles logins; you may click, never extract.
 - Nothing listening on 9222? Don't launch anything — say so and wait.
 
+## Signing in with a saved login
+
+On pages in your own sessions, use the `pass_fill` tool for usernames,
+passwords and TOTP codes — it reads the Pass item and fills the field
+without the value ever reaching you. Never type a secret with
+`agent-browser fill` or `type`. The operator's-browser rules above stay
+as they are: his autofill signs in there.
+
 ## When to use what
 
 - Server-rendered pages, docs, articles → `fetch` tool (cheaper, faster).

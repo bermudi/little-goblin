@@ -99,6 +99,13 @@ const parseValues: [string, unknown, (c: Config) => unknown, unknown][] = [
 		(c) => [c.sandbox?.image, c.sandbox?.idleHours],
 		["docker.io/library/debian:stable-slim", 0],
 	],
+	["pass absent means no pass_fill tool", objBase, (c) => c.pass, undefined],
+	[
+		"pass block parses",
+		{ ...objBase, pass: { loginProfile: "goblin-task" } },
+		(c) => c.pass,
+		{ loginProfile: "goblin-task" },
+	],
 ];
 for (const [name, input, pick, expected] of parseValues) {
 	test(name, () => {
@@ -120,6 +127,8 @@ parseThrows.push(
 	["sandbox flag-shaped image refs fail loud", { ...objBase, sandbox: { image: "--privileged" } }],
 	["sandbox small pids fail loud", { ...objBase, sandbox: { pids: 4 } }],
 	["sandbox negative idleHours fail loud", { ...objBase, sandbox: { idleHours: -1 } }],
+	["pass with an unknown key fails loud", { ...objBase, pass: { loginProfile: "p", extra: 1 } }],
+	["pass with an empty loginProfile fails loud", { ...objBase, pass: { loginProfile: "" } }],
 );
 for (const [name, input] of parseThrows) {
 	test(name, () => {

@@ -171,6 +171,13 @@ Service/KWallet. The token can read its grants; anything Goblin sees still
 goes to its model provider. **Grant narrowly** — that is the whole control
 ([Auth → Proton Pass](../design/auth.md#proton-pass-2026-09-26)).
 
+The `pass_fill` tool fills a page field from a Pass item without the
+value reaching the model: it travels pass-cli stdout → Goblin's memory →
+agent-browser stdin, never argv, logs or the tool result, and the page
+host must match one of the item's saved websites first. Goblin renews an
+expired task session itself through `pass-keys login`; the bootstrap
+token never enters Goblin's process.
+
 Foreground `pass-keys get PROFILE NAME` reads only the named local
 snapshot key; `run PROFILE -- …` injects that profile's local keys into
 the child environment and directly execs. Neither contacts Pass, logs in,

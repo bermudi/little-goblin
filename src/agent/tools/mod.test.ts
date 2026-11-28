@@ -201,6 +201,13 @@ describe("toolNames ↔ makeTools", () => {
 			post: {} as unknown as PostToolDeps,
 			ask: { asks: {} as never, conversationId: "c" },
 			ui: true,
+			passFill: {
+				lane: { readField: async () => "" },
+				browser: {
+					pageUrl: async () => "https://example.test",
+					fill: async () => ({ ok: true as const }),
+				},
+			},
 		});
 		// Policy exhaustiveness, both ways: a mounted tool without a
 		// TOOL_POLICY row fails here, and so does a TOOL_NAMES entry

@@ -411,6 +411,23 @@ desktops: {
 The desktop image must already be built on this machine; goblin never
 pulls it (docs/operations.md → Desktop image).
 
+### Proton Pass
+
+Off when unset. A `pass` block mounts the `pass_fill` tool, which fills
+one web-page field from a Pass login item without the value reaching the
+model (design/auth.md → Filling pages from Pass).
+
+```json5
+pass: {
+  loginProfile: "goblin-task",
+},
+```
+
+`loginProfile` names the pass-keys profile whose agent session backs the
+reads; the tool renews an expired session itself with
+`pass-keys login <loginProfile>` (#1016). Hand-edited only; live-read per
+turn.
+
 ### Retired: `subagents`
 
 The `subagents` config block is gone — native `agent` children replaced

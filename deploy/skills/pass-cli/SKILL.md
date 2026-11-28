@@ -22,6 +22,7 @@ shares, agents, or grants — those are owner actions.
 | A program needs a secret, you don't | `pass-cli run` with `pass://` refs — output masked, value reaches the child only |
 | A requested config artifact needs a secret | `pass-cli inject` to an explicit path (default 0600) |
 | An interactive login needs a one-time code | `pass-cli item totp` — the only value allowed into context; it dies in seconds |
+| A web page needs a saved login | the `pass_fill` tool — the value never reaches you |
 | Find what's accessible | `pass-cli vault list`, `item list --output json` — metadata only |
 
 Never `item view` (it prints values — once a secret enters context it

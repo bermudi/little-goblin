@@ -9,6 +9,7 @@
 
 import type { TurnToolMaker } from "../turn/tool-authority.ts";
 
+import { homedir } from "node:os";
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type Config } from "../config-schema.ts";
 import type { AgentChildren } from "../agent-children.ts";
@@ -16,6 +17,7 @@ import { loadAgentTypes } from "../agent-types.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
+import { goblinHome } from "../goblin-home.ts";
 import { paths } from "../home-layout.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
@@ -35,6 +37,8 @@ import {
 	type VisionToolDeps,
 } from "./tools/mod.ts";
 import { withAgent } from "./tools/agent.ts";
+import { makeAgentBrowser } from "../agent-browser.ts";
+import { makePassLane } from "../pass.ts";
 import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
@@ -317,6 +321,17 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 					: undefined,
 			// App turns only — Telegram and guests render plain text.
 			ui: channel === "app",
+			passFill:
+				configRef.current.pass !== undefined
+					? {
+							lane: makePassLane({
+								goblinHome: goblinHome(),
+								home: homedir(),
+								loginProfile: configRef.current.pass.loginProfile,
+							}),
+							browser: makeAgentBrowser(),
+						}
+					: undefined,
 		});
 		// Native subagents (design/agents.md → agent). A child
 		// conversation gets its spawn-time allowlist instead of the agent

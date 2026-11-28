@@ -42,6 +42,24 @@ arbitrary same-user code. Local snapshot reads do not create remote audit
 events. A failed sync can retain old keys; upstream rotation or revocation
 is the authority change. Grant narrowly.
 
+### Filling pages from Pass (operator, 2026-11-28, #1017)
+
+The `pass_fill` tool fills one field of a web page in Goblin's own
+agent-browser session from a Pass item and returns only that it filled;
+the value never reaches the model, the chat or the provider. The value
+path is pass-cli stdout → Goblin's memory → agent-browser stdin — never
+argv, logs or the tool result. Before the field is read, the page's host
+must equal or be a subdomain of one of the item's saved websites, over
+https (loopback http allowed). The check reads the URL of the frame where
+element commands run, so a main-frame snapshot ref pointing into an
+embedded frame is checked against the main page, and a page that
+navigates between the check and the fill is not caught. Accepted:
+Goblin's shell can still read its granted items. Rejected: shell commands
+(the model writes the command, and masking hides only the exact value) and
+the operator typing it (needs #863).
+An expired task session is renewed with `pass-keys login` before the read
+(#1016); `pass.loginProfile` names the profile.
+
 ### ChatGPT device-code ownership
 
 Cancellation and sign-out revoke a login attempt's authority, including

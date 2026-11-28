@@ -88,7 +88,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	post: P({ guestChannel: false, command: true }),
 	delegate: P({ guestChannel: false }),
 	mail: P({ guestChannel: false, command: true }),
-	send_file: P({ guestChannel: false, command: true }),
+	send_file: P({ guestChannel: false }),
 	artifact: P({ scriptable: true }),
 	memory_search: P({ replay: "safe", scriptable: true, guestChannel: false, command: true }),
 	memory_reflect: P({ guestChannel: false, command: true }),

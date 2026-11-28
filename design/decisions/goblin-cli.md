@@ -1,9 +1,11 @@
 # Goblin commands reached from bash (trial)
 
-Status: trial passed, ruled 2026-11-27 on
-[#993](https://github.com/bermudi/little-goblin/issues/993). The 2026-10-10
-rejection in [tools.md → Scripting](../tools.md#scripting) stands until the
-real-case measurement below. The trial stays off in production.
+Status: accepted, ruled 2026-11-28 on
+[#993](https://github.com/bermudi/little-goblin/issues/993). It replaces
+the 2026-10-10 rejection of bash callbacks in
+[tools.md → Scripting](../tools.md#scripting). Commands are off unless
+config turns them on. Turning them on in production needs a separate
+operator approval.
 
 **Context.** Every request sends every tool schema. With all tools mounted
 that is 27 tools and about 40 KB, roughly 10k tokens; most turns use two or
@@ -34,9 +36,10 @@ for a channel that belongs to one bash call:
   a socket on an inherited file descriptor, with no port and no path.
   Another same-uid process could not open `/proc/<pid>/fd/3`.
 
-**Decision.** Build one command, `goblin note`, and measure it before
-building more. The trial is off unless config turns it on, so production
-chats do not change until the operator rules on the result.
+**Decision.** Rarely used tools run as `goblin` commands through bash.
+The trial started with one command, `goblin note`; the ruling of
+2026-11-28 below sets ten. Commands are off unless config turns them on,
+so production chats do not change until the operator approves a rollout.
 
 - **One private channel per bash call.** When the trial is on, the bash
   tool spawns with Bun's IPC channel. Goblin closes the channel when that
@@ -73,9 +76,11 @@ chats do not change until the operator rules on the result.
   prints every command in full: description, actions and flags, so one
   call is enough (operator, 2026-11-27: the first measurement spent two
   help calls per new chat, one for the list and one for the flags). The bash
-  description gets one fixed sentence that names `goblin --help`. It never
-  lists the commands, so a change to the command set never changes the
-  tool list.
+  description gets one sentence that names every command in the code's
+  policy, mounted in the chat or not, and `goblin --help` (operator,
+  2026-11-28: without the names, Codex never found three of the eleven
+  commands). The list changes only with a release, so a chat's tool list
+  stays the same. A command that is not mounted answers "not available".
 - **The app shows the nested call.** The bash result carries a short
   record of each `goblin` call: tool, arguments, result and whether it
   failed, cut short the way `script` cuts its records. The bash card lists
@@ -85,9 +90,19 @@ chats do not change until the operator rules on the result.
   calls would need bash to rewrite its model output, which touches the
   cache rule; not in the trial.
 
-**Not in the trial:** other commands; commands that wait on the operator,
-such as mail approval, which can outlast the bash timeout; removing typed
-tools; shrinking schemas; the container `sandbox`, which gets no channel.
+- **Commands leave the typed list.** When commands are on, a command
+  tool stays in the turn's assembled tools, so the fence can dispatch it,
+  but it is not declared to the model on any route. Turning commands on
+  or off changes the declared list once (operator, 2026-11-28).
+- **The prompt names them as commands.** The system prompt's tool line
+  lists only declared tools, and a second line lists the commands. Lines
+  that describe a command tool name it as `goblin <name>`. With commands
+  off, the prompt is unchanged. The prompt is frozen per chat, so a chat
+  opened before commands were turned on keeps its old text.
+
+**Not in scope:** commands that wait on the operator, which can outlast
+the bash timeout (`mail` only queues a draft, so it qualifies); shrinking
+schemas; the container `sandbox`, which gets no channel.
 
 **Consequences.** The trial reports, on Codex (`gpt-6-luna`) and
 OpenRouter (`minimax/minimax-m3.1-flash`) with public prompts: how often
@@ -118,8 +133,15 @@ found `send_file`, `transcribe` or `mail` on Codex, because they never read
 help for them. A variant that names the commands in the sentence fixed
 that on Codex. On OpenRouter, `send_file` still went to `artifact`. A list
 flag such as `mail --to` failed until the parser took repeated values.
-Numbers are on #993. The operator rules next on the tool set and on naming
-the commands.
+Numbers are on #993.
+
+**Ruling (operator, 2026-11-28).** Ten tools are commands: `program`,
+`history_search`, `memory_search`, `memory_reflect`, `note`, `watch`,
+`mail`, `transcribe`, `speak` and `post`. `send_file` stays typed: it was
+the only command a model missed with the names in place, and its
+declaration is small. The bash sentence names the commands. The 2026-10-10
+rejection is replaced for bash; production stays off until the operator
+approves a rollout.
 
 Accepted risks:
 
@@ -127,6 +149,10 @@ Accepted risks:
   model starts in that call could write to it directly. That program
   already holds the bash call's authority, and the channel dies with the
   call.
-- The added sentence changes the bash description once when the trial is
-  turned on. On routes that resend the whole list, that costs one cold
-  cache read per open chat.
+- Turning commands on changes the bash description and drops the command
+  tools from the declared list, once. On routes that resend the whole
+  list, that costs one cold cache read per open chat. On Codex, removals
+  are announced as text, and the earlier declarations stay in the input.
+- Prompt or skill text that names a command tool as a typed tool can
+  send the model to an unknown tool. The bash sentence names the commands
+  to counter this.

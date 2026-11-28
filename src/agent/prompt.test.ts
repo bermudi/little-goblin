@@ -83,6 +83,28 @@ describe("buildSystemPrompt", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+	test("tools reached only as goblin commands are named as commands, not tools", () => {
+		const home = useHome("goblin-prompt-commands-");
+		process.env.GOBLIN_HOME = home;
+		try {
+			const typed = ["bash", "send_file"];
+			const commands = ["program", "mail", "memory_search", "memory_reflect", "history_search"];
+			const text = buildSystemPrompt(conv, typed, null, undefined, commands).text;
+			expect(text).toContain("- Tools: bash, send_file. Paths are relative");
+			expect(text).toContain("- Goblin commands, run through bash as `goblin <name>`: program, mail, memory_search, memory_reflect, history_search.");
+			expect(text).toContain("- goblin program manages standing orders");
+			expect(text).toContain("- goblin mail drafts a mail");
+			expect(text).toContain("- goblin history_search searches past conversations");
+			expect(text).toContain("via `goblin memory_search`.");
+			expect(text).toContain("- goblin memory_reflect investigates");
+			expect(text).toContain("service; goblin memory_search retrieves");
+			expect(text).not.toContain("the memory_search tool");
+			expect(buildSystemPrompt(conv, [...typed, ...commands], null, undefined, []).text)
+				.toBe(buildSystemPrompt(conv, [...typed, ...commands]).text);
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 	test("no clock — the prompt carries no date and points at `date` instead", () => {
 		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;

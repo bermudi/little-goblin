@@ -49,7 +49,6 @@ test("descriptors reproduce the former name lists", () => {
 		"note",
 		"post",
 		"program",
-		"send_file",
 		"speak",
 		"transcribe",
 		"watch",

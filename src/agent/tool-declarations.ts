@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { inputJsonSchema } from "../tool.ts";
-import { isHosted, type Tools } from "../tool.ts";
+import { isDeclared, isHosted, type Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
 
 export const TOOLS_PART = "data-tools";
@@ -74,7 +74,7 @@ export const toolChangeSchema = z.object({
 export function declarationsOf(tools: Tools): ToolDeclaration[] {
 	const declarations: ToolDeclaration[] = [];
 	for (const [name, tool] of Object.entries(tools)) {
-		if (isHosted(tool)) continue;
+		if (isHosted(tool) || !isDeclared(tool)) continue;
 		declarations.push({
 			type: "function",
 			name,

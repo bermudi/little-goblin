@@ -11,7 +11,7 @@
 // prompt, tool schemas, every message part — is verbatim.
 
 import type { Database } from "bun:sqlite";
-import { inputJsonSchema, isHosted, type Tools } from "./tool.ts";
+import { inputJsonSchema, isDeclared, isHosted, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { log } from "./log.ts";
 import type { PromptSegments } from "./turn/itemize.ts";
@@ -45,6 +45,7 @@ export interface StoredWindow {
 export function serializeToolDefs(tools: Tools): WindowTool[] {
 	const out: WindowTool[] = [];
 	for (const [name, tool] of Object.entries(tools)) {
+		if (!isDeclared(tool)) continue;
 		const description = isHosted(tool) ? null : tool.description;
 		const js = inputJsonSchema(tool);
 		// An async schema converter can't be read synchronously —

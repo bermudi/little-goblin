@@ -25,6 +25,7 @@ export interface FunctionTool<I, O> {
 	input: z.ZodType<I>;
 	/** A model-facing override used only by the ui tool. */
 	jsonSchema?: JSONObject;
+	declared?: false;
 	execute(input: I, context: ToolCallContext): Promise<O> | O;
 	toModelOutput?(options: {
 		output: O;
@@ -47,6 +48,10 @@ export function defineTool<I, O>(tool: FunctionTool<I, O>): FunctionTool<I, O> {
 
 export function isHosted(tool: Tool): tool is HostedTool {
 	return "hosted" in tool;
+}
+
+export function isDeclared(tool: Tool): boolean {
+	return isHosted(tool) || tool.declared !== false;
 }
 
 function isJsonValue(value: unknown): value is JSONValue {

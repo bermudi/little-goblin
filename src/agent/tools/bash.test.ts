@@ -44,7 +44,7 @@ describe("bash", () => {
 		expect(tool.description).toContain("does not authorize repairs or restarts");
 		expect(tool.description).toBe(bashTool("/another-workspace").description);
 		expect(tool.description).not.toBe(ws.description);
-		const commandSentence = " Some of Goblin's tools also run as commands here: `goblin --help` lists them.";
+		const commandSentence = " Some of Goblin's tools run as commands here: speak, transcribe, program, watch, post, mail, memory_search, memory_reflect, history_search, note. `goblin --help` shows how to call them.";
 		expect(bashTool(paths.workspace(), paths.workspace(), { commands: true }).description.endsWith(commandSentence)).toBe(true);
 		expect(bashTool("/tmp", "/tmp", { commands: true }).description.endsWith(commandSentence)).toBe(true);
 	});

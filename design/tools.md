@@ -152,10 +152,11 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
   `out of memory`. Measured on g7 (Bun 1.4.2): 30 parallel nested calls
   in 148 ms; a spinning `while (true) {}` stopped 203 ms after abort.
   This also keeps scripts orthogonal to the container sandbox
-  (`design/sandbox.md`): no port punches through it. A private channel
-  that belongs to one bash call is on trial
-  ([decision](decisions/goblin-cli.md), #993); this rejection stands
-  until the trial passes.
+  (`design/sandbox.md`): no port punches through it. For bash, a
+  private channel that belongs to one bash call replaces this rejection
+  (operator, 2026-11-28; [decision](decisions/goblin-cli.md), #993):
+  it closes when its bash call returns, and it has no port. Scripts
+  stay in the VM.
 - **Callable set = allowlist ∩ the turn's assembled set**, built after
   guest filtering, so every per-turn gate carries over. Delivery rides the
   sink, `mail` needs per-send human approval, agent-spawning and

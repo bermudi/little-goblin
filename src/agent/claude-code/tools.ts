@@ -12,7 +12,7 @@ import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-
 import { z } from "zod";
 import { log } from "../../log.ts";
 import { stableStringify } from "../../loop-detect.ts";
-import { inputJsonSchema, isHosted, type Tools, type ToolOutput } from "../../tool.ts";
+import { inputJsonSchema, isDeclared, isHosted, type Tools, type ToolOutput } from "../../tool.ts";
 
 export const MCP_SERVER_NAME = "goblin";
 
@@ -187,7 +187,7 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	let callSeq = 0;
 
 	for (const [name, t] of Object.entries(tools)) {
-		if (isHosted(t)) continue;
+		if (isHosted(t) || !isDeclared(t)) continue;
 		const schema = t.input;
 		names.push(name);
 		const settle: Handler = async (input, extra) => {

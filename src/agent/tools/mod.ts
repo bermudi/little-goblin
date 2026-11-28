@@ -1,4 +1,4 @@
-import type { Tools } from "../../tool.ts";
+import { isDeclared, type Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
@@ -70,7 +70,11 @@ export type {
 };
 
 export function toolNames(tools: Tools): string[] {
-	return Object.keys(tools);
+	return Object.keys(tools).filter((name) => isDeclared(tools[name]!));
+}
+
+export function commandToolNames(tools: Tools): string[] {
+	return Object.keys(tools).filter((name) => !isDeclared(tools[name]!));
 }
 
 export interface MakeToolsOptions {

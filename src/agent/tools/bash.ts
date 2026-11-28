@@ -9,13 +9,14 @@ import { log } from "../../log.ts";
 import { skillNameSchema } from "../../skill-provenance.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 import { commandBindingFor, commandRuntime } from "./goblin-channel.ts";
+import { TOOL_NAMES, policyOf } from "../tool-policy.ts";
 
 const MAX_CAPTURE = 4 * 1024 * 1024;
 const OUTPUT_BUDGET = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 
-const COMMAND_SENTENCE = " Some of Goblin's tools also run as commands here: `goblin --help` lists them.";
+const COMMAND_SENTENCE = ` Some of Goblin's tools run as commands here: ${TOOL_NAMES.filter((name) => policyOf(name).command).join(", ")}. \`goblin --help\` shows how to call them.`;
 
 export interface SkillWrites {
 	dirs: string[];

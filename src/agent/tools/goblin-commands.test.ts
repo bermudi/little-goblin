@@ -19,12 +19,14 @@ import { useHome } from "../../testkit.ts";
 import { fenceTools } from "../../turn/tool-fence.ts";
 import { makeTurnTools } from "../turn-tools.ts";
 import { TOOL_NAMES, policyOf } from "../tool-policy.ts";
+import { declarationsOf } from "../tool-declarations.ts";
+import { toToolSet } from "../../turn/ai-sdk-tools.ts";
+import { commandToolNames, toolNames } from "./mod.ts";
 import type { ProgramsStore } from "../../programs.ts";
 
 const commandNames: string[] = TOOL_NAMES.filter((name) => policyOf(name).command);
 const flagsByTool: Record<string, string> = {
 	program: "--name",
-	send_file: "--path",
 	history_search: "--query",
 	memory_search: "--query",
 	memory_reflect: "--query",
@@ -164,7 +166,15 @@ describe("assembled Goblin commands at the bash boundary", () => {
 			received.send_file = file;
 		});
 		const mounted = Object.keys(raw).filter((name) => policyOf(name).command);
-		expect(mounted).toEqual(commandNames);
+		expect(mounted.sort()).toEqual([...commandNames].sort());
+		const declared = declarationsOf(raw).map((declaration) => declaration.name);
+		for (const name of commandNames) expect(declared).not.toContain(name);
+		expect(declared).toEqual(expect.arrayContaining(["bash", "send_file", "fetch", "search"]));
+		expect(Object.keys(toToolSet(raw)).sort()).toEqual([...declared].sort());
+		expect(toolNames(raw).sort()).toEqual([...declared].sort());
+		expect(commandToolNames(raw).sort()).toEqual([...commandNames].sort());
+		const bashDescription = raw.bash !== undefined && !("hosted" in raw.bash) ? raw.bash.description : "";
+		expect(bashDescription).toContain(`run as commands here: ${commandNames.join(", ")}.`);
 		const speak = raw.speak;
 		if (speak === undefined || "hosted" in speak) throw new Error("speak did not mount");
 		raw.speak = {
@@ -199,10 +209,10 @@ describe("assembled Goblin commands at the bash boundary", () => {
 				expect(helpText).toContain(flag);
 			}
 			expect((await run("goblin fetch --url https://example.com")).output).toContain("fetch is not available");
+			expect((await run("goblin send_file --path out.txt")).output).toContain("send_file is not available");
 
 			const cases = [
 				["program", "goblin program list"],
-				["send_file", "goblin send_file --path out.txt"],
 				["history_search", "goblin history_search search --query handoff"],
 				["memory_search", "goblin memory_search --query preferences"],
 				["memory_reflect", "goblin memory_reflect --query patterns"],
@@ -224,7 +234,6 @@ describe("assembled Goblin commands at the bash boundary", () => {
 			}
 			expect(received).toMatchObject({
 				program: { action: "list" },
-				send_file: { filename: "out.txt" },
 				history_search: { query: "handoff" },
 				memory_search: { query: "preferences" },
 				memory_reflect: { query: "patterns" },

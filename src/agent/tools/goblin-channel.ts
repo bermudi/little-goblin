@@ -35,9 +35,13 @@ interface CommandBinding {
 const commandBindings = new WeakMap<object, CommandBinding>();
 
 export function withGoblinCommands(tools: Tools, conversation?: string): Tools {
-	const bash = tools.bash;
-	if (bash !== undefined) commandBindings.set(bash, { tools, ...(conversation ? { conversation } : {}) });
-	return tools;
+	const out: Tools = {};
+	for (const [name, tool] of Object.entries(tools)) {
+		out[name] = policyOf(name).command && !isHosted(tool) ? { ...tool, declared: false } : tool;
+	}
+	const bash = out.bash;
+	if (bash !== undefined) commandBindings.set(bash, { tools: out, ...(conversation ? { conversation } : {}) });
+	return out;
 }
 
 export function bindCommandDispatch(tools: Tools, dispatch: ToolDispatch): void {

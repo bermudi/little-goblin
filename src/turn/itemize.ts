@@ -1,6 +1,6 @@
 
 import type { PromptMessage } from "../prompt-message.ts";
-import { inputJsonSchema, isHosted, type Tools } from "../tool.ts";
+import { inputJsonSchema, isDeclared, isHosted, type Tools } from "../tool.ts";
 import { PROMPT_SECTIONS } from "../agent/prompt.ts";
 
 export interface PromptSegments {
@@ -139,6 +139,7 @@ const jsonSchemaByTool = new WeakMap<object, unknown>();
 function toolDefsChars(tools: Tools): number {
 	let total = 0;
 	for (const [name, t] of Object.entries(tools)) {
+		if (!isDeclared(t)) continue;
 		let size = name.length;
 		if (!isHosted(t)) size += t.description.length;
 		let js = jsonSchemaByTool.get(t);

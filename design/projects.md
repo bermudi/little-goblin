@@ -129,7 +129,7 @@ and diff.
 notes it can access. A new roll clears pins and compaction keeps
 them. On its next turn, the model receives a short notice for new pins and
 changes at the tail of the conversation. It reads bodies and diffs on
-demand. The Notes button shows changes in the app.
+demand. The composer's Notes button shows pins and changes in the app.
 
 **Editor: Milkdown** — chosen over Tiptap for being markdown-native (remark
 parse/serialize), so `body_md` stays the only format. The editor saves only
@@ -145,18 +145,33 @@ from a third party.
 
 - **Project conversations** get a notes index in the frozen `## project`
   section; current text is a `note read` away.
-- **Attach.** The composer's attach picker adds notes. The client sends a
-  reference and may add a display title for the chip — labels only; the
-  server ignores it. Intake resolves the id and stores the expanded part —
-  id, title, rev, and the body as of send — so history holds what the
-  server read, never client-supplied content. The model view renders it
-  fenced; the stored part is a frozen snapshot, and a later edit shows
-  through `note read`, never by rewriting the old message.
-- "Chat with a note" is a new conversation with that note attached to its
-  first message. No separate mechanism.
-- **Pin to a chat** (operator, 2026-11-27, #982). Notes in the chat header
-  opens a desktop panel or phone sheet. Search active notes in the chat's
-  scope, see pinned notes and recent edits, and unpin from the same place.
+- **One mode: pin (operator, 2026-11-28, #1002).** Picking a note pins it
+  to the chat; there is no separate attach. The operator: "any time you pin
+  a note, the model is probably going to read it … two modes make no
+  sense." Rejected: attach as a second mode. It froze a copy of the body
+  into one message, so after an edit the model held a stale copy plus a
+  change line, and a long note stayed in context for the rest of the chat.
+  Accepted cost: the model spends one `note read` before it uses a note.
+- **Old attached notes.** Messages sent before #1002 keep their expanded
+  `data-note` part: id, title, rev and the body as of send. Intake still
+  resolves a `data-note` reference (an edited old message keeps its chip),
+  stores what the server read, never client-supplied content, and the model
+  view renders it fenced. The app no longer offers a way to add one.
+- **Chat with this note** opens a new chat with that note staged as pinned
+  and the cursor in the composer. Nothing is sent until the operator types.
+- **Staged pins.** A chat that does not exist yet (the new-chat and
+  project composers) holds picked notes locally. The first send creates the
+  chat and its pins in one transaction, before the message is admitted, so
+  the first turn carries the pin notice. A note the new chat could not pin
+  refuses the whole create; the draft and the staged pins stay. Candidates
+  use the same access rule as an existing chat's pins.
+- **Pin to a chat** (operator, 2026-11-27, #982; moved to the composer
+  2026-11-28, #1002). The composer's Notes button opens a panel anchored to
+  it on desktop, or a bottom sheet from the + menu on a phone. Search active
+  notes in the chat's scope, see pinned notes and recent edits, and unpin
+  from the same place. The button shows whether notes are pinned, with a
+  count; hovering it lists the pinned names. A phone has no hover, so the
+  operator opens the sheet to see names. The chat header has no Notes button.
   A new roll starts with no pins. Compaction keeps the existing pins.
   On the next turn, a pin notice names the note, ID, and revision. One line
   per edit names the actor, change, and any reason. Unpinning or losing

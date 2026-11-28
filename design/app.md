@@ -338,7 +338,7 @@ icons beside the avatar. The operator tried both on a throwaway instance and
 picked the menu. Accepted cost: the tools take two clicks.
 
 **The phone bar folds three tools into a + menu (ruling 2026-11-22,
-#897).** On phone widths, Attach a file, Attach a note and Invoke a
+#897).** On phone widths, Attach a file, Notes and Invoke a
 skill sit behind one **Add** (+) button; Mic stays on the bar, since
 voice notes are a main phone action. The tools are gated in JSX on
 `usePhoneWidth`, not hidden by CSS. Send, Stop and Queue never shrink;
@@ -1617,7 +1617,7 @@ picker's catalog view; the operator Skills page is unchanged.
 shapes, chosen by size and steps, never by taste:
 
 - Small quick pick anchored to its trigger → `.composer-pick`
-  popover floating over the composer (note picker, model quick
+  popover floating over the composer (Notes panel, model quick
   menu). The thread stays visible and nothing reflows.
 - Big or multi-step task → `.veil > .msheet` bottom sheet over the
   whole app — dim veil, tap-outside closes, centered card above

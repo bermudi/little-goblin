@@ -61,7 +61,9 @@ export default function NoteEdits({
 		try {
 			const next = await listNoteEdits(token, id, page.before);
 			if (!current.active) return;
-			setPage({ edits: [...page.edits, ...next.edits], before: next.before });
+			setPage((latest) => latest === page
+				? { edits: [...latest.edits, ...next.edits], before: next.before }
+				: latest);
 			setError(null);
 		} catch {
 			if (current.active) setError("Couldn't load earlier edits.");

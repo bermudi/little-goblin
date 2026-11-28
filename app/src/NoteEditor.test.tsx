@@ -430,6 +430,57 @@ describe("NoteEditor save loop", () => {
 		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo", "Add a detail", undefined]);
 	});
 
+	test("tab hide saves the text and retires the unfinished reason when the save lands", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		const field = container.querySelector<HTMLInputElement>(".note-edit-reason")!;
+		holdPatch();
+		await edit(ref, "corrected text");
+		await typeReason(field, "Fix ty");
+		await act(async () => {
+			Object.defineProperty(win.document, "hasFocus", { value: () => false, configurable: true });
+			field.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
+			Object.defineProperty(win.document, "visibilityState", { value: "hidden", configurable: true });
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("corrected text");
+		expect(patches[0]!.body.reason).toBeUndefined();
+
+		Reflect.deleteProperty(win.document, "hasFocus");
+		Object.defineProperty(win.document, "visibilityState", { value: "visible", configurable: true });
+		await typeReason(field, "Fix typo");
+		await act(async () => field.blur());
+		await act(async () => releasePatch());
+		expect(field.value).toBe("");
+		await edit(ref, "an unrelated edit");
+		await notice();
+		expect(patches.map(({ body }) => body.reason)).toEqual([undefined, undefined]);
+	});
+
+	test("tab hide flushes the latest text even with a save in flight and a reason unfinished", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "first edit");
+		await notice();
+		expect(patches).toHaveLength(1);
+		await edit(ref, "latest edit");
+		const field = container.querySelector<HTMLInputElement>(".note-edit-reason")!;
+		await typeReason(field, "Unfinished");
+		await act(async () => {
+			Object.defineProperty(win.document, "visibilityState", { value: "hidden" });
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		await act(async () => releasePatch());
+		expect(patches).toHaveLength(2);
+		expect(stored.body).toContain("latest edit");
+		expect(patches[1]!.body.reason).toBeUndefined();
+		expect(field.value).toBe("");
+	});
+
 	test("mounting a body Milkdown normalizes autosaves nothing", async () => {
 		root = createRoot(container);
 		await mount();

@@ -171,10 +171,12 @@ const NoteEditor = forwardRef<
 	const [reason, setReason] = useState({ text: "" });
 	const reasonRef = useRef(reason);
 	const reasonEditingRef = useRef(false);
+	const reasonEntryRef = useRef(0);
 	// A save requested while one is in flight — runs on settle with
 	// merged options (a forced resolve keeps force + title).
 	const pendingRef = useRef<{
 		keepalive: boolean;
+		flush?: boolean;
 		force?: boolean;
 		title?: string;
 		preflush?: boolean;
@@ -394,6 +396,7 @@ const NoteEditor = forwardRef<
 		expectedRev: number,
 		opts: {
 			keepalive?: boolean;
+			flush?: boolean;
 			force?: boolean;
 			title?: string;
 			preflush?: boolean;
@@ -409,6 +412,7 @@ const NoteEditor = forwardRef<
 			const queued = pendingRef.current;
 			pendingRef.current = {
 				keepalive: queued?.keepalive === true || opts.keepalive === true,
+				...(queued?.flush === true || opts.flush === true ? { flush: true } : {}),
 				...(queued?.force === true || opts.force === true ? { force: true } : {}),
 				...(opts.title !== undefined
 					? { title: opts.title }
@@ -444,6 +448,9 @@ const NoteEditor = forwardRef<
 		const flight = (async () => {
 			try {
 				const submittedReason = reasonEditingRef.current ? null : reasonRef.current;
+				const unfinishedEntry = opts.flush === true && reasonEditingRef.current
+					? reasonEntryRef.current
+					: null;
 				const patch = {
 					body: md,
 					...(opts.title !== undefined ? { title: opts.title } : {}),
@@ -455,7 +462,12 @@ const NoteEditor = forwardRef<
 						opts.keepalive === true &&
 						utf8.encode(JSON.stringify(patch)).length <= KEEPALIVE_BODY_MAX,
 				});
-				if (submittedReason?.text && data.rev > expectedRev && reasonRef.current === submittedReason) {
+				if (
+					data.rev > expectedRev &&
+					((submittedReason?.text && reasonRef.current === submittedReason) ||
+						unfinishedEntry === reasonEntryRef.current)
+				) {
+					reasonEditingRef.current = false;
 					changeReason("");
 				}
 				baselineRef.current = md;
@@ -546,7 +558,7 @@ const NoteEditor = forwardRef<
 						// A queued title dispatches even on a clean body.
 						if (
 							pending.force === true || pending.title !== undefined ||
-							(dirtyNow && (pending.keepalive || !reasonEditingRef.current))
+							(dirtyNow && (pending.flush === true || !reasonEditingRef.current))
 						) {
 							void save(revRef.current, pending);
 						}
@@ -570,7 +582,7 @@ const NoteEditor = forwardRef<
 		const md = ed.action(getMarkdown());
 		if (md === baselineRef.current || md === discardedBodyRef.current) return;
 		// save() measures the wire body against the keepalive cap.
-		void save(revRef.current, { keepalive });
+		void save(revRef.current, { flush: true, keepalive });
 	}
 
 	function blocked(): boolean {
@@ -1453,12 +1465,13 @@ const NoteEditor = forwardRef<
 					maxLength={NOTE_EDIT_MESSAGE_MAX}
 					value={reason.text}
 					onChange={(e) => {
+						if (!reasonEditingRef.current) reasonEntryRef.current++;
 						reasonEditingRef.current = true;
 						clearTimer();
 						changeReason(e.target.value);
 					}}
-					onBlur={() => {
-						if (!reasonEditingRef.current) return;
+					onBlur={(e) => {
+						if (!reasonEditingRef.current || !e.currentTarget.ownerDocument.hasFocus()) return;
 						reasonEditingRef.current = false;
 						if (dirtyRef.current && !hardFailRef.current) schedule();
 					}}

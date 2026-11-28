@@ -46,6 +46,11 @@ revisions and that only the first edit shows the reason you entered. Open
 both diffs to check the changed text. Restore a snapshot and verify that
 the restore appears as another Operator edit.
 
+Change the body, start typing a reason, then switch tabs while the reason
+field still has focus. The body saves. On return, the unfinished reason has
+cleared after the save, and the history row has no reason. Make another edit
+and check that it has no reason either.
+
 ```sh
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select rev, author_bot_id, what, reason from note_edits order by note_id, rev'
 ```

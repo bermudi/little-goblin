@@ -1121,20 +1121,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								if (e.key === "Escape") setQuery("");
 							}}
 						/>
-						<button type="button" aria-label="New side chat" onClick={newConversation}>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								width="18"
-								height="18"
-								aria-hidden="true"
-							>
-								<path d="M12 5v14M5 12h14" />
-							</svg>
-						</button>
 					</div>
 					<LiveLost />
 					<div className="rail-body">

@@ -353,7 +353,7 @@ test("the owner row of an open subagent stays visible past the opening page", as
 	expect(visible).toEqual(["app/chat-1", "app/chat-2", "app/chat-3", "app/chat-4", "app/chat-5", "app/chat-12"]);
 });
 
-test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visible only when open", async () => {
+test("T-C1: side-chat disclosure and nested rows are visible only when open", async () => {
 	let toggles = 0;
 	let creates = 0;
 	const main = conv("main");
@@ -384,8 +384,8 @@ test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visib
 	await act(async () => root?.render(render(false)));
 	expect(container!.textContent).toContain("Little Goblin");
 	expect(container!.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("false");
-	expect(container!.textContent).not.toContain("side");
-	expect(container!.textContent).not.toContain("Chats");
+	expect(container!.querySelector(".side-chat[data-flip='app/side']")).toBeNull();
+	expect(container!.textContent).toContain("New side chat");
 	await act(async () => root?.render(render(true)));
 	expect(container!.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("true");
 	expect(container!.querySelector(".side-chat[data-flip='app/side']")).not.toBeNull();

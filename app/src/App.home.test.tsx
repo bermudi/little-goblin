@@ -502,6 +502,7 @@ describe("home screen", () => {
 			];
 			attention = [approval];
 			await open("/app/");
+			expect(container.querySelector(".rail-top button")).toBeNull();
 			expect(container.querySelector('[aria-label="New side chat"]')).not.toBeNull();
 			expect(list()).toEqual([
 				"Little Goblin",
@@ -562,7 +563,7 @@ describe("home screen", () => {
 		await goTo("/app/c/work");
 		expect(win.location.pathname).toBe("/app/c/work");
 		expect(expanded()).toBe("false");
-		expect(container.querySelector(".side-chat")).toBeNull();
+		expect(container.querySelector(".side-chat[data-flip]")).toBeNull();
 		await goTo("/app/c/other");
 		expect(expanded()).toBe("true");
 	});

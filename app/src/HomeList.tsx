@@ -163,11 +163,9 @@ export function HomeList({
 					}}>Show more ({sidePage.hidden} left)</button>
 				</li>
 			)}
-			{sideChatsOpen && (
-				<li className="side-chat new-side-chat">
-					<button type="button" onClick={onNewSideChat}>New side chat</button>
-				</li>
-			)}
+			<li className="side-chat new-side-chat">
+				<button type="button" aria-label="New side chat" onClick={onNewSideChat}>New side chat</button>
+			</li>
 			{bots.length > 0 && <li className="rail-chats-label">Bots</li>}
 			{bots.map(({ bot, main, side }) => {
 				const open = bot.id === expandedBotId;

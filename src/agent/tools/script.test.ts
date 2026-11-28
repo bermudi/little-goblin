@@ -65,7 +65,7 @@ test("a script call to bash records skill writes", async () => {
 	const records: string[] = [];
 	const tools = composed({
 		bash: bashTool(home, home, {
-			skillWrites: { dirs: [skills, join(home, "proposed")], record: (name) => records.push(name) },
+			skillWrites: { dirs: [skills, join(home, "proposed")], conversation: "c", record: (name) => records.push(name) },
 		}),
 	});
 	const out = await exec(scriptToolOf(tools), {

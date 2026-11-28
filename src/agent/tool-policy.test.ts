@@ -28,6 +28,7 @@ test("descriptors reproduce the former name lists", () => {
 			"delegate",
 			"desktop",
 			"generate_image",
+			"handover",
 			"history_search",
 			"mail",
 			"memory_reflect",

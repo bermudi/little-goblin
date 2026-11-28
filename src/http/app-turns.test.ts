@@ -293,11 +293,11 @@ describe("app conversation events", () => {
 				store.history("app/pending-stop").filter((message) => message.role === "assistant"),
 			).toHaveLength(0);
 			const listed = (await (await call("/api/app/conversations/pending-stop/pending")).json()) as {
-				items: { id: string; status: string }[];
+				items: { id: string; status: string; message: unknown }[];
 			};
-			expect(listed.items.map((item) => [item.id, item.status])).toEqual([
-				[steerId, "notSent"],
-				[followUpId, "notSent"],
+			expect(listed.items.map(({ id, status, message }) => ({ id, status, message }))).toEqual([
+				{ id: steerId, status: "notSent", message: steerMessage },
+				{ id: followUpId, status: "notSent", message: followUpMessage },
 			]);
 
 			const fresh = await call("/api/app/chat", {
@@ -366,7 +366,9 @@ describe("app conversation events", () => {
 				method: "DELETE",
 			});
 			expect(taken.status).toBe(200);
-			expect(await taken.json()).toMatchObject({ message: { id: "pending" } });
+			expect(await taken.json()).toEqual({
+				message: { id: "pending", role: "user", parts: [{ type: "text", text: "keep this" }] },
+			});
 			expect(runtime.listPending("app/pending-take")).toEqual([]);
 			expect(store.history("app/pending-take").map((message) => message.id)).not.toContain("pending");
 			const again = await call(`/api/app/conversations/pending-take/pending/${pendingId}`, {

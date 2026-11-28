@@ -130,7 +130,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile) => {
+	return (conv, deliverVoice, recording, deliverFile, context) => {
 		const snapshot = store.promptSnapshot(conv.id);
 		const provider = conv.model === null
 			? undefined

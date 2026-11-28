@@ -14,6 +14,8 @@ export interface AppBot {
 	name: string;
 	instructions: string;
 	folder: string | null;
+	model: string | null;
+	thinking: string | null;
 	mainConversationId: string;
 	sideConversationIds: string[];
 	canMoveBack: boolean;
@@ -23,7 +25,27 @@ export interface AppBotName {
 	name: string;
 }
 
-export type AppBotPatch = { [K in "name" | "instructions" | "folder"]?: AppBot[K] | undefined };
+export type AppBotPatch = {
+	[K in "name" | "instructions" | "folder" | "model" | "thinking"]?: AppBot[K] | undefined;
+};
+
+export interface AppBotMemory {
+	path: string | null;
+	text: string | null;
+}
+
+export interface AppBotProposal {
+	id: number;
+	conversationId: string;
+	name: string;
+	instructions: string;
+	model: string | null;
+	thinking: string | null;
+	state: "pending" | "approved" | "declined";
+	createdAt: string;
+	decidedAt: string | null;
+	botId: string | null;
+}
 
 export interface AppBotMoveBack {
 	conversationId: string;
@@ -587,6 +609,7 @@ export interface AppMailDraft {
 export interface AppApprovalsResponse {
 	programs: AppProgramProposal[];
 	mail: AppMailDraft[];
+	bots: AppBotProposal[];
 	/** IANA zone the scheduler evaluates crons in — cards show it. */
 	serverTimeZone: string;
 }
@@ -610,6 +633,7 @@ export interface AppAttentionItem {
 	id: string;
 	kind:
 		| "program-approval"
+		| "bot-approval"
 		| "mail-approval"
 		| "memory-blocked"
 		| "memory-outage"

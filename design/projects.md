@@ -103,6 +103,19 @@ Move, archive, restore, and delete work on the selection. A changed
 selection refuses the whole operation. Only archived notes can be deleted,
 after confirmation.
 
+**Bot access** (operator, 2026-11-28, #982). The `note` tool in a bot's
+chats reaches only that bot's notes and Global notes. Little Goblin's chats,
+project chats included, reach every note except other bots' notes, which
+they can read but never edit. The store re-checks this inside each agent
+write, so a note moved mid-call cannot be edited by a chat that lost it.
+Notes a chat made before it became a bot stay Little Goblin's; the operator
+moves them to the bot by hand. Pins keep their stricter rule. The tool names
+each note's owner and marks read-only notes. Settings → Notes lists bots by
+name between Little Goblin and projects, in the owner filter and the Move
+dialog. The server refuses an unknown or retired bot as filter or target.
+Project notes move to a successor bot by hand until project retirement
+moves them.
+
 **Edit history** (operator, 2026-11-27, #982). Each new content revision
 records its exact changed text and author. Bots record what they changed
 and why. The operator can supply a reason for their next edit and keeps

@@ -57,7 +57,7 @@ const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX) });
 const NOTE_LIST_LIMIT = 1000;
 
 const noteOwner = z.union([
-	z.strictObject({ botId: z.literal(LITTLE_GOBLIN_NOTE_OWNER).nullable() }),
+	z.strictObject({ botId: z.string().min(1).max(200).nullable() }),
 	z.strictObject({ projectId: z.string().min(1) }),
 ]);
 
@@ -200,7 +200,8 @@ export async function handleNotesRoute(
 			const owner = ownerParam === "global"
 				? { botId: null }
 				: ownerParam === LITTLE_GOBLIN_NOTE_OWNER
-					? { botId: LITTLE_GOBLIN_NOTE_OWNER }
+						|| (ownerParam !== null && deps.store.bots.get(ownerParam) !== null)
+					? { botId: ownerParam }
 					: undefined;
 			if (ownerParam !== null && owner === undefined) {
 				return Response.json({ error: "invalid note owner" }, { status: 422, headers: NO_STORE });

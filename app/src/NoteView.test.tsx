@@ -8,7 +8,7 @@ import { NoteView } from "./NoteView.tsx";
 import { LiveStore } from "./live.ts";
 import { NotesIndex } from "./NotesIndex.tsx";
 import { rawNoteDraft, writeNoteDraft } from "./noteDraft.ts";
-import type { AppNote, AppNoteSummary } from "../../src/http/app-wire.ts";
+import type { AppNote, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { emitLiveVersions, goblinFeedResponse, goblinLive, withLive } from "./testkit.ts";
 
 describe("main branch regressions", () => {
@@ -803,6 +803,32 @@ describe("quiet harbor regressions", () => {
 			// loaded marker, not the filters that paint immediately.
 			await waitFor(() => container.querySelector(".note-list-title") !== null, "a rendered note row");
 		};
+
+		test("a bot's note names its bot, and bots sit between Little Goblin and projects in the owner filter", async () => {
+			listBodies.active = { notes: [{ ...SUMMARY, title: "Lisbon itinerary", botId: "b1" }], truncated: false };
+			const urls: string[] = [];
+			const listFetch = globalThis.fetch;
+			globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+				urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+				return listFetch(input, init);
+			}) as typeof fetch;
+			const bot = { id: "b1", name: "Trip Planner", mainConversationId: "app/trip", sideConversationIds: [], canMoveBack: false };
+			const project = { id: "p1", name: "Kitchen reno" } as AppProject;
+			await mount(<NotesIndex token={null} projects={[project]} bots={[bot]} onOpen={() => {}} />);
+			expect([...container.querySelectorAll("td")].map((cell) => cell.textContent)).toContain("Trip Planner");
+			const filter = container.querySelector<HTMLSelectElement>('select[aria-label="Filter notes by owner"]')!;
+			expect([...filter.children].map((child) =>
+				child.tagName === "OPTGROUP"
+					? `${child.getAttribute("label")}: ${[...child.children].map((option) => option.textContent).join(", ")}`
+					: child.textContent,
+			)).toEqual(["All owners", "Global", "Little Goblin", "Bots: Trip Planner", "Projects: Kitchen reno"]);
+			await act(async () => {
+				filter.value = "b1";
+				filter.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			await waitFor(() => urls.some((url) => url.includes("owner=b1")), "a bot owner list request");
+			expect(urls.some((url) => url.includes("project=b1"))).toBe(false);
+		});
 
 		test("a capped list says so — active and archived carry their own notice", async () => {
 			listBodies = {

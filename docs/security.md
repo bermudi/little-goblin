@@ -168,7 +168,9 @@ the OS store under `goblin-dev`, not a `pass-cli.env` file.
 `goblin-dev` and `goblin-mcp-dev` share that agent/bootstrap and serialized
 sync lane, but keep separate encrypted snapshots in Secret
 Service/KWallet. The token can read its grants; anything Goblin sees still
-goes to its model provider. **Grant narrowly** — that is the whole control
+goes to its model provider. Goblin renews an expired task session itself
+through pass-keys; the bootstrap token never enters Goblin's process.
+**Grant narrowly** — that is the whole control
 ([Auth → Proton Pass](../design/auth.md#proton-pass-2026-09-26)).
 
 Foreground `pass-keys get PROFILE NAME` reads only the named local
@@ -191,7 +193,7 @@ OS-store encryption protects secrets at rest, **not against arbitrary
 same-user code accessing an unlocked wallet**. Bootstrap handling must
 remain process-only: no printed values, argv secrets or model context.
 Task retrieval still uses a separately guarded agent session, never the
-owner; the operator provisions/refreshes it from the OS-store bootstrap.
+owner; the operator provisions it from the OS-store bootstrap.
 Auth command edits and successfully rotated keys require an approved
 Goblin restart: auth is loaded at boot and successful values are memoized.
 

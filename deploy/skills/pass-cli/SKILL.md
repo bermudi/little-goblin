@@ -7,7 +7,7 @@ description: >
 license: Apache-2.0
 metadata:
   topic: secrets
-compatibility: Requires pass-cli and an operator-provisioned goblin-dev agent task session; the bootstrap PAT lives in Secret Service/KWallet as goblin-dev, with per-item viewer grants (owner actions)
+compatibility: Requires pass-cli, the goblin-task pass-keys profile for the task session, and an operator-provisioned goblin-dev agent; the bootstrap PAT lives in Secret Service/KWallet as goblin-dev, with per-item viewer grants (owner actions)
 ---
 
 # pass-cli — Proton Pass secrets during tasks
@@ -37,10 +37,11 @@ Unguarded, `pass-cli` resolves to the operator's owner session
 Every call runs as goblin's own agent token in its OWN session dir —
 `$GOBLIN_HOME/state/pass-cli-task`, NOT `state/pass-cli` (that one is the
 background pass-keys sync lane's). Never interleave calls within one
-session. The operator provisions/refreshes task auth from the OS-store
-bootstrap PAT named `goblin-dev` through a process-only helper; never
-source a PAT env file, print the PAT, or put it in argv/context. Missing
-or expired task auth stops the task and requires operator repair.
+session. The operator provisions the OS-store bootstrap PAT named
+`goblin-dev` through a process-only helper; never source a PAT env
+file, print the PAT, or put it in argv/context. An expired task session
+is renewed by `pass-keys login goblin-task`; a failed renewal goes to
+the operator; never switch to the owner session.
 
 Provider/MCP consumption is different: `pass-keys get`/`run` read local
 encrypted snapshots with no Pass/network fallback. Do not use a snapshot
@@ -52,7 +53,7 @@ shell as the command:
 ```bash
 set +x
 for name in "${!PROTON_PASS_@}"; do unset "$name" || exit 1; done
-export PATH="$HOME/bin:$PATH"
+export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
 GOBLIN_HOME="${GOBLIN_HOME:-$HOME/goblin}"
 export PROTON_PASS_SESSION_DIR="$GOBLIN_HOME/state/pass-cli-task"
 # Tripwire: a symlink alias is still the owner's session directory.
@@ -62,22 +63,28 @@ export PROTON_PASS_SESSION_DIR="$GOBLIN_HOME/state/pass-cli-task"
 info=$(pass-cli info 2>/dev/null) || info=
 if ! printf '%s' "$info" | grep -Fq 'Personal Access Token' ||
    ! printf '%s' "$info" | grep -Fq '[Agent]'; then
-  echo "goblin's agent task session is missing or expired — ask the operator to refresh it from the OS-store goblin-dev bootstrap" >&2
-  exit 1
+  pass-keys login goblin-task
+  info=$(pass-cli info 2>/dev/null) || info=
+  if ! printf '%s' "$info" | grep -Fq 'Personal Access Token' ||
+     ! printf '%s' "$info" | grep -Fq '[Agent]'; then
+    echo "goblin's task session could not be renewed — tell the operator the pass-keys error above" >&2
+    exit 1
+  fi
 fi
 unset info
 # Every call names its task in the audit trail: ≤300 chars, no secrets.
 export PROTON_PASS_AGENT_REASON="task: <what you're doing>"
 ```
 
-`info` must report both "Personal Access Token" and "[Agent]" —
-agent sessions expire (~2h), so operator-assisted refresh is routine.
-An `invalid, expired or has been deleted` failure means the bootstrap
-token may be dead: ask the operator to renew the OS-store `goblin-dev`
-bootstrap and refresh the dedicated task session. A locked/unavailable
-wallet also needs operator repair, not a plaintext-file fallback. NEVER
-fall back to the owner session. OS-store encryption is not same-user
-isolation.
+`info` must report both "Personal Access Token" and "[Agent]". Agent
+sessions expire after about two hours; the guard renews the session
+itself with `pass-keys login goblin-task`, which reads goblin's
+bootstrap token inside pass-keys, so the token never reaches this
+shell. A login error saying the token is invalid, expired or deleted
+means the token is dead — tell the operator; never source a credential
+file or display the token. A locked/unavailable wallet also needs
+operator repair, not a plaintext-file fallback. NEVER fall back to the
+owner session. OS-store encryption is not same-user isolation.
 
 ## Usage
 

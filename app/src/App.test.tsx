@@ -2928,6 +2928,9 @@ describe("app projects surface", () => {
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
 				const request = body as { rolling?: unknown; message?: UIMessage };
+				if (request.rolling === true && createRefusedNotes !== null) {
+					return Promise.resolve(jsonResponse({ error: "Some notes can't be pinned in this chat", noteIds: createRefusedNotes }, 409));
+				}
 				if (request.rolling === true && request.message !== undefined) {
 					const shortReply: UIMessage = {
 						id: "a-rolled",
@@ -3637,6 +3640,37 @@ describe("app projects surface", () => {
 		const chat = posts.find((p) => p.url === "/api/app/chat");
 		const parts = (chat!.body as { message: { parts: { type: string }[] } }).message.parts;
 		expect(parts.some((part) => part.type === "data-note")).toBe(false);
+	});
+
+	test("the first Little Goblin chat stages pins and sends them with its first message", async () => {
+		notes = [noteRow("Shopping")];
+		rollingRows = [];
+		rollingReply = { conversationId: "app/roll-first", rolled: true };
+		createRefusedNotes = ["n-shopping"];
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		expect(container.textContent).toContain("your chat with Little Goblin starts here");
+		await pinStaged("Shopping");
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
+		await sendComposer("first words");
+		expect(composerText()).toBe("first words");
+		expect(container.querySelector('p.error[role="alert"]')?.textContent).toBe(
+			"This chat can't use Shopping, so it was unpinned. Send again to start without it.",
+		);
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes");
+		createRefusedNotes = null;
+		await pinStaged("Shopping");
+		await act(async () =>
+			container
+				.querySelector("form.composer")!
+				.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event),
+		);
+		await settle();
+		const sends = posts.filter((p) => p.url === "/api/app/chat");
+		expect(sends).toHaveLength(2);
+		expect((sends[0]!.body as { pinnedNoteIds?: string[] }).pinnedNoteIds).toEqual(["n-shopping"]);
+		expect((sends[1]!.body as { rolling?: boolean; pinnedNoteIds?: string[] })).toMatchObject({ rolling: true, pinnedNoteIds: ["n-shopping"] });
+		expect(container.textContent).not.toContain("your chat with Little Goblin starts here");
 	});
 
 	test("a create that refuses a staged note unpins it and keeps the draft", async () => {

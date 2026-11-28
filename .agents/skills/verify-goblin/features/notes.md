@@ -77,7 +77,8 @@ At phone width the + button shows a dot and its menu reads
 
 A new side chat stages pins before the first send: pin a note, send, then
 check `chat_note_pins` for the new conversation and its first input for the
-pin notice. **Chat with this note** on a note page lands on the new-chat
+pin notice. Little Goblin's chat on a fresh instance (`/app/rolling`, before
+any message) stages the same way. **Chat with this note** on a note page lands on the new-chat
 composer with that note staged and creates nothing until you send.
 
 ## Gotchas

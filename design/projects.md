@@ -160,11 +160,14 @@ from a third party.
 - **Chat with this note** opens a new chat with that note staged as pinned
   and the cursor in the composer. Nothing is sent until the operator types.
 - **Staged pins.** A chat that does not exist yet (the new-chat and
-  project composers) holds picked notes locally. The first send creates the
-  chat and its pins in one transaction, before the message is admitted, so
-  the first turn carries the pin notice. A note the new chat could not pin
-  refuses the whole create; the draft and the staged pins stay. Candidates
-  use the same access rule as an existing chat's pins.
+  project composers, and Little Goblin's chat before its first message)
+  holds picked notes locally. The first send creates the chat and its pins
+  in one transaction, before the message is admitted, so the first turn
+  carries the pin notice. A note the new chat could not pin refuses the
+  whole create; the draft stays, and the refused notes are unpinned with a
+  line that names them. For Little Goblin's first message the server checks
+  the notes before it routes, and pins them on the roll the message lands
+  in. Candidates use the same access rule as an existing chat's pins.
 - **Pin to a chat** (operator, 2026-11-27, #982; moved to the composer
   2026-11-28, #1002). The composer's Notes button opens a panel anchored to
   it on desktop, or a bottom sheet from the + menu on a phone. Search active

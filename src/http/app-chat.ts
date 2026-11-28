@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { buildLearnPrompt } from "../learn.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
-import { CHAT_NOTE_NOTICE_PART } from "../chat-note-pins.ts";
+import { CHAT_NOTE_NOTICE_PART, NotePinsRefused } from "../chat-note-pins.ts";
 import {
 	ATTACHMENT_PART,
 	attachmentRefSchema,
@@ -41,6 +41,11 @@ const chatBody = z
 		conversationId: conversationIdSchema.optional(),
 		rolling: z.literal(true).optional(),
 		initialModelSettings: modelSettingsBody.optional(),
+		pinnedNoteIds: z
+			.array(z.string().min(1).max(200))
+			.max(50)
+			.refine((ids) => new Set(ids).size === ids.length, "pinnedNoteIds must be unique")
+			.optional(),
 		whenBusy: z.enum(["steer", "followUp"]).optional(),
 		retry: z.literal(true).optional(),
 		// Edit-in-place: the durable user event this message replaces. The
@@ -153,6 +158,13 @@ const chatBody = z
 				ctx.addIssue({ code: "custom", path: ["message"], message: "rolling requires a message" });
 			}
 			return;
+		}
+		if (d.pinnedNoteIds !== undefined) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["pinnedNoteIds"],
+				message: "pinnedNoteIds is only valid for a rolling send",
+			});
 		}
 		if (d.initialModelSettings !== undefined) {
 			ctx.addIssue({
@@ -576,6 +588,15 @@ export async function handleChatRoute(
 					);
 				}
 			}
+			const pinnedNoteIds = parsed.data.pinnedNoteIds ?? [];
+			const refusedPins = store.chatNotePins.unpinnableIn(null, pinnedNoteIds);
+			if (refusedPins.length > 0) {
+				log.warn("app rolling send refused: notes not pinnable", { refused: refusedPins });
+				return Response.json(
+					{ error: "Some notes can't be pinned in this chat", noteIds: refusedPins },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
 			const lane = appLane(initialSettings);
 			const rollDeps: RollDeps = {
 				store,
@@ -591,10 +612,23 @@ export async function handleChatRoute(
 			convId = result.conv.id;
 			conv = result.conv;
 			rolled = result.rolled;
+			if (pinnedNoteIds.length > 0) {
+				try {
+					store.chatNotePins.pinAll(convId, pinnedNoteIds);
+				} catch (err) {
+					if (!(err instanceof NotePinsRefused)) throw err;
+					log.warn("app rolling send refused: notes lost access", { conversation: convId, refused: err.noteIds });
+					return Response.json(
+						{ error: "Some notes can't be pinned in this chat", noteIds: err.noteIds },
+						{ status: 409, headers: NO_STORE },
+					);
+				}
+			}
 			log.info("app rolling send", {
 				conversation: convId,
 				rolled,
 				decidedBy: result.decidedBy,
+				pinnedNotes: pinnedNoteIds.length,
 			});
 		}
 		if (conv === null) throw new Error(`rolling route did not resolve a conversation`);

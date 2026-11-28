@@ -299,6 +299,11 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		pins: stagedPins[scope] ?? [],
 		onPinsChange: (pins) => setStagedPinsFor(scope, pins),
 	});
+	const unpinRefused = (scope: string, pinned: StagedPin[], refused: string[]) => {
+		const titles = pinned.filter((pin) => refused.includes(pin.id)).map((pin) => pin.title);
+		setStagedPinsFor(scope, pinned.filter((pin) => !refused.includes(pin.id)));
+		setPinRefusal(`This chat can't use ${titles.join(", ")}, so ${titles.length === 1 ? "it was" : "they were"} unpinned. Send again to start without ${titles.length === 1 ? "it" : "them"}.`);
+	};
 	const [startFailed, setStartFailed] = useState(false);
 	// A cancelled send belongs only to the composer that dispatched it.
 	const [draftRestores, setDraftRestores] = useState<
@@ -856,9 +861,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			if (seq !== startSeq.current) return false;
 			const refused = err instanceof ApiError && err.status === 409 ? refusedNoteIds(err.data) : null;
 			if (refused !== null) {
-				const titles = pinned.filter((pin) => refused.includes(pin.id)).map((pin) => pin.title);
-				setStagedPinsFor(composerScope, pinned.filter((pin) => !refused.includes(pin.id)));
-				setPinRefusal(`This chat can't use ${titles.join(", ")}, so ${titles.length === 1 ? "it was" : "they were"} unpinned. Send again to start without ${titles.length === 1 ? "it" : "them"}.`);
+				unpinRefused(composerScope, pinned, refused);
 			} else {
 				setStartFailed(true);
 			}
@@ -1772,6 +1775,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								<div className="transcript-inner">
 									<p className="empty">Send a message — your chat with Little Goblin starts here.</p>
 									{startFailed && <p className="error">Couldn't send — check the tailnet, then resend.</p>}
+									{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 								</div>
 							</div>
 							<Composer
@@ -1780,9 +1784,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								busy={starting}
 								stagedMemory={{ excluded: false, locked: true }}
 								onStagedMemoryToggle={() => {}}
+								notes={stagedNotes("rolling", null)}
 								onSend={async (parts, _whenBusy, initialModelSettings) => {
 									setStarting(true);
 									setStartFailed(false);
+									setPinRefusal(null);
+									const pinned = stagedPins.rolling ?? [];
 									try {
 										const message = { id: crypto.randomUUID(), role: "user", parts };
 										const response = await fetch("/api/app/chat", {
@@ -1795,12 +1802,21 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 												rolling: true,
 												message,
 												...(initialModelSettings === undefined ? {} : { initialModelSettings }),
+												...(pinned.length === 0 ? {} : { pinnedNoteIds: pinned.map((pin) => pin.id) }),
 											}),
 										});
+										if (response.status === 409) {
+											const refused = refusedNoteIds(await response.json().catch(() => null));
+											if (refused !== null) {
+												unpinRefused("rolling", pinned, refused);
+												return false;
+											}
+										}
 										if (response.status !== 202) throw new Error(`send failed (${response.status})`);
 										const result = (await response.json()) as AppChatResponse;
 										if (!("conversationId" in result))
 											throw new Error("rolling send returned no conversation id");
+										setStagedPinsFor("rolling", []);
 										setRollingViewing(null);
 										setRollingRouted(result.conversationId);
 										setRollingFollow({

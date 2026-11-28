@@ -17,6 +17,7 @@ import type { ConversationStore } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { ModelSettings } from "../conversation-settings.ts";
+import { NotePinsRefused } from "../chat-note-pins.ts";
 import { log } from "../log.ts";
 import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
@@ -71,12 +72,6 @@ const createBody = z.object({
 		.refine((ids) => new Set(ids).size === ids.length, "pinnedNoteIds must be unique")
 		.optional(),
 });
-
-class PinsRefused extends Error {
-	constructor(readonly noteIds: string[]) {
-		super(`notes not pinnable here: ${noteIds.join(", ")}`);
-	}
-}
 
 const branchBody = z.object({ messageId: z.string().min(1).max(200) });
 
@@ -486,10 +481,7 @@ export async function handleConversationsRoute(
 					if (parsed.data.title !== undefined) {
 						store.setMeta(row.id, { title: parsed.data.title, titleImplicit: false });
 					}
-					if (existing === null) {
-						const refused = pinnedNoteIds.filter((id) => !store.chatNotePins.set(row.id, id, true));
-						if (refused.length > 0) throw new PinsRefused(refused);
-					}
+					if (existing === null) store.chatNotePins.pinAll(row.id, pinnedNoteIds);
 					return { kind: "ok", conv: store.get(row.id)! };
 				},
 			);
@@ -497,7 +489,7 @@ export async function handleConversationsRoute(
 			try {
 				outcome = create();
 			} catch (err) {
-				if (!(err instanceof PinsRefused)) throw err;
+				if (!(err instanceof NotePinsRefused)) throw err;
 				log.warn("app conversation create refused: notes not pinnable", {
 					conversation: convId,
 					notes: err.noteIds,

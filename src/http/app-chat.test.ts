@@ -116,6 +116,51 @@ describe("app chat", () => {
 		}
 	});
 
+	test("the first rolling send pins its staged notes before admission, and refuses unpinnable notes before routing", async () => {
+		const { http, call, store, projects, notes } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const send = (id: string, extra: Record<string, unknown>) =>
+				call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ rolling: true, ...extra, message: { id, role: "user", parts: [{ type: "text", text: id }] } }),
+				});
+			const project = projects.create({ name: "Private project" });
+			const privateNote = notes.create({ title: "Private", projectId: project.id });
+			const archived = notes.create({ title: "Old" });
+			notes.setArchived(archived.id, true);
+			const note = notes.create({ title: "Reading list" });
+
+			const refused = await send("refused", { pinnedNoteIds: [note.id, privateNote.id, archived.id] });
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toMatchObject({ noteIds: [privateNote.id, archived.id] });
+			expect(store.currentAppRoll()).toBeNull();
+
+			expect((await send("dupes", { pinnedNoteIds: [note.id, note.id] })).status).toBe(422);
+			expect((await send("first", { pinnedNoteIds: [note.id] })).status).toBe(202);
+			const roll = store.currentAppRoll();
+			expect(roll).not.toBeNull();
+			await waitUntil(() => store.history(roll!.id).length === 2, "first rolling reply");
+			const notice = store.history(roll!.id)[0]?.parts.find((part) => part.type === CHAT_NOTE_NOTICE_PART);
+			expect(JSON.stringify(notice)).toContain(note.id);
+			const pins = (await (await call(`/api/app/conversations/${roll!.id.slice(4)}/note-pins`)).json()) as { pins: { id: string }[] };
+			expect(pins.pins.map(({ id }) => id)).toEqual([note.id]);
+
+			const notRolling = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: roll!.id,
+					pinnedNoteIds: [note.id],
+					message: { id: "later", role: "user", parts: [{ type: "text", text: "later" }] },
+				}),
+			});
+			expect(notRolling.status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("draft model choice applies only to a newly minted rolling chat", async () => {
 		const { http, call, store, configRef, configWrites } = setup({ token: APP_TOKEN_NAME });
 		try {

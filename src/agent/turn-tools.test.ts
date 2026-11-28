@@ -37,6 +37,7 @@ import {
 } from "./models-dev.ts";
 import { policyOf } from "./tool-policy.ts";
 import { storeFence } from "../testkit/store-fence.ts";
+import { paths } from "../home-layout.ts";
 
 setLogFile(null);
 
@@ -87,7 +88,12 @@ describe("hosted web_search mount", () => {
 			search: [{ kind: "ddg" }],
 		}) as unknown as Config;
 
-	const rigTools = (config: Config, conv: Conversation, snapshot: ReturnType<ConversationStore["promptSnapshot"]> = null) =>
+	const rigTools = (
+		config: Config,
+		conv: Conversation,
+		snapshot: ReturnType<ConversationStore["promptSnapshot"]> = null,
+		noteSkillWrite?: (conversationId: string, skill: string) => void,
+	) =>
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
@@ -111,6 +117,7 @@ describe("hosted web_search mount", () => {
 			desktops: null,
 			agents: null,
 			filterGuests: (_c, t) => t,
+			...(noteSkillWrite !== undefined ? { noteSkillWrite } : {}),
 		});
 
 	const conv = (model: string) =>
@@ -147,6 +154,20 @@ describe("hosted web_search mount", () => {
 		const other = rigTools(cfgFor("live"), conv("zai/glm-5.3"))(conv("zai/glm-5.3"));
 		expect("web_search" in other).toBe(false);
 		expect("search" in other).toBe(true);
+	});
+
+	test("bash skill writes retain the conversation id", async () => {
+		useHome("goblin-skill-write-");
+		const writes: [string, string][] = [];
+		mkdirSync(paths.skills(), { recursive: true });
+		const convValue = conv("codex/gpt-6.1-sol");
+		const tools = rigTools(cfgFor("off"), convValue, null, (conversationId, skill) =>
+			writes.push([conversationId, skill]),
+		)(convValue);
+		const bash = tools.bash;
+		if (bash === undefined || !("execute" in bash)) throw new Error("Expected bash");
+		await bash.execute({ command: `mkdir -p ${paths.skills()}/demo && echo x > ${paths.skills()}/demo/SKILL.md` }, { toolCallId: "skill-write" });
+		expect(writes).toEqual([[convValue.id, "demo"]]);
 	});
 
 	test("default Codex declarations fit in a stored part and test conversation", () => {
@@ -268,7 +289,7 @@ describe("agent tool mount", () => {
 		} as unknown as AgentChildren;
 		const tools = rigTools(engine)(childConv);
 		const names = Object.keys(tools);
-		expect(names).toContain("read_file");
+		expect(names).not.toContain("read_file");
 		expect(names).toContain("bash");
 		for (const banned of ["agent", "delegate", "speak", "memory_search", "note", "ui", "ask"]) {
 			expect(names).not.toContain(banned);

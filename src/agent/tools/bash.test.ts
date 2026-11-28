@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../../home-layout.ts";
 import { bashTool } from "./bash.ts";
@@ -15,12 +15,16 @@ interface BashResult {
 }
 
 let home: string;
+let originalHome: string | undefined;
 beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "goblin-bash-"));
+	originalHome = process.env.HOME;
 	process.env.GOBLIN_HOME = home;
 });
 afterEach(() => {
 	delete process.env.GOBLIN_HOME;
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
 	rmSync(home, { recursive: true, force: true });
 });
 
@@ -48,6 +52,76 @@ describe("bash", () => {
 		expect(out.output).toBe("hello\n");
 		expect(out.exit_code).toBe(0);
 		expect(out.truncated).toBeUndefined();
+	});
+
+	test("records successful SKILL.md command mentions as reads", async () => {
+		const root = join(home, "project");
+		const skill = join(root, "skills", "demo", "SKILL.md");
+		const homeSkill = join(home, "home-skills", "demo", "SKILL.md");
+		mkdirSync(join(root, "skills", "demo"), { recursive: true });
+		mkdirSync(join(home, "home-skills", "demo"), { recursive: true });
+		writeFileSync(skill, "demo");
+		writeFileSync(homeSkill, "demo");
+		process.env.HOME = home;
+		const reads: string[] = [];
+		const tool = bashTool(root, root, { onRead: (abs) => reads.push(abs) });
+		await tool.execute({ command: `cat "${skill}"` }, opts);
+		expect(reads).toEqual([skill]);
+		reads.length = 0;
+		await tool.execute({ command: "cat skills/demo/SKILL.md; cat skills/demo/SKILL.md" }, opts);
+		expect(reads).toEqual([skill]);
+		reads.length = 0;
+		if (homedir() === home) {
+			await tool.execute({ command: "cat ~/home-skills/demo/SKILL.md" }, opts);
+			expect(reads).toEqual([homeSkill]);
+		}
+		reads.length = 0;
+		await tool.execute({ command: "cat skills/demo/SKILL.md; exit 2" }, opts);
+		expect(reads).toEqual([]);
+		await tool.execute({ command: "echo ordinary" }, opts);
+		expect(reads).toEqual([]);
+	});
+
+	test("records skill directory changes, but not installs, deletions, or symlink targets", async () => {
+		const root = join(home, "project");
+		const skills = join(root, "skills");
+		const proposed = join(root, "proposed");
+		mkdirSync(skills, { recursive: true });
+		mkdirSync(proposed, { recursive: true });
+		const records: string[] = [];
+		const tool = bashTool(root, root, {
+			skillWrites: { dirs: [skills, proposed], record: (name) => records.push(name) },
+		});
+		const run = async (command: string) => tool.execute({ command }, opts);
+		await run("mkdir -p skills/demo; echo x > skills/demo/SKILL.md");
+		expect(records).toEqual(["demo"]);
+		records.length = 0;
+		await run("echo changed >> skills/demo/SKILL.md");
+		expect(records).toEqual(["demo"]);
+		records.length = 0;
+		await run("mkdir -p proposed/y; echo y > proposed/y/SKILL.md");
+		expect(records).toEqual(["y"]);
+		records.length = 0;
+		mkdirSync(join(proposed, "x"), { recursive: true });
+		writeFileSync(join(proposed, "x", "SKILL.md"), "x\n");
+		await run("mv proposed/x skills/x");
+		expect(records).toEqual([]);
+		await run("rm -rf skills/x");
+		mkdirSync(join(proposed, "x"), { recursive: true });
+		writeFileSync(join(proposed, "x", "SKILL.md"), "x\n");
+		await run("cp -r proposed/x skills/x");
+		expect(records).toEqual(["x"]);
+		records.length = 0;
+		await run("true");
+		expect(records).toEqual([]);
+		await run("rm -rf skills/x");
+		await run("rm -rf skills/demo");
+		expect(records).toEqual([]);
+		await run("mkdir -p skills/demo; echo hi > skills/demo/SKILL.md; exit 3");
+		expect(records).toEqual(["demo"]);
+		records.length = 0;
+		await run("mkdir -p outside/target; echo s > outside/target/SKILL.md; ln -s ../outside/target skills/linked");
+		expect(records).toEqual([]);
 	});
 
 	test("a flooded stream is reported as truncated, not silently cut", async () => {

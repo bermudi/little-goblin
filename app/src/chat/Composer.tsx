@@ -514,7 +514,9 @@ export function Composer({
 					>
 						<MenuTrigger
 							className={`icon-btn${notesTarget !== undefined && notes.pins.length > 0 ? " has-pins" : ""}`}
-							aria-label={notesTarget !== undefined && notes.pins.length > 0 ? `Add, ${notes.pins.length} notes pinned` : "Add"}
+							aria-label={notesTarget !== undefined && notes.pins.length > 0
+								? `Add, ${notes.pins.length} ${notes.pins.length === 1 ? "note" : "notes"} pinned`
+								: "Add"}
 							title="Add"
 						>
 							<svg

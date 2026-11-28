@@ -74,6 +74,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		{ id: "n3", title: "Recipes", owner: "Global" },
 	];
 	let pinned: string[] = [];
+	let pinChanges: Record<string, { rev: number; actor: string; what: string; reason: string | null }[]> = {};
 	let pinCalls: { noteId: string; pinned: boolean }[] = [];
 	let candidateUrls: string[] = [];
 	const noteMatches = (q: string | null) => q === null
@@ -97,6 +98,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		uploads = [];
 		phoneWidth = false;
 		pinned = [];
+		pinChanges = {};
 		pinCalls = [];
 		candidateUrls = [];
 		sent.length = 0;
@@ -154,7 +156,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				}
 				const q = new URL(url, "http://goblin.test").searchParams.get("q");
 				return Promise.resolve(jsonResponse({
-					pins: pinned.map((id) => ({ ...library.find((note) => note.id === id)!, rev: 1, changes: [] })),
+					pins: pinned.map((id) => ({ ...library.find((note) => note.id === id)!, rev: 1, changes: pinChanges[id] ?? [] })),
 					matches: noteMatches(q),
 					truncated: false,
 				}));
@@ -474,6 +476,21 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await keyOnSearch("Escape");
 		expect(inDocument(".notes-pop")).toBeNull();
 		expect(textareaValue()).toBe("hello");
+	});
+
+	test("a pinned row says who edited it and lists each change on hover", async () => {
+		pinned = ["n1"];
+		pinChanges = { n1: [
+			{ rev: 2, actor: "Operator", what: "Edited the body", reason: "fix typo" },
+			{ rev: 3, actor: "Scout", what: "Edited the title", reason: null },
+		] };
+		await mount(null, { notes: chatNotes });
+		await settle();
+		await click(notesButton());
+		await settle();
+		const meta = inDocument('[data-value="n1"] .notes-row-meta');
+		expect(meta?.textContent).toBe("Global · edited by Scout");
+		expect(meta?.getAttribute("title")).toBe("Operator · Edited the body (fix typo)\nScout · Edited the title");
 	});
 
 	test("Enter with an empty notes search changes nothing", async () => {

@@ -142,11 +142,12 @@ export function notesTooltip(pins: { title: string }[]): string {
 }
 
 function NoteRow({
-	note, pinned, detail, onOpenNote,
+	note, pinned, detail, history, onOpenNote,
 }: {
 	note: StagedPin;
 	pinned: boolean;
 	detail: string | null;
+	history?: string | undefined;
 	onOpenNote: (id: string) => void;
 }) {
 	return (
@@ -154,7 +155,7 @@ function NoteRow({
 			<button type="button" className="notes-row-main" aria-label={`${pinned ? "Unpin" : "Pin"} ${note.title}`}>
 				<span className="notes-row-text">
 					<span className="notes-row-title">{note.title}</span>
-					<span className="notes-row-meta">{detail === null ? note.owner : `${note.owner} · ${detail}`}</span>
+					<span className="notes-row-meta" title={history}>{detail === null ? note.owner : `${note.owner} · ${detail}`}</span>
 				</span>
 				<span className="notes-row-act">{pinned ? "Unpin" : "Pin"}</span>
 			</button>
@@ -179,6 +180,13 @@ function NoteRow({
 			</button>
 		</CommandItem>
 	);
+}
+
+function changeHistory(pin: PinnedRow): string | undefined {
+	if (pin.changes.length === 0) return undefined;
+	return pin.changes
+		.map((edit) => `${edit.actor} · ${edit.what}${edit.reason === null ? "" : ` (${edit.reason})`}`)
+		.join("\n");
 }
 
 function latestChange(pin: PinnedRow): string | null {
@@ -237,7 +245,7 @@ export function NotesPanel({
 					<CommandGroup>
 						<CommandGroupLabel className="notes-group">Pinned</CommandGroupLabel>
 						{notes.pins.map((pin) => (
-							<NoteRow key={pin.id} note={pin} pinned detail={latestChange(pin)} onOpenNote={open} />
+							<NoteRow key={pin.id} note={pin} pinned detail={latestChange(pin)} history={changeHistory(pin)} onOpenNote={open} />
 						))}
 					</CommandGroup>
 				)}

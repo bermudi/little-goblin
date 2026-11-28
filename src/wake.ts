@@ -11,6 +11,7 @@ import type { TurnSink } from "./turn/sink.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
 import { appConversationOf, telegramAddressOf, type ConversationTarget } from "./targets.ts";
 import { log } from "./log.ts";
+import { HANDOVER_WORK_PART } from "./handover-message.ts";
 
 export interface WakeDeps {
 	store: ConversationStore;
@@ -92,7 +93,7 @@ export function wake(
 
 // The bell fires when the queued turn lands, not at submission. A rejected
 // or failed submit stays retryable; a deleted row is the intentional drop.
-export function wakeApp(deps: WakeDeps, conversationId: string, text: string): boolean {
+export function wakeApp(deps: WakeDeps, conversationId: string, text: string, kind?: "program"): boolean {
 	if (!deps.runtime.accepting()) return false;
 	const destination = deps.store.appRollDestination(conversationId);
 	if (destination !== conversationId) {
@@ -107,7 +108,9 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 	}
 	const sink = deps.bell(conv);
 	try {
-		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		const message = userMessage([{ type: "text", text }]);
+		if (kind === "program") message.parts.push({ type: HANDOVER_WORK_PART, data: [`program:${message.id}`] });
+		const admitted = deps.runtime.submit(conv, message, sink);
 		if (!admitted) {
 			log.warn("app wake history only — runtime closed", { conversation: conv.id });
 			return false;
@@ -127,7 +130,7 @@ export function wakeTarget(deps: WakeDeps, target: ConversationTarget, text: str
 	const telegram = telegramAddressOf(target);
 	if (telegram !== null) return wake(deps, telegram, text);
 	const appConversation = appConversationOf(target);
-	if (appConversation !== null) return wakeApp(deps, appConversation, text);
+	if (appConversation !== null) return wakeApp(deps, appConversation, text, "program");
 	log.error("program wake dropped — invalid target", { target });
 	return false;
 }

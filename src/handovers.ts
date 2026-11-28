@@ -10,18 +10,21 @@ import {
 	HANDOVER_OPERATOR_PART,
 	HANDOVER_PART,
 	HANDOVER_STOP_PART,
+	HANDOVER_WORK_PART,
 	handoverChains,
-	isHandoverCard,
 } from "./handover-message.ts";
 import { log } from "./log.ts";
 import type { WakeStore } from "./wake-store.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
 
-interface HandoverAuthority {
+interface HandoverSource {
 	source: Conversation;
-	botId: string;
 	inputSeqs(): ReadonlySet<number>;
 	sourceInputSeq(): number | null;
+}
+
+interface HandoverAuthority extends HandoverSource {
+	botId: string;
 	runId: string;
 }
 
@@ -70,7 +73,7 @@ export function makeHandovers({ store, wakes, asks, config, pump, changed }: Han
 		WHERE conversation_id = ? AND seq <= ? AND role = 'user'
 		AND EXISTS (
 			SELECT 1 FROM json_each(CASE WHEN json_valid(events.data) THEN events.data ELSE '{}' END, '$.message.parts')
-			WHERE json_extract(value, '$.type') IN ('${HANDOVER_PART}', '${HANDOVER_OPERATOR_PART}')
+			WHERE json_extract(value, '$.type') IN ('${HANDOVER_PART}', '${HANDOVER_OPERATOR_PART}', '${HANDOVER_WORK_PART}')
 		)
 		ORDER BY seq DESC LIMIT 1
 	`);
@@ -87,13 +90,13 @@ export function makeHandovers({ store, wakes, asks, config, pump, changed }: Han
 		return { id: bot.id, name: bot.name, conversationId: bot.mainConversationId };
 	};
 
-	function rootsOf(authority: HandoverAuthority): string[] {
+	function rootsOf(authority: HandoverSource): string[] {
 		const conversation = authority.source.id;
 		const roots = new Set<string>();
 		for (const { message } of store.historyData(conversation, [...authority.inputSeqs()].sort((a, b) => a - b))) {
 			const chains = handoverChains(message);
 			if (chains.length === 0) continue;
-			if (!isHandoverCard(message.parts)) roots.clear();
+			if (message.parts.some((part) => part.type === HANDOVER_OPERATOR_PART)) roots.clear();
 			for (const id of chains) roots.add(id);
 		}
 		if (roots.size !== 0) return [...roots];
@@ -190,6 +193,7 @@ export function makeHandovers({ store, wakes, asks, config, pump, changed }: Han
 
 	return {
 		ownerOf,
+		rootsOf,
 		list(sourceBot: string) {
 			const list = [LITTLE_GOBLIN_BOT_ID, ...bots.list().map((bot) => bot.id)].flatMap((id) => {
 				const bot = id === sourceBot ? null : liveBot(id);

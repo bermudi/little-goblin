@@ -62,7 +62,9 @@ main bot, bots with one job each, and no projects.
   snapshot rebuild. Codex and Claude Code can add the tool without that wait.
 - A chain counts all accepted handovers from the same work, including ones
   sent in parallel or from different bots. The check and both chat records
-  commit together, before the receiving bot runs.
+  commit together, before the receiving bot runs. Independent scheduled
+  runs and watches start their own chains. A watch set during a turn keeps
+  the chain of the work that set it, even if it fires after other work.
 - **Group chats stay out.**
 - **[Goals](../../GLOSSARY.md#goal) come after the first bot.** Bots are
   designed so they can update a goal's status line.

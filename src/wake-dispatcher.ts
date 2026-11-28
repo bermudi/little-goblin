@@ -18,8 +18,10 @@
 // fence holds resubmission and each pump retries the closure.
 
 import type { Message } from "./message.ts";
+import { channelOf } from "./conversation-address.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
+import { HANDOVER_WORK_PART } from "./handover-message.ts";
 import { log } from "./log.ts";
 import { every } from "./timing.ts";
 import type { Runtime } from "./runtime.ts";
@@ -256,8 +258,13 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		}
 		const claimed = wakes.commit(
 			rec.wakeId,
-			({ id, text, conversationId }) =>
-				store.append(conversationId, [{ id, role: "user", parts: [{ type: "text", text }] }]),
+			({ id, text, conversationId }) => {
+				const parts: Message["parts"] = [{ type: "text", text }];
+				if (rec.watchHandoverRoots !== undefined && channelOf(conversationId) === "app") {
+					parts.push({ type: HANDOVER_WORK_PART, data: rec.watchHandoverRoots });
+				}
+				store.append(conversationId, [{ id, role: "user", parts }]);
+			},
 		);
 		submitGuarded(claimed);
 	}

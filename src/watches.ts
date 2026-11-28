@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
+import { handoverWorkSchema } from "./handover-message.ts";
 import type { WakeStore } from "./wake-store.ts";
 import { log } from "./log.ts";
 
@@ -50,6 +51,7 @@ const rowSchema = z.object({
 	target_json: z.string(),
 	reason: z.string(),
 	baseline_json: z.string(),
+	handover_roots_json: z.string().nullable(),
 	state: z.enum(["active", "fired", "cancelled"]),
 	created_at: z.string(),
 	fired_at: z.string().nullable(),
@@ -90,14 +92,18 @@ export function ensureWatchesSchema(db: Database): void {
 		state TEXT NOT NULL CHECK (state IN ('active','fired','cancelled')),
 		created_at TEXT NOT NULL,
 		fired_at TEXT,
-		cancelled_at TEXT
+		cancelled_at TEXT,
+		handover_roots_json TEXT
 	)`);
+	if (!db.query<{ name: string }, []>("PRAGMA table_info(watches)").all().some(({ name }) => name === "handover_roots_json")) {
+		db.run("ALTER TABLE watches ADD COLUMN handover_roots_json TEXT");
+	}
 	db.run("CREATE INDEX IF NOT EXISTS watches_state_id ON watches(state, id)");
 	db.run("CREATE INDEX IF NOT EXISTS watches_conversation_state ON watches(conversation_id, state, id)");
 }
 
 export interface Watches {
-	add(input: { conversationId: string; target: WatchTarget; reason: string; baseline: unknown }): Watch;
+	add(input: { conversationId: string; target: WatchTarget; reason: string; baseline: unknown; handoverRoots?: readonly string[] }): Watch;
 	get(id: number): Watch | null;
 	active(): Watch[];
 	forConversation(id: string): Watch[];
@@ -109,16 +115,17 @@ export interface Watches {
 
 export function makeWatches(db: Database, now: () => Date): Watches {
 	const select = db.query<Row, [number]>("SELECT * FROM watches WHERE id = ?");
-	function add(input: { conversationId: string; target: WatchTarget; reason: string; baseline: unknown }): Watch {
+	function add(input: Parameters<Watches["add"]>[0]): Watch {
 		const result = db.transaction(() => {
 			const n = db.query<{ n: number }, [string]>(
 				"SELECT COUNT(*) AS n FROM watches WHERE conversation_id = ? AND state = 'active'",
 			).get(input.conversationId)?.n ?? 0;
 			if (n >= 32) throw new Error("a conversation can have at most 32 active watches");
 			const createdAt = now().toISOString();
-			const inserted = db.query<{ id: number }, [string, string, string, string, string]>(
-				"INSERT INTO watches (conversation_id,target_json,reason,baseline_json,state,created_at) VALUES (?,?,?,?,'active',?) RETURNING id",
-			).get(input.conversationId, JSON.stringify(input.target), input.reason, JSON.stringify(input.baseline), createdAt);
+			const inserted = db.query<{ id: number }, [string, string, string, string, string, string | null]>(
+				"INSERT INTO watches (conversation_id,target_json,reason,baseline_json,state,created_at,handover_roots_json) VALUES (?,?,?,?,'active',?,?) RETURNING id",
+			).get(input.conversationId, JSON.stringify(input.target), input.reason, JSON.stringify(input.baseline), createdAt,
+				input.handoverRoots?.length ? JSON.stringify(input.handoverRoots) : null);
 			if (inserted === null) throw new Error("watch insert returned no row");
 			log.info("watch added", { watch: inserted.id, conversation: input.conversationId, target: input.target.kind });
 			return parseWatch(select.get(inserted.id));
@@ -153,7 +160,10 @@ export function makeWatches(db: Database, now: () => Date): Watches {
 					conversationId: watch.conversationId,
 					kind: "watch",
 					text: development.text,
-					facts: development.facts,
+					facts: row.handover_roots_json === null ? development.facts : {
+						observation: development.facts,
+						handoverRoots: handoverWorkSchema.parse(JSON.parse(row.handover_roots_json)),
+					},
 					origin: development.origin,
 				});
 				log.info("watch fired", { watch: id, conversation: watch.conversationId });

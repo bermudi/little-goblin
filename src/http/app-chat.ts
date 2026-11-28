@@ -32,7 +32,7 @@ import { appConversationSink } from "./app-sse.ts";
 import type { AppRollResponse, AppTtsResponse } from "./app-wire.ts";
 import { TOOLS_PART } from "../agent/tool-declarations.ts";
 import { INSERTS_PART } from "../agent/turn-inserts.ts";
-import { HANDOVER_OPERATOR_PART, HANDOVER_PART, HANDOVER_STOP_PART, isHandoverCard } from "../handover-message.ts";
+import { HANDOVER_OPERATOR_PART, HANDOVER_PART, HANDOVER_STOP_PART, HANDOVER_WORK_PART, isHandoverCard } from "../handover-message.ts";
 
 const conversationIdSchema = z
 	.string()
@@ -71,7 +71,8 @@ const chatBody = z
 							// boundary must refuse before persistence.
 							if (
 								p.type === TOOLS_PART || p.type === INSERTS_PART || p.type === CHAT_NOTE_NOTICE_PART ||
-								p.type === HANDOVER_PART || p.type === HANDOVER_STOP_PART || p.type === HANDOVER_OPERATOR_PART
+								p.type === HANDOVER_PART || p.type === HANDOVER_STOP_PART ||
+								p.type === HANDOVER_OPERATOR_PART || p.type === HANDOVER_WORK_PART
 							) {
 								ctx.addIssue({
 									code: "custom",

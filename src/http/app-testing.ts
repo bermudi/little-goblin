@@ -211,6 +211,8 @@ export function setup(
 		notes,
 		posts,
 		asks,
+		dispatcher,
+		handovers,
 		stopWakes,
 		configRef,
 		configWrites,

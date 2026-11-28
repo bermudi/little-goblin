@@ -142,6 +142,8 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
 		const channel = channelOf(conv.id);
+		const handovers = channel === "app" && conv.persona === "personal" &&
+			conv.agentType === null && conv.parentId === null ? deps.handovers : undefined;
 		const workdir = projectWorkdir(projects, conv);
 		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
 		const delegate = delegateDeps(conv, workdir);
@@ -156,6 +158,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				showThread: (thread, messages) => deps.t3.showThread(thread, messages),
 				readPr: (repository, number) => deps.github.readPr(repository, number),
 				now: deps.now,
+				...(handovers !== undefined && context !== undefined
+					? { handoverRoots: () => handovers.rootsOf({ source: conv, ...context }) }
+					: {}),
 			},
 			post: { posts: deps.posts, conversationId: conv.id },
 			ask: channel === "app" && conv.agentType === null
@@ -331,11 +336,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			ui: channel === "app",
 		});
 		if (
-			channel === "app" && conv.persona === "personal" && conv.agentType === null &&
-			conv.parentId === null && deps.handovers !== undefined && context !== undefined &&
-			handoverAvailable(snapshot, provider?.kind)
+			handovers !== undefined && context !== undefined && handoverAvailable(snapshot, provider?.kind)
 		) {
-			tools.handover = handoverTool(deps.handovers, conv, context);
+			tools.handover = handoverTool(handovers, conv, context);
 		}
 		// Native subagents (design/agents.md → agent). A child
 		// conversation gets its spawn-time allowlist instead of the agent

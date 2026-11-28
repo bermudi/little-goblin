@@ -4,9 +4,11 @@ import type { Message } from "./message.ts";
 export const HANDOVER_PART = "data-handover";
 export const HANDOVER_STOP_PART = "data-handover-stop";
 export const HANDOVER_OPERATOR_PART = "data-handover-operator";
+export const HANDOVER_WORK_PART = "data-handover-work";
 export const HANDOVER_LIMIT = 5;
 
 const chainId = z.string().min(1);
+export const handoverWorkSchema = z.array(chainId).min(1);
 const card = {
 	from: z.string(),
 	to: z.string(),
@@ -14,7 +16,7 @@ const card = {
 };
 export const handoverCardSchema = z.discriminatedUnion("direction", [
 	z.object({ ...card, direction: z.literal("sent") }),
-	z.object({ ...card, direction: z.literal("received"), chains: z.array(chainId).min(1) }),
+	z.object({ ...card, direction: z.literal("received"), chains: handoverWorkSchema }),
 ]);
 export type HandoverCard = z.infer<typeof handoverCardSchema>;
 export type IncomingHandover = Extract<HandoverCard, { direction: "received" }>;
@@ -35,7 +37,10 @@ export function handoverChains(message: Message): readonly string[] {
 	if (incoming?.direction === "received") return incoming.chains;
 	const operator = message.parts.find((part) => part.type === HANDOVER_OPERATOR_PART);
 	const parsed = chainId.safeParse(operator !== undefined && "data" in operator ? operator.data : null);
-	return parsed.success ? [parsed.data] : [];
+	if (parsed.success) return [parsed.data];
+	const work = message.parts.find((part) => part.type === HANDOVER_WORK_PART);
+	const roots = handoverWorkSchema.safeParse(work !== undefined && "data" in work ? work.data : null);
+	return roots.success ? roots.data : [];
 }
 
 export function isHandoverCard(parts: readonly { type: string }[]): boolean {

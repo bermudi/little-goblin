@@ -203,6 +203,7 @@ describe("toolNames ↔ makeTools", () => {
 		});
 		tools.handover = handoverTool({
 			ownerOf: () => "little-goblin",
+			rootsOf: () => [],
 			list: () => [],
 			send: () => ({ status: "sent" }),
 		}, { id: "app/chat" } as Conversation, {

@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
+import { handoverWorkSchema } from "./handover-message.ts";
 import { log } from "./log.ts";
 import type { JournalStatus } from "./turn-journal.ts";
 import { makeAppRollDestination } from "./conversation-app-rolling.ts";
@@ -59,6 +60,7 @@ export interface WakeRecord {
 	/** Composed trigger text — the wake's events in id order. */
 	text: string;
 	events: { eventId: number; sourceKey: string }[];
+	watchHandoverRoots?: string[];
 }
 
 export interface ReconcilePlan {
@@ -99,6 +101,8 @@ const eventRefSchema = z.object({
 	event_id: z.number(),
 	source_key: z.string(),
 	text: z.string(),
+	kind: z.string(),
+	handover_roots: z.string().nullable(),
 });
 
 // The appended event's data envelope, as conversation.ts writes it.
@@ -267,7 +271,9 @@ export function openWakeStore(db: Database): WakeStore {
 	const qLinkEvent = db.prepare("INSERT INTO wake_events (wake_id, event_id) VALUES (?, ?)");
 	const qWake = db.query<WakeRow, [number]>("SELECT * FROM wake_deliveries WHERE wake_id = ?");
 	const qWakeEvents = db.query<z.infer<typeof eventRefSchema>, [number]>(
-		"SELECT e.event_id, e.source_key, e.text FROM wake_events w JOIN work_events e ON e.event_id = w.event_id WHERE w.wake_id = ? ORDER BY e.event_id",
+		`SELECT e.event_id, e.source_key, e.text, e.kind,
+			CASE WHEN e.kind = 'watch' THEN json_extract(e.facts_json, '$.handoverRoots') END AS handover_roots
+		FROM wake_events w JOIN work_events e ON e.event_id = w.event_id WHERE w.wake_id = ? ORDER BY e.event_id`,
 	);
 	const qPending = db.query<WakeRow, [string]>(
 		"SELECT * FROM wake_deliveries WHERE state = 'pending' AND conversation_id = ? ORDER BY wake_id",
@@ -315,6 +321,9 @@ export function openWakeStore(db: Database): WakeStore {
 	function rowToRecord(row: WakeRow): WakeRecord {
 		const parsed = wakeRowSchema.parse(row);
 		const events = qWakeEvents.all(parsed.wake_id).map((e) => eventRefSchema.parse(e));
+		const watchHandoverRoots = events.filter((e) => e.kind === "watch").flatMap((e) =>
+			e.handover_roots === null ? [`watch:${e.event_id}`] : handoverWorkSchema.parse(JSON.parse(e.handover_roots))
+		);
 		return {
 			wakeId: parsed.wake_id,
 			conversationId: parsed.conversation_id,
@@ -331,6 +340,7 @@ export function openWakeStore(db: Database): WakeStore {
 			settledAt: parsed.settled_at,
 			text: events.map((e) => e.text).join("\n"),
 			events: events.map((e) => ({ eventId: e.event_id, sourceKey: e.source_key })),
+			...(watchHandoverRoots.length === 0 ? {} : { watchHandoverRoots: [...new Set(watchHandoverRoots)] }),
 		};
 	}
 

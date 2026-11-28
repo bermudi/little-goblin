@@ -70,7 +70,7 @@ import { useReplyRatings } from "./chat/useReplyRatings.ts";
 import { WorkHeader } from "./chat/WorkHeader.tsx";
 import { LiveWork } from "./chat/LiveWork.tsx";
 import { HandoverCard } from "./chat/HandoverCard.tsx";
-import { HANDOVER_OPERATOR_PART, HANDOVER_STOP_PART, isHandoverCard } from "../../src/handover-message.ts";
+import { HANDOVER_OPERATOR_PART, HANDOVER_STOP_PART, HANDOVER_WORK_PART, isHandoverCard } from "../../src/handover-message.ts";
 
 // ---------- the chat ----------
 
@@ -1101,6 +1101,7 @@ function Chat({
       kept: m.parts.filter((part) =>
         part.type !== "data-chat-note-notices" &&
         part.type !== HANDOVER_OPERATOR_PART &&
+        part.type !== HANDOVER_WORK_PART &&
         !editable.includes(part)
       ),
     });

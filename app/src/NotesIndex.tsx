@@ -279,9 +279,9 @@ export function NotesIndex({
 							)}
 							{destinationBot !== undefined && (
 								<p>
-									Only {destinationBot.name}'s chats can use{" "}
-									{count === 1 ? "it" : "them"}. {destinationBot.name} can't be moved back
-									to Little Goblin while it owns notes.
+									Only {destinationBot.name} can edit {count === 1 ? "it" : "them"}. Little
+									Goblin can still read {count === 1 ? "it" : "them"}. {destinationBot.name}{" "}
+									can't be moved back to Little Goblin while it owns notes.
 								</p>
 							)}
 							<div className="confirm-actions">

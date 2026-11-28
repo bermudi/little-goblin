@@ -323,8 +323,8 @@ describe("note tool access by bot", () => {
 		const tripTool = toolFor(trip.chat.id);
 		const goblinTool = toolFor(goblin.id);
 		const own = notes.create({ title: "Lisbon itinerary", conversation: trip.chat.id }, "agent");
-		const other = notes.create({ title: "Desk inbox", conversation: desk.chat.id }, "agent");
-		const local = notes.create({ title: "Reading list" });
+		const other = notes.create({ title: "Desk inbox", body: "secret desk plan", conversation: desk.chat.id }, "agent");
+		const local = notes.create({ title: "Reading list", body: "secret reading list" });
 		const shared = notes.create({ title: "House rules" });
 		notes.batch([{ id: shared.id, stateRev: shared.stateRev }], { action: "move", owner: { botId: null } });
 		try {
@@ -340,6 +340,14 @@ describe("note tool access by bot", () => {
 				expect(await exec(tripTool, { action: "diff", id: note.id, rev: 1 })).toEqual(blocked(note.id));
 				expect(await exec(tripTool, { action: "append", id: note.id, text: "x", what: "Added x", reason: "Test" }))
 					.toEqual(blocked(note.id));
+				for (const edit of [
+					{ start: 0, end: 1, expected: "x", text: "y" },
+					{ start: 0, end: 1, expected: note.body.slice(0, 1), text: "y" },
+					{ start: 0, end: 10_000, expected: "x", text: "y" },
+				]) {
+					expect(await exec(tripTool, { action: "replace_range", id: note.id, edits: [edit], what: "Probe", reason: "Test" }))
+						.toEqual(blocked(note.id));
+				}
 			}
 			expect(await exec(tripTool, { action: "append", id: own.id, text: "Day one", what: "Added day one", reason: "Plan" }))
 				.toMatchObject({ note: { rev: 2, owner: "Trip" } });

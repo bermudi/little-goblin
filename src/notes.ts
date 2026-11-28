@@ -734,6 +734,7 @@ export function openNotes(
 		},
 		replaceRanges(id, edits, conversation, message) {
 			const current = mustGet(id);
+			if (conversation !== undefined) checkAgentWrite(current, conversation);
 			const sorted = [...edits].sort((a, b) => a.start - b.start);
 			const refuse = (reason: string): never => {
 				log.info("note range refused", { note: id, conversation: conversation ?? null, reason });

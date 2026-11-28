@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openStore } from "../../conversation.ts";
 import { setLogFile } from "../../log.ts";
 import { openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";
 import { fenceTools } from "../../turn/tool-fence.ts";
-import { useHome } from "../../testkit.ts";
+import { useHome, waitUntil } from "../../testkit.ts";
 import { noteTool } from "./note.ts";
 import { bashTool } from "./bash.ts";
 import { withGoblinCommands } from "./goblin-channel.ts";
@@ -202,7 +202,7 @@ describe("goblin command channel at the bash boundary", () => {
 		} finally {
 			h.close();
 		}
-	});
+	}, 20_000);
 
 	test("a background process cannot call after its bash call returns", async () => {
 		const h = setup();
@@ -210,7 +210,7 @@ describe("goblin command channel at the bash boundary", () => {
 			const resultPath = join(h.home, "late.result");
 			const codePath = join(h.home, "late.code");
 			await run(h, `(sleep 0.5; goblin note create --title LATE >${resultPath} 2>&1; echo $? >${codePath}) >/dev/null 2>&1 &`);
-			await Bun.sleep(800);
+			await waitUntil(() => existsSync(codePath) && readFileSync(codePath, "utf8").trim() !== "", "late job finished", 10_000);
 			expect(h.notes.list({ project: "loose" }).some((note) => note.title === "LATE")).toBe(false);
 			expect(existsSync(resultPath)).toBe(true);
 			expect(readFileSync(resultPath, "utf8")).toContain("goblin: the bash call that owned this channel has ended");
@@ -225,10 +225,18 @@ describe("goblin command channel at the bash boundary", () => {
 		let release!: () => void;
 		const started = new Promise<void>((resolve) => { start = resolve; });
 		const released = new Promise<void>((resolve) => { release = resolve; });
-		const h = setup(true, () => {}, undefined, undefined, { started: start, release: released });
+		let accepted = "";
+		const h = setup(true, () => {}, undefined, undefined, {
+			started: () => {
+				writeFileSync(accepted, "");
+				start();
+			},
+			release: released,
+		});
+		accepted = join(h.home, "accepted");
 		try {
 			let settled = false;
-			const result = run(h, "goblin note create --title INFLIGHT >/dev/null 2>&1 & sleep 0.2").then((output) => {
+			const result = run(h, `goblin note create --title INFLIGHT >/dev/null 2>&1 & until [ -e ${accepted} ]; do sleep 0.05; done`).then((output) => {
 				settled = true;
 				return output;
 			});
@@ -282,9 +290,10 @@ describe("goblin command channel at the bash boundary", () => {
 			await started;
 			controller.abort();
 			await result;
-			await Bun.sleep(800);
+			const returnedAfter = Date.now() - startedAt;
+			await waitUntil(() => existsSync(codePath) && readFileSync(codePath, "utf8").trim() !== "", "late job finished", 10_000);
 			expect(aborted).toBe(true);
-			expect(Date.now() - startedAt).toBeLessThan(5000);
+			expect(returnedAfter).toBeLessThan(5000);
 			expect(h.notes.list({ project: "loose" })).toHaveLength(0);
 			expect(readFileSync(resultPath, "utf8")).toContain("goblin: the bash call that owned this channel has ended");
 			expect(readFileSync(codePath, "utf8").trim()).toBe("75");

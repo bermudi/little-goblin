@@ -129,7 +129,9 @@ export function commandRuntime(opts: {
 		const respond = (reply: Omit<ReplyMessage, "id">): void => {
 			try {
 				send({ id: req.id, ...reply });
-			} catch {}
+			} catch (err) {
+				log.warn("goblin reply failed", { toolCallId: opts.toolCallId, code: reply.code, error: err instanceof Error ? err.message : String(err) });
+			}
 		};
 		if (!alive) return respond({ stdout: "", stderr: "goblin: the bash call that owned this channel has ended\n", code: 75 });
 		count += 1;

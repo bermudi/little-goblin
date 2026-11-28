@@ -10,6 +10,7 @@ import { useHome, waitUntil } from "../../testkit.ts";
 import { noteTool } from "./note.ts";
 import { bashTool } from "./bash.ts";
 import { withGoblinCommands } from "./goblin-channel.ts";
+import { declarationsOf } from "../tool-declarations.ts";
 
 setLogFile("/dev/null");
 
@@ -323,6 +324,61 @@ describe("goblin command channel at the bash boundary", () => {
 			h.close();
 		}
 	}, 20_000);
+
+	test("a bash timeout aborts a nested call that is still running", async () => {
+		let start!: () => void;
+		let aborted = false;
+		const started = new Promise<void>((resolve) => { start = resolve; });
+		const h = setup(true, () => {}, undefined, {
+			started: start,
+			aborted: () => { aborted = true; },
+		});
+		try {
+			const startedAt = Date.now();
+			const result = h.bash.execute(
+				{ command: "goblin note create --title HELD", timeout_ms: 1000 },
+				{ toolCallId: "timeout", messages: [], context: {} } as never,
+			) as Promise<Record<string, unknown>>;
+			await started;
+			const output = await result;
+			expect(aborted).toBe(true);
+			expect(output.timed_out).toBe(true);
+			expect(Date.now() - startedAt).toBeLessThan(5000);
+			expect(h.notes.list({ project: "loose" })).toHaveLength(0);
+		} finally {
+			h.close();
+		}
+	}, 20_000);
+
+	test("an option value of -h or --help is a value, not a help request", async () => {
+		const h = setup();
+		try {
+			const created = await run(h, "goblin note create --title -h --body --help");
+			expect(created.exit_code).toBe(0);
+			const note = h.notes.list({ project: "loose" }).find((entry) => entry.title === "-h");
+			expect(note).toBeDefined();
+			expect(h.notes.get(note!.id)?.body).toBe("--help");
+			const help = await run(h, "goblin note create --title X --help");
+			expect(help.output).toContain("Usage: goblin note <action> [options]");
+			expect(help.calls).toBeUndefined();
+		} finally {
+			h.close();
+		}
+	});
+
+	test("a tool set without bash keeps its command tools declared", () => {
+		const home = useHome("goblin-command-nobash-");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const store = openStore(join(home, "state", "goblin.sqlite"));
+		try {
+			const projects = openProjects(store);
+			const note = noteTool({ notes: openNotes(store, { projects }), projects, conversation: "test", projectId: null });
+			expect(declarationsOf(withGoblinCommands({ note })).map((declaration) => declaration.name)).toEqual(["note"]);
+			expect(declarationsOf(withGoblinCommands({ bash: bashTool("/tmp", "/tmp", { commands: true }), note })).map((declaration) => declaration.name)).toEqual(["bash"]);
+		} finally {
+			store.db.close();
+		}
+	});
 
 	test("the commands-off bash output stays the legacy shape", async () => {
 		const off = bashTool("/tmp");

@@ -11,6 +11,23 @@ import { log } from "../../log.ts";
 const MAX_REQUEST = 1024 * 1024;
 const MAX_CALLS = 50;
 
+interface PropertySchema {
+	type?: string;
+	enum?: unknown[];
+	const?: unknown;
+	description?: string;
+	items?: { type?: string };
+	anyOf?: { type?: string }[];
+}
+
+const typeOf = (property: PropertySchema | undefined): string | undefined =>
+	property?.type ?? property?.anyOf?.find((member) => member.type !== "null")?.type;
+
+const nullable = (property: PropertySchema | undefined): boolean =>
+	property?.anyOf?.some((member) => member.type === "null") === true;
+
+const isHelp = (word: string | undefined): boolean => word === "--help" || word === "-h";
+
 const actionsOf = (action: { enum?: unknown[]; const?: unknown } | undefined): string[] =>
 	(action?.enum ?? (action?.const === undefined ? [] : [action.const])).filter((value): value is string => typeof value === "string");
 
@@ -35,6 +52,7 @@ interface CommandBinding {
 const commandBindings = new WeakMap<object, CommandBinding>();
 
 export function withGoblinCommands(tools: Tools, conversation?: string): Tools {
+	if (tools.bash === undefined || isHosted(tools.bash)) return tools;
 	const out: Tools = {};
 	for (const [name, tool] of Object.entries(tools)) {
 		out[name] = policyOf(name).command && !isHosted(tool) ? { ...tool, declared: false } : tool;
@@ -109,7 +127,7 @@ export function commandRuntime(opts: {
 	};
 	const usage = (name: string): string => {
 		const json = zodInputJsonSchema(schemas.get(name)!) as {
-			properties?: Record<string, { type?: string; enum?: unknown[]; const?: unknown; description?: string; items?: { type?: string } }>;
+			properties?: Record<string, PropertySchema>;
 			required?: string[];
 		};
 		const actions = actionsOf(json.properties?.action);
@@ -119,9 +137,9 @@ export function commandRuntime(opts: {
 			const property = json.properties?.[key];
 			const values = property?.enum?.filter((value): value is string => typeof value === "string");
 			const flag = key.replaceAll("_", "-").replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
-			const shape = property?.type === "array"
-				? `<${property.items?.type ?? "value"}> (repeat for more)`
-				: `<${values?.length ? values.join("|") : property?.type ?? "value"}>`;
+			const shape = typeOf(property) === "array"
+				? `<${property?.items?.type ?? "value"}> (repeat for more)`
+				: `<${values?.length ? values.join("|") : typeOf(property) ?? "value"}${nullable(property) ? "|null" : ""}>`;
 			return `  --${flag}${json.required?.includes(key) ? " (required)" : ""} ${shape}${property?.description ? ` — ${property.description}` : ""}`;
 		}).join("\n")}\n`;
 	};
@@ -158,21 +176,22 @@ export function commandRuntime(opts: {
 		if (Buffer.byteLength(encoded) > MAX_REQUEST) return respond({ stdout: "", stderr: "goblin: request exceeds 1 MiB\n", code: 2 });
 		const task = (async () => {
 			const argv = req.argv;
-			if (argv[0] === "--help" || argv.length === 0) return respond(help());
+			if (argv.length === 0 || isHelp(argv[0])) return respond(help());
 			const name = argv.shift()!;
-			if (argv.includes("--help") || argv.includes("-h")) return respond(help(name));
+			if (isHelp(argv[0])) return respond(help(name));
 			const schema = schemas.get(name);
 			const tool = opts.tools[name];
 			if (schema === undefined || tool === undefined || isHosted(tool)) {
 				return respond({ stdout: "", stderr: `goblin: ${name} is not available in this chat\n`, code: 2 });
 			}
-			const schemaJson = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string; enum?: unknown[]; const?: unknown }> };
+			const schemaJson = zodInputJsonSchema(schema) as { properties?: Record<string, PropertySchema> };
 			const hasAction = schemaJson.properties?.action !== undefined;
 			if (hasAction && (argv[0] === undefined || argv[0].startsWith("--"))) {
 				const actions = actionsOf(schemaJson.properties?.action).join(", ");
 				return respond({ stdout: "", stderr: `goblin: ${name} needs an action first: goblin ${name} <action> [options]. Actions: ${actions}\n`, code: 2 });
 			}
 			const action = hasAction ? argv.shift() : undefined;
+			if (argv.some((word, index) => index % 2 === 0 && isHelp(word))) return respond(help(name));
 			const args: Record<string, unknown> = action === undefined ? {} : { action };
 			let invoked = false;
 			try {
@@ -191,10 +210,12 @@ export function commandRuntime(opts: {
 					const key = Object.keys(properties).find((candidate) =>
 						candidate.replaceAll("_", "").toLowerCase() === inputKey.replaceAll("-", "").toLowerCase(),
 					);
-					const type = key === undefined ? undefined : properties[key]?.type;
+					const property = key === undefined ? undefined : properties[key];
+					const type = typeOf(property);
 					if (key === undefined || type === undefined || key === "action") throw new Error(`unknown option ${flag}`);
 					const value = raw === "-" && req.stdin !== undefined ? req.stdin : raw;
-					if (type === "array") {
+					if (raw === "null" && nullable(property)) args[key] = null;
+					else if (type === "array") {
 						const list: unknown = value.trimStart().startsWith("[") ? JSON.parse(value) : undefined;
 						const previous = Array.isArray(args[key]) ? args[key] as unknown[] : [];
 						args[key] = Array.isArray(list) ? [...previous, ...list] : [...previous, value];

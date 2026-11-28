@@ -139,13 +139,17 @@ export const bashTool = (
 				log.error("skill write snapshot failed", err, { tool: "bash", toolCallId, phase: "before" });
 			}
 			const binding = commands ? commandBindingFor(bashToolRef) : undefined;
+			const nested = commands ? new AbortController() : undefined;
+			const forwardAbort = (): void => nested?.abort(abortSignal?.reason);
+			if (nested !== undefined && abortSignal?.aborted) forwardAbort();
+			else if (nested !== undefined) abortSignal?.addEventListener("abort", forwardAbort, { once: true });
 			const runtime = commands
 				? commandRuntime({
 						tools: binding?.tools ?? {},
 						dispatch: binding?.dispatch ?? (() => ({ error: "goblin command dispatch is not bound" })),
 						toolCallId,
 						...(binding?.conversation === undefined ? {} : { conversation: binding.conversation }),
-						...(abortSignal === undefined ? {} : { abortSignal }),
+						...(nested === undefined ? {} : { abortSignal: nested.signal }),
 					})
 				: undefined;
 			let proc: Bun.ReadableSubprocess;
@@ -162,17 +166,22 @@ export const bashTool = (
 					runtime?.env,
 				);
 			} catch (err) {
+				abortSignal?.removeEventListener("abort", forwardAbort);
 				runtime?.close();
 				return { error: `spawn failed: ${(err as Error).message}` };
 			}
 			let result: BoundedProc;
+			let finished = false;
 			try {
 				result = await boundedRun(proc, {
 					timeoutMs: Math.min(timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
 					maxOutput: MAX_CAPTURE,
 					...(abortSignal ? { abortSignal } : {}),
 				});
+				finished = !result.timedOut;
 			} finally {
+				abortSignal?.removeEventListener("abort", forwardAbort);
+				if (!finished) nested?.abort(new Error("bash call timed out"));
 				if (runtime !== undefined) {
 					await runtime.settle();
 					proc.disconnect();

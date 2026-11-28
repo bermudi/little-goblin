@@ -47,7 +47,8 @@ so production chats do not change until the operator approves a rollout.
   arrives later fails at once, with a message and a nonzero exit. A call
   that arrived before the bash process ended finishes first, so the bash
   result never comes back ahead of an effect it started, and its record
-  is in that result.
+  is in that result. When bash times out, that call gets an abort, so it
+  cannot hold bash past its timeout.
 - **Only `goblin` sees the channel.** Bun sets `NODE_CHANNEL_FD` on the
   child even when the caller passes its own env. Any bun or node program
   that inherits it gets `process.send` and may switch to its worker mode.

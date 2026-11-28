@@ -175,6 +175,16 @@ describe("assembled Goblin commands at the bash boundary", () => {
 		expect(commandToolNames(raw).sort()).toEqual([...commandNames].sort());
 		const bashDescription = raw.bash !== undefined && !("hosted" in raw.bash) ? raw.bash.description : "";
 		expect(bashDescription).toContain(`run as commands here: ${commandNames.join(", ")}.`);
+		const programTool = raw.program;
+		if (programTool === undefined || "hosted" in programTool) throw new Error("program did not mount");
+		const programInputs: unknown[] = [];
+		raw.program = {
+			...programTool,
+			execute: async (input: unknown, context: never) => {
+				programInputs.push(input);
+				return await programTool.execute(input as never, context);
+			},
+		};
 		const speak = raw.speak;
 		if (speak === undefined || "hosted" in speak) throw new Error("speak did not mount");
 		raw.speak = {
@@ -250,6 +260,9 @@ describe("assembled Goblin commands at the bash boundary", () => {
 			expect(noAction.exit_code).toBe(2);
 			expect(String(noAction.output)).toContain("mail needs an action first");
 			expect(String(noAction.output)).toContain("Actions: send");
+			await run("goblin program update --id 3 --cron '0 9 * * 1' --max-lateness-minutes null --mail-filter from:bank");
+			expect(programInputs.at(-1)).toEqual({ action: "update", id: 3, cron: "0 9 * * 1", maxLatenessMinutes: null, mailFilter: "from:bank" });
+			expect(String((await run("goblin program --help")).output)).toContain("--cron <string|null>");
 			const mailHelp = String((await run("goblin mail --help")).output);
 			expect(mailHelp).toContain("Actions: send");
 			expect(mailHelp).toContain("--to <string> (repeat for more)");

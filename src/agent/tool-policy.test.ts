@@ -25,6 +25,7 @@ test("descriptors reproduce the former name lists", () => {
 	expect(names((p) => !p.guestChannel)).toEqual(
 		[
 			"ask",
+			"bot",
 			"delegate",
 			"desktop",
 			"generate_image",

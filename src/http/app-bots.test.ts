@@ -214,13 +214,12 @@ test("a note created through the chat tool follows its bot and blocks move back"
 		});
 		expect(pin.status).toBe(200);
 		expect(await tool.execute({ action: "append", id: before!.id, text: "Added from Desk" }, { toolCallId: "append" }))
-			.toMatchObject({ note: { rev: 2 } });
+			.toEqual({ error: `note ${before!.id} belongs to another bot; this chat can't use it` });
 		expect((await (await call(`/api/app/notes/${before!.id}/edits`)).json())).toMatchObject({ edits: [
-			{ rev: 2, author: { botId: bot.id } },
-			{ rev: 1, author: { botId: LITTLE_GOBLIN_NOTE_OWNER } },
+			{ rev: 1, author: { botId: LITTLE_GOBLIN_NOTE_OWNER, name: "Little Goblin" } },
 		] });
 		expect((await (await call(`/api/app/notes/${after!.id}/edits`)).json())).toMatchObject({ edits: [
-			{ rev: 1, author: { botId: bot.id } },
+			{ rev: 1, author: { botId: bot.id, name: "Desk" } },
 		] });
 
 		const listed = await (await call("/api/app/notes")).json();

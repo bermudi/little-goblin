@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { appAddress } from "../conversation-address.ts";
 import { setLogLevel } from "../log.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { NOTE_BODY_MAX } from "../notes.ts";
@@ -124,6 +125,41 @@ describe("app notes", () => {
 			expect((await batch(stillArchived, { action: "delete" })).status).toBe(200);
 			expect((await call(`/api/app/notes/${first.id}`)).status).toBe(404);
 			expect((await readList("owner=global")).map((note) => note.id)).toEqual([second.id]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a bot is a note owner filter and move target, and an unknown or retired bot is refused", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const chat = store.resolve(appAddress("trip"), "/workshop");
+			const conversion = store.bots.convertSideChat(chat.id, "Trip Planner", 0, () => false);
+			if (conversion.kind !== "converted") throw new Error(`conversion ${conversion.kind}`);
+			const bot = conversion.bot;
+			const note = (await (await create(call, { title: "Lisbon itinerary" })).json()) as AppNote;
+			const readList = async (query: string) =>
+				((await (await call(`/api/app/notes?${query}`)).json()) as AppNoteList).notes;
+			const move = (target: AppNote | AppNoteList["notes"][number], botId: string) =>
+				postJson(call, "/api/app/notes/batch", {
+					selection: [{ id: target.id, stateRev: target.stateRev }],
+					change: { action: "move", owner: { botId } },
+				});
+			expect(await readList(`owner=${bot.id}`)).toEqual([]);
+			expect((await call("/api/app/notes?owner=no-such-bot")).status).toBe(422);
+			expect((await move(note, "no-such-bot")).status).toBe(422);
+			expect((await move(note, bot.id)).status).toBe(200);
+			const owned = await readList(`owner=${bot.id}`);
+			expect(owned.map(({ id, botId }) => ({ id, botId }))).toEqual([{ id: note.id, botId: bot.id }]);
+			expect(store.bots.get(bot.id)?.canMoveBack).toBe(false);
+
+			const back = await move(owned[0]!, LITTLE_GOBLIN_NOTE_OWNER);
+			expect(back.status).toBe(200);
+			expect(store.bots.moveBack(bot.id, () => false).kind).toBe("moved");
+			const [loose] = await readList(`owner=${LITTLE_GOBLIN_NOTE_OWNER}`);
+			expect((await move(loose!, bot.id)).status).toBe(422);
+			expect((await call(`/api/app/notes?owner=${bot.id}`)).status).toBe(422);
+			expect((await readList(`owner=${LITTLE_GOBLIN_NOTE_OWNER}`)).map(({ id }) => id)).toEqual([note.id]);
 		} finally {
 			http.stop();
 		}

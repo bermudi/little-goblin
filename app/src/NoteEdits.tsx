@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { LITTLE_GOBLIN_NOTE_OWNER } from "../../src/note-owner.ts";
 import type { NoteEdit, NoteEditMeta, NoteEditPage, NoteTextChange } from "../../src/note-edit.ts";
 import { getNoteEdit, listNoteEdits } from "./api.ts";
 
 function authorName(author: NoteEditMeta["author"]): string {
 	if (author === "operator") return "Operator";
-	return author.botId === LITTLE_GOBLIN_NOTE_OWNER ? "Little Goblin" : author.botId;
+	return author.name;
 }
 
 function TextChange({ label, change }: { label: string; change: NoteTextChange }) {

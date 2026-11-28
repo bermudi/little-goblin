@@ -1549,6 +1549,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<NotesIndex
 						token={token}
 						projects={projectList}
+						bots={bots}
 						onOpen={openNote}
 						onSettings={() => void openPage("settings")}
 						onChanged={() => void acted("notes")}
@@ -1565,6 +1566,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									token={token}
 									noteId={noteId}
 									projects={projectList}
+									bots={bots}
 									discardRef={noteDiscard}
 									onChanged={() => void acted("notes")}
 									onChat={(note: AppNote) =>

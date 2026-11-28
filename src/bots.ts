@@ -92,6 +92,7 @@ export function makeBotStore(db: Database) {
 		${currentBots}
 		ORDER BY bots.created_at DESC, bots.id
 	`);
+	const names = db.query<{ name: string }, [BotId]>("SELECT name FROM bots WHERE id = ?");
 	const insert = db.query("INSERT INTO bots (id, name, created_at) VALUES (?, ?, ?)");
 	const rename = db.query("UPDATE bots SET name = ? WHERE id = ?");
 	const detach = db.query("DELETE FROM bot_chats WHERE conversation_id = ? AND bot_id = ?");
@@ -145,6 +146,11 @@ export function makeBotStore(db: Database) {
 
 	return {
 		membership: (id: string) => membership.get(id),
+		get: (id: BotId) => {
+			const row = main.get(id);
+			return row === null ? null : readBot(row);
+		},
+		name: (id: BotId) => names.get(id)?.name ?? null,
 		attachSideChat: (id: string, botId: BotId) => attachSide.run(id, botId),
 		list: () => list.all().map(readBot),
 		convertSideChat: convert.immediate,

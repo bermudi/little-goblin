@@ -17,22 +17,35 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@ui-sdk/react/dialog";
-import type { AppNoteList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
+import type { AppBot, AppNoteList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER, type NoteBatchAction } from "../../src/note-owner.ts";
 import { batchNotes, createNote, listNotes } from "./api.ts";
 import { relTime } from "./memoryShared.tsx";
 import { useLiveVersion } from "./useLive.tsx";
 
-function OwnerOptions({ projects }: { projects: AppProject[] }) {
+function OwnerOptions({ projects, bots }: { projects: AppProject[]; bots: AppBot[] }) {
 	return (
 		<>
 			<option value="global">Global</option>
 			<option value={LITTLE_GOBLIN_NOTE_OWNER}>Little Goblin</option>
-			{projects.map((project) => (
-				<option key={project.id} value={project.id}>
-					{project.name}
-				</option>
-			))}
+			{bots.length > 0 && (
+				<optgroup label="Bots">
+					{bots.map((bot) => (
+						<option key={bot.id} value={bot.id}>
+							{bot.name}
+						</option>
+					))}
+				</optgroup>
+			)}
+			{projects.length > 0 && (
+				<optgroup label="Projects">
+					{projects.map((project) => (
+						<option key={project.id} value={project.id}>
+							{project.name}
+						</option>
+					))}
+				</optgroup>
+			)}
 		</>
 	);
 }
@@ -42,12 +55,14 @@ const actions = { move: "Moved", archive: "Archived", restore: "Restored", delet
 export function NotesIndex({
 	token,
 	projects,
+	bots = [],
 	onOpen,
 	onChanged,
 	onSettings,
 }: {
 	token: string | null;
 	projects: AppProject[];
+	bots?: AppBot[];
 	onOpen: (id: string) => void;
 	onChanged?: () => void;
 	onSettings?: () => void;
@@ -71,12 +86,16 @@ export function NotesIndex({
 	const selection = Array.from(selected, ([id, stateRev]) => ({ id, stateRev }));
 	const selectedShown = rows.filter(({ id }) => selected.has(id)).length;
 	const count = selection.length;
+	const botOwner = (id: string) => bots.find((bot) => bot.id === id);
 	const ownerName = (note: AppNoteSummary) =>
 		note.projectId === null
 			? note.botId === null
 				? "Global"
-				: "Little Goblin"
+				: note.botId === undefined || note.botId === LITTLE_GOBLIN_NOTE_OWNER
+					? "Little Goblin"
+					: (botOwner(note.botId)?.name ?? "Bot")
 			: (projects.find((project) => project.id === note.projectId)?.name ?? "Project");
+	const destinationBot = botOwner(destination);
 
 	useEffect(() => {
 		mounted.current = true;
@@ -89,7 +108,7 @@ export function NotesIndex({
 		let cancelled = false;
 		const timer = setTimeout(() => {
 			const scope =
-				filter === "global" || filter === LITTLE_GOBLIN_NOTE_OWNER
+				filter === "global" || filter === LITTLE_GOBLIN_NOTE_OWNER || botOwner(filter) !== undefined
 					? { owner: filter }
 					: { project: filter };
 			void listNotes(token, { ...scope, q: query, archived }).then(
@@ -209,7 +228,7 @@ export function NotesIndex({
 					}}
 				>
 					<option value="all">All owners</option>
-					<OwnerOptions projects={projects} />
+					<OwnerOptions projects={projects} bots={bots} />
 				</select>
 				<select
 					aria-label="Filter notes by status"
@@ -253,11 +272,19 @@ export function NotesIndex({
 										projects={projects.filter(
 											(project) => project.archivedAt === null,
 										)}
+										bots={bots}
 									/>
 								</select>
 							</label>
 							{destination === "global" && (
 								<p>Every bot can read and edit Global notes.</p>
+							)}
+							{destinationBot !== undefined && (
+								<p>
+									Only {destinationBot.name}'s chats can use{" "}
+									{count === 1 ? "it" : "them"}. {destinationBot.name} can't be moved back
+									to Little Goblin while it owns notes.
+								</p>
 							)}
 							<div className="confirm-actions">
 								<DialogClose className="ghost proj-btn">Cancel</DialogClose>
@@ -268,8 +295,8 @@ export function NotesIndex({
 										const owner =
 											destination === "global"
 												? { botId: null }
-												: destination === LITTLE_GOBLIN_NOTE_OWNER
-													? { botId: LITTLE_GOBLIN_NOTE_OWNER }
+												: destination === LITTLE_GOBLIN_NOTE_OWNER || destinationBot !== undefined
+													? { botId: destination }
 													: { projectId: destination };
 										void mutate({ action: "move", owner });
 									}}

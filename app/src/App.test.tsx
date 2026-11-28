@@ -11,6 +11,7 @@ import {
 } from "../../src/config-schema.ts";
 import type {
 	AppAttentionItem,
+	AppBot,
 	AppConversationList,
 	AppNote,
 	AppNoteSummary,
@@ -2437,6 +2438,7 @@ describe("app projects surface", () => {
 	// Conversation creation control: POST /api/app/conversations 500s.
 	let failCreate: boolean;
 	let createRefusedNotes: string[] | null;
+	let listBots: AppBot[];
 	let movePatchFail: boolean;
 	let liveN = 0;
 	// Focus-refresh controls: the note GET fails, or answers with a
@@ -2555,6 +2557,7 @@ describe("app projects surface", () => {
 		conflictPatch = false;
 		failCreate = false;
 		createRefusedNotes = null;
+		listBots = [];
 		movePatchFail = false;
 		noteGetFail = false;
 		noteGetOverride = null;
@@ -2642,7 +2645,11 @@ describe("app projects surface", () => {
 								);
 					return createHold === null ? reply() : createHold.then(reply);
 				}
-				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: rollingRows } }));
+				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: rollingRows }, bots: listBots }));
+			}
+			if (url.endsWith("/note-pins") && method === "PATCH") {
+				posts.push({ url, body });
+				return Promise.resolve(jsonResponse({ pins: [], matches: [], truncated: false }));
 			}
 			if (url.startsWith("/api/app/note-pin-candidates")) {
 				const u = new URL(url, "http://localhost");
@@ -4715,6 +4722,28 @@ describe("app projects surface", () => {
 			});
 		});
 	}
+
+	test("Chat with this note on a bot's note pins it to that bot's chat and creates nothing", async () => {
+		listBots = [{ id: "bot-cook", name: "Cook", mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
+		convs = [convRow("Cook", { id: "app/cook-main" })];
+		notes = [noteRow("Recipes", { botId: "bot-cook" })];
+		win.history.replaceState(null, "", "/app/n/n-recipes");
+		await mount();
+		let pm: Element | null = null;
+		for (let i = 0; i < 20 && pm === null; i++) {
+			pm = container.querySelector(".ProseMirror");
+			if (pm === null) await settle();
+		}
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Chat with this note"),
+		);
+		await settle();
+		expect(posts.filter((p) => p.url.endsWith("/note-pins"))).toEqual([
+			{ url: "/api/app/conversations/cook-main/note-pins", body: { noteId: "n-recipes", pinned: true } },
+		]);
+		expect(posts.some((p) => p.url === "/api/app/conversations" || p.url === "/api/app/chat")).toBe(false);
+		expect(win.location.pathname).toBe("/app/c/cook-main");
+	});
 
 	const chatButton = () =>
 		[...container.querySelectorAll(".note-flags button")].find(

@@ -217,14 +217,18 @@ export async function handleChatRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
-	const appLane = (initialSettings?: ModelSettings): RollLane => ({
+	const appLane = (initialSettings?: ModelSettings, pinnedNoteIds: string[] = []): RollLane => ({
 		current: () => store.currentAppRoll(),
 		mint: () =>
-			store.rollApp(
-				initialSettings === undefined
-					? deps.configRef.current
-					: { ...deps.configRef.current, ...initialSettings },
-			),
+			store.db.transaction(() => {
+				const conv = store.rollApp(
+					initialSettings === undefined
+						? deps.configRef.current
+						: { ...deps.configRef.current, ...initialSettings },
+				);
+				store.chatNotePins.pinAll(conv.id, pinnedNoteIds);
+				return conv;
+			})(),
 		logs: {
 			rolled: "app lane rolled",
 			continued: "app lane continued past gap",
@@ -589,41 +593,37 @@ export async function handleChatRoute(
 				}
 			}
 			const pinnedNoteIds = parsed.data.pinnedNoteIds ?? [];
-			const refusedPins = store.chatNotePins.unpinnableIn(null, pinnedNoteIds);
-			if (refusedPins.length > 0) {
-				log.warn("app rolling send refused: notes not pinnable", { refused: refusedPins });
+			if (pinnedNoteIds.length > 0 && store.currentAppRoll() !== null) {
 				return Response.json(
-					{ error: "Some notes can't be pinned in this chat", noteIds: refusedPins },
+					{ error: "Little Goblin's chat already exists — pin notes from its composer" },
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			const lane = appLane(initialSettings);
+			const lane = appLane(initialSettings, pinnedNoteIds);
 			const rollDeps: RollDeps = {
 				store,
 				runtime,
 				gapMinutes: () => deps.configRef.current.telegram.dmGapMinutes,
 				...(deps.gate !== undefined ? { gate: deps.gate } : {}),
 			};
-			const result = await routeLaneMessage(
-				rollDeps,
-				lane,
-				projectRollText(message.parts as Message["parts"]),
-			);
+			let result: Awaited<ReturnType<typeof routeLaneMessage>>;
+			try {
+				result = await routeLaneMessage(
+					rollDeps,
+					lane,
+					projectRollText(message.parts as Message["parts"]),
+				);
+			} catch (err) {
+				if (!(err instanceof NotePinsRefused)) throw err;
+				log.warn("app rolling send refused: notes not pinnable", { refused: err.noteIds });
+				return Response.json(
+					{ error: "Some notes can't be pinned in this chat", noteIds: err.noteIds },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
 			convId = result.conv.id;
 			conv = result.conv;
 			rolled = result.rolled;
-			if (pinnedNoteIds.length > 0) {
-				try {
-					store.chatNotePins.pinAll(convId, pinnedNoteIds);
-				} catch (err) {
-					if (!(err instanceof NotePinsRefused)) throw err;
-					log.warn("app rolling send refused: notes lost access", { conversation: convId, refused: err.noteIds });
-					return Response.json(
-						{ error: "Some notes can't be pinned in this chat", noteIds: err.noteIds },
-						{ status: 409, headers: NO_STORE },
-					);
-				}
-			}
 			log.info("app rolling send", {
 				conversation: convId,
 				rolled,

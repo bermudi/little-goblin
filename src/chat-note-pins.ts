@@ -184,9 +184,6 @@ export function openChatNotePins(db: Database) {
 		)
 		ORDER BY n.updated_at DESC, n.id LIMIT 51
 	`);
-	const pinnableIn = db.query<{ id: string }, [string, string | null]>(`
-		SELECT n.id FROM notes n WHERE n.id = ?1 AND ${availableIn("n", "?2", `'${LITTLE_GOBLIN_NOTE_OWNER}'`)}
-	`);
 	const changes = db.query<ChatNoteChange, [string, number, number]>(
 		`${changeSelect} AND e.rev <= ? ORDER BY e.rev`,
 	);
@@ -250,9 +247,6 @@ export function openChatNotePins(db: Database) {
 				? []
 				: search.all(conversation, match, match);
 			return { pins, matches: matches.slice(0, 50), truncated: matches.length > 50 };
-		},
-		unpinnableIn(projectId: string | null, ids: string[]): string[] {
-			return ids.filter((id) => pinnableIn.get(id, projectId) === null);
 		},
 		candidates(projectId: string | null, query: string): ChatNotePinCandidates {
 			const match = toFtsQuery(query);

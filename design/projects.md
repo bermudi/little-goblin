@@ -159,15 +159,18 @@ from a third party.
   view renders it fenced. The app no longer offers a way to add one.
 - **Chat with this note** opens a new chat with that note staged as pinned
   and the cursor in the composer. Nothing is sent until the operator types.
+  A note owned by another bot cannot be pinned in Little Goblin's chats, so
+  the button pins it to that bot's main chat and opens it instead.
 - **Staged pins.** A chat that does not exist yet (the new-chat and
   project composers, and Little Goblin's chat before its first message)
   holds picked notes locally. The first send creates the chat and its pins
   in one transaction, before the message is admitted, so the first turn
   carries the pin notice. A note the new chat could not pin refuses the
   whole create; the draft stays, and the refused notes are unpinned with a
-  line that names them. For Little Goblin's first message the server checks
-  the notes before it routes, and pins them on the roll the message lands
-  in. Candidates use the same access rule as an existing chat's pins.
+  line that names them. For Little Goblin's first message the new roll and
+  its pins commit in one transaction, so a refusal leaves no roll behind;
+  once a roll exists, staged pins are refused and pins go through its
+  composer. Candidates use the same access rule as an existing chat's pins.
 - **Pin to a chat** (operator, 2026-11-27, #982; moved to the composer
   2026-11-28, #1002). The composer's Notes button opens a panel anchored to
   it on desktop, or a bottom sheet from the + menu on a phone. Search active

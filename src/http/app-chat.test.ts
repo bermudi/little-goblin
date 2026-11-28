@@ -116,7 +116,7 @@ describe("app chat", () => {
 		}
 	});
 
-	test("the first rolling send pins its staged notes before admission, and refuses unpinnable notes before routing", async () => {
+	test("the first rolling send mints its roll and pins together, refusing unpinnable notes and pins once a roll exists", async () => {
 		const { http, call, store, projects, notes } = setup({ token: APP_TOKEN_NAME });
 		try {
 			const send = (id: string, extra: Record<string, unknown>) =>
@@ -145,6 +145,11 @@ describe("app chat", () => {
 			expect(JSON.stringify(notice)).toContain(note.id);
 			const pins = (await (await call(`/api/app/conversations/${roll!.id.slice(4)}/note-pins`)).json()) as { pins: { id: string }[] };
 			expect(pins.pins.map(({ id }) => id)).toEqual([note.id]);
+
+			const lateStage = await send("late", { pinnedNoteIds: [note.id] });
+			expect(lateStage.status).toBe(409);
+			expect(store.currentAppRoll()?.id).toBe(roll!.id);
+			expect(store.history(roll!.id)).toHaveLength(2);
 
 			const notRolling = await call("/api/app/chat", {
 				method: "POST",

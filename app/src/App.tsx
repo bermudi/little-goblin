@@ -36,6 +36,7 @@ import {
 	loadToken,
 	patchConversation,
 	rollRollingChat,
+	setChatNotePin,
 	telegramDoor,
 } from "./api.ts";
 import { moveComposerDraft } from "./composerDraft.ts";
@@ -1586,6 +1587,15 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									discardRef={noteDiscard}
 									onChanged={() => void acted("notes")}
 									onChat={(note: AppNote) => {
+										const ownerBot = note.projectId === null ? bots.find((bot) => bot.id === note.botId) : undefined;
+										if (ownerBot !== undefined) {
+											setPinRefusal(null);
+											void setChatNotePin(token, ownerBot.mainConversationId, note.id, true).then(
+												() => openConversation(ownerBot.mainConversationId),
+												() => setPinRefusal(`Couldn't pin ${note.title} to ${ownerBot.name}'s chat.`),
+											);
+											return;
+										}
 										const scope = note.projectId ?? "chat";
 										const owner = (note.projectId === null ? undefined : projectList.find((p) => p.id === note.projectId)?.name)
 											?? bots.find((bot) => bot.id === note.botId)?.name ?? note.botId ?? "Global";
@@ -1615,6 +1625,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 										Couldn't start a conversation — check the tailnet, then resend.
 									</p>
 								)}
+								{pinRefusal !== null && <p className="error" role="alert">{pinRefusal}</p>}
 							</>
 						)}
 					</div>

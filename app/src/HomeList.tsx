@@ -54,12 +54,12 @@ export function useHomeList(
 	expandedBotId: string | null,
 ): Home {
 	const [hold, setHold] = useState<Hold | null>(null);
-	const [sideRowLimit, setSideRowLimit] = useState(SIDE_CHAT_PAGE_ROWS);
+	const [revealedHiddenRows, setRevealedHiddenRows] = useState(0);
 	const built = buildHome(input, hold);
 	if (built.hold !== hold) setHold(built.hold);
 
 	const { active, side, bots } = built.list;
-	const pagedSide = pageSideChats(side, sideRowLimit, input.open);
+	const pagedSide = pageSideChats(side, revealedHiddenRows, built.list.openRow);
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
 		projectsOpen ? projects.map((project) => project.id) : [],
@@ -72,20 +72,25 @@ export function useHomeList(
 		orderSignature,
 		sidePage: {
 			...pagedSide,
-			showMore: () => setSideRowLimit((limit) => limit + SIDE_CHAT_PAGE_ROWS),
+			showMore: () => setRevealedHiddenRows((count) => count + SIDE_CHAT_PAGE_ROWS),
 		},
 	};
 }
 
 function pageSideChats(
 	rows: readonly ChatRow[],
-	limit: number,
+	revealedHidden: number,
 	open: string | null,
 ): { rows: ChatRow[]; hidden: number } {
-	const base = new Set(rows.slice(0, limit).map((row) => row.id));
-	const visible = rows.filter((row) =>
-		base.has(row.id) || row.mark !== null || row.conv.pinnedAt !== null || row.id === open
-	);
+	const base = new Set(rows.slice(0, SIDE_CHAT_PAGE_ROWS).map((row) => row.id));
+	let admitted = 0;
+	const visible = rows.filter((row) => {
+		const forced = row.mark !== null || row.conv.pinnedAt !== null || row.id === open;
+		if (base.has(row.id) || forced) return true;
+		if (admitted >= revealedHidden) return false;
+		admitted++;
+		return true;
+	});
 	return { rows: visible, hidden: rows.length - visible.length };
 }
 

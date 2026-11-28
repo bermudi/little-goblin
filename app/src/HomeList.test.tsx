@@ -281,6 +281,76 @@ test("marked and open side chats stay visible past the five-row opening page", a
 	expect(container!.textContent).toContain("Show more (5 left)");
 });
 
+test("Show more adds five hidden rows even when pinned rows overlap the page", async () => {
+	const rows = Array.from({ length: 12 }, (_, index) => conv(`chat-${index + 1}`));
+	for (const row of rows.slice(0, 6)) row.pinnedAt = at;
+	setup();
+	function Fixture() {
+		const home = useHomeList({ ...input(rows), sideChatsOpen: true }, [], false, null);
+		return <HomeList
+			home={home}
+			projects={[]}
+			projectsOpen={false}
+			currentFolderId={null}
+			currentConversationId={null}
+			expandedBotId={null}
+			rollingCurrent={false}
+			sideChatsOpen
+			onToggleProjects={() => {}}
+			onToggleSideChats={() => {}}
+			onNewSideChat={() => {}}
+			onNewProject={() => {}}
+			onOpenProject={() => {}}
+			onOpenTarget={() => {}}
+			onOpenRolling={() => {}}
+			onOpenConversation={() => {}}
+			onToggleBotSideChats={() => {}}
+			renderRow={(row) => <ConversationNavLink className="conv-main" id={row.id} href={`/app/c/${row.id.slice(4)}`}>{row.title}</ConversationNavLink>}
+		/>;
+	}
+	await act(async () => root?.render(<Fixture />));
+	const visible = () => [...container!.querySelectorAll<HTMLElement>(".side-chat[data-flip]")].map((row) => row.dataset.flip);
+	const showMore = () => [...container!.querySelectorAll<HTMLButtonElement>("button")]
+		.find((button) => button.textContent?.startsWith("Show more") ?? false);
+	expect(visible()).toHaveLength(6);
+	expect(showMore()?.textContent).toBe("Show more (6 left)");
+	await act(async () => showMore()?.click());
+	expect(visible()).toHaveLength(11);
+	expect(showMore()?.textContent).toBe("Show more (1 left)");
+});
+
+test("the owner row of an open subagent stays visible past the opening page", async () => {
+	const rows = Array.from({ length: 12 }, (_, index) => conv(`chat-${index + 1}`));
+	rows.push(conv("agent-child", "app/chat-12"));
+	setup();
+	function Fixture() {
+		const home = useHomeList({ ...input(rows, "app/agent-child"), sideChatsOpen: true }, [], false, null);
+		return <HomeList
+			home={home}
+			projects={[]}
+			projectsOpen={false}
+			currentFolderId={null}
+			currentConversationId="app/agent-child"
+			expandedBotId={null}
+			rollingCurrent={false}
+			sideChatsOpen
+			onToggleProjects={() => {}}
+			onToggleSideChats={() => {}}
+			onNewSideChat={() => {}}
+			onNewProject={() => {}}
+			onOpenProject={() => {}}
+			onOpenTarget={() => {}}
+			onOpenRolling={() => {}}
+			onOpenConversation={() => {}}
+			onToggleBotSideChats={() => {}}
+			renderRow={(row) => <ConversationNavLink className="conv-main" id={row.id} href={`/app/c/${row.id.slice(4)}`}>{row.title}</ConversationNavLink>}
+		/>;
+	}
+	await act(async () => root?.render(<Fixture />));
+	const visible = [...container!.querySelectorAll<HTMLElement>(".side-chat[data-flip]")].map((row) => row.dataset.flip);
+	expect(visible).toEqual(["app/chat-1", "app/chat-2", "app/chat-3", "app/chat-4", "app/chat-5", "app/chat-12"]);
+});
+
 test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visible only when open", async () => {
 	let toggles = 0;
 	let creates = 0;

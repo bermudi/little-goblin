@@ -8,6 +8,7 @@ test("descriptors reproduce the former name lists", () => {
 	expect(names((p) => p.replay === "safe")).toEqual([
 		"history_search",
 		"memory_search",
+		"read_file",
 	]);
 	expect(names((p) => p.scriptable)).toEqual(
 		[
@@ -19,6 +20,9 @@ test("descriptors reproduce the former name lists", () => {
 			"transcribe",
 			"sandbox",
 			"artifact",
+			"edit_file",
+			"read_file",
+			"write_file",
 		].sort(),
 	);
 	expect(names((p) => p.guestSandbox)).toEqual(["search", "web_search"]);

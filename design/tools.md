@@ -103,13 +103,16 @@ for now — container output is a separate surface. `transcribe` follows the sam
 the full text lands content-addressed in `state/transcriptcache`, never
 pruned.
 
-**File work is bash-only** (ruling 2026-11-27, #994). Turn tools have no
+**File work is bash-only** (ruling 2026-11-27, #994). New chats do not mount
 `read_file`, `write_file` or `edit_file`: the model reads with `cat` or
 `sed -n` and writes or edits with heredocs, `sed` or a short script, as
 current models already prefer. One fewer tool family means a smaller
-tool list on every request. Old conversations keep their file-tool calls
-in history, and the app still renders them. The skill reviewer's private
-staging copy still mounts the three tools (`src/reviewer-staging.ts`).
+tool list on each request. A chat that already sent the old declarations
+on a route that resends the full tool list keeps those declarations and
+callable tools until its prompt snapshot resets (#1020). Old conversations
+keep their file-tool calls in history, and the app still renders them.
+The skill reviewer's private staging copy still mounts the three tools
+(`src/reviewer-staging.ts`).
 Skill provenance and usage moved to the bash tool
 ([skills.md](skills.md#skill-provenance-ruling-2026-10-16)).
 

@@ -34,10 +34,12 @@ export const visionInputSchema = z.object({
 		),
 });
 
-export function visionTool(cwd: string, deps: VisionToolDeps) {
+export const VISION_BASH_IMAGES = "bash cannot show images";
+
+export function visionTool(cwd: string, deps: VisionToolDeps, legacyFileTools = false) {
 	return defineTool({
 		description:
-			"Ask a vision model a specific question about an image file and get a text answer. This is the only way to see an image's content — bash cannot show images. " +
+			`Ask a vision model a specific question about an image file and get a text answer. This is the only way to see an image's content — ${legacyFileTools ? "read_file cannot show images" : VISION_BASH_IMAGES}. ` +
 			"Ask targeted questions ('what error does the dialog show?', 'which element is highlighted?'), and pass followUp=true to continue the previous thread about the same image.",
 		input: visionInputSchema,
 		execute: async ({ path, prompt, followUp }, options) => {

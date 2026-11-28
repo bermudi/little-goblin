@@ -5,7 +5,7 @@ import { log } from "../../log.ts";
 import { resolvePath, unicodeTwin, writeThroughTarget } from "./paths.ts";
 import { readTextFile } from "./read.ts";
 
-export const editFileTool = (cwd: string) =>
+export const editFileTool = (cwd: string, onWrite?: (abs: string, toolCallId: string) => void) =>
 	defineTool({
 		description:
 			"Replace exact text in a file. old_string must match uniquely unless replace_all is set. Leaf symlinks are followed to the file they manage.",
@@ -15,7 +15,7 @@ export const editFileTool = (cwd: string) =>
 			new_string: z.string(),
 			replace_all: z.boolean().optional(),
 		}),
-		execute: async ({ path, old_string, new_string, replace_all }) => {
+		execute: async ({ path, old_string, new_string, replace_all }, { toolCallId }) => {
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;
 			const through = writeThroughTarget(target);
@@ -38,6 +38,7 @@ export const editFileTool = (cwd: string) =>
 				? text.split(old_string).join(new_string)
 				: text.replace(old_string, () => new_string);
 			durableWriteFile(file, next);
+			onWrite?.(file, toolCallId);
 			return { path: file, replaced: replace_all ? count : 1 };
 		},
 	});

@@ -8,6 +8,7 @@ import type { Conversation } from "../conversation-read.ts";
 import type { JSONObject, Message } from "../message.ts";
 import { declarationsOf, TOOLS_PART } from "./tool-declarations.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import { persistableToolSet } from "../turn/ai-sdk-tools.ts";
 import { readFileTool } from "./tools/read.ts";
 import { writeFileTool } from "./tools/write.ts";
 import { editFileTool } from "./tools/edit.ts";
@@ -104,7 +105,8 @@ describe("hosted web_search mount", () => {
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: options?.store ?? { promptSnapshot: () => snapshot, lastTurnTools: () => null } as ConversationStore,
+			store: options?.store ??
+				{ promptSnapshot: () => snapshot, lastTurnTools: () => null } as unknown as ConversationStore,
 			projects: { get: () => ({ dir: tmpDir("goblin-turn-tools-project-") }) } as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -139,9 +141,10 @@ describe("hosted web_search mount", () => {
 		const model = "zai/glm-5.3";
 		const target = { ...conversation, model };
 		const config = { ...cfgFor("off"), scripting: { maxCalls: 50 } };
-		const mount = rigTools(config, target, null, undefined, {
+		const skillWrites: [string, string][] = [];
+		const mount = rigTools(config, target, null, (id, name) => skillWrites.push([id, name]), {
 			store,
-			vision: { configRef: { current: config }, auth: {} as AuthStore, conversation: target.id },
+			vision: { configRef: { current: config, ttsDown: false }, auth: {} as AuthStore, conversation: target.id },
 		});
 		const descriptions = {
 			bash: "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts.",
@@ -169,7 +172,15 @@ describe("hosted web_search mount", () => {
 		const runtime = new Runtime({
 			store,
 			engines: script.engines,
-			buildStep: (c, tools) => ({ ...script.step(), system: systemPromptFor(store, c, Object.keys(tools)).text }),
+			captureConversation: (c) => ({ ...c, model }),
+			buildStep: (c, tools) => ({
+				...script.step(),
+				system: systemPromptFor({
+					promptSnapshot: store.promptSnapshot,
+					savePromptSnapshot: (id, text, sources) =>
+						store.savePromptSnapshot(id, text, [...sources, NOTE_HISTORY_SOURCE]),
+				}, c, Object.keys(tools)).text,
+			}),
 		});
 		let beforeRollout = true;
 		runtime.mount({ makeTools: (c, ...args) => beforeRollout ? old : mount(c, ...args) });
@@ -181,7 +192,7 @@ describe("hosted web_search mount", () => {
 		const request = (index: number) =>
 			JSON.parse(script.callOptions()[index]!) as { prompt: unknown[]; tools: { name: string }[] };
 		try {
-			const path = "frozen.txt";
+			const path = "skills-proposed/demo/frozen.txt";
 			script.script(
 				reply("before"),
 				toolReply(toolCall("write", "write_file", { path, content: "before\n" })),
@@ -200,16 +211,45 @@ describe("hosted web_search mount", () => {
 			expect(request(1).prompt.slice(0, request(0).prompt.length)).toEqual(request(0).prompt);
 			expect(readFileSync(join(workspace, path), "utf8")).toBe("after\n");
 			expect(JSON.stringify(request(4).prompt)).toContain("1\\tafter\\n");
+			expect(skillWrites).toEqual([[target.id, "demo"], [target.id, "demo"]]);
 
 			store.clearPromptSnapshot(target.id);
 			await send("after prompt reset");
-			expect(JSON.stringify(request(5).tools)).toBe(JSON.stringify(request(5).tools.filter(
-				(tool) => !["read_file", "write_file", "edit_file"].includes(tool.name),
-			)));
+			for (const name of ["read_file", "write_file", "edit_file"]) {
+				expect(request(5).tools.map((tool) => tool.name)).not.toContain(name);
+			}
 			expect(request(5).tools[0]?.name).toBe("bash");
 			expect(JSON.stringify(request(5).tools)).toContain("It is also the file tool");
 		} finally {
 			await runtime.shutdown();
+			store.close();
+		}
+	});
+
+	test("fresh and already bash-only full-tool conversations stay bash-only", async () => {
+		useHome("goblin-bash-only-file-tools-");
+		const { store } = openTestStore("goblin-bash-only-file-tools-");
+		try {
+			const target = {
+				...store.resolve({ kind: "dm", chatId: 1 }, paths.workspace()),
+				model: "zai/glm-5.3",
+			};
+			const config = cfgFor("off");
+			const mount = rigTools(config, target, null, undefined, {
+				store,
+				vision: { configRef: { current: config, ttsDown: false }, auth: {} as AuthStore, conversation: target.id },
+			});
+			const fresh = mount(target);
+			expect(Object.keys(fresh)[0]).toBe("bash");
+			for (const name of ["read_file", "write_file", "edit_file"]) {
+				expect(Object.keys(fresh)).not.toContain(name);
+			}
+			const persisted = await persistableToolSet(fresh);
+			if ("unpersistable" in persisted) throw new Error("expected persistable tools");
+			store.saveLastTurnTools(target.id, target.epoch, persisted.json);
+			store.savePromptSnapshot(target.id, "frozen", [NOTE_HISTORY_SOURCE]);
+			expect(JSON.stringify(declarationsOf(mount(target)))).toBe(JSON.stringify(declarationsOf(fresh)));
+		} finally {
 			store.close();
 		}
 	});

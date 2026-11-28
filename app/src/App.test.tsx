@@ -11,6 +11,7 @@ import {
 } from "../../src/config-schema.ts";
 import type {
 	AppAttentionItem,
+	AppBot,
 	AppConversationList,
 	AppNote,
 	AppNoteSummary,
@@ -2436,6 +2437,8 @@ describe("app projects surface", () => {
 	let conflictPatch: boolean;
 	// Conversation creation control: POST /api/app/conversations 500s.
 	let failCreate: boolean;
+	let createRefusedNotes: string[] | null;
+	let listBots: AppBot[];
 	let movePatchFail: boolean;
 	let liveN = 0;
 	// Focus-refresh controls: the note GET fails, or answers with a
@@ -2553,6 +2556,8 @@ describe("app projects surface", () => {
 		stored = [];
 		conflictPatch = false;
 		failCreate = false;
+		createRefusedNotes = null;
+		listBots = [];
 		movePatchFail = false;
 		noteGetFail = false;
 		noteGetOverride = null;
@@ -2630,7 +2635,9 @@ describe("app projects surface", () => {
 					const reply = () =>
 						failCreate
 							? Promise.resolve(jsonResponse({ error: "mint down" }, 500))
-							: Promise.resolve(
+							: createRefusedNotes !== null
+								? Promise.resolve(jsonResponse({ error: "Some notes can't be pinned in this chat", noteIds: createRefusedNotes }, 409))
+								: Promise.resolve(
 									jsonResponse(
 										{ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" },
 										201,
@@ -2638,7 +2645,22 @@ describe("app projects surface", () => {
 								);
 					return createHold === null ? reply() : createHold.then(reply);
 				}
-				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: rollingRows } }));
+				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: rollingRows }, bots: listBots }));
+			}
+			if (url.endsWith("/note-pins") && method === "PATCH") {
+				posts.push({ url, body });
+				return Promise.resolve(jsonResponse({ pins: [], matches: [], truncated: false }));
+			}
+			if (url.startsWith("/api/app/note-pin-candidates")) {
+				const u = new URL(url, "http://localhost");
+				const scope = u.searchParams.get("projectId");
+				const q = (u.searchParams.get("q") ?? "").toLowerCase();
+				return Promise.resolve(jsonResponse({
+					matches: notes
+						.filter((n) => n.archivedAt === null && n.projectId === scope && n.title.toLowerCase().includes(q))
+						.map((n) => ({ id: n.id, title: n.title, rev: n.rev, owner: "Global" })),
+					truncated: false,
+				}));
 			}
 			if (url.startsWith("/api/app/search")) {
 				const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
@@ -2913,6 +2935,9 @@ describe("app projects surface", () => {
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
 				const request = body as { rolling?: unknown; message?: UIMessage };
+				if (request.rolling === true && createRefusedNotes !== null) {
+					return Promise.resolve(jsonResponse({ error: "Some notes can't be pinned in this chat", noteIds: createRefusedNotes }, 409));
+				}
 				if (request.rolling === true && request.message !== undefined) {
 					const shortReply: UIMessage = {
 						id: "a-rolled",
@@ -3595,160 +3620,88 @@ describe("app projects surface", () => {
 		});
 	};
 
-	test("the composer's note picker stages a chip that sends as data-note", async () => {
+	const notesTrigger = () => container.querySelector<HTMLButtonElement>("form.composer .notes-trigger");
+	const pinStaged = async (title: string) => {
+		await click(notesTrigger());
+		await settleSlow();
+		await click(document.querySelector(`button[aria-label="Pin ${title}"]`));
+		await click(document.querySelector('button[aria-label="Close Notes"]'));
+	};
+
+	test("the composer offers no attach-a-note mode", async () => {
 		notes = [noteRow("Shopping")];
 		await mount();
-
-		await click(container.querySelector('button[aria-label="Attach a note"]'));
-		await settleSlow();
-		const pick = container.querySelector(".composer-pick");
-		expect(pick).not.toBeNull();
-		await click(
-			[...pick!.querySelectorAll("[role=option] button")].find((b) => b.textContent === "Shopping"),
-		);
-		expect(container.querySelector(".goblin-chip")!.textContent).toContain("Shopping");
-
-		const form = container.querySelector("form.composer")!;
-		await act(async () => {
-			form.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await settle();
-		const chat = posts.find((p) => p.url === "/api/app/chat");
-		expect(chat).toBeTruthy();
-		const msg = (chat!.body as { message: { parts: { type: string; data?: unknown }[] } }).message;
-		// The display title rides along for the optimistic chip; the
-		// server still expands the stored note authoritatively.
-		expect(msg.parts).toContainEqual({
-			type: "data-note",
-			data: { id: "n-shopping", title: "Shopping", inline: true },
-		});
-		// The live transcript labels the just-sent chip before any
-		// history reload — and the chip still navigates.
-		const chips = container.querySelectorAll(".msg.user .goblin-chip");
-		expect(chips).toHaveLength(1);
-		expect(chips[0]!.getAttribute("aria-label")).toBe("Note Shopping");
-		await click(chips[0]);
-		const details = container.querySelector('[role="dialog"] button');
-		expect(details).not.toBeNull();
-		await click(details);
-		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		expect(container.querySelector('button[aria-label="Attach a note"]')).toBeNull();
+		expect(notesTrigger()).not.toBeNull();
 	});
 
-	test("a refused lazy create keeps the compose and note chip ready for one retry", async () => {
+	test("a new chat stages a pinned note and creates the chat with it", async () => {
 		notes = [noteRow("Shopping")];
-		failCreate = true;
 		await mount();
-		await click(container.querySelector('button[aria-label="Attach a note"]'));
-		await settleSlow();
-		await click(
-			[...container.querySelectorAll(".composer-pick [role=option] button")].find(
-				(b) => b.textContent === "Shopping",
-			),
+		await pinStaged("Shopping");
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
+		await sendComposer("plan the week");
+		const creates = posts.filter((p) => p.url === "/api/app/conversations");
+		expect(creates).toHaveLength(1);
+		expect((creates[0]!.body as { pinnedNoteIds?: string[] }).pinnedNoteIds).toEqual(["n-shopping"]);
+		const chat = posts.find((p) => p.url === "/api/app/chat");
+		const parts = (chat!.body as { message: { parts: { type: string }[] } }).message.parts;
+		expect(parts.some((part) => part.type === "data-note")).toBe(false);
+	});
+
+	test("the first Little Goblin chat stages pins and sends them with its first message", async () => {
+		notes = [noteRow("Shopping")];
+		rollingRows = [];
+		rollingReply = { conversationId: "app/roll-first", rolled: true };
+		createRefusedNotes = ["n-shopping"];
+		win.history.replaceState(null, "", "/app/rolling");
+		await mount();
+		expect(container.textContent).toContain("your chat with Little Goblin starts here");
+		await pinStaged("Shopping");
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
+		await sendComposer("first words");
+		expect(composerText()).toBe("first words");
+		expect(container.querySelector('p.error[role="alert"]')?.textContent).toBe(
+			"This chat can't use Shopping, so it was unpinned. Send again to start without it.",
 		);
-		await sendComposer("keep this compose");
-		expect(composerText()).toBe(" keep this compose");
-		expect(container.querySelectorAll("form.composer .goblin-chip")).toHaveLength(1);
-		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
-		failCreate = false;
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes");
+		createRefusedNotes = null;
+		await pinStaged("Shopping");
 		await act(async () =>
 			container
 				.querySelector("form.composer")!
-				.dispatchEvent(
-					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-				),
+				.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event),
 		);
 		await settle();
-		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(2);
-		const chats = posts.filter((p) => p.url === "/api/app/chat");
-		expect(chats).toHaveLength(1);
-		expect((chats[0]!.body as { message: { parts: unknown[] } }).message.parts).toEqual([
-			{ type: "data-note", data: { id: "n-shopping", title: "Shopping", inline: true } },
-			{ type: "text", text: " keep this compose" },
-		]);
-		expect(container.querySelector("form.composer .goblin-chip")).toBeNull();
+		const sends = posts.filter((p) => p.url === "/api/app/chat");
+		expect(sends).toHaveLength(2);
+		expect((sends[0]!.body as { pinnedNoteIds?: string[] }).pinnedNoteIds).toEqual(["n-shopping"]);
+		expect((sends[1]!.body as { rolling?: boolean; pinnedNoteIds?: string[] })).toMatchObject({ rolling: true, pinnedNoteIds: ["n-shopping"] });
+		expect(container.textContent).not.toContain("your chat with Little Goblin starts here");
 	});
 
-	test("a fenced lazy create restores text without duplicating the still-staged note chip", async () => {
+	test("a create that refuses a staged note unpins it and keeps the draft", async () => {
 		notes = [noteRow("Shopping")];
-		projs = [projRow("Goblin")];
+		createRefusedNotes = ["n-shopping"];
 		await mount();
-		await click(container.querySelector('button[aria-label="Attach a note"]'));
-		await settleSlow();
-		await click(
-			[...container.querySelectorAll(".composer-pick [role=option] button")].find(
-				(b) => b.textContent === "Shopping",
-			),
-		);
-		const gate = hold();
-		createHold = gate.promise;
-		await sendComposer("come back to this");
-		await click(container.querySelector(".rail-section-toggle"));
-		await click(container.querySelector('.rail-project-main[href="/app/p/p-goblin"]'));
-		gate.resolve();
-		await settle();
-		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
-		await settle();
-		expect(composerText()).toBe(" come back to this");
-		expect(container.querySelectorAll("form.composer .goblin-chip")).toHaveLength(1);
+		await pinStaged("Shopping");
+		await sendComposer("keep this compose");
 		expect(posts.filter((p) => p.url === "/api/app/chat")).toHaveLength(0);
-	});
-
-	test("the note picker's Enter and Escape stay picker-local — no send, draft kept", async () => {
-		notes = [noteRow("Shopping")];
-		await mount();
-		const draft = container.querySelector("form.composer .message-box")! as HTMLElement;
-		await typeInto(draft, "keep me", win.HTMLTextAreaElement.prototype);
-
-		await click(container.querySelector('button[aria-label="Attach a note"]'));
-		const picker = container.querySelector(".composer-pick input")!;
-		expect(picker).not.toBeNull();
-
-		// Enter inside a form input would implicitly submit — the picker
-		// cancels and contains it, so no chat POST and the draft stands.
-		const enter = new win.KeyboardEvent("keydown", {
-			bubbles: true,
-			cancelable: true,
-			key: "Enter",
-		});
-		await act(async () => {
-			picker.dispatchEvent(enter as unknown as Event);
-		});
-		expect(enter.defaultPrevented).toBe(true);
-		expect(posts.some((p) => p.url === "/api/app/chat")).toBe(false);
-		expect(composerText()).toBe("keep me");
-		expect(container.querySelector(".composer-pick")).not.toBeNull();
-
-		// Escape must not touch the draft.
-		const escape = new win.KeyboardEvent("keydown", {
-			bubbles: true,
-			cancelable: true,
-			key: "Escape",
-		});
-		await act(async () => {
-			picker.dispatchEvent(escape as unknown as Event);
-		});
-		expect(escape.defaultPrevented).toBe(true);
-		expect(container.querySelector(".composer-pick")).toBeNull();
-		expect(composerText()).toBe("keep me");
-	});
-
-	test("the attachment note picker discloses truncation until a complete search returns", async () => {
-		notes = [noteRow("Shopping")];
-		notesTruncated = true;
-		await mount();
-		await click(container.querySelector('button[aria-label="Attach a note"]'));
-		await settleSlow();
-		const picker = container.querySelector(".composer-pick")!;
-		expect(picker.querySelector('[role="status"]')?.textContent).toContain(
-			"Showing the first 1 matching notes",
+		expect(composerText()).toBe("keep this compose");
+		expect(container.querySelector('main p.error[role="alert"]')?.textContent).toBe(
+			"This chat can't use Shopping, so it was unpinned. Send again to start without it.",
 		);
-		notesTruncated = false;
-		await typeInto(picker.querySelector("input")!, "Shopping", win.HTMLInputElement.prototype);
-		await settleSlow();
-		expect(picker.querySelector('[role="status"]')).toBeNull();
-		expect(picker.textContent).toContain("Shopping");
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes");
+		createRefusedNotes = null;
+		await act(async () =>
+			container
+				.querySelector("form.composer")!
+				.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event),
+		);
+		await settle();
+		const creates = posts.filter((p) => p.url === "/api/app/conversations");
+		expect(creates).toHaveLength(2);
+		expect((creates[1]!.body as { pinnedNoteIds?: string[] }).pinnedNoteIds).toBeUndefined();
 	});
 
 	test("a stored data-note part renders as a chip that opens the note", async () => {
@@ -4738,14 +4691,11 @@ describe("app projects surface", () => {
 		["loose", null],
 		["project", "p-goblin"],
 	] as const) {
-		test(`a failed chat mint on a ${variant} note page stays put and shows the alert`, async () => {
+		test(`Chat with this note on a ${variant} note page stages it on that composer and sends nothing`, async () => {
 			if (projectId !== null) projs = [projRow("Goblin")];
 			notes = [noteRow("Shopping", { projectId })];
-			failCreate = true;
 			win.history.replaceState(null, "", "/app/n/n-shopping");
 			await mount();
-			// The lazy editor mounts async — the page must survive the
-			// failure, so wait for its DOM first.
 			let pm: Element | null = null;
 			for (let i = 0; i < 20 && pm === null; i++) {
 				pm = container.querySelector(".ProseMirror");
@@ -4758,32 +4708,49 @@ describe("app projects surface", () => {
 					(b) => b.textContent === "Chat with this note",
 				),
 			);
-			expect(win.location.pathname).toBe("/app/n/n-shopping");
-			expect(container.querySelector(".note-editor")).not.toBeNull();
-			const alert = container.querySelector('p.error[role="alert"]');
-			expect(alert).not.toBeNull();
-			expect(alert!.textContent).toBe(
-				"Couldn't start a conversation — check the tailnet, then resend.",
-			);
+			await settle();
+			expect(win.location.pathname).toBe(projectId === null ? "/app/" : "/app/p/p-goblin");
+			expect(posts.some((p) => p.url === "/api/app/conversations" || p.url === "/api/app/chat")).toBe(false);
+			expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
+			expect(notesTrigger()?.getAttribute("title")).toBe("Pinned notes\n• Shopping");
 
-			// A retry after the mint recovers navigates and clears.
-			failCreate = false;
-			await click(
-				[...container.querySelectorAll("button")].find(
-					(b) => b.textContent === "Chat with this note",
-				),
-			);
-			expect(win.location.pathname).toBe("/app/c/minted");
-			expect(container.querySelector('p.error[role="alert"]')).toBeNull();
+			await sendComposer("what is left?");
+			const create = posts.find((p) => p.url === "/api/app/conversations");
+			expect(create?.body).toMatchObject({
+				pinnedNoteIds: ["n-shopping"],
+				...(projectId === null ? {} : { projectId }),
+			});
 		});
 	}
+
+	test("Chat with this note on a bot's note pins it to that bot's chat and creates nothing", async () => {
+		listBots = [{ id: "bot-cook", name: "Cook", mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
+		convs = [convRow("Cook", { id: "app/cook-main" })];
+		notes = [noteRow("Recipes", { botId: "bot-cook" })];
+		win.history.replaceState(null, "", "/app/n/n-recipes");
+		await mount();
+		let pm: Element | null = null;
+		for (let i = 0; i < 20 && pm === null; i++) {
+			pm = container.querySelector(".ProseMirror");
+			if (pm === null) await settle();
+		}
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Chat with this note"),
+		);
+		await settle();
+		expect(posts.filter((p) => p.url.endsWith("/note-pins"))).toEqual([
+			{ url: "/api/app/conversations/cook-main/note-pins", body: { noteId: "n-recipes", pinned: true } },
+		]);
+		expect(posts.some((p) => p.url === "/api/app/conversations" || p.url === "/api/app/chat")).toBe(false);
+		expect(win.location.pathname).toBe("/app/c/cook-main");
+	});
 
 	const chatButton = () =>
 		[...container.querySelectorAll(".note-flags button")].find(
 			(b) => b.textContent === "Chat with this note",
 		) as HTMLButtonElement;
 
-	test("chat flushes the pending edit before minting — held PATCH, no early navigation", async () => {
+	test("chat flushes the pending edit before staging — held PATCH, no early navigation", async () => {
 		notes = [noteRow("Shopping")];
 		noteBodies = { "n-shopping": "milk" };
 		await notePage("/app/n/n-shopping");
@@ -4801,15 +4768,9 @@ describe("app projects surface", () => {
 		gate.resolve();
 		await settle();
 		await settleSlow();
-		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
-		expect(win.location.pathname).toBe("/app/c/minted");
-		const chatPost = posts.find((p) => p.url === "/api/app/chat");
-		expect(chatPost).toBeTruthy();
-		const parts = (chatPost!.body as { message: { parts: unknown[] } }).message.parts;
-		expect(parts).toContainEqual({
-			type: "data-note",
-			data: { id: "n-shopping", title: "Shopping" },
-		});
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(false);
+		expect(win.location.pathname).toBe("/app/");
+		expect(notesTrigger()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
 	});
 
 	test("chat joins an in-flight title PATCH — the flush rides the landed rev", async () => {
@@ -4843,15 +4804,9 @@ describe("app projects surface", () => {
 		expect(notePatches[0]!.ifMatch).toBe('"1"');
 		expect((notePatches[1]!.body as { body?: string }).body).toContain("milkx");
 		expect(notePatches[1]!.ifMatch).toBe('"2"');
-		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
-		expect(win.location.pathname).toBe("/app/c/minted");
-		const chatPost = posts.find((p) => p.url === "/api/app/chat");
-		expect(chatPost).toBeTruthy();
-		const parts = (chatPost!.body as { message: { parts: unknown[] } }).message.parts;
-		expect(parts).toContainEqual({
-			type: "data-note",
-			data: { id: "n-shopping", title: "Shopping 2" },
-		});
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(false);
+		expect(win.location.pathname).toBe("/app/");
+		expect(notesTrigger()?.getAttribute("title")).toBe("Pinned notes\n• Shopping 2");
 	});
 
 	test("a refused flush save blocks the mint — buffer stays, error shows", async () => {
@@ -5328,15 +5283,12 @@ describe("app projects surface", () => {
 		expect(startAlert()).toBeNull();
 	});
 
-	test("a start failure on a note page clears on New conversation", async () => {
-		notes = [noteRow("Shopping")];
+	test("a start failure on a project page clears on New conversation", async () => {
+		projs = [projRow("Goblin")];
 		failCreate = true;
-		await notePage("/app/n/n-shopping");
-		await click(
-			[...container.querySelectorAll("button")].find(
-				(b) => b.textContent === "Chat with this note",
-			),
-		);
+		win.history.replaceState(null, "", "/app/p/p-goblin");
+		await mount();
+		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
 		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
@@ -5348,12 +5300,9 @@ describe("app projects surface", () => {
 		notes = [noteRow("Shopping")];
 		projs = [projRow("Goblin")];
 		failCreate = true;
-		await notePage("/app/n/n-shopping");
-		await click(
-			[...container.querySelectorAll("button")].find(
-				(b) => b.textContent === "Chat with this note",
-			),
-		);
+		await mount();
+		await openNewChat();
+		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
 		await openPage("Projects");
@@ -5382,34 +5331,28 @@ describe("app projects surface", () => {
 	test("an accepted back/forward traversal clears a stale start failure", async () => {
 		notes = [noteRow("Shopping")];
 		failCreate = true;
-		await notePage("/app/n/n-shopping");
-		await click(
-			[...container.querySelectorAll("button")].find(
-				(b) => b.textContent === "Chat with this note",
-			),
-		);
+		await mount();
+		await openNewChat();
+		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
 		await act(async () => {
-			win.history.replaceState(null, "", "/app/");
+			win.history.replaceState(null, "", "/app/notes");
 			win.dispatchEvent(new win.PopStateEvent("popstate"));
 		});
 		await settle();
-		expect(win.location.pathname).toBe("/app/");
+		expect(win.location.pathname).toBe("/app/notes");
 		expect(startAlert()).toBeNull();
 	});
 
 	test("a create that fails after navigating away can't post its alert on the destination", async () => {
 		projs = [projRow("Goblin")];
 		notes = [noteRow("Shopping")];
-		await notePage("/app/n/n-shopping");
+		await mount();
+		await openNewChat();
 		const gate = hold();
 		createHold = gate.promise;
-		await click(
-			[...container.querySelectorAll("button")].find(
-				(b) => b.textContent === "Chat with this note",
-			),
-		);
+		await sendComposer("hi");
 		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(true);
 		expect(startAlert()).toBeNull();
 
@@ -6099,7 +6042,7 @@ describe("chat width selector", () => {
 	const wideItem = () =>
 		[...container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((item) => item.textContent?.includes("Wide column"));
 
-	test("chat note pins use the header panel and update its count", async () => {
+	test("chat note pins live in the composer, not the header", async () => {
 		const fallback = globalThis.fetch;
 		const note = { id: "reading", title: "Reading list", rev: 2, owner: "Little Goblin" };
 		const writes: { noteId: string; pinned: boolean }[] = [];
@@ -6118,17 +6061,18 @@ describe("chat width selector", () => {
 			}));
 		}) as typeof fetch;
 		await mount();
-		const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
-		const trigger = button("Notes");
-		expect(trigger?.nextElementSibling).toBe(button("Chat tools"));
+		const button = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+		expect(container.querySelector('main > header button[aria-label^="Notes"]')).toBeNull();
+		const trigger = container.querySelector<HTMLButtonElement>("form.composer .notes-trigger");
+		expect(trigger?.getAttribute("aria-label")).toBe("Notes");
 		await act(async () => trigger?.click());
 		await settle();
 		await act(async () => button("Pin Reading list")?.click());
 		await settle();
-		expect(button("Notes, 1 pinned")).not.toBeNull();
+		expect(trigger?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
 		await act(async () => button("Unpin Reading list")?.click());
 		await settle();
-		expect(button("Notes")).not.toBeNull();
+		expect(trigger?.getAttribute("aria-label")).toBe("Notes");
 		expect(writes).toEqual([{ noteId: "reading", pinned: true }, { noteId: "reading", pinned: false }]);
 	});
 

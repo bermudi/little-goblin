@@ -94,30 +94,27 @@ export function commandRuntime(opts: {
 		GOBLIN_CLI: cli,
 	};
 
-	const firstSentence = (description: string): string => {
-		const match = /[.!?](?:\s|$)/.exec(description);
-		return match === null ? description : description.slice(0, match.index + 1);
+	const stdinHint = (name: string): string =>
+		`A value of - reads that option from stdin, so multi-line text can come from a pipe or a heredoc:\n  goblin ${name} <action> --<option> - <<'EOF'\n  ...\n  EOF\n`;
+	const usage = (name: string): string => {
+		const json = zodInputJsonSchema(schemas.get(name)!) as {
+			properties?: Record<string, { type?: string; enum?: unknown[] }>;
+		};
+		const actions = (json.properties?.action?.enum ?? []).filter((value): value is string => typeof value === "string");
+		const flags = Object.keys(json.properties ?? {}).filter((key) => key !== "action");
+		return `${descriptions.get(name) ?? ""}\n\nUsage: goblin ${name} <action> [options]\n${actions.length > 0 ? `Actions: ${actions.join(", ")}\n` : ""}${flags.map((key) => `  --${key.replaceAll("_", "-")} <${json.properties?.[key]?.type ?? "value"}>`).join("\n")}\n`;
 	};
 	const help = (name?: string): Omit<ReplyMessage, "id"> => {
 		if (name === undefined) {
+			if (allowed.length === 0) return { stdout: "\n", stderr: "", code: 0 };
 			return {
-				stdout:
-					allowed.map(([tool]) => `${tool} — ${firstSentence(descriptions.get(tool) ?? "")}`).join("\n") +
-					"\n",
+				stdout: `${allowed.map(([tool]) => usage(tool)).join("\n")}\n${stdinHint("<command>")}`,
 				stderr: "",
 				code: 0,
 			};
 		}
-		const schema = schemas.get(name);
-		if (schema === undefined) return { stdout: "", stderr: `goblin: ${name} is not available in this chat\n`, code: 2 };
-		const description = descriptions.get(name) ?? "";
-		const json = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string }> };
-		const flags = Object.keys(json.properties ?? {}).filter((key) => key !== "action");
-		return {
-			stdout: `${description}\n\nUsage: goblin ${name} <action> [options]\n${flags.map((key) => `  --${key.replaceAll("_", "-")} <${json.properties?.[key]?.type ?? "value"}>`).join("\n")}\n\nA value of - reads that option from stdin, so multi-line text can come from a pipe or a heredoc:\n  goblin ${name} <action> --<option> - <<'EOF'\n  ...\n  EOF\n`,
-			stderr: "",
-			code: 0,
-		};
+		if (!schemas.has(name)) return { stdout: "", stderr: `goblin: ${name} is not available in this chat\n`, code: 2 };
+		return { stdout: `${usage(name)}\n${stdinHint(name)}`, stderr: "", code: 0 };
 	};
 
 	const handle = (message: unknown, send: (value: unknown) => void): void => {

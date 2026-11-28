@@ -112,6 +112,20 @@ describe("goblin command channel at the bash boundary", () => {
 		}
 	});
 
+	test("top-level help lists every command with its actions and flags in one call", async () => {
+		const h = setup();
+		try {
+			const output = await run(h, "goblin --help");
+			expect(output.output).toContain("Usage: goblin note <action> [options]");
+			expect(output.output).toContain("Actions: list, read, create, append");
+			expect(output.output).toContain("--title <string>");
+			expect(output.output).toContain("goblin <command> <action> --<option> - <<'EOF'");
+			expect(output.calls).toBeUndefined();
+		} finally {
+			h.close();
+		}
+	});
+
 	test("help after an action still prints usage, with the stdin form", async () => {
 		const h = setup();
 		try {

@@ -69,7 +69,10 @@ chats do not change until the operator rules on the result.
   tool returns text, and as JSON otherwise. Errors go to stderr with exit
   1. Text the tool takes as a body can come from stdin.
 - **Help comes from the tool.** `goblin --help` and `goblin note --help`
-  are made from the tool's description and input schema. The bash
+  are made from the tool's description and input schema. `goblin --help`
+  prints every command in full: description, actions and flags, so one
+  call is enough (operator, 2026-11-27: the first measurement spent two
+  help calls per new chat, one for the list and one for the flags). The bash
   description gets one fixed sentence that names `goblin --help`. It never
   lists the commands, so a change to the command set never changes the
   tool list.

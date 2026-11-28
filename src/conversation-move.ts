@@ -17,6 +17,7 @@ export type MoveOutcome =
 	| { kind: "projectArchived" }
 	| { kind: "alreadyBound"; projectId: string }
 	| { kind: "busy" }
+	| { kind: "botChat" }
 	| { kind: "notApp" }
 	| { kind: "child" }
 	| { kind: "rolling" };
@@ -26,6 +27,7 @@ export function moveIntoProject(
 		store: Pick<
 			ConversationStore,
 			| "db"
+			| "bots"
 			| "get"
 			| "bindProject"
 			| "setMeta"
@@ -59,6 +61,7 @@ export function moveIntoProject(
 		return { kind: "unchanged", conv };
 	}
 	if (conv.projectId !== null) return refused("alreadyBound", conv.projectId);
+	if (deps.store.bots.membership(conv.id) !== null) return refused("botChat");
 	if (deps.runtime.busy(conv.id)) return refused("busy");
 
 	const moved = deps.store.db.transaction(() => {
@@ -93,10 +96,10 @@ export function moveIntoProject(
 	});
 	return { kind: "moved", conv: moved.conv };
 
-	function refused(kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "rolling"): MoveOutcome;
+	function refused(kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "rolling" | "botChat"): MoveOutcome;
 	function refused(kind: "alreadyBound", boundProjectId: string): MoveOutcome;
 	function refused(
-		kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "rolling" | "alreadyBound",
+		kind: "notFound" | "noProject" | "projectArchived" | "busy" | "notApp" | "child" | "rolling" | "botChat" | "alreadyBound",
 		boundProjectId?: string,
 	): MoveOutcome {
 		log.info("conversation move refused", {

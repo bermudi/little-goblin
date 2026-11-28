@@ -30,6 +30,7 @@ const conv = (
 const convList = (rows: AppConversationSummary[]): AppConversationList => ({
 	conversations: rows.map((row) => ({ ...row, busy: false })),
 	rolling: { chain: [] },
+	bots: [],
 });
 
 const projectFixture = (name: string) => {

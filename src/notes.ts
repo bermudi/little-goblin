@@ -144,6 +144,7 @@ export interface NoteStore {
 		title: string;
 		body?: string | undefined;
 		projectId?: string | null | undefined;
+		conversation?: string | undefined;
 	}): Note;
 	get(id: string): Note | null;
 	list(filter?: {
@@ -498,20 +499,27 @@ export function openNotes(
 		title: string;
 		body?: string | undefined;
 		projectId?: string | null | undefined;
+		conversation?: string | undefined;
 	}): Note {
 		const title = input.title.trim();
 		if (title === "") throw new NoteInputError("note title is empty");
 		checkBodySize(input.body ?? "");
-		checkProjectId(input.projectId ?? null);
+		const projectId = input.projectId ?? null;
+		checkProjectId(projectId);
 		const id = randomUUID();
 		const at = now().toISOString();
 		db.run(
-			`INSERT INTO notes (id, project_id, title, body_md, rev, state_rev, last_source, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, 1, 1, 'app', ?, ?)`,
-			[id, input.projectId ?? null, title, input.body ?? "", at, at],
+			`INSERT INTO notes (id, project_id, bot_id, title, body_md, rev, state_rev, last_source, created_at, updated_at)
+			 VALUES (?, ?, COALESCE((SELECT bot_id FROM bot_chats WHERE conversation_id = ?), ?),
+				?, ?, 1, 1, 'app', ?, ?)`,
+			[
+				id, projectId, projectId === null ? input.conversation ?? null : null,
+				LITTLE_GOBLIN_NOTE_OWNER, title, input.body ?? "", at, at,
+			],
 		);
-		log.info("note created", { note: id, project: input.projectId ?? null, title });
-		return mustGet(id);
+		const note = mustGet(id);
+		log.info("note created", { note: id, project: projectId, bot: note.botId, title });
+		return note;
 	}
 
 	function applyDelete(id: string): void {

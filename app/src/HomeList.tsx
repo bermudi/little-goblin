@@ -1,9 +1,12 @@
 import { useState, type ReactNode, type Ref } from "react";
 import type { AppAttentionTarget, AppConversationList } from "../../src/http/app-wire.ts";
 import { ChatMark } from "./ChatMark.tsx";
-import { ConversationNav, RollingRow } from "./ConversationList.tsx";
+import { BotAvatar } from "./BotAvatar.tsx";
+import { ConversationNav, ConversationNavLink, relTime, RollingRow } from "./ConversationList.tsx";
 import {
 	buildHome,
+	mostUrgentChat,
+	rankOf,
 	type ChatRow,
 	type HomeInput,
 	type HomeList as HomeListModel,
@@ -39,16 +42,18 @@ export function useHomeList(
 	input: HomeInput,
 	projects: readonly ProjectLink[],
 	projectsOpen: boolean,
+	expandedBotId: string | null,
 ): Home {
 	const [hold, setHold] = useState<Hold | null>(null);
 	const built = buildHome(input, hold);
 	if (built.hold !== hold) setHold(built.hold);
 
-	const { active, side } = built.list;
+	const { active, side, bots } = built.list;
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
 		projectsOpen ? projects.map((project) => project.id) : [],
 		input.sideChatsOpen ? side.map((row) => row.id) : [],
+		bots.map(({ bot, side }) => [bot.id, ...(bot.id === expandedBotId ? side.map((row) => row.id) : [])]),
 	]);
 
 	return { list: built.list, orderSignature };
@@ -59,6 +64,8 @@ export function HomeList({
 	projects,
 	projectsOpen,
 	currentFolderId,
+	currentConversationId,
+	expandedBotId,
 	rollingCurrent,
 	sideChatsOpen,
 	onToggleProjects,
@@ -68,6 +75,8 @@ export function HomeList({
 	onOpenProject,
 	onOpenTarget,
 	onOpenRolling,
+	onOpenConversation,
+	onToggleBotSideChats,
 	renderRow,
 	navRef,
 }: {
@@ -75,6 +84,8 @@ export function HomeList({
 	projects: readonly ProjectLink[];
 	projectsOpen: boolean;
 	currentFolderId: string | null;
+	currentConversationId: string | null;
+	expandedBotId: string | null;
 	rollingCurrent: boolean;
 	sideChatsOpen: boolean;
 	onToggleProjects: () => void;
@@ -84,10 +95,12 @@ export function HomeList({
 	onOpenProject: (id: string) => void;
 	onOpenTarget: (target: AppAttentionTarget) => void;
 	onOpenRolling: () => void;
+	onOpenConversation: (id: string) => void;
+	onToggleBotSideChats: (id: string) => void;
 	renderRow: RenderRow;
 	navRef?: Ref<HTMLUListElement>;
 }) {
-	const { rolling, active, side } = home.list;
+	const { rolling, active, side, bots } = home.list;
 	return (
 		<ConversationNav ref={navRef} loop={false}>
 			<RollingRow
@@ -109,6 +122,30 @@ export function HomeList({
 					<button type="button" onClick={onNewSideChat}>New side chat</button>
 				</li>
 			)}
+			{bots.length > 0 && <li className="rail-chats-label">Bots</li>}
+			{bots.map(({ bot, main, side }) => {
+				const open = bot.id === expandedBotId;
+				const markedSide = open ? undefined : mostUrgentChat(side);
+				const display = markedSide?.mark != null &&
+					(main.mark === null || rankOf(markedSide.mark) < rankOf(main.mark))
+					? markedSide : main;
+				const current = currentConversationId === main.id;
+				return (
+					<BotListRows
+						key={bot.id}
+						name={bot.name}
+						main={main}
+						mark={display.mark}
+						line={display.line}
+						current={current}
+						side={side}
+						expanded={open}
+						onToggleSideChats={() => onToggleBotSideChats(bot.id)}
+						onOpen={() => onOpenConversation(main.id)}
+						renderRow={renderRow}
+					/>
+				);
+			})}
 			{active.length > 0 && <li className="rail-chats-label">Active</li>}
 			{active.map((row) => row.kind === "chat"
 				? <ChatListItem key={row.id} row={row} renderRow={renderRow} />
@@ -163,6 +200,66 @@ export function HomeList({
 				</li>
 			))}
 		</ConversationNav>
+	);
+}
+
+function BotListRows({ name, main, mark, line, current, side, expanded, onToggleSideChats, onOpen, renderRow }: {
+	name: string;
+	main: ChatRow;
+	mark: Mark | null;
+	line: string;
+	current: boolean;
+	side: ChatRow[];
+	expanded: boolean;
+	onToggleSideChats: () => void;
+	onOpen: () => void;
+	renderRow: RenderRow;
+}) {
+	return (
+		<>
+			<li data-flip={main.id}>
+				<div className={`conv bot-row${current ? " current" : ""}`} data-mark={mark ?? undefined}>
+					<ConversationNavLink
+						id={main.id}
+						className="conv-main"
+						href={pathOfRoute({ kind: "conversation", id: main.id })}
+						aria-current={current ? "page" : undefined}
+						onClick={(event) => {
+							if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0)
+								return;
+							event.preventDefault();
+							onOpen();
+						}}
+					>
+						<BotAvatar name={name} />
+						<span className="conv-copy">
+							<span className="conv-head">
+								<span className="conv-title">{name}</span>
+								{mark !== null && <span className="conv-mark"><ChatMark mark={mark} /></span>}
+								<span className="conv-time">{relTime(main.conv.updatedAt)}</span>
+							</span>
+							{line !== "" && <span className="conv-preview">{flatLine(line)}</span>}
+						</span>
+					</ConversationNavLink>
+					{side.length > 0 && (
+						<button
+							type="button"
+							className={`rolling-disclosure${expanded ? " open" : ""}`}
+							aria-expanded={expanded}
+							aria-label={`Side chats for ${name}`}
+							onClick={onToggleSideChats}
+						>
+							<ChevronGlyph />
+						</button>
+					)}
+				</div>
+			</li>
+			{expanded && side.map((row) => (
+				<li key={row.id} data-flip={row.id} className="side-chat">
+					{renderRow(row.conv, { mark: row.mark, line: row.line })}
+				</li>
+			))}
+		</>
 	);
 }
 

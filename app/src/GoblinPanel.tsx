@@ -5,6 +5,7 @@ import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
 import { relTime as shortAge } from "./ConversationList.tsx";
 import { GoblinAvatar } from "./GoblinAvatar.tsx";
+import { BotAvatar } from "./BotAvatar.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { ts } from "./opsShared.tsx";
 import { triggerWords } from "./ProgramsView.tsx";
@@ -100,6 +101,7 @@ export interface GoblinPanelProps {
 	rollingConversationIds?: readonly string[];
 	notes: AppNoteSummary[] | null;
 	notesError?: boolean;
+	botName?: string | undefined;
 	variant: "column" | "sheet";
 	onOpenTarget(target: AppAttentionTarget): void;
 	onOpenConversation(id: string): void;
@@ -479,6 +481,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 
 	const attention = data.attention ?? [];
 	const showNeeds = attention.length > 0 || data.attentionError;
+	const name = props.botName ?? "Little Goblin";
 
 	return (
 		<div className={`goblin-panel goblin-panel-${props.variant}`}>
@@ -486,12 +489,14 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				<button
 					type="button"
 					className="goblin-profile-button"
-					aria-label="Little Goblin's profile"
+					aria-label={props.botName === undefined ? "Little Goblin's profile" : `Settings for ${name}`}
 					onClick={props.onOpenProfile}
 				>
-					<GoblinAvatar size="lg" working={data.working > 0} portrait />
+					{props.botName === undefined
+						? <GoblinAvatar size="lg" working={data.working > 0} portrait />
+						: <BotAvatar name={name} large />}
 				</button>
-				<strong>Little Goblin</strong>
+				<strong>{name}</strong>
 				<span>{goblinStatusText(data.working)}</span>
 			</header>
 			{showNeeds && (
@@ -518,7 +523,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 				</section>
 			)}
 			<Tabs value={tab} onValueChange={selectTab}>
-				<TabsList aria-label="Little Goblin's work">
+				<TabsList aria-label={`${name}'s work`}>
 					<TabsTab value="activity">Activity</TabsTab>
 					<TabsTab value="scheduled">Scheduled</TabsTab>
 					<TabsTab value="library">Library</TabsTab>

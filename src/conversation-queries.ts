@@ -311,7 +311,7 @@ export function prepareConversationQueries(db: Database) {
 			created_at: string;
 			title: string | null;
 		},
-		[string, string | null, number]
+		[string, string | null, number, string | null]
 	>(
 		`SELECT e.conversation_id AS cid, e.seq AS seq, e.role AS role,
 				e.data AS data, e.created_at AS created_at, c.title AS title
@@ -320,6 +320,9 @@ export function prepareConversationQueries(db: Database) {
 			JOIN conversations c ON c.id = e.conversation_id
 			WHERE events_fts MATCH ?1 AND c.memory_excluded = 0
 			  AND (?2 IS NULL OR e.conversation_id LIKE ?2)
+			  AND (?4 IS NULL OR EXISTS (
+				SELECT 1 FROM bot_chats WHERE conversation_id = c.id AND bot_id = ?4
+			  ))
 			ORDER BY rank LIMIT ?3`,
 	);
 	const qContext = db.query<

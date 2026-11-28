@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { appIdOf } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER, type NoteOwner } from "../note-owner.ts";
 import {
@@ -13,6 +14,7 @@ import {
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import type {
 	AppNote,
+	AppNoteCreate,
 	AppNoteList,
 	AppNoteRewriteResponse,
 	AppNoteSummary,
@@ -21,10 +23,11 @@ import type {
 } from "./app-wire.ts";
 import { versionedJson } from "./live-version.ts";
 
-const noteCreateBody = z.object({
+const noteCreateBody: z.ZodType<AppNoteCreate> = z.object({
 	title: z.string().trim().min(1).max(200),
 	body: z.string().max(NOTE_BODY_MAX).optional(),
 	projectId: z.string().min(1).nullish(),
+	conversation: z.string().refine((id) => appIdOf(id) !== null, "expected an app conversation id").optional(),
 });
 
 const notePatchBody = z
@@ -229,6 +232,10 @@ export async function handleNotesRoute(
 				);
 			}
 			try {
+				const conversation = parsed.data.conversation;
+				if (conversation !== undefined && deps.store.get(conversation) === null) {
+					return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+				}
 				const note = deps.notes.create(parsed.data);
 				return noteResponse(note, 201);
 			} catch (err) {

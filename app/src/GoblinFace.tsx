@@ -1,11 +1,13 @@
 import { GoblinAvatar } from "./GoblinAvatar.tsx";
+import { BotAvatar } from "./BotAvatar.tsx";
 
 export function buildGoblinFaceLabel(
 	working: number,
 	needs: number | null,
 	failed: boolean,
+	name = "Little Goblin",
 ): string {
-	const parts = ["Little Goblin"];
+	const parts = [name];
 	if (working > 0) parts.push(`${working} ${working === 1 ? "job" : "jobs"}`);
 	else if (needs === null || needs === 0) parts.push("idle");
 
@@ -22,23 +24,25 @@ export function GoblinFace({
 	failed,
 	onClick,
 	expanded,
+	botName,
 }: {
 	working: number;
 	needs: number | null;
 	failed: boolean;
 	onClick: () => void;
 	expanded?: boolean;
+	botName?: string | undefined;
 }) {
 	const badge = badgeText(needs, failed);
 	return (
 		<button
 			type="button"
 			className="goblin-panel-toggle"
-			aria-label={buildGoblinFaceLabel(working, needs, failed)}
+			aria-label={buildGoblinFaceLabel(working, needs, failed, botName)}
 			aria-expanded={expanded}
 			onClick={onClick}
 		>
-			<GoblinAvatar size="sm" working={working > 0} />
+			{botName === undefined ? <GoblinAvatar size="sm" working={working > 0} /> : <BotAvatar name={botName} />}
 			{badge !== null && <span className="goblin-face-badge">{badge}</span>}
 		</button>
 	);

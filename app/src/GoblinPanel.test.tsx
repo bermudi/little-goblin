@@ -84,7 +84,7 @@ test("tabs are Activity, Scheduled and Library; avatar opens profile", async () 
 	let profile = 0;
 	await mount(0, [], { onOpenProfile: () => { profile += 1; } });
 	expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Activity", "Scheduled", "Library"]);
-	expect(container.querySelector(".goblin-profile-button [data-portrait] img")?.getAttribute("src")).toBe("/app/goblin-portrait.webp");
+	expect(container.querySelector(".goblin-profile-button .goblin-avatar img")?.getAttribute("src")).toBe("/app/goblin-portrait.webp");
 	await act(async () => container.querySelector(".goblin-profile-button")?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
 	expect(profile).toBe(1);
 });

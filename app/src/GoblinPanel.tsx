@@ -71,7 +71,7 @@ export function GoblinProfileHeader({ page, working, onPage }: {
 	const pages = ["status", "memory", "skills", "log"] as const;
 	return (
 		<div className="goblin-profile-header">
-			<GoblinAvatar size="md" working={working > 0} portrait />
+			<GoblinAvatar size="md" working={working > 0} />
 			<strong>Little Goblin</strong>
 			<span>{goblinStatusText(working)}</span>
 			<nav aria-label="Little Goblin's profile">
@@ -493,7 +493,7 @@ export function GoblinPanel(props: GoblinPanelProps) {
 					onClick={props.onOpenProfile}
 				>
 					{props.botName === undefined
-						? <GoblinAvatar size="lg" working={data.working > 0} portrait />
+						? <GoblinAvatar size="lg" working={data.working > 0} />
 						: <BotAvatar name={name} large />}
 				</button>
 				<strong>{name}</strong>

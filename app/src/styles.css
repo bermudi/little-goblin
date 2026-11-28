@@ -8802,21 +8802,13 @@ button.link:hover {
 	color: var(--app-fg-muted);
 }
 .goblin-avatar img {
-	display: block;
-	height: 100%;
-}
-.goblin-avatar[data-portrait] img {
 	position: absolute;
 	top: 0;
 	left: 50%;
+	display: block;
 	width: auto;
+	height: 100%;
 	transform: translateX(-50%);
-}
-.goblin-avatar:not([data-portrait]) img {
-	width: 100%;
-	object-fit: cover;
-	border-radius: 50%;
-	image-rendering: pixelated;
 }
 .goblin-avatar[data-working]::after {
 	content: "";

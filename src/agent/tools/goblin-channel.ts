@@ -94,15 +94,26 @@ export function commandRuntime(opts: {
 		GOBLIN_CLI: cli,
 	};
 
-	const stdinHint = (name: string): string =>
-		`A value of - reads that option from stdin, so multi-line text can come from a pipe or a heredoc:\n  goblin ${name} <action> --<option> - <<'EOF'\n  ...\n  EOF\n`;
+	const stdinHint = (name: string): string => {
+		const hasAction = name === "<command>"
+			? allowed.some(([, tool]) => (zodInputJsonSchema(tool.input) as { properties?: Record<string, unknown> }).properties?.action !== undefined)
+			: (zodInputJsonSchema(schemas.get(name)!) as { properties?: Record<string, unknown> }).properties?.action !== undefined;
+		return `A value of - reads that option from stdin, so multi-line text can come from a pipe or a heredoc:\n  goblin ${name}${hasAction ? " <action>" : ""} --<option> - <<'EOF'\n  ...\n  EOF\n`;
+	};
 	const usage = (name: string): string => {
 		const json = zodInputJsonSchema(schemas.get(name)!) as {
-			properties?: Record<string, { type?: string; enum?: unknown[] }>;
+			properties?: Record<string, { type?: string; enum?: unknown[]; description?: string }>;
+			required?: string[];
 		};
 		const actions = (json.properties?.action?.enum ?? []).filter((value): value is string => typeof value === "string");
+		const hasAction = json.properties?.action !== undefined;
 		const flags = Object.keys(json.properties ?? {}).filter((key) => key !== "action");
-		return `${descriptions.get(name) ?? ""}\n\nUsage: goblin ${name} <action> [options]\n${actions.length > 0 ? `Actions: ${actions.join(", ")}\n` : ""}${flags.map((key) => `  --${key.replaceAll("_", "-")} <${json.properties?.[key]?.type ?? "value"}>`).join("\n")}\n`;
+		return `${descriptions.get(name) ?? ""}\n\nUsage: goblin ${name}${hasAction ? " <action>" : ""} [options]\n${actions.length > 0 ? `Actions: ${actions.join(", ")}\n` : ""}${flags.map((key) => {
+			const property = json.properties?.[key];
+			const values = property?.enum?.filter((value): value is string => typeof value === "string");
+			const flag = key.replaceAll("_", "-").replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+			return `  --${flag}${json.required?.includes(key) ? " (required)" : ""} <${values?.length ? values.join("|") : property?.type ?? "value"}>${property?.description ? ` — ${property.description}` : ""}`;
+		}).join("\n")}\n`;
 	};
 	const help = (name?: string): Omit<ReplyMessage, "id"> => {
 		if (name === undefined) {
@@ -145,7 +156,9 @@ export function commandRuntime(opts: {
 			if (schema === undefined || tool === undefined || isHosted(tool)) {
 				return respond({ stdout: "", stderr: `goblin: ${name} is not available in this chat\n`, code: 2 });
 			}
-			const action = argv.shift();
+			const schemaJson = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string }> };
+			const hasAction = schemaJson.properties?.action !== undefined;
+			const action = hasAction ? argv.shift() : undefined;
 			const args: Record<string, unknown> = action === undefined ? {} : { action };
 			let invoked = false;
 			try {
@@ -153,16 +166,19 @@ export function commandRuntime(opts: {
 					const flag = argv[i]!;
 					const raw = argv[i + 1];
 					if (!flag.startsWith("--") || raw === undefined) throw new Error(`invalid option ${flag}`);
-					const key = flag.slice(2).replaceAll("-", "_");
-					if (key === "json") {
+					const inputKey = flag.slice(2);
+					if (inputKey === "json") {
 						const value: unknown = JSON.parse(raw);
 						if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("--json needs an object");
 						Object.assign(args, value);
 						continue;
 					}
-					const property = zodInputJsonSchema(schema) as { properties?: Record<string, { type?: string }> };
-					const type = property.properties?.[key]?.type;
-					if (type === undefined || key === "action") throw new Error(`unknown option ${flag}`);
+					const properties = schemaJson.properties ?? {};
+					const key = Object.keys(properties).find((candidate) =>
+						candidate.replaceAll("_", "").toLowerCase() === inputKey.replaceAll("-", "").toLowerCase(),
+					);
+					const type = key === undefined ? undefined : properties[key]?.type;
+					if (key === undefined || type === undefined || key === "action") throw new Error(`unknown option ${flag}`);
 					if (raw === "-" && req.stdin !== undefined) args[key] = req.stdin;
 					else if (type === "integer" || type === "number") args[key] = Number(raw);
 					else if (type === "boolean") args[key] = raw === "true" ? true : raw === "false" ? false : raw;

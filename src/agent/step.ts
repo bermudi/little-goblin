@@ -20,7 +20,7 @@ import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
-import { noteTool } from "./tools/note.ts";
+import { NOTE_HISTORY_DESCRIPTION, NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
 import { toToolSet } from "../turn/ai-sdk-tools.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
@@ -57,6 +57,11 @@ export function makeStepBuilder(
 	deps: StepBuilderDeps,
 ): Pick<RuntimeDeps, "buildStep" | "compaction"> {
 	const { configRef, auth, store, projects, notes, observation } = deps;
+	const promptStore = {
+		promptSnapshot: (id: string) => store.promptSnapshot(id),
+		savePromptSnapshot: (id: string, text: string, sources: string[]) =>
+			store.savePromptSnapshot(id, text, [...sources, NOTE_HISTORY_SOURCE]),
+	};
 	// Both a turn and a cache-prefix summary use this one API-lane
 	// construction, so model setup cannot drift between their requests.
 	const apiLane = async (conv: Conversation, modelRef: string) => {
@@ -179,9 +184,9 @@ export function makeStepBuilder(
 			// (agent-types.ts); everything else builds the goblin prompt.
 			const prompt =
 				conv.agentType !== null
-					? agentChildSystemPrompt(store, conv, paths.agentTypes())
+					? agentChildSystemPrompt(promptStore, conv, paths.agentTypes())
 					: systemPromptFor(
-							store,
+							promptStore,
 							conv,
 							toolNames(tools),
 							project,
@@ -291,12 +296,14 @@ export function makeStepBuilder(
 				};
 			},
 			prefixFlush: (input) => {
+				const description = input.tools.note?.description;
 				const note = toToolSet({
 					note: noteTool({
 						notes,
 						projects,
 						conversation: input.conv.id,
 						projectId: input.conv.projectId,
+						editHistory: typeof description === "string" && description.endsWith(NOTE_HISTORY_DESCRIPTION),
 					}),
 				}).note;
 				if (note === undefined || !("execute" in note) || typeof note.execute !== "function") return null;
@@ -362,6 +369,7 @@ export function makeStepBuilder(
 								projects,
 								conversation: conv.id,
 								projectId: conv.projectId,
+								editHistory: true,
 							}),
 						},
 						maxSteps: FLUSH_MAX_STEPS,

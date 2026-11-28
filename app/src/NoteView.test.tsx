@@ -418,6 +418,8 @@ describe("quiet harbor regressions", () => {
 						}),
 					);
 				}
+				if (url === `/api/app/notes/${note.id}/edits`)
+					return Promise.resolve(jsonResponse({ edits: [], before: null }));
 				if (url === `/api/app/notes/${note.id}/versions`)
 					return Promise.resolve(
 						jsonResponse({
@@ -514,6 +516,47 @@ describe("quiet harbor regressions", () => {
 			const row = container.querySelector(".note-versions li small")?.textContent ?? "";
 			expect(row).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2} · 12 B$/);
 		});
+
+	test("earlier edits arriving late do not replace refreshed history", async () => {
+		const refresh = Promise.withResolvers<Response>();
+		const earlier = Promise.withResolvers<Response>();
+		const listEdits = `/api/app/notes/${note.id}/edits`;
+		const requests: string[] = [];
+		const editPage = (rev: number, before: number | null) => jsonResponse({
+			edits: [{ rev, author: "operator", at: note.updatedAt, what: null, reason: null }], before,
+		});
+		const stubbed = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (!url.startsWith(listEdits)) return stubbed(input, init);
+			requests.push(url);
+			if (url === `${listEdits}?before=3`) return earlier.promise;
+			if (url === `${listEdits}?before=4`) return Promise.resolve(editPage(3, 3));
+			return requests.length === 1 ? Promise.resolve(editPage(3, 3)) : refresh.promise;
+		}) as typeof fetch;
+		const button = (label: string) => [...container.querySelectorAll("button")].find(
+			(el) => el.textContent === label,
+		);
+		await mount(
+			<NoteView token={null} noteId="n1" projects={[]} onChat={() => {}} onDeleted={() => {}} />,
+		);
+		await act(async () => button("Versions")!.click());
+		await waitFor(() => button("View diff · rev 3") !== undefined, "revision 3");
+		note = { ...note, rev: 4, stateRev: note.stateRev + 1 };
+		await act(async () => win.dispatchEvent(new win.Event("focus")));
+		await waitFor(() => requests.length === 2, "the history refresh request");
+		await act(async () => button("Earlier edits")!.click());
+		expect(requests[2]).toBe(`${listEdits}?before=3`);
+		await act(async () => refresh.resolve(editPage(4, 4)));
+		await waitFor(() => button("View diff · rev 4") !== undefined, "revision 4");
+		await act(async () => earlier.resolve(editPage(2, null)));
+		expect(button("View diff · rev 4")).toBeDefined();
+		expect(button("View diff · rev 2")).toBeUndefined();
+		await act(async () => button("Earlier edits")!.click());
+		expect(requests[3]).toBe(`${listEdits}?before=4`);
+		await waitFor(() => button("View diff · rev 3") !== undefined, "the earlier revision");
+		expect(button("View diff · rev 4")).toBeDefined();
+	});
 
 		test("the versions popover sits in the Versions button's wrapper and closes on outside press or Escape", async () => {
 			await mount(

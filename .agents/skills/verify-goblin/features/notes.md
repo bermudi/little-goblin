@@ -38,12 +38,29 @@ sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select title, bot_id, archive
 
 A Global row has a null `bot_id`. Little Goblin's rows use `little-goblin`.
 
+On a note, fill **Reason for next edit (optional)** and leave the field or
+press Enter to finish the reason. Change its title or body and wait for Saved.
+Edit it again with the reason field empty.
+Open **Versions** and check that Edit history shows two distinct Operator
+revisions and that only the first edit shows the reason you entered. Open
+both diffs to check the changed text. Restore a snapshot and verify that
+the restore appears as another Operator edit.
+
+Change the body, start typing a reason, then switch tabs while the reason
+field still has focus. The body saves, and that history row has no reason.
+On return, check that the partial reason is still in the field. Finish it,
+then change the note again and check that the next history row has that reason.
+
+```sh
+sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select rev, author_bot_id, what, reason from note_edits order by note_id, rev'
+```
+
 ## Gotchas
 
 Saving isn't instant, so wait before reading the row.
 
-The app only writes a version every 10 minutes (`APP_VERSION_GAP_MS`), so
-several quick edits give one version. To see a full Versions list, insert
+The app groups restore snapshots for quick edits. Each content revision still
+has its own history entry. To seed more restore snapshots, insert
 extra rows into `note_versions` in the throwaway database (fiction, label it).
 Give them revs below the note's own `rev`: the server snapshots the current rev
 on the next save, so a row at the current rev makes every save fail with a

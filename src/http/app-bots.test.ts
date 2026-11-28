@@ -144,6 +144,17 @@ test("a note created through the chat tool follows its bot and blocks move back"
 		const bot = (await converted.json()) as AppBot;
 		expect(bot.canMoveBack).toBe(true);
 		expect(await create("After conversion")).toMatchObject({ created: true });
+		const [before] = notes.list({ q: "Before conversion" });
+		const [after] = notes.list({ q: "After conversion" });
+		expect(await tool.execute({ action: "append", id: before!.id, text: "Added from Desk" }, { toolCallId: "append" }))
+			.toMatchObject({ note: { rev: 2 } });
+		expect((await (await call(`/api/app/notes/${before!.id}/edits`)).json())).toMatchObject({ edits: [
+			{ rev: 2, author: { botId: bot.id } },
+			{ rev: 1, author: { botId: LITTLE_GOBLIN_NOTE_OWNER } },
+		] });
+		expect((await (await call(`/api/app/notes/${after!.id}/edits`)).json())).toMatchObject({ edits: [
+			{ rev: 1, author: { botId: bot.id } },
+		] });
 
 		const listed = await (await call("/api/app/notes")).json();
 		expect(listed).toMatchObject({ notes: expect.arrayContaining([

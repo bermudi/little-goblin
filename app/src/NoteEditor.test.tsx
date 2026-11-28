@@ -31,7 +31,7 @@ const note: AppNote = {
 };
 
 interface PatchCall {
-	body: { body?: string; title?: string; source?: string };
+	body: { body?: string; title?: string; source?: string; reason?: string };
 	init: RequestInit;
 }
 const patches: PatchCall[] = [];
@@ -307,6 +307,15 @@ async function edit(ref: { current: NoteEditorHandle | null }, md: string): Prom
 	await act(async () => ref.current?.editor()?.action(replaceAll(md)));
 }
 
+async function typeReason(field: HTMLInputElement, value: string): Promise<void> {
+	await act(async () => {
+		field.focus();
+		Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(field, value);
+		field.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+		field.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true }) as unknown as Event);
+	});
+}
+
 // A real PM TextSelection dispatched through the view — the same
 // shape keyboard and mouse selections produce through selectionUpdated.
 async function select(
@@ -393,6 +402,85 @@ async function openFlow(
 }
 
 describe("NoteEditor save loop", () => {
+	test("autosave waits for a reason to be finished and preserves a newer reason during the ack", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		const field = container.querySelector<HTMLInputElement>(".note-edit-reason")!;
+		holdPatch();
+		await edit(ref, "corrected text");
+		await typeReason(field, "Fix ty");
+		await notice();
+		expect(patches).toHaveLength(0);
+		await typeReason(field, "Fix typo");
+		await act(async () => field.blur());
+		await tick(DELAY + 25);
+		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo"]);
+
+		await typeReason(field, "Add a detail");
+		await act(async () => field.blur());
+		await act(async () => releasePatch());
+		expect(field.value).toBe("Add a detail");
+		await edit(ref, "corrected text with detail");
+		await notice();
+		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo", "Add a detail"]);
+		expect(field.value).toBe("");
+		await edit(ref, "another edit");
+		await notice();
+		expect(patches.map(({ body }) => body.reason)).toEqual(["Fix typo", "Add a detail", undefined]);
+	});
+
+	test("tab hide saves the text and keeps the unfinished reason for the next edit", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		const field = container.querySelector<HTMLInputElement>(".note-edit-reason")!;
+		holdPatch();
+		await edit(ref, "corrected text");
+		await typeReason(field, "Fix ty");
+		await act(async () => {
+			Object.defineProperty(win.document, "hasFocus", { value: () => false, configurable: true });
+			field.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
+			Object.defineProperty(win.document, "visibilityState", { value: "hidden", configurable: true });
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("corrected text");
+		expect(patches[0]!.body.reason).toBeUndefined();
+		await act(async () => releasePatch());
+		expect(field.value).toBe("Fix ty");
+
+		Reflect.deleteProperty(win.document, "hasFocus");
+		Object.defineProperty(win.document, "visibilityState", { value: "visible", configurable: true });
+		await act(async () => field.blur());
+		await edit(ref, "corrected text with detail");
+		await notice();
+		expect(patches.map(({ body }) => body.reason)).toEqual([undefined, "Fix ty"]);
+		expect(field.value).toBe("");
+	});
+
+	test("tab hide flushes the latest text even with a save in flight and a reason unfinished", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "first edit");
+		await notice();
+		expect(patches).toHaveLength(1);
+		await edit(ref, "latest edit");
+		const field = container.querySelector<HTMLInputElement>(".note-edit-reason")!;
+		await typeReason(field, "Unfinished");
+		await act(async () => {
+			Object.defineProperty(win.document, "visibilityState", { value: "hidden" });
+			win.document.dispatchEvent(new win.Event("visibilitychange"));
+		});
+		await act(async () => releasePatch());
+		expect(patches).toHaveLength(2);
+		expect(stored.body).toContain("latest edit");
+		expect(patches[1]!.body.reason).toBeUndefined();
+		expect(field.value).toBe("Unfinished");
+	});
+
 	test("mounting a body Milkdown normalizes autosaves nothing", async () => {
 		root = createRoot(container);
 		await mount();

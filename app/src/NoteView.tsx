@@ -28,6 +28,7 @@ import { useLiveVersion } from "./useLive.tsx";
 import type { NoteEditorHandle } from "./NoteEditor.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { discardNoteDraft, loadNoteDraft, rawNoteDraft, type NoteDraft } from "./noteDraft.ts";
+import NoteEdits from "./NoteEdits.tsx";
 
 const Editor = lazy(() => import("./NoteEditor.tsx"));
 
@@ -109,6 +110,8 @@ function VersionsPanel({
 	};
 	return (
 		<div className="note-versions">
+			<NoteEdits key={note.id} token={token} id={note.id} rev={note.rev} formatTime={versionTime} />
+			<strong>Restore versions</strong>
 			{error !== null && (
 				<p className="error" role="alert">
 					{error}

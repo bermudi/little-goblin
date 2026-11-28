@@ -55,6 +55,52 @@ describe("note tool input schema", () => {
 });
 
 describe("note tool actions", () => {
+	test("diff pages keep both sides Unicode-safe even when surrogate pairs are staggered", async () => {
+		const { deps } = setup();
+		const tool = noteTool({ ...deps, editHistory: true });
+		const before = "a" + "😀".repeat(20_000);
+		const after = "😎".repeat(20_001);
+		const note = deps.notes.create({ title: "Emoji", body: before });
+		deps.notes.write(note.id, { body: after }, "app");
+		const query = { action: "diff", id: note.id, rev: 2 };
+		type DiffPage = {
+			body: { before: string; after: string };
+			beforeOffset: number;
+			afterOffset: number;
+			nextOffset: number | null;
+		};
+		const first = await exec(tool, query) as DiffPage;
+		expect(first.body.before).toBe(before.slice(0, 31_999));
+		expect(first.body.after).toBe(after.slice(0, 32_000));
+		expect(first.nextOffset).toBe(32_000);
+		const second = await exec(tool, { ...query, offset: first.nextOffset }) as DiffPage;
+		expect(second.beforeOffset).toBe(31_999);
+		expect(second.afterOffset).toBe(32_000);
+		expect(first.body.before + second.body.before).toBe(before);
+		expect(first.body.after + second.body.after).toBe(after);
+		expect(second.nextOffset).toBeNull();
+	});
+
+	test("bot edit history requires a message and returns attribution and diffs on demand", async () => {
+		const { deps } = setup();
+		const tool = noteTool({ ...deps, editHistory: true });
+		const shared = deps.notes.create({ title: "Reading" });
+		deps.notes.batch([shared], { action: "move", owner: { botId: null } });
+		const append = { action: "append", id: shared.id, text: "A new book" };
+		expect(await exec(tool, { ...append, what: "Added a book" })).toMatchObject({ error: expect.stringContaining("reason") });
+		expect(deps.notes.get(shared.id)?.rev).toBe(1);
+		expect(await exec(tool, { ...append, what: "Added a book", reason: "The operator asked" })).toMatchObject({ note: { rev: 2 } });
+		const history = await exec(tool, { action: "history", id: shared.id });
+		expect(history).toMatchObject({ edits: [
+			{ rev: 2, what: "Added a book", reason: "The operator asked", author: { botId: "little-goblin" } },
+			{ rev: 1, author: "operator" },
+		] });
+		expect(JSON.stringify(history)).not.toContain("A new book");
+		expect(await exec(tool, { action: "history", id: shared.id, before: 2 })).toMatchObject({ edits: [{ rev: 1 }] });
+		expect(await exec(tool, { action: "diff", id: shared.id, rev: 2 })).toMatchObject({
+			body: { offset: 0, before: "", after: "A new book" },
+		});
+	});
 	test("create/read/append round-trip through the store", async () => {
 		const { tool, deps } = setup();
 		const created = (await exec(tool, {

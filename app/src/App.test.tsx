@@ -2715,6 +2715,8 @@ describe("app projects surface", () => {
 						n === undefined ? jsonResponse({ error: "not found" }, 404) : jsonResponse(noteFull(n)),
 					);
 				}
+				if (url.endsWith("/edits") && method === "GET")
+					return Promise.resolve(jsonResponse({ edits: [], before: null }));
 				if (url.endsWith("/versions"))
 					return Promise.resolve(jsonResponse({ versions: versionRows }));
 				if (/\/versions\/\d+\/restore$/.test(url) && method === "POST") {

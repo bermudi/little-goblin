@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { ConversationStore } from "./conversation.ts";
 import { flatLine, toFtsQuery } from "./conversation-events.ts";
 import { log } from "./log.ts";
+import { noteBodyChange, type NoteEdit, type NoteEditMessage, type NoteEditMeta, type NoteEditPage } from "./note-edit.ts";
 import {
 	LITTLE_GOBLIN_NOTE_OWNER,
 	type NoteBatchAction,
@@ -77,6 +78,18 @@ export interface NoteVersion extends NoteVersionMeta {
 	body: string;
 }
 
+type NoteWriteOptions = NoteEditMessage & {
+	conversation?: string | undefined;
+	expectedRev?: number | undefined;
+};
+
+type NoteCreate = NoteEditMessage & {
+	conversation?: string | undefined;
+	title: string;
+	body?: string | undefined;
+	projectId?: string | null | undefined;
+};
+
 // Operator-facing refusals → HTTP 422; a conflict carries the current
 // note so the 409 body can hand it back whole.
 export class NoteInputError extends Error {}
@@ -140,12 +153,7 @@ const LIST_DEFAULT_LIMIT = 200;
 export class NoteSelectionError extends Error {}
 
 export interface NoteStore {
-	create(input: {
-		title: string;
-		body?: string | undefined;
-		projectId?: string | null | undefined;
-		conversation?: string | undefined;
-	}): Note;
+	create(input: NoteCreate, source?: "app" | "agent"): Note;
 	get(id: string): Note | null;
 	list(filter?: {
 		project?: string | "loose" | "all" | undefined;
@@ -161,7 +169,7 @@ export interface NoteStore {
 		id: string,
 		next: { title?: string | undefined; body?: string | undefined },
 		source: NoteSource,
-		opts?: { conversation?: string | undefined; expectedRev?: number | undefined },
+		opts?: NoteWriteOptions,
 	): Note;
 	// Flag/move mutations and the content write commit together — a
 	// failed body write must not strand a committed archive or move.
@@ -176,15 +184,16 @@ export interface NoteStore {
 			archived?: boolean | undefined;
 		},
 		source: NoteSource,
-		opts?: { expectedRev?: number | undefined },
+		opts?: NoteWriteOptions,
 	): Note;
-	append(id: string, text: string, source: NoteSource, conversation?: string): Note;
+	append(id: string, text: string, source: NoteSource, conversation?: string, message?: NoteEditMessage): Note;
 	// UTF-16 offsets into body_md, each guarded by expected text — a
 	// mismatch or overlap refuses the whole call with nothing written.
 	replaceRanges(
 		id: string,
 		edits: { start: number; end: number; expected: string; text: string }[],
 		conversation?: string,
+		message?: NoteEditMessage,
 	): Note;
 	// A restore IS a content write — expectedRev guards the live rev,
 	// or a stale panel rolls newer work back silently.
@@ -194,6 +203,8 @@ export interface NoteStore {
 	move(id: string, projectId: string | null): Note;
 	listVersions(id: string): NoteVersionMeta[];
 	getVersion(id: string, rev: number): NoteVersion | null;
+	listEdits(id: string, before?: number): NoteEditPage;
+	getEdit(id: string, rev: number): NoteEdit | null;
 	// Archived only.
 	delete(id: string): void;
 	batch(selection: NoteSelection[], action: NoteBatchAction): void;
@@ -242,6 +253,18 @@ export function ensureNotesSchema(db: Database): void {
 			source TEXT NOT NULL CHECK (source IN ('app','agent','rewrite','append','restore')),
 			conversation TEXT,
 			at TEXT NOT NULL,
+			PRIMARY KEY (note_id, rev)
+		)`);
+	db.run(`
+		CREATE TABLE IF NOT EXISTS note_edits (
+			note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+			rev INTEGER NOT NULL,
+			at TEXT NOT NULL,
+			author_bot_id TEXT,
+			what TEXT,
+			reason TEXT,
+			title_change TEXT,
+			body_change TEXT,
 			PRIMARY KEY (note_id, rev)
 		)`);
 	// External-content FTS5: rows join on notes.rowid — the TEXT
@@ -306,6 +329,26 @@ interface VersionRow {
 	at: string;
 }
 
+interface EditMetaRow {
+	rev: number;
+	at: string;
+	author_bot_id: string | null;
+	what: string | null;
+	reason: string | null;
+}
+
+type EditRow = EditMetaRow & { title_change: string | null; body_change: string | null };
+
+function toEditMeta(row: EditMetaRow): NoteEditMeta {
+	return {
+		rev: row.rev,
+		at: row.at,
+		author: row.author_bot_id === null ? "operator" : { botId: row.author_bot_id },
+		what: row.what,
+		reason: row.reason,
+	};
+}
+
 function toNote(r: NoteRow): Note {
 	return {
 		id: r.id,
@@ -343,6 +386,7 @@ export function openNotes(
 	const db = store.db;
 	const now = deps.now ?? (() => new Date());
 	const qGet = db.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?");
+	const qExists = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM notes WHERE id = ?");
 	const qNewestVersion = db.query<{ at: string }, [string]>(
 		"SELECT at FROM note_versions WHERE note_id = ? ORDER BY rev DESC LIMIT 1",
 	);
@@ -357,6 +401,13 @@ export function openNotes(
 	);
 	const qVersion = db.query<VersionRow, [string, number]>(
 		"SELECT * FROM note_versions WHERE note_id = ? AND rev = ?",
+	);
+	const qEditMetas = db.query<EditMetaRow, [string, number, number]>(
+		`SELECT rev, at, author_bot_id, what, reason FROM note_edits
+		 WHERE note_id = ? AND rev < ? ORDER BY rev DESC LIMIT ?`,
+	);
+	const qEdit = db.query<EditRow, [string, number]>(
+		"SELECT * FROM note_edits WHERE note_id = ? AND rev = ?",
 	);
 	const qIndex = db.query<{ id: string; title: string }, [string, number]>(
 		`SELECT id, title FROM notes
@@ -384,13 +435,37 @@ export function openNotes(
 		}
 	}
 
+	function recordEdit(previous: Pick<Note, "title" | "body">, next: Note, message: NoteWriteOptions) {
+		const title = previous.title === next.title ? null : { before: previous.title, after: next.title };
+		const body = noteBodyChange(previous.body, next.body);
+		const membership = next.lastSource === "agent" && message.conversation !== undefined
+			? store.bots.membership(message.conversation)
+			: null;
+		const authorBotId = next.lastSource === "agent" ? membership?.botId ?? LITTLE_GOBLIN_NOTE_OWNER : null;
+		db.run(
+			`INSERT INTO note_edits
+			 (note_id, rev, at, author_bot_id, what, reason, title_change, body_change)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				next.id,
+				next.rev,
+				next.updatedAt,
+				authorBotId,
+				message.what?.trim() || null,
+				message.reason?.trim() || null,
+				title === null ? null : JSON.stringify(title),
+				body === null ? null : JSON.stringify(body),
+			],
+		);
+	}
+
 	// Runs inside the caller's transaction — bun:sqlite nesting isn't
 	// savepoints: an inner throw leaves the outer statements committed.
 	function applyWrite(
 		id: string,
 		next: { title?: string | undefined; body?: string | undefined },
 		source: NoteSource,
-		opts: { conversation?: string | undefined; expectedRev?: number | undefined },
+		opts: NoteWriteOptions,
 	): Note {
 		const current = mustGet(id);
 		if (current.archivedAt !== null) {
@@ -443,6 +518,7 @@ export function openNotes(
 			[title, body, source, updatedAt, id],
 		);
 		const updated = mustGet(id);
+		recordEdit(current, updated, opts);
 		log.info("note write", {
 			note: id,
 			rev: updated.rev,
@@ -459,7 +535,7 @@ export function openNotes(
 		id: string,
 		next: { title?: string | undefined; body?: string | undefined },
 		source: NoteSource,
-		opts: { conversation?: string | undefined; expectedRev?: number | undefined } = {},
+		opts: NoteWriteOptions = {},
 	): Note {
 		return db.transaction(() => applyWrite(id, next, source, opts))();
 	}
@@ -495,12 +571,7 @@ export function openNotes(
 		log.info("note archived", { note: id, archived });
 	}
 
-	function create(input: {
-		title: string;
-		body?: string | undefined;
-		projectId?: string | null | undefined;
-		conversation?: string | undefined;
-	}): Note {
+	const create = db.transaction((input: NoteCreate, source: "app" | "agent" = "app"): Note => {
 		const title = input.title.trim();
 		if (title === "") throw new NoteInputError("note title is empty");
 		checkBodySize(input.body ?? "");
@@ -511,18 +582,20 @@ export function openNotes(
 		db.run(
 			`INSERT INTO notes (id, project_id, bot_id, title, body_md, rev, state_rev, last_source, created_at, updated_at)
 			 VALUES (?, ?, COALESCE((SELECT bot_id FROM bot_chats WHERE conversation_id = ?), ?),
-				?, ?, 1, 1, 'app', ?, ?)`,
+				?, ?, 1, 1, ?, ?, ?)`,
 			[
 				id, projectId, projectId === null ? input.conversation ?? null : null,
-				LITTLE_GOBLIN_NOTE_OWNER, title, input.body ?? "", at, at,
+				LITTLE_GOBLIN_NOTE_OWNER, title, input.body ?? "", source, at, at,
 			],
 		);
-		const note = mustGet(id);
-		log.info("note created", { note: id, project: projectId, bot: note.botId, title });
-		return note;
-	}
+		const created = mustGet(id);
+		recordEdit({ title: "", body: "" }, created, input);
+		log.info("note created", { note: id, project: projectId, bot: created.botId, title });
+		return created;
+	});
 
 	function applyDelete(id: string): void {
+		db.run("DELETE FROM note_edits WHERE note_id = ?", [id]);
 		db.run("DELETE FROM note_versions WHERE note_id = ?", [id]);
 		db.run("DELETE FROM notes WHERE id = ?", [id]);
 		log.info("note deleted", { note: id });
@@ -615,12 +688,12 @@ export function openNotes(
 				return mustGet(id);
 			})();
 		},
-		append(id, text, source, conversation) {
+		append(id, text, source, conversation, message) {
 			const current = mustGet(id);
 			const body = current.body === "" ? text : `${current.body.replace(/\n+$/, "")}\n\n${text}`;
-			return write(id, { body }, source, { conversation });
+			return write(id, { body }, source, { ...message, conversation, expectedRev: current.rev });
 		},
-		replaceRanges(id, edits, conversation) {
+		replaceRanges(id, edits, conversation, message) {
 			const current = mustGet(id);
 			const sorted = [...edits].sort((a, b) => a.start - b.start);
 			const refuse = (reason: string): never => {
@@ -643,7 +716,7 @@ export function openNotes(
 			for (const e of [...sorted].reverse()) {
 				body = body.slice(0, e.start) + e.text + body.slice(e.end);
 			}
-			return write(id, { body }, "agent", { conversation });
+			return write(id, { body }, "agent", { ...message, conversation, expectedRev: current.rev });
 		},
 		restore(id, rev, expectedRev) {
 			// One transaction: the version read and the guarded write must
@@ -656,7 +729,7 @@ export function openNotes(
 					id,
 					{ title: version.title, body: version.body_md },
 					"restore",
-					{ expectedRev },
+					{ expectedRev, what: `Restored revision ${rev}` },
 				);
 				log.info("note restored", { note: id, fromRev: rev, newRev: restored.rev });
 				return restored;
@@ -691,6 +764,21 @@ export function openNotes(
 			mustGet(id);
 			const row = qVersion.get(id, rev);
 			return row === null ? null : { ...toVersionMeta(row), title: row.title, body: row.body_md };
+		},
+		listEdits(id, before = Number.MAX_SAFE_INTEGER) {
+			if (qExists.get(id) === null) throw new NoteInputError(`no such note: ${id}`);
+			const limit = 50;
+			const rows = qEditMetas.all(id, before, limit + 1);
+			const edits = rows.slice(0, limit).map(toEditMeta);
+			return { edits, before: rows.length > limit ? edits.at(-1)!.rev : null };
+		},
+		getEdit(id, rev) {
+			const row = qEdit.get(id, rev);
+			return row === null ? null : {
+				...toEditMeta(row),
+				title: row.title_change === null ? null : JSON.parse(row.title_change) as NoteEdit["title"],
+				body: row.body_change === null ? null : JSON.parse(row.body_change) as NoteEdit["body"],
+			};
 		},
 		delete(id) {
 			db.transaction(() => {

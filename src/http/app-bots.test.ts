@@ -94,6 +94,8 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 		expect(bot).toEqual({
 			id: expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
 			name: "Workshop",
+			instructions: "",
+			folder: null,
 			mainConversationId: chat.id,
 			sideConversationIds: [],
 			canMoveBack: true,
@@ -142,6 +144,36 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 		const convertedAgain = await convert("Workshop");
 		expect(convertedAgain.status).toBe(201);
 		expect(((await convertedAgain.json()) as AppBot).id).not.toBe(bot.id);
+	} finally {
+		http.stop();
+		store.close();
+	}
+});
+
+test("a bot's instructions and folder round-trip without a rename", async () => {
+	const { call, store, http } = setup({ token: APP_TOKEN_NAME });
+	try {
+		store.resolve(appAddress("bot-settings"), "/workshop");
+		const converted = await call("/api/app/conversations/bot-settings/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Workshop" }),
+		});
+		expect(converted.status).toBe(201);
+		const bot = (await converted.json()) as AppBot;
+		const update = (body: object) => call(`/api/app/bots/${bot.id}`, {
+			method: "PATCH", headers: jsonHeaders, body: JSON.stringify(body),
+		});
+		expect((await update({ folder: "../relative" })).status).toBe(422);
+		expect((await update({})).status).toBe(422);
+		const patch = { instructions: "  Keep the inventory.\n", folder: "/workshop/bot" };
+		const changed = await update(patch);
+		expect(changed.status).toBe(200);
+		expect(await changed.json()).toEqual({ ...bot, ...patch });
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({
+			bots: [{ ...bot, ...patch }],
+		});
+		const cleared = await update({ folder: null });
+		expect(cleared.status).toBe(200);
+		expect(await cleared.json()).toEqual({ ...bot, instructions: patch.instructions });
 	} finally {
 		http.stop();
 		store.close();

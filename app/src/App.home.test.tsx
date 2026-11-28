@@ -101,6 +101,7 @@ describe("home screen", () => {
 			const body = JSON.parse(String(init?.body)) as { name: string };
 			const bot: AppBot = {
 				id: "bot-1", name: body.name, mainConversationId: "app/workshop",
+				instructions: "", folder: null,
 				sideConversationIds: [], canMoveBack: true,
 			};
 			bots = [bot];
@@ -352,6 +353,7 @@ describe("home screen", () => {
 		conversations = [conv("main", { newReply: 2 }), conv("branch", { newReply: 3 })];
 		bots = [{
 			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
+			instructions: "", folder: null,
 			sideConversationIds: ["app/branch"], canMoveBack: false,
 		}];
 		await open("/app/c/main");
@@ -370,6 +372,7 @@ describe("home screen", () => {
 		expect(container.querySelector(".chatlist-screen .empty")?.textContent).toContain("Nothing here yet");
 		bots = [{
 			id: "bot-1", name: "Workshop", mainConversationId: "app/main",
+			instructions: "", folder: null,
 			sideConversationIds: [], canMoveBack: true,
 		}];
 		await publish({ conversations: [conv("main")] });

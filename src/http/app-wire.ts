@@ -12,6 +12,8 @@ export type { ChatNotePinsView } from "../chat-note-pins.ts";
 export interface AppBot {
 	id: string;
 	name: string;
+	instructions: string;
+	folder: string | null;
 	mainConversationId: string;
 	sideConversationIds: string[];
 	canMoveBack: boolean;
@@ -20,6 +22,8 @@ export interface AppBot {
 export interface AppBotName {
 	name: string;
 }
+
+export type AppBotPatch = { [K in "name" | "instructions" | "folder"]?: AppBot[K] | undefined };
 
 export interface AppBotMoveBack {
 	conversationId: string;

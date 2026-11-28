@@ -9,10 +9,14 @@ export const LITTLE_GOBLIN_BOT_ID: BotId = LITTLE_GOBLIN_NOTE_OWNER;
 export interface Bot {
 	id: BotId;
 	name: string;
+	instructions: string;
+	folder: string | null;
 	mainConversationId: string;
 	sideConversationIds: string[];
 	canMoveBack: boolean;
 }
+
+export type BotPatch = { [K in "name" | "instructions" | "folder"]?: Bot[K] | undefined };
 
 type BotRow = Omit<Bot, "canMoveBack" | "sideConversationIds"> & {
 	sideConversationIds: string;
@@ -45,9 +49,18 @@ export function ensureBotsSchema(db: Database): void {
 		CREATE TABLE IF NOT EXISTS bots (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
-			created_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL,
+			instructions TEXT NOT NULL DEFAULT '',
+			folder TEXT
 		)
 	`);
+	const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(bots)").all().map(({ name }) => name));
+	if (!columns.has("instructions")) {
+		db.run("ALTER TABLE bots ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
+	}
+	if (!columns.has("folder")) {
+		db.run("ALTER TABLE bots ADD COLUMN folder TEXT");
+	}
 	db.run("INSERT OR IGNORE INTO bots (id, name, created_at) VALUES (?, 'Little Goblin', 0)", [
 		LITTLE_GOBLIN_BOT_ID,
 	]);
@@ -74,7 +87,7 @@ export function makeBotStore(db: Database) {
 		SELECT bot_id AS botId, main_ordinal AS mainOrdinal FROM bot_chats WHERE conversation_id = ?
 	`);
 	const currentBots = `
-		SELECT bots.id, bots.name, bot_chats.conversation_id AS mainConversationId,
+		SELECT bots.id, bots.name, bots.instructions, bots.folder, bot_chats.conversation_id AS mainConversationId,
 			(SELECT json_group_array(conversation_id ORDER BY conversation_id)
 				FROM bot_chats AS side
 				WHERE side.bot_id = bots.id AND side.main_ordinal IS NULL) AS sideConversationIds,
@@ -94,7 +107,7 @@ export function makeBotStore(db: Database) {
 	`);
 	const names = db.query<{ name: string }, [BotId]>("SELECT name FROM bots WHERE id = ?");
 	const insert = db.query("INSERT INTO bots (id, name, created_at) VALUES (?, ?, ?)");
-	const rename = db.query("UPDATE bots SET name = ? WHERE id = ?");
+	const update = db.query("UPDATE bots SET name = ?, instructions = ?, folder = ? WHERE id = ?");
 	const detach = db.query("DELETE FROM bot_chats WHERE conversation_id = ? AND bot_id = ?");
 	const attachMain = db.query(`
 		INSERT INTO bot_chats (conversation_id, bot_id, main_ordinal) VALUES (?, ?, 1)
@@ -121,7 +134,7 @@ export function makeBotStore(db: Database) {
 			}
 			if (busy(id)) return { kind: "busy" };
 			const bot: Bot = {
-				id: randomUUID(), name, mainConversationId: id,
+				id: randomUUID(), name, instructions: "", folder: null, mainConversationId: id,
 				sideConversationIds: [], canMoveBack: true,
 			};
 			insert.run(bot.id, bot.name, createdAt);
@@ -129,11 +142,17 @@ export function makeBotStore(db: Database) {
 			return { kind: "converted", bot };
 		},
 	);
-	const renameActive = db.transaction((id: BotId, name: string): Bot | null => {
+	const patchActive = db.transaction((id: BotId, patch: BotPatch): Bot | null => {
 		const row = main.get(id);
 		if (row === null) return null;
-		rename.run(name, id);
-		return readBot({ ...row, name });
+		const next = {
+			...row,
+			name: patch.name ?? row.name,
+			instructions: patch.instructions ?? row.instructions,
+			folder: patch.folder === undefined ? row.folder : patch.folder,
+		};
+		update.run(next.name, next.instructions, next.folder, id);
+		return readBot(next);
 	});
 	const moveBack = db.transaction((id: BotId, busy: (id: string) => boolean): MoveBack => {
 		const row = main.get(id);
@@ -154,7 +173,7 @@ export function makeBotStore(db: Database) {
 		attachSideChat: (id: string, botId: BotId) => attachSide.run(id, botId),
 		list: () => list.all().map(readBot),
 		convertSideChat: convert.immediate,
-		rename: renameActive.immediate,
+		patch: patchActive.immediate,
 		moveBack: moveBack.immediate,
 	};
 }

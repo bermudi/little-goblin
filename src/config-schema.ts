@@ -273,6 +273,13 @@ export const mailConfigSchema = z
 	.strict();
 export type MailConfig = z.infer<typeof mailConfigSchema>;
 
+export const passConfigSchema = z
+	.object({
+		loginProfile: z.string().min(1),
+	})
+	.strict();
+export type PassConfig = z.infer<typeof passConfigSchema>;
+
 // Guest answering in third-party chats — absent = intake off entirely; hand-edited only.
 export const guestConfigSchema = z
 	.object({
@@ -741,6 +748,7 @@ export const configSchema = z
 			.optional(),
 		// The managed desktop pool — hand-edited only, like delegation.
 		desktops: desktopsConfigSchema.optional(),
+		pass: passConfigSchema.optional(),
 		// Native subagents — live-read per turn; the agent tool itself
 		// mounts regardless (it needs no provider of its own).
 		agents: agentsConfigSchema.optional(),

@@ -193,6 +193,16 @@ describe("hosted web_search mount", () => {
 		expect(policyOf("post")).toMatchObject({ guestChannel: false, guestSandbox: false, replay: "unsafe" });
 	});
 
+	test("pass_fill mounts on the pass config on every channel and stays off guest turns", () => {
+		const config = { ...cfgFor("off"), pass: { loginProfile: "goblin-task" } };
+		const telegram = conv("zai/glm-5");
+		const app = { ...conv("zai/glm-5"), id: "app/parent" } as Conversation;
+		expect("pass_fill" in rigTools(config, telegram)(telegram)).toBe(true);
+		expect("pass_fill" in rigTools(config, app)(app)).toBe(true);
+		expect("pass_fill" in rigTools(cfgFor("off"), telegram)(telegram)).toBe(false);
+		expect(policyOf("pass_fill")).toMatchObject({ guestChannel: false, guestSandbox: false, replay: "unsafe" });
+	});
+
 	test("ask mounts only on app parent turns", () => {
 		const config = cfgFor("off");
 		const app = { ...conv("zai/glm-5"), id: "app/parent" } as Conversation;

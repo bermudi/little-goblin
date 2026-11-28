@@ -411,6 +411,7 @@ const server = Bun.serve({
 		}
 		const askMarker = /\[ask ([^\]]+)\]/.exec(lastUserText);
 		const askCloseMarker = /\[ask-close (\d+)\]/.exec(lastUserText);
+		const passFillMarker = /\[pass_fill (\S+) (\S+)(?: (\S+))?\]/.exec(lastUserText);
 		if (parsed.data.stream === true && (lastUserText.includes("[work]") || lastUserText.includes("[think]"))) {
 			const step = parsed.data.messages.slice(lastUserIndex + 1).filter((m) => m.role === "tool").length;
 			if (lastUserText.includes("[think]")) return workReply(0, true);
@@ -475,6 +476,17 @@ const server = Bun.serve({
 					action: "create", title: noteMatch[1]!.trim(), body: "Verification note.",
 				}, parsed.data.stream === true);
 			}
+			if (passFillMarker !== null) {
+				return toolCallResponse(
+					"pass_fill",
+					{
+						ref: passFillMarker[1]!,
+						target: passFillMarker[2]!,
+						...(passFillMarker[3] !== undefined ? { session: passFillMarker[3] } : {}),
+					},
+					parsed.data.stream === true,
+				);
+			}
 			const delegateMatch = /\[delegate (\S+) (\S+) ([^\]]+)\]/.exec(lastUserText);
 			if (delegateMatch !== null) {
 				return toolCallResponse(
@@ -491,6 +503,11 @@ const server = Bun.serve({
 		}
 		if (toolAfterLastUser && askMarker !== null) reply = "Asked.";
 		if (toolAfterLastUser && askCloseMarker !== null) reply = `Closed ${askCloseMarker[1]}.`;
+		if (toolAfterLastUser && passFillMarker !== null) {
+			const toolMsg = parsed.data.messages.filter((m) => m.role === "tool").at(-1);
+			const result = toolJson(toolMsg?.content);
+			reply = `verify-reply: pass_fill ${result === null ? textOf(toolMsg?.content) : JSON.stringify(result)}`;
+		}
 		if (parsed.data.stream !== true) {
 			return Response.json({
 				id: "verify",

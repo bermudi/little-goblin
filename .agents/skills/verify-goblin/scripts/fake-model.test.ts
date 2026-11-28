@@ -117,3 +117,46 @@ test("fake System1 endpoint rejects a non-string or malformed state", async () =
 		expect(malformed.status).toBe(400);
 	});
 });
+
+test("fake model pass_fill marker calls the tool then replies with its result", async () => {
+        await withFakeServer(async (baseUrl) => {
+                const suffix = "[2026-11-26 14:53 -06:00 · app]";
+                const first = await modelCall(baseUrl, `[pass_fill pass://S/I/password #pw work]${suffix}`);
+                const call = first.choices[0]?.message.tool_calls?.[0];
+                expect(call?.function.name).toBe("pass_fill");
+                expect(JSON.parse(call!.function.arguments)).toEqual({
+                        ref: "pass://S/I/password",
+                        target: "#pw",
+                        session: "work",
+                });
+                const bare = await modelCall(baseUrl, `[pass_fill pass://S/I/password #pw]${suffix}`);
+                expect(JSON.parse(bare.choices[0]!.message.tool_calls![0]!.function.arguments)).toEqual({
+                        ref: "pass://S/I/password",
+                        target: "#pw",
+                });
+                const toolCall = {
+                        id: "call-verify-pass_fill",
+                        type: "function",
+                        function: { name: "pass_fill", arguments: JSON.stringify({ ref: "pass://S/I/password", target: "#pw" }) },
+                };
+                const second = await fetch(`${baseUrl}/v1/chat/completions`, {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({
+                                stream: false,
+                                messages: [
+                                        { role: "user", content: `[pass_fill pass://S/I/password #pw]${suffix}` },
+                                        { role: "assistant", content: null, tool_calls: [toolCall] },
+                                        {
+                                                role: "tool",
+                                                tool_call_id: "call-verify-pass_fill",
+                                                content: JSON.stringify({ type: "json", value: { filled: true, field: "password", host: "127.0.0.1" } }),
+                                        },
+                                ],
+                        }),
+                });
+                const body = (await second.json()) as { choices: { message: { content?: string } }[] };
+                expect(body.choices[0]?.message.content).toContain("verify-reply: pass_fill ");
+                expect(body.choices[0]?.message.content).toContain('"filled":true');
+        });
+});

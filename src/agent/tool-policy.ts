@@ -78,6 +78,7 @@ export const TOOL_NAMES = [
 	"ui",
 	"ask",
 	"script",
+	"pass_fill",
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -112,6 +113,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	ui: P({}),
 	ask: P({ guestChannel: false }),
 	script: P({ writesFiles: true, composes: true }),
+	pass_fill: P({ guestChannel: false }),
 };
 
 export function policyOf(name: string): ToolPolicy {

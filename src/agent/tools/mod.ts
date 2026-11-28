@@ -105,6 +105,7 @@ export interface MakeToolsOptions {
 	computer?: ComputerToolDeps | undefined;
 	askOperator?: AskOperatorToolDeps | undefined;
 	ui?: boolean | undefined;
+	commands?: boolean | undefined;
 	// Codex conversations mount the backend's hosted web_search instead of
 	// the local search tool — the mode only decides external_web_access.
 	hostedSearch?: { externalWebAccess: boolean } | undefined;
@@ -144,6 +145,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		computer,
 		askOperator,
 		ui,
+		commands,
 		onRead,
 		contextFill,
 	} = options;
@@ -151,7 +153,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		read_file: readFileTool(cwd, vision !== undefined, onRead, contextFill),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
-		bash: bashTool(cwd, bashDescriptionCwd),
+		bash: bashTool(cwd, bashDescriptionCwd, commands === true),
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),

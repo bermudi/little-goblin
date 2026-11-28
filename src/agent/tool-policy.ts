@@ -22,6 +22,7 @@ export interface ToolPolicy {
 	composes: boolean;
 	// Callable from inside a `script`.
 	scriptable: boolean;
+	command: boolean;
 	// Mounted for the sandboxed guest persona (the sandbox ruling: search only).
 	guestSandbox: boolean;
 	// Mounted on guest-channel turns for a non-sandbox persona.
@@ -34,6 +35,7 @@ export const CONSERVATIVE_POLICY: ToolPolicy = {
 	writesFiles: false,
 	composes: false,
 	scriptable: false,
+	command: false,
 	guestSandbox: false,
 	guestChannel: false,
 };
@@ -44,6 +46,7 @@ const BASE: ToolPolicy = {
 	writesFiles: false,
 	composes: false,
 	scriptable: false,
+	command: false,
 	guestSandbox: false,
 	guestChannel: true,
 };
@@ -86,7 +89,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	read_file: P({ replay: "safe", scriptable: true }),
 	write_file: P({ writesFiles: true, scriptable: true }),
 	edit_file: P({ writesFiles: true, scriptable: true }),
-	bash: P({ scriptable: true }),
+	bash: P({ scriptable: true, composes: true }),
 	speak: P({ guestChannel: false }),
 	transcribe: P({ scriptable: true }),
 	vision: P({}),
@@ -106,7 +109,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	// cannot call it; guests keep it exactly like local search.
 	web_search: P({ output: "untrusted", guestSandbox: true }),
 	history_search: P({ replay: "safe", scriptable: true, guestChannel: false }),
-	note: P({ guestChannel: false }),
+	note: P({ guestChannel: false, command: true }),
 	sandbox: P({ scriptable: true }),
 	desktop: P({ guestChannel: false }),
 	ui: P({}),

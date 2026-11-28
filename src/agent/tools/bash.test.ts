@@ -40,6 +40,9 @@ describe("bash", () => {
 		expect(tool.description).toContain("does not authorize repairs or restarts");
 		expect(tool.description).toBe(bashTool("/another-workspace").description);
 		expect(tool.description).not.toBe(ws.description);
+		const commandSentence = " Some of Goblin's tools also run as commands here: `goblin --help` lists them.";
+		expect(bashTool(paths.workspace(), paths.workspace(), true).description.endsWith(commandSentence)).toBe(true);
+		expect(bashTool("/tmp", "/tmp", true).description.endsWith(commandSentence)).toBe(true);
 	});
 
 	test("returns output and exit code", async () => {

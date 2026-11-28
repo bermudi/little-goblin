@@ -45,7 +45,8 @@ test("descriptors reproduce the former name lists", () => {
 	);
 	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "search", "web_search"]);
 	expect(names((p) => p.writesFiles)).toEqual(["edit_file", "script", "write_file"]);
-	expect(names((p) => p.composes)).toEqual(["script"]);
+	expect(names((p) => p.composes)).toEqual(["bash", "script"]);
+	expect(names((p) => p.command)).toEqual(["note"]);
 });
 
 test("unknown (dynamic) tools get the conservative default", () => {

@@ -85,6 +85,7 @@ export const providerPresets: ProviderPreset[] = [
 export const capabilityDefaults: Partial<Record<CapabilityName, unknown>> = {
 	sandbox: {},
 	scripting: {},
+	commands: {},
 	guest: {},
 	reviewer: { auth: authDefaults.openrouter },
 };
@@ -96,6 +97,7 @@ export const capabilityHints: Record<CapabilityName, string | null> = {
 	image: "pick an engine/model",
 	sandbox: null,
 	scripting: null,
+	commands: null,
 	delegation: "add a coding agent in Settings → Delegation",
 	guest: null,
 	reviewer: null,

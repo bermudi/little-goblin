@@ -59,14 +59,17 @@ export function spawnProc(
 	cwd?: string,
 	stdin?: Bun.SpawnOptions.Writable,
 	processGroup: ProcessGroupMode = "new",
+	ipc?: (message: unknown, subprocess: Bun.Subprocess) => void,
+	env?: Record<string, string>,
 ): Bun.ReadableSubprocess {
 	return Bun.spawn(argv, {
 		...(cwd !== undefined ? { cwd } : {}),
-		env: process.env,
+		env: env === undefined ? process.env : { ...process.env, ...env },
 		stdin: stdin ?? "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 		detached: processGroup === "new",
+		...(ipc === undefined ? {} : { ipc, serialization: "json" as const }),
 	});
 }
 

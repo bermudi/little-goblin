@@ -4,6 +4,7 @@ import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
 import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
+import { commandBindingFor, commandRuntime } from "./goblin-channel.ts";
 
 // Runaway capture guard (the process is killed over it, proc.ts). 4 MiB keeps
 // the spill inside read_file's 8 MiB ceiling.
@@ -12,28 +13,63 @@ const OUTPUT_BUDGET = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 
-export const bashTool = (cwd: string, descriptionCwd = cwd) =>
-	defineTool({
+const COMMAND_SENTENCE = " Some of Goblin's tools also run as commands here: `goblin --help` lists them.";
+
+export const bashTool = (cwd: string, descriptionCwd = cwd, commands = false) => {
+	let bashToolRef: object;
+	const tool = defineTool({
 		description:
-			descriptionCwd === paths.workspace()
+			(descriptionCwd === paths.workspace()
 				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts."
-				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts.`,
+				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts.`) +
+			(commands ? COMMAND_SENTENCE : ""),
 		input: z.object({
 			command: z.string(),
 			timeout_ms: z.number().int().positive().optional(),
 		}),
-		execute: async ({ command, timeout_ms }, { abortSignal }) => {
+		execute: async ({ command, timeout_ms }, options) => {
+			const { abortSignal } = options;
+			const binding = commands ? commandBindingFor(bashToolRef) : undefined;
+			const runtime = commands
+				? commandRuntime({
+						tools: binding?.tools ?? {},
+						dispatch: binding?.dispatch ?? (() => ({ error: "goblin command dispatch is not bound" })),
+						toolCallId: options.toolCallId,
+						...(binding?.conversation === undefined ? {} : { conversation: binding.conversation }),
+						...(abortSignal === undefined ? {} : { abortSignal }),
+					})
+				: undefined;
 			let proc: Bun.ReadableSubprocess;
 			try {
-				proc = spawnProc(["/bin/bash", "-c", command], cwd);
+				proc = spawnProc(
+					["/bin/bash", "-c", command],
+					cwd,
+					undefined,
+					"new",
+					runtime === undefined
+						? undefined
+						: (message: unknown, child: Bun.Subprocess) =>
+								runtime.handle(message, (reply) => child.send(reply)),
+					runtime?.env,
+				);
 			} catch (err) {
+				runtime?.close();
 				return { error: `spawn failed: ${(err as Error).message}` };
 			}
-			const result: BoundedProc = await boundedRun(proc, {
-				timeoutMs: Math.min(timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
-				maxOutput: MAX_CAPTURE,
-				...(abortSignal ? { abortSignal } : {}),
-			});
+			let result: BoundedProc;
+			try {
+				result = await boundedRun(proc, {
+					timeoutMs: Math.min(timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
+					maxOutput: MAX_CAPTURE,
+					...(abortSignal ? { abortSignal } : {}),
+				});
+			} finally {
+				if (runtime !== undefined) {
+					await runtime.settle();
+					proc.disconnect();
+					runtime.close();
+				}
+			}
 			const combined = result.stdout + result.stderr;
 			let output = combined;
 			let truncated = result.truncated;
@@ -59,6 +95,10 @@ export const bashTool = (cwd: string, descriptionCwd = cwd) =>
 				timed_out: result.timedOut || undefined,
 				truncated: truncated || undefined,
 				output,
+				...(runtime && runtime.outputCalls().length > 0 ? { calls: runtime.outputCalls() } : {}),
 			};
 		},
 	});
+	bashToolRef = tool;
+	return tool;
+};

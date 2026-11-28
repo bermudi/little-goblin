@@ -70,6 +70,16 @@ export const bashView: ToolView = {
           {o.data.output !== "" && (
             <Clip text={clipTail(o.data.output, TAIL_CHARS)} />
           )}
+          {o.data.calls !== undefined && o.data.calls.length > 0 && (
+            <ul className="script-calls">
+              {o.data.calls.map((call, index) => (
+                <li key={index}>
+                  <code>{call.tool}</code>
+                  {call.ok ? "" : " (failed)"} — {firstLine(`${call.args} → ${call.result}`, 200)}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ),
     };

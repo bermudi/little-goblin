@@ -243,9 +243,11 @@ test("the side-chat list opens with five rows and Show more adds five", async ()
 	await act(async () => showMore()?.click());
 	expect(visible()).toEqual(Array.from({ length: 10 }, (_, index) => `app/chat-${index + 1}`));
 	expect(showMore()?.textContent).toBe("Show more (2 left)");
+	showMore()?.focus();
 	await act(async () => showMore()?.click());
 	expect(visible()).toHaveLength(12);
 	expect(showMore()).toBeUndefined();
+	expect(container!.ownerDocument.activeElement?.textContent).toBe("New side chat");
 });
 
 test("marked and open side chats stay visible past the five-row opening page", async () => {

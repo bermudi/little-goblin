@@ -155,7 +155,12 @@ export function HomeList({
 			))}
 			{sideChatsOpen && sidePage.hidden > 0 && (
 				<li className="side-chat side-chat-more">
-					<button type="button" onClick={sidePage.showMore}>Show more ({sidePage.hidden} left)</button>
+					<button type="button" onClick={(event) => {
+						sidePage.showMore();
+						if (sidePage.hidden <= SIDE_CHAT_PAGE_ROWS) {
+							event.currentTarget.closest("ul")?.querySelector<HTMLButtonElement>(".new-side-chat button")?.focus();
+						}
+					}}>Show more ({sidePage.hidden} left)</button>
 				</li>
 			)}
 			{sideChatsOpen && (

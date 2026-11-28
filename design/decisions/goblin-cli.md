@@ -47,8 +47,11 @@ so production chats do not change until the operator approves a rollout.
   arrives later fails at once, with a message and a nonzero exit. A call
   that arrived before the bash process ended finishes first, so the bash
   result never comes back ahead of an effect it started, and its record
-  is in that result. When bash times out, that call gets an abort, so it
-  cannot hold bash past its timeout.
+  is in that result. When bash times out, is killed at its output cap or
+  is stopped, that call gets an abort. Bash waits at most 2 s more for it,
+  then returns and records it as still running. A tool that ignores the
+  abort, such as `transcribe`, may finish later, as it would after a stop
+  on its typed form.
 - **Only `goblin` sees the channel.** Bun sets `NODE_CHANNEL_FD` on the
   child even when the caller passes its own env. Any bun or node program
   that inherits it gets `process.send` and may switch to its worker mode.
@@ -58,7 +61,9 @@ so production chats do not change until the operator approves a rollout.
   whichever reader takes them first. A lock on the inherited socket does
   not keep siblings apart, because they share the open file. So the
   command takes a lock on a separate per-call lock file. Parallel
-  `goblin` calls in one bash call wait their turn.
+  `goblin` calls in one bash call wait their turn. A command that reads an
+  option from stdin reads all of it before it takes the lock, so
+  `goblin note list | goblin note create --body -` cannot deadlock.
 - **Calls are real calls under the real name.** Goblin answers each
   request in-process through the fence's dispatch, the same path a
   `script` nested call takes: authority epoch, journal, recovery guard,

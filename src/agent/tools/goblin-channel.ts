@@ -10,6 +10,7 @@ import { log } from "../../log.ts";
 
 const MAX_REQUEST = 1024 * 1024;
 const MAX_CALLS = 50;
+const ABORT_GRACE_MS = 2000;
 
 interface PropertySchema {
 	type?: string;
@@ -100,6 +101,8 @@ export function commandRuntime(opts: {
 	);
 	let alive = true;
 	const pending = new Set<Promise<void>>();
+	const running = new Map<number, { tool: string; args: string }>();
+	let returned: { tool: string; args: string; ok: boolean; result: string }[] | undefined;
 	let count = 0;
 	let dispatchSeq = 0;
 	const calls: { tool: string; args: string; ok: boolean; result: string }[] = [];
@@ -219,10 +222,9 @@ export function commandRuntime(opts: {
 						const list: unknown = value.trimStart().startsWith("[") ? JSON.parse(value) : undefined;
 						const previous = Array.isArray(args[key]) ? args[key] as unknown[] : [];
 						args[key] = Array.isArray(list) ? [...previous, ...list] : [...previous, value];
-					} else if (raw === "-" && req.stdin !== undefined) args[key] = req.stdin;
-					else if (type === "integer" || type === "number") args[key] = Number(raw);
-					else if (type === "boolean") args[key] = raw === "true" ? true : raw === "false" ? false : raw;
-					else args[key] = raw;
+					} else if (type === "integer" || type === "number") args[key] = Number(value);
+					else if (type === "boolean") args[key] = value === "true" ? true : value === "false" ? false : value;
+					else args[key] = value;
 				}
 				const checked = await schema.safeParseAsync(args);
 				if (!checked.success) throw new Error(checked.error.issues[0]?.message ?? "invalid arguments");
@@ -238,12 +240,15 @@ export function commandRuntime(opts: {
 					arg: JSON.stringify(checked.data).slice(0, 200),
 				});
 				let result: unknown;
+				const seq = dispatchSeq;
+				running.set(seq, { tool: name, args: summarize(checked.data, 200) });
 				try {
 					result = await opts.dispatch(name, checked.data, {
 						toolCallId: childCallId,
 						...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
 					});
 				} catch (err) {
+					running.delete(seq);
 					const text = err instanceof Error ? err.message : String(err);
 					log.warn("tool execute failed", {
 						conversation: opts.conversation ?? "",
@@ -254,6 +259,7 @@ export function commandRuntime(opts: {
 					calls.push({ tool: name, args: summarize(checked.data, 200), ok: false, result: summarize(text, 300) });
 					return respond({ stdout: "", stderr: `${text}\n`, code: 1 });
 				}
+				running.delete(seq);
 				const failed = typeof result === "object" && result !== null && typeof (result as { error?: unknown }).error === "string";
 				const text = failed
 					? (result as { error: string }).error
@@ -289,12 +295,25 @@ export function commandRuntime(opts: {
 		handle: (message, send) => handle(message, send),
 		settle: async () => {
 			alive = false;
-			await Promise.allSettled([...pending]);
+			const all = Promise.allSettled([...pending]).then(() => undefined);
+			const signal = opts.abortSignal;
+			const aborted = signal === undefined
+				? new Promise<never>(() => {})
+				: new Promise<void>((resolve) => {
+						if (signal.aborted) resolve();
+						else signal.addEventListener("abort", () => resolve(), { once: true });
+					});
+			await Promise.race([all, aborted.then(() => Promise.race([all, Bun.sleep(ABORT_GRACE_MS)]))]);
+			for (const call of running.values()) {
+				calls.push({ ...call, ok: false, result: "still running when the bash call ended; its result was not waited for" });
+				log.warn("goblin call abandoned after abort", { conversation: opts.conversation ?? "", tool: call.tool, parent: opts.toolCallId });
+			}
+			returned = [...calls];
 		},
 		close: () => {
 			alive = false;
 			rmSync(dirname, { recursive: true, force: true });
 		},
-		outputCalls: () => calls,
+		outputCalls: () => returned ?? [...calls],
 	};
 }

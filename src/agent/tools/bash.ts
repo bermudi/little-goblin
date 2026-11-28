@@ -178,14 +178,17 @@ export const bashTool = (
 					maxOutput: MAX_CAPTURE,
 					...(abortSignal ? { abortSignal } : {}),
 				});
-				finished = !result.timedOut;
+				finished = !result.timedOut && !result.killed;
 			} finally {
-				abortSignal?.removeEventListener("abort", forwardAbort);
-				if (!finished) nested?.abort(new Error("bash call timed out"));
-				if (runtime !== undefined) {
-					await runtime.settle();
-					proc.disconnect();
-					runtime.close();
+				if (!finished) nested?.abort(new Error("bash call was killed or timed out"));
+				try {
+					if (runtime !== undefined) {
+						await runtime.settle();
+						proc.disconnect();
+						runtime.close();
+					}
+				} finally {
+					abortSignal?.removeEventListener("abort", forwardAbort);
 				}
 				if (before !== undefined && hooks.skillWrites !== undefined) {
 					try {

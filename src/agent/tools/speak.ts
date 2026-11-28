@@ -38,7 +38,7 @@ export function speakTool(
 			"Synthesize text or a plain-text/Markdown file and send it as voice notes." +
 			(allowed ? ` Voice (optional, match the text's language): ${allowed.join(", ")}.` : ""),
 		input: speakInputSchema(voices),
-		execute: async ({ text, path, voice }, { toolCallId }) => {
+		execute: async ({ text, path, voice }, { toolCallId, abortSignal }) => {
 			let input = text;
 			if (path !== undefined) {
 				if (![".txt", ".md", ".markdown"].includes(extname(path).toLowerCase())) {
@@ -51,8 +51,13 @@ export function speakTool(
 			const stopRecording = recording?.();
 			try {
 				const chunks = await synthesize(input!, voice);
-				for (const audio of chunks) await deliver(audio, toolCallId);
-				return { sent: chunks.length };
+				let sent = 0;
+				for (const audio of chunks) {
+					if (abortSignal?.aborted === true) return { error: `stopped after ${sent} of ${chunks.length} voice notes` };
+					await deliver(audio, toolCallId);
+					sent += 1;
+				}
+				return { sent };
 			} catch (err) {
 				log.warn("speak synthesis failed", err);
 				return { error: `speech synthesis failed: ${String(err)}` };

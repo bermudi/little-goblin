@@ -184,6 +184,9 @@ describe("goblin command channel at the bash boundary", () => {
 			const page = await run(h, `goblin note read --id ${created.id} --offset 1`);
 			expect(page.exit_code).toBe(0);
 			expect(page.output).toContain("Showing chars 1");
+			const piped = await run(h, `printf 1 | goblin note read --id ${created.id} --offset -`);
+			expect(piped.exit_code, String(piped.output)).toBe(0);
+			expect(piped.output).toContain("Showing chars 1");
 			const edited = await run(
 				h,
 				`goblin note replace_range --id ${created.id} --json '{"edits":[{"start":1,"end":2,"expected":"b","text":"B"}]}'`,
@@ -345,6 +348,86 @@ describe("goblin command channel at the bash boundary", () => {
 			expect(output.timed_out).toBe(true);
 			expect(Date.now() - startedAt).toBeLessThan(5000);
 			expect(h.notes.list({ project: "loose" })).toHaveLength(0);
+		} finally {
+			h.close();
+		}
+	}, 20_000);
+
+	test("a stop still reaches a nested call that bash waits on after it exits", async () => {
+		let aborted = false;
+		const h = setup(true, () => {}, undefined, {
+			started: () => writeFileSync(join(h.home, "started"), ""),
+			aborted: () => { aborted = true; },
+		});
+		const controller = new AbortController();
+		try {
+			const startedAt = Date.now();
+			const result = run(h, `goblin note create --title HELD >/dev/null 2>&1 & ${waitForFile(join(h.home, "started"))}`, { abortSignal: controller.signal });
+			await waitUntil(() => existsSync(join(h.home, "started")), "nested call started", 10_000);
+			await Bun.sleep(300);
+			controller.abort();
+			await result;
+			expect(aborted).toBe(true);
+			expect(Date.now() - startedAt).toBeLessThan(5000);
+		} finally {
+			h.close();
+		}
+	}, 20_000);
+
+	test("a capture-cap kill aborts a nested call that is still running", async () => {
+		let aborted = false;
+		const h = setup(true, () => {}, undefined, {
+			started: () => writeFileSync(join(h.home, "started"), ""),
+			aborted: () => { aborted = true; },
+		});
+		try {
+			const output = await h.bash.execute(
+				{ command: `goblin note create --title HELD >/dev/null 2>&1 & ${waitForFile(join(h.home, "started"))}; head -c 6000000 /dev/zero | tr '\\0' x; sleep 10`, timeout_ms: 15_000 },
+				{ toolCallId: "cap", messages: [], context: {} } as never,
+			) as Record<string, unknown>;
+			expect(aborted).toBe(true);
+			expect(output.truncated).toBe(true);
+			expect(output.timed_out).toBeUndefined();
+		} finally {
+			h.close();
+		}
+	}, 30_000);
+
+	test("a call that ignores the abort does not hold bash past a short grace", async () => {
+		let release!: () => void;
+		let start!: () => void;
+		const started = new Promise<void>((resolve) => { start = resolve; });
+		const h = setup(true, () => {}, undefined, undefined, {
+			started: () => start(),
+			release: new Promise<void>((resolve) => { release = resolve; }),
+		});
+		const controller = new AbortController();
+		try {
+			const startedAt = Date.now();
+			const result = run(h, "goblin note create --title STUCK", { abortSignal: controller.signal });
+			await started;
+			controller.abort();
+			const output = await result;
+			expect(Date.now() - startedAt).toBeLessThan(6000);
+			expect(output.calls).toEqual([expect.objectContaining({ tool: "note", ok: false, result: expect.stringContaining("still running") })]);
+		} finally {
+			release();
+			h.close();
+		}
+	}, 20_000);
+
+	test("a pipe from one goblin command into another's stdin does not deadlock", async () => {
+		const h = setup();
+		try {
+			await run(h, "goblin note create --title Source --body abc");
+			const output = await h.bash.execute(
+				{ command: "{ sleep 0.3; goblin note list; } | goblin note create --title Copy --body -", timeout_ms: 8000 },
+				{ toolCallId: "pipe", messages: [], context: {} } as never,
+			) as Record<string, unknown>;
+			expect(output.timed_out).toBeUndefined();
+			expect(output.exit_code, String(output.output)).toBe(0);
+			const copy = h.notes.list({ project: "loose" }).find((entry) => entry.title === "Copy");
+			expect(h.notes.get(copy!.id)?.body).toContain("Source");
 		} finally {
 			h.close();
 		}

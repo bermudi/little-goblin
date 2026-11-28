@@ -5610,6 +5610,28 @@ button.pathchip:hover svg {
 	cursor: default;
 }
 
+.handover-card {
+	margin: 0.6rem 0;
+	padding: 0.4rem 0.6rem;
+	border: 1px solid var(--app-divider);
+	border-inline-start: 3px solid var(--app-accent);
+	border-radius: 6px;
+	overflow-wrap: anywhere;
+}
+.handover-label {
+	color: var(--app-fg-muted);
+	font-size: 0.8em;
+}
+.handover-request,
+.handover-pause .ask-question {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.handover-pause .ask-card:not(.closed) {
+	border-color: color-mix(in oklab, var(--app-warning) 48%, var(--app-divider));
+	background: color-mix(in oklab, var(--app-warning) 8%, var(--app-bg));
+}
+
 .ask-card {
 	display: flex;
 	flex-direction: column;

@@ -15,9 +15,6 @@ export function AskCard({
 	busy: boolean;
 	token: string | null;
 }) {
-	const live = useLive("attention");
-	const store = useLiveStore();
-	const [error, setError] = useState(false);
 	const input = part.input as { action?: unknown; question?: unknown; options?: unknown };
 	const output = part.state === "output-available" && typeof part.output === "object" && part.output !== null
 		? part.output as { id?: unknown }
@@ -31,25 +28,51 @@ export function AskCard({
 	const options = Array.isArray(input.options)
 		? input.options.filter((option): option is string => typeof option === "string")
 		: [];
-	const itemId = `ask:${output.id}`;
+	return <OperatorQuestionCard id={output.id} question={input.question} options={options} onAction={onAction} busy={busy} token={token} />;
+}
+
+export function OperatorQuestionCard({
+	id,
+	question,
+	options,
+	onAction,
+	busy,
+	token,
+	label = "Question from Goblin",
+	heading,
+}: {
+	id: number;
+	question: string;
+	options?: readonly string[];
+	onAction?: ((text: string) => void) | undefined;
+	busy?: boolean;
+	token: string | null;
+	label?: string;
+	heading?: string;
+}) {
+	const live = useLive("attention");
+	const store = useLiveStore();
+	const [error, setError] = useState(false);
+	const itemId = `ask:${id}`;
 	const isOpen = live.data?.items.some((item) => item.id === itemId) ?? false;
 	const known = live.data !== null && live.error === null;
 	const close = async (by: "tap" | "dismiss", label?: string) => {
 		setError(false);
-		if (by === "tap" && label !== undefined) onAction?.(`[ask] ${input.question as string} → ${label}`);
+		if (by === "tap" && label !== undefined) onAction?.(`[ask] ${question} → ${label}`);
 		try {
-			await closeAsk(token, output.id as number, by);
+			await closeAsk(token, id, by);
 			await store.refresh("attention");
 		} catch {
 			setError(true);
 		}
 	};
 	return (
-		<div className={`ask-card${isOpen ? "" : " closed"}`} role="group" aria-label="Question from Goblin">
-			<div className="ask-question">{input.question}</div>
+		<div className={`ask-card${isOpen ? "" : " closed"}`} role="group" aria-label={label}>
+			{heading !== undefined && <strong>{heading}</strong>}
+			<div className="ask-question">{question}</div>
 			{isOpen ? (
 				<>
-					{options.length > 0 && (
+					{options !== undefined && options.length > 0 && (
 						<div className="ui-choice-row">
 							{options.map((option) => (
 								<button key={option} className="ui-choice" disabled={busy || !known} onClick={() => void close("tap", option)}>
@@ -63,7 +86,7 @@ export function AskCard({
 			) : known ? (
 				<div className="ask-closed">Closed</div>
 			) : (
-				options.length > 0 && (
+				options !== undefined && options.length > 0 && (
 					<div className="ui-choice-row">
 						{options.map((option) => <button key={option} className="ui-choice" disabled>{option}</button>)}
 					</div>

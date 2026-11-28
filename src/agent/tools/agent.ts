@@ -31,6 +31,7 @@ export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 	"note",
 	"program",
 	"desktop",
+	"handover",
 ]);
 
 /** The child's effective tools: the parent turn's mounted set, minus

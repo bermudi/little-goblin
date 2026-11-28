@@ -11,6 +11,7 @@ export interface QueuedTurn {
 	message: Message;
 	sink: TurnSink;
 	doneSent: boolean;
+	isolated?: boolean;
 	streamFailed?: boolean;
 	release?: (() => void) | undefined;
 }
@@ -29,6 +30,7 @@ export type ConversationEvent =
 	| { type: "turn-start"; elapsedMs: number }
 	| { type: "turn-end" }
 	| { type: "pending" }
+	| { type: "history" }
 	| { type: "rewound"; messageId: string; replacedBy: string };
 
 interface Lane {
@@ -44,10 +46,13 @@ interface Lane {
 }
 
 function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: boolean): number {
+	if (headLeads && pending[0]?.isolated === true) return 1;
+	const isolated = pending.findIndex((turn) => turn.isolated === true);
+	const limit = isolated === -1 ? pending.length : isolated;
 	const start = headLeads ? 1 : 0;
-	if (headStreams) return pending.length;
+	if (headStreams) return limit;
 	const first = pending.findIndex((t, i) => i >= start && t.sink.delivery === "stream");
-	return first === -1 ? pending.length : Math.min(pending.length, first);
+	return first === -1 ? limit : Math.min(limit, first);
 }
 
 function claimPending(

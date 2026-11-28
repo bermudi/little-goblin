@@ -9,6 +9,10 @@ import { openNotes } from "../notes.ts";
 import { makePosts } from "../posts.ts";
 import { makeAsks } from "../asks.ts";
 import { askTool } from "../agent/tools/ask.ts";
+import { handoverTool } from "../agent/tools/handover.ts";
+import { makeHandovers } from "../handovers.ts";
+import { openWakeStore } from "../wake-store.ts";
+import { makeWakeDispatcher } from "../wake-dispatcher.ts";
 import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
@@ -16,7 +20,7 @@ import type { TurnToolMaker } from "../turn/tool-authority.ts";
 
 import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { textModel } from "../testkit/fake-model.ts";
-import { useHome } from "../testkit.ts";
+import { HeadlessSink, useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { openWindowCapture } from "../window-capture.ts";
 import { sleep } from "../timing.ts";
@@ -53,6 +57,7 @@ export function setup(
 		makeTools?: TurnToolMaker;
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 		ask?: { now: () => Date };
+		handovers?: true;
 	} = {},
 ) {
 	const home = useHome("goblin-app-");
@@ -104,13 +109,6 @@ export function setup(
 		},
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 	});
-	runtime.mount({ makeTools: (conv, deliverVoice, recording, deliverFile) => {
-			opts.workdirs?.push(projectWorkdir(projects, conv));
-			const tools = opts.makeTools?.(conv, deliverVoice, recording, deliverFile) ?? {};
-			return opts.ask !== undefined && channelOf(conv.id) === "app" && conv.agentType === null
-				? { ...tools, ask: askTool({ asks, conversationId: conv.id }) }
-				: tools;
-		} });
 	const auth: Pick<AuthStore, "resolve"> = {
 		resolve: (name) =>
 			name === APP_TOKEN_NAME
@@ -136,6 +134,28 @@ export function setup(
 		} as Config,
 		ttsDown: false,
 	};
+	const wakes = opts.handovers === true ? openWakeStore(store.db) : null;
+	const dispatcher = wakes === null ? null : makeWakeDispatcher({
+		store, journal: turnJournal, wakes, runtime, sinkFor: () => new HeadlessSink(),
+	});
+	const handovers = wakes === null || dispatcher === null ? null : makeHandovers({
+		store, wakes, asks, config: () => configRef.current,
+		pump: () => dispatcher.pump(),
+		changed: (id) => runtime.emitConversationHistory(id),
+	});
+	runtime.mount({
+		makeTools: (conv, deliverVoice, recording, deliverFile, context) => {
+			opts.workdirs?.push(projectWorkdir(projects, conv));
+			const tools = opts.makeTools?.(conv, deliverVoice, recording, deliverFile, context) ?? {};
+			if (channelOf(conv.id) === "app" && conv.agentType === null) {
+				if (opts.ask !== undefined) tools.ask = askTool({ asks, conversationId: conv.id });
+				if (handovers !== null && context !== undefined) tools.handover = handoverTool(handovers, conv, context);
+			}
+			return tools;
+		},
+		...(dispatcher === null ? {} : { runOwnership: dispatcher.hooks }),
+	});
+	const stopWakes = dispatcher?.start();
 	const configWrites = { count: 0 };
 	const appTokenName = resolveAppAuth(opts.token);
 	const appDepsBase: Omit<AppChannelDeps, "live"> = {
@@ -191,6 +211,7 @@ export function setup(
 		notes,
 		posts,
 		asks,
+		stopWakes,
 		configRef,
 		configWrites,
 		call,

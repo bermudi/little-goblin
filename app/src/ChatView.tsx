@@ -70,6 +70,8 @@ import { useLiveStoreOrNull } from "./useLive.tsx";
 import { useReplyRatings } from "./chat/useReplyRatings.ts";
 import { WorkHeader } from "./chat/WorkHeader.tsx";
 import { LiveWork } from "./chat/LiveWork.tsx";
+import { HandoverCard } from "./chat/HandoverCard.tsx";
+import { HANDOVER_OPERATOR_PART, HANDOVER_STOP_PART, isHandoverCard } from "../../src/handover-message.ts";
 
 // ---------- the chat ----------
 
@@ -869,6 +871,8 @@ function Chat({
       } else if (event.type === "rewound") {
         setMessages((current) => rewindTranscript(current, event));
         refreshTranscript();
+      } else if (event.type === "history") {
+        refreshTranscript();
       } else if (event.type === "pending") {
         setSubmitPending(false);
         refreshPending();
@@ -1115,7 +1119,11 @@ function Chat({
     setEditing({
       id: m.id,
       draft: draftFromMessages([editable]),
-      kept: m.parts.filter((part) => part.type !== "data-chat-note-notices" && !editable.includes(part)),
+      kept: m.parts.filter((part) =>
+        part.type !== "data-chat-note-notices" &&
+        part.type !== HANDOVER_OPERATOR_PART &&
+        !editable.includes(part)
+      ),
     });
   };
   const cancelEdit = () => setEditing(null);
@@ -1126,7 +1134,9 @@ function Chat({
     if (uploadState(editing.draft) !== "ready") return;
     if (isEmptyDraft(editing.draft) && editing.kept.length === 0) return;
     const parts = [...draftToParts(editing.draft), ...editing.kept];
-    const tail = messages.length - index - 1;
+    const tail = messages.slice(index + 1).filter((row) =>
+      !isHandoverCard(row.parts) && !row.parts.some((part) => part.type === HANDOVER_STOP_PART)
+    ).length;
     // A rewind is destructive by design. Say so when it is about to
     // drop real messages; the branch action is the way to keep them.
     if (
@@ -1264,6 +1274,12 @@ function Chat({
                 m.parts.every((p) => p.type === "step-start");
               if (placedMedia.hidden.has(m) || placeholder) {
                 if (!marksByIndex.has(i)) return null;
+              } else if (isHandoverCard(m.parts) || m.parts.some((part) => part.type === HANDOVER_STOP_PART)) {
+                el = (
+                  <div data-outline-anchor={m.role === "user" ? m.id : undefined}>
+                    <HandoverCard parts={m.parts} token={token} />
+                  </div>
+                );
               } else if (m.role === "user") {
                 const isEditing = editing !== null && editing.id === m.id;
                 const prevUser = displayed[i - 1]?.role === "user";
@@ -1422,7 +1438,8 @@ function Chat({
                     />
                     <ActionBar
                       message={m}
-                      isLastAssistant={m.id === lastAssistantId}
+                      isLastAssistant={m.id === lastAssistantId &&
+                        !isHandoverCard(displayed.findLast((message) => message.role === "user")?.parts ?? [])}
                       busy={busy}
                       onRetry={() => {
                         setSettledTailId(null);

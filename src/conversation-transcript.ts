@@ -7,12 +7,13 @@ import type { Database } from "bun:sqlite";
 import type { BotStore } from "./bots.ts";
 import type { ChatNotePins } from "./chat-note-pins.ts";
 import { parseEvent } from "./conversation-events.ts";
+import { isHandoverCard } from "./handover-message.ts";
 import type { Message } from "./message.ts";
 import { log } from "./log.ts";
 import { stampArrival } from "./message-context.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import type { MemoryQueue } from "./memory/queue.ts";
-import type { ConversationQueries } from "./conversation-queries.ts";
+import { CAUSAL_KEY_SQL, type ConversationQueries } from "./conversation-queries.ts";
 
 // The observable shape of an edit's sweep: the cut is the edited event's
 // seq, seq is the new event's (never-reused) position, and the counts
@@ -81,6 +82,7 @@ export function makeConversationTranscript(
 				originalRow === null
 					? null
 					: parseEvent(id, found.seq, originalRow.role, originalRow.data);
+			if (original !== null && isHandoverCard(original.parts)) return null;
 			const conv = qGet.get(id);
 			if (!conv) throw new Error(`conversation ${id} not found`);
 			const cut = found.seq;
@@ -96,9 +98,9 @@ export function makeConversationTranscript(
 			const projections = Number(qRewindProjections.run(id, cut).changes);
 			const events = Number(qRewindEvents.run(id, cut).changes);
 			const asks = Number(db.run(
-				`DELETE FROM asks WHERE conversation_id = ?1 AND created_at >
-				 COALESCE((SELECT MAX(created_at) FROM events WHERE conversation_id = ?1), '')`,
-				[id],
+				`DELETE FROM asks WHERE conversation_id = ?1 AND operator_only = 0 AND created_at >
+				 COALESCE((SELECT MAX(created_at) FROM events WHERE conversation_id = ?1 AND ${CAUSAL_KEY_SQL} < ?2), '')`,
+				[id, cut],
 			).changes);
 			const compactions = Number(qRewindCompactions.run(id, cut, cut).changes);
 			const contexts = Number(qRewindContexts.run(id, cut).changes);

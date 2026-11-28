@@ -245,6 +245,7 @@ export type AppConversationEvent =
 	| { type: "state"; live: true; elapsedMs: number }
 	| { type: "turn-start"; elapsedMs: number }
 	| { type: "turn-end" }
+	| { type: "history" }
 	| { type: "pending" }
 	| { type: "rewound"; messageId: string; replacedBy: string };
 

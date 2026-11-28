@@ -118,7 +118,7 @@ export interface WakeStore {
 	/** Record one development; a duplicate source key is a no-op that
 	 *  returns the existing event. Joins the conversation's pending wake
 	 *  or opens one — all in one transaction. */
-	record(input: DevelopmentInput): { eventId: number; wakeId: number; created: boolean };
+	record(input: DevelopmentInput, options?: { separate: true }): { eventId: number; wakeId: number; created: boolean };
 	get(wakeId: number): WakeRecord | null;
 	/** Pending wakes, oldest first (optionally one conversation's). */
 	pending(conversationId?: string): WakeRecord[];
@@ -341,7 +341,7 @@ export function openWakeStore(db: Database): WakeStore {
 	}
 
 	const store: WakeStore = {
-		record(input) {
+		record(input, options) {
 			if (input.sourceKey === "" || input.conversationId === "" || input.text === "") {
 				throw new Error("wake development needs a source key, conversation, and text");
 			}
@@ -386,7 +386,7 @@ export function openWakeStore(db: Database): WakeStore {
 					now,
 				);
 				const eventId = Number(inserted.lastInsertRowid);
-				const pending = qPendingWake.get(input.conversationId);
+				const pending = options?.separate === true ? null : qPendingWake.get(input.conversationId);
 				let wakeId: number;
 				if (pending != null) {
 					wakeId = pending.wake_id;

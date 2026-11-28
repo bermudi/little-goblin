@@ -3,6 +3,7 @@
 // shape lives here; the store owns what they mean.
 
 import type { Database } from "bun:sqlite";
+import { HANDOVER_PART, HANDOVER_STOP_PART } from "./handover-message.ts";
 
 export interface Row {
 	id: string;
@@ -67,7 +68,10 @@ export const PROJECTIONS_THROUGH_SQL = `SELECT seq, tool_call_id, replacement, r
 // An edit's causal cut: the events the cut drops, and the projections
 // keyed on that same event set — the sweep order lives with the queries.
 export const REWIND_EVENTS_SQL = `DELETE FROM events WHERE conversation_id = ?1
-				 AND ${CAUSAL_KEY_SQL} >= ?2`;
+				AND ${CAUSAL_KEY_SQL} >= ?2
+				AND COALESCE(json_extract(
+					CASE WHEN json_valid(data) THEN data ELSE '{}' END, '$.message.parts[0].type'
+				), '') NOT IN ('${HANDOVER_PART}', '${HANDOVER_STOP_PART}')`;
 export const REWIND_PROJECTIONS_SQL = `DELETE FROM event_projections WHERE conversation_id = ?1
 				 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
 				  AND ${CAUSAL_KEY_SQL} >= ?2)`;

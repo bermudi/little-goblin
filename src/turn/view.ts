@@ -37,6 +37,7 @@ import {
 	type TurnInsertItem,
 } from "../agent/turn-inserts.ts";
 import { compactionSummaryId } from "../tags.ts";
+import { HANDOVER_STOP_PART, isHandoverCard } from "../handover-message.ts";
 
 export interface ViewContext {
 	convId: string;
@@ -402,6 +403,8 @@ export async function buildModelView(
 			messages.push(...toolChangeMessages(storedChange, folded, unavailable));
 		}
 		if (slots[i]?.dataOnly) continue;
+		const handover = isHandoverCard(m.parts);
+		if (m.role === "system" && (handover || m.parts.some((part) => part.type === HANDOVER_STOP_PART))) continue;
 		const entrySeq = seqByIndex[i] ?? null;
 		const includeBody = entrySeq !== null && m.role === "user" && owned.has(entrySeq);
 		const { message: skillMarked, invocations } = skillPartsAsText(
@@ -459,7 +462,7 @@ export async function buildModelView(
 		if (includeBody) {
 			messages.push(...injectedBodies(ctx, invocations));
 		}
-		if (slots[i]?.replayed) {
+		if (slots[i]?.replayed || handover) {
 			for (const message of messages.slice(renderedStart)) unmergeable.add(message);
 		}
 	}

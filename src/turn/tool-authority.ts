@@ -19,6 +19,7 @@ export type TurnToolMaker = (
 		runId: string;
 		sourceMessageId(): string;
 		sourceInputSeq(): number | null;
+		inputSeqs(): ReadonlySet<number>;
 		contextFill(): { used: number; limit: number } | null;
 	},
 ) => Tools;
@@ -72,6 +73,7 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			runId: newRunId,
 			sourceMessageId: deps.sourceMessageId,
 			sourceInputSeq: record.sourceInputSeq,
+			inputSeqs: () => record.ownedInputSeqs,
 			contextFill: deps.contextFill ?? (() => null),
 		},
 	);

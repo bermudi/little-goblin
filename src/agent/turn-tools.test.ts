@@ -5,10 +5,13 @@ import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
+import { appAddress } from "../conversation-address.ts";
+import { isHosted } from "../tool.ts";
 import type { JSONObject, Message } from "../message.ts";
 import { declarationsOf, TOOLS_PART } from "./tool-declarations.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
+import { HANDOVER_TOOL_SOURCE, handoverAvailable } from "./tools/handover.ts";
 import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
 import type { GitHub } from "../github.ts";
@@ -135,6 +138,15 @@ describe("hosted web_search mount", () => {
 		expect(declaration(codex, existing)).toEqual(current);
 	});
 
+	test("handover waits for a snapshot rebuild on full-tool routes only", () => {
+		const frozen = { sources: [] };
+		expect(handoverAvailable(frozen, "openai-compatible")).toBe(false);
+		expect(handoverAvailable(frozen, "codex")).toBe(true);
+		expect(handoverAvailable(frozen, "claude-code")).toBe(true);
+		expect(handoverAvailable({ sources: [HANDOVER_TOOL_SOURCE] }, "openai-compatible")).toBe(true);
+		expect(handoverAvailable(null, "openai-compatible")).toBe(true);
+	});
+
 	test("codex+live/cached mounts web_search, search absent; off and non-codex keep local search", () => {
 		for (const mode of ["live", "cached"] as const) {
 			const t = rigTools(cfgFor(mode), conv("codex/gpt-6.1-sol"))(conv("codex/gpt-6.1-sol"));
@@ -224,11 +236,11 @@ describe("agent tool mount", () => {
 		agentType: "general",
 	} as unknown as Conversation;
 
-	const rigTools = (engine: AgentChildren | null) =>
+	const rigTools = (engine: AgentChildren | null, store = { promptSnapshot: () => null } as unknown as ConversationStore) =>
 		makeTurnTools({
 			configRef: { current: {} as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: { promptSnapshot: () => null } as unknown as ConversationStore,
+			store,
 			projects: {} as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -272,6 +284,30 @@ describe("agent tool mount", () => {
 		expect(names).toContain("bash");
 		for (const banned of ["agent", "delegate", "speak", "memory_search", "note", "ui", "ask"]) {
 			expect(names).not.toContain(banned);
+		}
+	});
+
+	test("a child working for a bot cannot read another bot through history_search", async () => {
+		const home = useHome("goblin-turn-bot-history-");
+		const store = openStore(join(home, "goblin.sqlite"));
+		try {
+			const own = store.resolve(appAddress("drafts"), home);
+			const other = store.resolve(appAddress("archive"), home);
+			store.bots.convertSideChat(own.id, "Drafts", 0, () => false);
+			store.bots.convertSideChat(other.id, "Archive", 0, () => false);
+			const ownSeq = store.append(own.id, [userMessage([{ type: "text", text: "Own invoice" }])])[0]!;
+			const otherSeq = store.append(other.id, [userMessage([{ type: "text", text: "Private invoice" }])])[0]!;
+			const child = store.resolveAgentChild(own, "general", "Look up an invoice", { model: "fake/model", thinking: "medium" }, new Date().toISOString());
+			store.setMeta(child.id, { memoryExcluded: false });
+			const engine = { allowlistFor: () => ["history_search"], desktopFor: () => null } as unknown as AgentChildren;
+			const tools = rigTools(engine, store)({ ...child, model: null });
+			const history = tools.history_search;
+			if (history === undefined || isHosted(history)) throw new Error("history_search not mounted");
+			expect(await history.execute({ action: "context", conversation: own.id, seq: ownSeq }, { toolCallId: "own" })).toContain("Own invoice");
+			expect(await history.execute({ action: "context", conversation: other.id, seq: otherSeq }, { toolCallId: "other" }))
+				.toEqual({ error: "Only this bot's conversations are in scope." });
+		} finally {
+			store.close();
 		}
 	});
 

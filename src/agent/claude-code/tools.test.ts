@@ -49,6 +49,15 @@ describe("createToolBridge", () => {
 		expect(b.allowedTools()).toEqual(["mcp__goblin"]);
 	});
 
+	test("a tool reached only as a goblin command stays off the model surface", async () => {
+		const all = tools();
+		const echo = all.echo;
+		if (echo === undefined || "hosted" in echo) throw new Error("echo fixture missing");
+		const b = createToolBridge({ convId: "c", tools: { ...all, echo: { ...echo, declared: false } } });
+		expect(b.toolNames()).toEqual(["ui", "shaper", "loose"]);
+		expect((await b.invoke("echo", { message: "hi" })).error).toContain("no bridged tool named echo");
+	});
+
 	test("invoke parses zod args and returns the exact execution output", async () => {
 		const b = createToolBridge({ convId: "c", tools: tools() });
 		const r = await b.invoke("echo", { message: "hi", times: 2 });

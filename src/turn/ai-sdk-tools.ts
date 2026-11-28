@@ -4,7 +4,7 @@ import { asSchema, jsonSchema, tool, type ToolSet } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { ToolResultOutput } from "../prompt-message.ts";
 import { z } from "zod";
-import { isHosted, type Tool, type ToolOutput, type Tools } from "../tool.ts";
+import { isDeclared, isHosted, type Tool, type ToolOutput, type Tools } from "../tool.ts";
 import type { ToolDeclaration } from "../agent/tool-declarations.ts";
 
 const storedToolSchema = z.object({
@@ -161,6 +161,7 @@ function toSdkTool(definition: Exclude<Tool, { hosted: string }>) {
 export function toToolSet(tools: Tools): ToolSet {
 	const out: ToolSet = {};
 	for (const [name, definition] of Object.entries(tools)) {
+		if (!isDeclared(definition)) continue;
 		out[name] = isHosted(definition)
 			? openai.tools.webSearch({ externalWebAccess: definition.args.externalWebAccess })
 			: toSdkTool(definition);

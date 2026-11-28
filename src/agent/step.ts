@@ -22,7 +22,7 @@ import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
 import { NOTE_HISTORY_DESCRIPTION, NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
 import { toToolSet } from "../turn/ai-sdk-tools.ts";
-import { toolNames } from "./tools/mod.ts";
+import { commandToolNames, toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
 import type { MediaPosition } from "./attachments.ts";
@@ -191,6 +191,7 @@ export function makeStepBuilder(
 							toolNames(tools),
 							project,
 							project === null ? undefined : notes.index(project.id),
+							commandToolNames(tools),
 						);
 			const uncapped = agentTypeUncapped(conv, paths.agentTypes());
 			log.info("model step", {

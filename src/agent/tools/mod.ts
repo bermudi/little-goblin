@@ -1,4 +1,4 @@
-import type { Tools } from "../../tool.ts";
+import { isDeclared, type Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
@@ -70,7 +70,11 @@ export type {
 };
 
 export function toolNames(tools: Tools): string[] {
-	return Object.keys(tools);
+	return Object.keys(tools).filter((name) => isDeclared(tools[name]!));
+}
+
+export function commandToolNames(tools: Tools): string[] {
+	return Object.keys(tools).filter((name) => !isDeclared(tools[name]!));
 }
 
 export interface MakeToolsOptions {
@@ -106,6 +110,7 @@ export interface MakeToolsOptions {
 	hostedSearch?: { externalWebAccess: boolean } | undefined;
 	onRead?: (abs: string) => void;
 	skillWrites?: SkillWrites;
+	commands?: boolean | undefined;
 }
 
 // The codex provider tool — args travel as the wire tool's
@@ -127,6 +132,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		hostedSearch,
 		onRead,
 		skillWrites,
+		commands,
 		transcribe,
 		delegate,
 		mail,
@@ -144,6 +150,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		bash: bashTool(cwd, bashDescriptionCwd, {
 			...(onRead !== undefined ? { onRead } : {}),
 			...(skillWrites !== undefined ? { skillWrites } : {}),
+			...(commands === true ? { commands: true } : {}),
 		}),
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }

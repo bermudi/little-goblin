@@ -34,6 +34,12 @@ export const bashOutputSchema = z.union([
 		output: z.string(),
 		timed_out: z.boolean().optional(),
 		truncated: z.boolean().optional(),
+		calls: z.array(z.object({
+			tool: z.string(),
+			args: z.string(),
+			ok: z.boolean(),
+			result: z.string(),
+		})).optional(),
 	}),
 	toolError,
 ]);

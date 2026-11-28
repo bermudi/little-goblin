@@ -1,0 +1,27 @@
+#!/bin/bash
+if [[ -z "${GOBLIN_CHANNEL_FD:-}" ]]; then
+	printf '%s\n' "goblin: no Goblin channel here — goblin commands work only inside Goblin's bash tool, while that call runs" >&2
+	exit 75
+fi
+export NODE_CHANNEL_FD="$GOBLIN_CHANNEL_FD"
+export NODE_CHANNEL_SERIALIZATION_MODE="${GOBLIN_CHANNEL_MODE:-json}"
+if ! exec 9>"$GOBLIN_CHANNEL_LOCK"; then
+	printf '%s\n' "goblin: the bash call that owned this channel has ended" >&2
+	exit 75
+fi
+for arg in "$@"; do
+	if [[ "$arg" == "-" ]]; then
+		stdin_file="${GOBLIN_CHANNEL_LOCK%/*}/stdin.$$"
+		if ! head -c 1048577 >"$stdin_file" || ! exec 0<"$stdin_file"; then
+			printf '%s\n' "goblin: could not read stdin" >&2
+			exit 2
+		fi
+		rm -f -- "$stdin_file"
+		break
+	fi
+done
+if ! flock 9; then
+	printf '%s\n' "goblin: the bash call that owned this channel has ended" >&2
+	exit 75
+fi
+exec "$GOBLIN_BUN" "$GOBLIN_CLI" "$@"

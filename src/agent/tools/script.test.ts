@@ -527,6 +527,7 @@ return "tail marker";`,
 		{ command: `sed -n '1,2000p' "${file}"` },
 		{ toolCallId: "tc-bash" },
 	);
+	if (!("output" in opened)) throw new Error(opened.error);
 	expect(opened.output).toContain("line 0 ");
 });
 

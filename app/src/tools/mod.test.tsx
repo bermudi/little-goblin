@@ -274,6 +274,45 @@ describe("ToolRun", () => {
     expect(html).not.toContain("exit-badge");
   });
 
+  test("bash cards list nested Goblin commands but old outputs stay valid", () => {
+    const html = renderToStaticMarkup(
+      <ToolRun
+        part={part({
+          type: "tool-bash",
+          state: "output-available",
+          input: { command: "goblin note create --title T" },
+          output: {
+            exit_code: 0,
+            output: "created",
+            calls: [
+              { tool: "note", args: '{"action":"create","title":"T"}', ok: true, result: '{"id":"n1"}' },
+              { tool: "note", args: '{"action":"create","title":"bad"}', ok: false, result: "refused" },
+            ],
+          },
+        })}
+      />,
+    );
+    expect(html).toContain("note");
+    expect(html).toContain('(failed)');
+    expect(html).toContain("exit 0 · 1 call failed");
+    expect(html).not.toContain("tool-sum err");
+    expect(html).toContain('{&quot;action&quot;:&quot;create&quot;,&quot;title&quot;:&quot;T&quot;}');
+    expect(html).toContain('{&quot;id&quot;:&quot;n1&quot;}');
+    const old = renderToStaticMarkup(
+      <ToolRun
+        part={part({
+          type: "tool-bash",
+          state: "output-available",
+          input: { command: "echo old" },
+          output: { exit_code: 0, output: "old" },
+        })}
+      />,
+    );
+    expect(old).toContain("old");
+    expect(old).not.toContain("(failed)");
+    expect(old).not.toContain("failed");
+  });
+
   test("an unknown tool name renders the generic row, never crashes", () => {
     const html = renderToStaticMarkup(
       <ToolRun

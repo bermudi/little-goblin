@@ -1,6 +1,7 @@
 
 import { isHosted, type ToolCallContext, type Tools } from "../tool.ts";
 import { bindScriptDispatch, type ToolDispatch } from "../agent/tools/script.ts";
+import { bindCommandDispatch } from "../agent/tools/goblin-channel.ts";
 import { log } from "../log.ts";
 import { classifyRetry, type RetryGuard } from "./retry-guard.ts";
 import { replayKey, type TurnJournal } from "../turn-journal.ts";
@@ -113,5 +114,6 @@ export function fenceTools(opts: {
 					};
 	}
 	bindScriptDispatch(tools, dispatch);
+	bindCommandDispatch(tools, dispatch);
 	return out;
 }

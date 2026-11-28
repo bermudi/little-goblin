@@ -168,6 +168,9 @@ export const scriptingConfigSchema = z
 	.strict();
 export type ScriptingConfig = z.infer<typeof scriptingConfigSchema>;
 
+export const commandsConfigSchema = z.object({}).strict();
+export type CommandsConfig = z.infer<typeof commandsConfigSchema>;
+
 // Edge read-aloud: no auth, unofficial, can break — ffmpeg is the only dependency.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 
@@ -761,6 +764,10 @@ export const configSchema = z
 			.union([scriptingConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		commands: z
+			.union([commandsConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		// auth.jsonl record NAME — the token value never sits in this
 		// file. Absent = trust mode: /api/app/* unauthenticated, the
 		// tailnet is the only lock. Boot-pinned; a flip needs a restart.
@@ -776,6 +783,7 @@ export const configSchema = z
 				image: imageConfigSchema.optional(),
 				sandbox: sandboxConfigSchema.optional(),
 				scripting: scriptingConfigSchema.optional(),
+				commands: commandsConfigSchema.optional(),
 				delegation: delegationConfigSchema.optional(),
 				guest: guestConfigSchema.optional(),
 				reviewer: reviewerConfigSchema.optional(),
@@ -866,6 +874,7 @@ export const capabilityNames = [
 	"image",
 	"sandbox",
 	"scripting",
+	"commands",
 	"delegation",
 	"guest",
 	"reviewer",

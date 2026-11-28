@@ -43,6 +43,22 @@ describe("speak", () => {
 		expect(out).toEqual({ sent: 2 });
 	});
 
+	test("a stop between voice notes sends no more of them", async () => {
+		const controller = new AbortController();
+		const delivered: number[] = [];
+		const t = speakTool(
+			"/tmp",
+			async () => [new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])],
+			async (audio) => {
+				delivered.push(audio[0]!);
+				controller.abort();
+			},
+		);
+		const out = await t.execute!({ text: "three parts" }, { ...opts, abortSignal: controller.signal });
+		expect(delivered).toEqual([1]);
+		expect(out).toEqual({ error: "stopped after 1 of 3 voice notes" });
+	});
+
 	test("surfaces synthesis failure as a tool result", async () => {
 		const t = speakTool(
 			"/tmp",

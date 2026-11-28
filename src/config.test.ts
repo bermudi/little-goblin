@@ -1595,4 +1595,13 @@ describe("parked capability blocks", () => {
 			safeFailure(() => parseConfig({ ...base(), parked: { memory: { bankId: "x" } } })).message,
 		).toContain("invalid config");
 	});
+
+	test("commands stay parked when disabled and do not enable the trial by default", () => {
+		const off = parseConfig(base());
+		expect(off.commands).toBeUndefined();
+		const parked = parseConfig({ ...base(), parked: { commands: {} } });
+		expect(parked.commands).toBeUndefined();
+		expect(parked.parked?.commands).toEqual({});
+		expect(parseConfig({ ...base(), commands: {} }).commands).toEqual({});
+	});
 });

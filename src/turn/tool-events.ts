@@ -11,7 +11,7 @@ const scriptOutputSchema = z.object({
 			ok: z.boolean(),
 			result: z.string(),
 		}),
-	),
+	).optional(),
 });
 
 export interface ToolEventState {
@@ -98,16 +98,16 @@ export function noteToolOutput(
 			ring.ok = toolOk(output);
 		});
 	}
-	if (policyOf(call?.tool ?? "").composes) {
+	if (policyOf(call?.tool ?? "").composes && typeof output === "object" && output !== null && "calls" in output) {
 		const parsed = scriptOutputSchema.safeParse(output);
-		if (parsed.success) {
+		if (parsed.success && parsed.data.calls !== undefined) {
 			for (const [i, nested] of parsed.data.calls.entries()) {
-				state.toolCalls.push(`script.${nested.tool}`);
+				state.toolCalls.push(`${call?.tool}.${nested.tool}`);
 				if (deps.evidence !== undefined) {
 					state.digestRing.push({
 						id: `${toolCallId}/${i + 1}`,
 						entry: {
-							tool: `script.${nested.tool}`,
+							tool: `${call?.tool}.${nested.tool}`,
 							args: summarize(nested.args, deps.evidence.argChars),
 							result: summarize(nested.result, deps.evidence.outChars),
 							ok: nested.ok,

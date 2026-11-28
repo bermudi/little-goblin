@@ -8,11 +8,15 @@ import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
 import { skillNameSchema } from "../../skill-provenance.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
+import { commandBindingFor, commandRuntime } from "./goblin-channel.ts";
+import { TOOL_NAMES, policyOf } from "../tool-policy.ts";
 
 const MAX_CAPTURE = 4 * 1024 * 1024;
 const OUTPUT_BUDGET = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
+
+const COMMAND_SENTENCE = ` Some of Goblin's tools run as commands here: ${TOOL_NAMES.filter((name) => policyOf(name).command).join(", ")}. \`goblin --help\` shows how to call them.`;
 
 export interface SkillWrites {
 	dirs: string[];
@@ -112,38 +116,80 @@ function skillReadCandidates(command: string, cwd: string): string[] {
 export const bashTool = (
 	cwd: string,
 	descriptionCwd = cwd,
-	hooks: { onRead?: (abs: string) => void; skillWrites?: SkillWrites } = {},
-) =>
-	defineTool({
+	hooks: { onRead?: (abs: string) => void; skillWrites?: SkillWrites; commands?: boolean } = {},
+) => {
+	const commands = hooks.commands === true;
+	let bashToolRef: object;
+	const tool = defineTool({
 		description:
-			descriptionCwd === paths.workspace()
+			(descriptionCwd === paths.workspace()
 				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts. It is also the file tool: read with cat or sed -n, and write or edit with heredocs, sed or a short script."
-				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts. It is also the file tool: read with cat or sed -n, and write or edit with heredocs, sed or a short script.`,
+				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts. It is also the file tool: read with cat or sed -n, and write or edit with heredocs, sed or a short script.`) +
+			(commands ? COMMAND_SENTENCE : ""),
 		input: z.object({
 			command: z.string(),
 			timeout_ms: z.number().int().positive().optional(),
 		}),
-		execute: async ({ command, timeout_ms }, { abortSignal, toolCallId }) => {
+		execute: async ({ command, timeout_ms }, options) => {
+			const { abortSignal, toolCallId } = options;
 			let before: Map<string, Fingerprint> | undefined;
 			try {
 				if (hooks.skillWrites !== undefined) before = skillSnapshot(hooks.skillWrites.dirs);
 			} catch (err) {
 				log.error("skill write snapshot failed", err, { tool: "bash", toolCallId, phase: "before" });
 			}
+			const binding = commands ? commandBindingFor(bashToolRef) : undefined;
+			const nested = commands ? new AbortController() : undefined;
+			const forwardAbort = (): void => nested?.abort(abortSignal?.reason);
+			if (nested !== undefined && abortSignal?.aborted) forwardAbort();
+			else if (nested !== undefined) abortSignal?.addEventListener("abort", forwardAbort, { once: true });
+			const runtime = commands
+				? commandRuntime({
+						tools: binding?.tools ?? {},
+						dispatch: binding?.dispatch ?? (() => ({ error: "goblin command dispatch is not bound" })),
+						toolCallId,
+						...(binding?.conversation === undefined ? {} : { conversation: binding.conversation }),
+						...(nested === undefined ? {} : { abortSignal: nested.signal }),
+					})
+				: undefined;
 			let proc: Bun.ReadableSubprocess;
 			try {
-				proc = spawnProc(["/bin/bash", "-c", command], cwd);
+				proc = spawnProc(
+					["/bin/bash", "-c", command],
+					cwd,
+					undefined,
+					"new",
+					runtime === undefined
+						? undefined
+						: (message: unknown, child: Bun.Subprocess) =>
+								runtime.handle(message, (reply) => child.send(reply)),
+					runtime?.env,
+				);
 			} catch (err) {
+				abortSignal?.removeEventListener("abort", forwardAbort);
+				runtime?.close();
 				return { error: `spawn failed: ${(err as Error).message}` };
 			}
 			let result: BoundedProc;
+			let finished = false;
 			try {
 				result = await boundedRun(proc, {
 					timeoutMs: Math.min(timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
 					maxOutput: MAX_CAPTURE,
 					...(abortSignal ? { abortSignal } : {}),
 				});
+				finished = !result.timedOut && !result.killed;
 			} finally {
+				if (!finished) nested?.abort(new Error("bash call was killed or timed out"));
+				try {
+					if (runtime !== undefined) {
+						await runtime.settle();
+						proc.disconnect();
+						runtime.close();
+					}
+				} finally {
+					abortSignal?.removeEventListener("abort", forwardAbort);
+				}
 				if (before !== undefined && hooks.skillWrites !== undefined) {
 					try {
 						recordSkillWrites(before, skillSnapshot(hooks.skillWrites.dirs), hooks.skillWrites, toolCallId);
@@ -186,6 +232,10 @@ export const bashTool = (
 				timed_out: result.timedOut || undefined,
 				truncated: truncated || undefined,
 				output,
+				...(runtime && runtime.outputCalls().length > 0 ? { calls: runtime.outputCalls() } : {}),
 			};
 		},
 	});
+	bashToolRef = tool;
+	return tool;
+};

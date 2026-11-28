@@ -19,6 +19,7 @@ export interface ToolPolicy {
 	composes: boolean;
 	// Callable from inside a `script`.
 	scriptable: boolean;
+	command: boolean;
 	// Mounted for the sandboxed guest persona (the sandbox ruling: search only).
 	guestSandbox: boolean;
 	// Mounted on guest-channel turns for a non-sandbox persona.
@@ -30,6 +31,7 @@ export const CONSERVATIVE_POLICY: ToolPolicy = {
 	output: "untrusted",
 	composes: false,
 	scriptable: false,
+	command: false,
 	guestSandbox: false,
 	guestChannel: false,
 };
@@ -39,6 +41,7 @@ const BASE: ToolPolicy = {
 	output: "trusted",
 	composes: false,
 	scriptable: false,
+	command: false,
 	guestSandbox: false,
 	guestChannel: true,
 };
@@ -75,27 +78,27 @@ export const TOOL_NAMES = [
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
-	bash: P({ scriptable: true }),
-	speak: P({ guestChannel: false }),
-	transcribe: P({ scriptable: true }),
+	bash: P({ scriptable: true, composes: true }),
+	speak: P({ guestChannel: false, command: true }),
+	transcribe: P({ scriptable: true, command: true }),
 	vision: P({}),
 	generate_image: P({ guestChannel: false }),
-	program: P({ guestChannel: false }),
-	watch: P({}),
-	post: P({ guestChannel: false }),
+	program: P({ guestChannel: false, command: true }),
+	watch: P({ command: true }),
+	post: P({ guestChannel: false, command: true }),
 	delegate: P({ guestChannel: false }),
-	mail: P({ guestChannel: false }),
+	mail: P({ guestChannel: false, command: true }),
 	send_file: P({ guestChannel: false }),
 	artifact: P({ scriptable: true }),
-	memory_search: P({ replay: "safe", scriptable: true, guestChannel: false }),
-	memory_reflect: P({ guestChannel: false }),
+	memory_search: P({ replay: "safe", scriptable: true, guestChannel: false, command: true }),
+	memory_reflect: P({ guestChannel: false, command: true }),
 	fetch: P({ output: "untrusted", scriptable: true }),
 	search: P({ output: "untrusted", scriptable: true, guestSandbox: true }),
 	// Provider-executed (codex hosted search): the model runs it, so a script
 	// cannot call it; guests keep it exactly like local search.
 	web_search: P({ output: "untrusted", guestSandbox: true }),
-	history_search: P({ replay: "safe", scriptable: true, guestChannel: false }),
-	note: P({ guestChannel: false }),
+	history_search: P({ replay: "safe", scriptable: true, guestChannel: false, command: true }),
+	note: P({ guestChannel: false, command: true }),
 	sandbox: P({ scriptable: true }),
 	desktop: P({ guestChannel: false }),
 	ui: P({}),

@@ -39,6 +39,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
+import { withGoblinCommands } from "./tools/goblin-channel.ts";
 import { promptHasProject } from "./prompt.ts";
 import { noteHistoryAvailable } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
@@ -159,6 +160,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				: undefined,
 			cwd: workdir,
 			bashDescriptionCwd,
+			commands: configRef.current.commands !== undefined,
 			...(deps.noteSkillRead !== undefined || deps.noteSkillWrite !== undefined
 				? {
 						onRead: deps.noteSkillRead,
@@ -357,7 +359,10 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			});
 		}
 		// Guest mode: hard toolset exclusion after assembly.
-		const filtered = filterGuests(conv, surfaced);
+		const guestFiltered = filterGuests(conv, surfaced);
+		const filtered = configRef.current.commands !== undefined
+			? withGoblinCommands(guestFiltered, conv.id)
+			: guestFiltered;
 		// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
 		const scripting = configRef.current.scripting;
 		return scripting

@@ -371,9 +371,14 @@ export function ensureConversationSchema(db: Database): void {
 				question TEXT NOT NULL,
 				options TEXT NOT NULL,
 				created_at TEXT NOT NULL,
+				operator_only INTEGER NOT NULL DEFAULT 0,
 				closed_at TEXT,
 				closed_by TEXT CHECK (closed_by IN ('goblin','tap','dismiss'))
 			)`);
+	const askCols = db.query<{ name: string }, []>("PRAGMA table_info(asks)").all();
+	if (!askCols.some((column) => column.name === "operator_only")) {
+		db.run("ALTER TABLE asks ADD COLUMN operator_only INTEGER NOT NULL DEFAULT 0");
+	}
 	db.run("CREATE INDEX IF NOT EXISTS asks_conversation_closed ON asks(conversation_id, closed_at)");
 	// Manual DM navigation is additive. The presence of the link column
 	// is the one-time migration marker: never rebuild links on later boots,

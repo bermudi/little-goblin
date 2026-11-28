@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { buildLearnPrompt } from "../learn.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
@@ -31,6 +32,7 @@ import { appConversationSink } from "./app-sse.ts";
 import type { AppRollResponse, AppTtsResponse } from "./app-wire.ts";
 import { TOOLS_PART } from "../agent/tool-declarations.ts";
 import { INSERTS_PART } from "../agent/turn-inserts.ts";
+import { HANDOVER_OPERATOR_PART, HANDOVER_PART, HANDOVER_STOP_PART, HANDOVER_WORK_PART, isHandoverCard } from "../handover-message.ts";
 
 const conversationIdSchema = z
 	.string()
@@ -67,7 +69,11 @@ const chatBody = z
 							// is persisted, then fails every later turn at
 							// standardizePrompt — the poison-pill shape the
 							// boundary must refuse before persistence.
-							if (p.type === TOOLS_PART || p.type === INSERTS_PART || p.type === CHAT_NOTE_NOTICE_PART) {
+							if (
+								p.type === TOOLS_PART || p.type === INSERTS_PART || p.type === CHAT_NOTE_NOTICE_PART ||
+								p.type === HANDOVER_PART || p.type === HANDOVER_STOP_PART ||
+								p.type === HANDOVER_OPERATOR_PART || p.type === HANDOVER_WORK_PART
+							) {
 								ctx.addIssue({
 									code: "custom",
 									path: [i, "type"],
@@ -386,6 +392,9 @@ export async function handleChatRoute(
 				);
 			}
 			const lastUser = store.lastEntry(convId, "user") ?? undefined;
+			if (lastUser !== undefined && isHandoverCard(lastUser.message.parts)) {
+				return Response.json({ error: "A bot's handover cannot be retried as an operator message." }, { status: 409, headers: NO_STORE });
+			}
 			if (lastUser === undefined) {
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
@@ -423,6 +432,7 @@ export async function handleChatRoute(
 		}
 
 		const message = parsed.data.message!;
+		message.parts.push({ type: HANDOVER_OPERATOR_PART, data: randomUUID() });
 
 		// /learn, the app door: a leading "/learn" text part rewrites to
 		// the builder output — the same prompt the Telegram command

@@ -28,6 +28,7 @@ export interface WatchToolDeps {
 	showThread(thread: string, messages: number): Promise<T3ShowResult | null>;
 	readPr(repository: string, number: number): Promise<PrSnapshot>;
 	now(): Date;
+	handoverRoots?(): readonly string[];
 }
 
 export function watchTool(deps: WatchToolDeps) {
@@ -69,6 +70,7 @@ export function watchTool(deps: WatchToolDeps) {
 				target,
 				reason: parsed.reason!,
 				baseline,
+				...(deps.handoverRoots === undefined ? {} : { handoverRoots: deps.handoverRoots() }),
 			});
 			return { id: watch.id, target: watch.target, baseline: watch.baseline };
 		},

@@ -45,6 +45,9 @@ import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { Posts } from "../posts.ts";
 import type { Asks } from "../asks.ts";
+import type { Handovers } from "../handovers.ts";
+import { handoverAvailable, handoverTool } from "./tools/handover.ts";
+import { LITTLE_GOBLIN_BOT_ID } from "../bots.ts";
 import type { GitHub } from "../github.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
@@ -83,6 +86,7 @@ export interface TurnToolsDeps {
 	watches: Watches;
 	posts: Pick<Posts, "add">;
 	asks: Pick<Asks, "open" | "listOpen" | "close">;
+	handovers?: Handovers;
 	github: GitHub;
 	agents: AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
@@ -126,7 +130,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile) => {
+	return (conv, deliverVoice, recording, deliverFile, context) => {
 		const snapshot = store.promptSnapshot(conv.id);
 		const provider = conv.model === null
 			? undefined
@@ -138,6 +142,8 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
 		const channel = channelOf(conv.id);
+		const handovers = channel === "app" && conv.persona === "personal" &&
+			conv.agentType === null && conv.parentId === null ? deps.handovers : undefined;
 		const workdir = projectWorkdir(projects, conv);
 		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
 		const delegate = delegateDeps(conv, workdir);
@@ -152,6 +158,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				showThread: (thread, messages) => deps.t3.showThread(thread, messages),
 				readPr: (repository, number) => deps.github.readPr(repository, number),
 				now: deps.now,
+				...(handovers !== undefined && context !== undefined
+					? { handoverRoots: () => handovers.rootsOf({ source: conv, ...context }) }
+					: {}),
 			},
 			post: { posts: deps.posts, conversationId: conv.id },
 			ask: channel === "app" && conv.agentType === null
@@ -246,7 +255,12 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				store,
 				conversationId: conv.id,
 				isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
-				botIdFor: (id) => store.bots.membership(id)?.botId ?? null,
+				botIdFor: (id) => {
+					const direct = store.bots.membership(id);
+					const parent = direct === null ? store.get(id)?.parentId ?? null : null;
+					const owner = direct?.botId ?? (parent === null ? null : store.bots.membership(parent)?.botId ?? null);
+					return owner === LITTLE_GOBLIN_BOT_ID ? null : owner;
+				},
 			},
 			// Guests are excluded by the filter below, never by dep absence.
 			note: {
@@ -321,6 +335,11 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			// App turns only — Telegram and guests render plain text.
 			ui: channel === "app",
 		});
+		if (
+			handovers !== undefined && context !== undefined && handoverAvailable(snapshot, provider?.kind)
+		) {
+			tools.handover = handoverTool(handovers, conv, context);
+		}
 		// Native subagents (design/agents.md → agent). A child
 		// conversation gets its spawn-time allowlist instead of the agent
 		// tool — depth is 1. A parent gets the tool with the types read

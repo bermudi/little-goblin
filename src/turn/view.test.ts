@@ -17,6 +17,7 @@ import {
 } from "../agent/tool-declarations.ts";
 import { INSERTS_PART } from "../agent/turn-inserts.ts";
 import { setLogFile } from "../log.ts";
+import { HANDOVER_PART, HANDOVER_STOP_PART, HANDOVER_OPERATOR_PART } from "../handover-message.ts";
 import type { RecallContext } from "../memory/mod.ts";
 import {
 	buildModelView,
@@ -88,6 +89,29 @@ const build = async (
 	});
 
 describe("the model view", () => {
+	test("an arriving handover appends instead of merging with the previous user input", async () => {
+		const first = user("operator", "A request from the operator");
+		const tagged = { ...first, parts: [...first.parts, { type: HANDOVER_OPERATOR_PART, data: "root" } as const] };
+		const receipt: Message = {
+			id: "received", role: "user",
+			parts: [
+				{ type: HANDOVER_PART, data: { direction: "received", from: "One", to: "Two", request: "Draft", chains: ["root"] } },
+				{ type: "text", text: "A request from a bot, not the operator" },
+			],
+		};
+		const sent: Message = { id: "sent", role: "system", parts: [{ type: HANDOVER_PART, data: {} }] };
+		const paused: Message = {
+			id: "paused", role: "system",
+			parts: [{ type: HANDOVER_STOP_PART, data: { askId: 1, question: "What's next?" } }],
+		};
+		const prefix = await build(entries([first]));
+		expect(await build(entries([tagged]))).toEqual(prefix);
+		const view = await build(entries([tagged, sent, paused, receipt, user("next", "Next input")]));
+		expect(view.slice(0, prefix.length)).toEqual(prefix);
+		expect(view).toHaveLength(prefix.length + 2);
+		expect(texts(view.slice(prefix.length))).toEqual(["A request from a bot, not the operator", "Next input"]);
+	});
+
 	test("splitting a two-step assistant reply preserves conversion and drops its data-only head", async () => {
 		const reply = {
 			id: "a-split",

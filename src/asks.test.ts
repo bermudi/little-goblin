@@ -8,7 +8,7 @@ function rig() {
 	db.run("CREATE TABLE app_rolls (n INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL)");
 	db.run(`CREATE TABLE asks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, question TEXT NOT NULL,
-		options TEXT NOT NULL, created_at TEXT NOT NULL, closed_at TEXT,
+		options TEXT NOT NULL, created_at TEXT NOT NULL, closed_at TEXT, operator_only INTEGER NOT NULL DEFAULT 0,
 		closed_by TEXT CHECK (closed_by IN ('goblin','tap','dismiss'))
 	)`);
 	for (const id of ["app/one", "app/two", "app/three", "app/archived"]) {
@@ -47,11 +47,16 @@ test("asks open, list oldest first, close, and refuse invalid questions or optio
 });
 
 test("the tenth open question is allowed and the eleventh says to close one first", () => {
-	const { asks } = rig();
+	const { db, asks } = rig();
 	for (let index = 0; index < 10; index += 1) {
 		expect(asks.open({ conversationId: "app/one", question: `Question ${index}` })).not.toHaveProperty("error");
 	}
 	expect(asks.open({ conversationId: "app/one", question: "Too many" })).toMatchObject({ error: expect.stringContaining("Close one first") });
+	const required = asks.openRequired({ conversationId: "app/one", question: "What should the bot do next?" });
+	expect(asks.openForAttention().map((ask) => ask.id)).toContain(required.id);
+	expect(asks.close(required.id, "goblin", "app/one")).toBe("out-of-scope");
+	expect(asks.close(required.id, "dismiss")).toBe("closed");
+	db.close();
 });
 
 test("closing respects roll scope but a roll can close an older roll ask", () => {

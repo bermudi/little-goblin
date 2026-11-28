@@ -1,6 +1,8 @@
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { z } from "zod";
+import { HANDOVER_OPERATOR_PART } from "../handover-message.ts";
 import { log } from "../log.ts";
+import type { Message } from "../message.ts";
 import { within } from "../timing.ts";
 import { appSseWriter, eventStream } from "./app-sse.ts";
 import {
@@ -13,6 +15,10 @@ import type { AppCompactResponse, AppStopResponse } from "./app-wire.ts";
 import type { AppConversationEvent } from "./app-wire.ts";
 
 const EVENT_KEEPALIVE_MS = 25_000;
+
+function pendingMessage(message: Message): Message {
+	return { ...message, parts: message.parts.filter((part) => part.type !== HANDOVER_OPERATOR_PART) };
+}
 
 const compactBody = z
 	.object({
@@ -77,7 +83,7 @@ export async function handleTurnsRoute(
 				items: runtime.listPending(convId.id).map(({ id, mode, message, createdAt, status }) => ({
 					id,
 					mode,
-					message,
+					message: pendingMessage(message),
 					createdAt,
 					status,
 				})),
@@ -107,7 +113,7 @@ export async function handleTurnsRoute(
 			if (message === null) {
 				return Response.json({ error: "already taken" }, { status: 409, headers: NO_STORE });
 			}
-			return Response.json({ message }, { headers: NO_STORE });
+			return Response.json({ message: pendingMessage(message) }, { headers: NO_STORE });
 		} catch (err) {
 			log.error("app pending dequeue failed", err, {
 				conversation: convId.id,
@@ -138,7 +144,10 @@ export async function handleTurnsRoute(
 				waitedMs,
 			});
 		}
-		const body: AppStopResponse = { stopped, settled, notSent };
+		const body: AppStopResponse = {
+			stopped, settled,
+			notSent: notSent.map(({ id, message }) => ({ id, message: pendingMessage(message) })),
+		};
 		return Response.json(body, { headers: NO_STORE });
 	}
 

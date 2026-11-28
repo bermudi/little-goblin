@@ -406,6 +406,28 @@ const server = Bun.serve({
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		const sendHandover = /\[handover ([^|\]]+)\|([^\]]+)\]/.exec(lastUserText);
+		const loopHandover = lastUserText.includes("[handover-loop]");
+		if (sendHandover !== null || loopHandover) {
+			const results = parsed.data.messages.slice(lastUserIndex + 1).filter((message) => message.role === "tool");
+			if (results.length === 0) {
+				return toolCallResponse("handover", { action: "list" }, parsed.data.stream === true, "verify-handover-list");
+			}
+			if (results.length === 1) {
+				const list = z.array(z.object({ id: z.string(), name: z.string() }))
+					.safeParse(toolJson(results[0]?.content)?.bots);
+				const to = list.data?.find((bot) => sendHandover === null || bot.name === sendHandover[1]?.trim());
+				if (to !== undefined) {
+					return toolCallResponse("handover", {
+						action: "send", to: to.id, request: sendHandover?.[2]?.trim() ?? "Pass this along. [handover-loop]",
+					}, parsed.data.stream === true, "verify-handover-send");
+				}
+			}
+			const status = toolJson(results.at(-1)?.content)?.status;
+			reply = status === "sent" ? "Handover sent." : status === "paused" ? "Waiting for the operator." : "Handover not sent.";
+		} else if (lastUserText.startsWith("<bot_handover>")) {
+			reply = "Received the handover.";
+		}
 		if (lastUserText.includes("[note-card]")) {
 			reply = "```note title=\"Parts list\"\nVerification note.\n```";
 		}

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { inputJsonSchema, isHosted } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config-schema.ts";
+import type { Conversation } from "../../conversation-read.ts";
 import { TOOL_NAMES } from "../tool-policy.ts";
 import { withScript } from "./script.ts";
 import { HindsightClient } from "../../memory/hindsight.ts";
@@ -23,6 +24,7 @@ import {
 } from "./mod.ts";
 import type { WatchToolDeps } from "./watch.ts";
 import type { PostToolDeps } from "./post.ts";
+import { handoverTool } from "./handover.ts";
 
 const programs = {} as unknown as ProgramsStore;
 const memoryClient = {} as unknown as HindsightClient;
@@ -198,6 +200,16 @@ describe("toolNames ↔ makeTools", () => {
 			post: {} as unknown as PostToolDeps,
 			ask: { asks: {} as never, conversationId: "c" },
 			ui: true,
+		});
+		tools.handover = handoverTool({
+			ownerOf: () => "little-goblin",
+			rootsOf: () => [],
+			list: () => [],
+			send: () => ({ status: "sent" }),
+		}, { id: "app/chat" } as Conversation, {
+			runId: "schema-test",
+			inputSeqs: () => new Set<number>(),
+			sourceInputSeq: () => null,
 		});
 		// Policy exhaustiveness, both ways: a mounted tool without a
 		// TOOL_POLICY row fails here, and so does a TOOL_NAMES entry

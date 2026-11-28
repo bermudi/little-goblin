@@ -885,6 +885,13 @@ export class Runtime {
 					? undefined
 					: { conversation: recovery.conversation, startedAt: recovery.startedAt },
 			);
+			if (admitted.kind === "admitted" && recovery === undefined) {
+				const { anchorSeq, entries, ownedInputSeqs } = admitted.snapshot;
+				if (anchorSeq !== null && ownedInputSeqs.includes(anchorSeq)) {
+					const anchor = entries.findLast((entry) => entry.seq === anchorSeq && entry.message.role === "user");
+					if (anchor !== undefined) anchor.message = store.chatNotePins.capture(convId, anchor.seq, anchor.message);
+				}
+			}
 		} catch (err) {
 			announcePreRunFailure(err);
 			throw err;

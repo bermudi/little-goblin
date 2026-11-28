@@ -55,6 +55,24 @@ then change the note again and check that the next history row has that reason.
 sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" 'select rev, author_bot_id, what, reason from note_edits order by note_id, rev'
 ```
 
+## Chat pins
+
+Create a fake note with a distinctive title and body. Send a message to
+start a roll, open **Notes** in the chat header, and search for that note.
+Pin it and check the header count. Send another message and check the
+model request or its stored input for the pin notice. The title, ID, and
+revision appear there. The distinctive body is absent.
+
+Edit the note with a reason and return to the chat. Under **Notes**, expand
+the note's update details. Send a message, then send another without editing.
+The first new input has the actor, change, and reason. The second has no new
+notice. Previous input retains its prior notices. Unpin from the panel and
+check that the next input reports it once. Pin again, then archive the note
+and check for the unavailable notice and the cleared count. Restore the note
+and pin it again. Use the [rolling journey](rolling.md) to start another roll
+and confirm its count is empty. An ordinary chat keeps a separate pin list.
+At phone width **Notes** opens a sheet.
+
 ## Gotchas
 
 Saving isn't instant, so wait before reading the row.

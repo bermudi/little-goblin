@@ -5,6 +5,7 @@ import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
 import { ensureClaudeSessionsSchema } from "./claude-sessions.ts";
 import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
+import { ensureChatNotePinsSchema } from "./chat-note-pins.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { ensureRatingsSchema } from "./reply-ratings.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
@@ -127,6 +128,7 @@ export function ensureConversationSchema(db: Database): void {
 				memory_eligible INTEGER NOT NULL DEFAULT 0,
 				UNIQUE(conversation_id, seq)
 			)`);
+	ensureChatNotePinsSchema(db);
 	if (!convCols.has("read_seq")) {
 		db.transaction(() => {
 			db.run("ALTER TABLE conversations ADD COLUMN read_seq INTEGER NOT NULL DEFAULT 0");

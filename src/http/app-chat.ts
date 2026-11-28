@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { buildLearnPrompt } from "../learn.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
+import { CHAT_NOTE_NOTICE_PART } from "../chat-note-pins.ts";
 import {
 	ATTACHMENT_PART,
 	attachmentRefSchema,
@@ -61,7 +62,7 @@ const chatBody = z
 							// is persisted, then fails every later turn at
 							// standardizePrompt — the poison-pill shape the
 							// boundary must refuse before persistence.
-							if (p.type === TOOLS_PART || p.type === INSERTS_PART) {
+							if (p.type === TOOLS_PART || p.type === INSERTS_PART || p.type === CHAT_NOTE_NOTICE_PART) {
 								ctx.addIssue({
 									code: "custom",
 									path: [i, "type"],

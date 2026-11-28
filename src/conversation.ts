@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { Message } from "./message.ts";
+import { openChatNotePins, type ChatNotePins } from "./chat-note-pins.ts";
 import { z } from "zod";
 import { type BotStore, makeBotStore } from "./bots.ts";
 import { type Config, splitModelRef } from "./config-schema.ts";
@@ -90,6 +91,7 @@ export interface ConversationStore extends ConversationReads {
 	// Shared handle — the memory/outage modules each own tables in this file.
 	readonly db: Database;
 	readonly bots: BotStore;
+	readonly chatNotePins: ChatNotePins;
 	readonly memoryQueue: MemoryQueue;
 	readonly memoryContexts: MemoryContexts;
 	// Boot records the live endpoint+bank so forget can reconstruct a
@@ -230,6 +232,7 @@ export function openStore(dbPath: string): ConversationStore {
 	db.run("PRAGMA foreign_keys = ON");
 	ensureConversationSchema(db);
 	const bots = makeBotStore(db);
+	const chatNotePins = openChatNotePins(db);
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
 	const memoryDestinations = new MemoryDestinations(db);
@@ -299,6 +302,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const transcript = makeConversationTranscript(db, queries, {
 		memoryQueue,
 		bots,
+		chatNotePins,
 		bump,
 		messageEvent: historyView.messageEvent,
 	});
@@ -371,6 +375,7 @@ export function openStore(dbPath: string): ConversationStore {
 	return {
 		db,
 		bots,
+		chatNotePins,
 		memoryQueue,
 		memoryContexts,
 		memoryDestinations,

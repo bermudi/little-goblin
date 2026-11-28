@@ -82,6 +82,148 @@ import type { ScriptCall, ScriptedModel } from "./testkit/turn-script.ts";
 const engines = [sdkScript, claudeScript] as const;
 const engineName = (make: (typeof engines)[number]) => make === sdkScript ? "ai-sdk" : "claude-code";
 
+test("chat note pins add durable tail notices without resending the note", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 8; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("note-pins") });
+	const notes = openNotes(store, { projects: openProjects(store) });
+	const note = notes.create({ title: "Reading list", body: "the note body marker" });
+	async function turn(text: string) {
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		return script.requests().at(-1)!;
+	}
+	try {
+		const first = await turn("Before pinning");
+		const prior = store.lastEntry(conv.id, "user")!;
+		expect(store.chatNotePins.set(conv.id, note.id, true)).toBe(true);
+		const pinned = await turn("What is pinned?");
+		expect(pinned.startsWith(first.slice(0, -1))).toBe(true);
+		expect(pinned).toContain("Note pinned.");
+		expect(pinned).toContain(note.id);
+		expect(pinned).toContain("revision 1");
+		expect(pinned).not.toContain("the note body marker");
+		expect(store.lastEntry(conv.id, "user")?.seq).not.toBe(prior.seq);
+		expect(store.historyEntries(conv.id).find(({ seq }) => seq === prior.seq)?.message).toEqual(prior.message);
+
+		notes.write(note.id, { body: "updated note body marker" }, "app", { reason: "Finished the book" });
+		notes.write(note.id, { title: "Books" }, "app");
+		notes.write(note.id, { body: "another note body marker" }, "agent", {
+			conversation: conv.id, what: "Added a recommendation", reason: "For the next meeting",
+		});
+		const edited = await turn("Show the changes");
+		expect(edited.startsWith(pinned.slice(0, -1))).toBe(true);
+		expect(edited).toContain("revision 2");
+		expect(edited).toContain("Finished the book");
+		expect(edited).toContain("revision 3");
+		expect(edited).toContain("Edited the title");
+		expect(edited).toContain("Little Goblin");
+		expect(edited).toContain("Added a recommendation");
+		expect(edited).toContain("For the next meeting");
+		expect(edited).not.toContain("updated note body marker");
+		const quiet = await turn("Carry on");
+		expect(quiet.split("Chat note updates")).toHaveLength(3);
+		notes.write(note.id, { body: "body marker before unpin" }, "app", { reason: "Before unpinning" });
+		expect(store.chatNotePins.set(conv.id, note.id, false)).toBe(true);
+		notes.write(note.id, { body: "body marker after unpin" }, "app", { reason: "While not pinned" });
+		const unpinned = await turn("After unpinning");
+		expect(unpinned).toContain("Note unpinned.");
+		expect(unpinned).toContain("Before unpinning");
+		expect(unpinned).not.toContain("While not pinned");
+		expect(store.chatNotePins.set(conv.id, note.id, true)).toBe(true);
+		const repinned = await turn("Pinned again");
+		expect(repinned.split("Note pinned.")).toHaveLength(3);
+
+		notes.setArchived(note.id, true);
+		notes.setArchived(note.id, false);
+		const lost = await turn("After the restore");
+		expect(lost).toContain("is no longer available");
+		expect(store.chatNotePins.view(conv.id, null).pins).toEqual([]);
+		const after = await turn("Carry on again");
+		expect(after.split("is no longer available")).toHaveLength(2);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("an unannounced chat note pin produces no edits or unpin notice", async () => {
+	const script = sdkScript();
+	script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("pin-cancel") });
+	const notes = openNotes(store, { projects: openProjects(store) });
+	try {
+		const note = notes.create({ title: "Cancelled pin" });
+		store.chatNotePins.set(conv.id, note.id, true);
+		notes.write(note.id, { body: "Changed between pin and unpin" }, "app", { reason: "While pinned briefly" });
+		store.chatNotePins.set(conv.id, note.id, false);
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "Continue" }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		expect(script.requests().at(-1)).not.toContain("Chat note updates");
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("re-pinning after a restore identifies the previously announced lost note", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 3; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("pin-restore") });
+	const notes = openNotes(store, { projects: openProjects(store) });
+	async function turn(text: string) {
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		const notice = store.lastEntry(conv.id, "user")?.message.parts.find((part) => part.type === "data-chat-note-notices");
+		return notice && "data" in notice ? notice.data : undefined;
+	}
+	try {
+		const note = notes.create({ title: "Restored pin" });
+		store.chatNotePins.set(conv.id, note.id, true);
+		expect(await turn("Announce pin")).toContain(note.id);
+		notes.setArchived(note.id, true);
+		notes.setArchived(note.id, false);
+		store.chatNotePins.set(conv.id, note.id, true);
+		const notices = await turn("After re-pin");
+		expect(notices).toContain(`Note "${note.id}" is no longer available.`);
+		expect(notices).toContain(`Note pinned. "Restored pin" (${note.id})`);
+		expect(await turn("Continue")).toBeUndefined();
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
+test("binding a chat to a project loses a Little Goblin pin even if the note turns Global", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 2; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("pin-bind") });
+	const projects = openProjects(store);
+	const notes = openNotes(store, { projects });
+	async function turn(text: string) {
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		const notice = store.lastEntry(conv.id, "user")?.message.parts.find((part) => part.type === "data-chat-note-notices");
+		return notice && "data" in notice ? notice.data : undefined;
+	}
+	try {
+		const note = notes.create({ title: "Goblin pin" });
+		store.chatNotePins.set(conv.id, note.id, true);
+		expect(await turn("Announce pin")).toContain(note.id);
+		store.bindProject(conv.id, projects.create({ name: "Bound Project" }).id);
+		notes.batch([{ id: note.id, stateRev: notes.get(note.id)!.stateRev }], { action: "move", owner: { botId: null } });
+		expect(await turn("After bind")).toContain(`Note "${note.id}" is no longer available.`);
+		expect(store.chatNotePins.view(conv.id, null).pins).toEqual([]);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
 

@@ -13,6 +13,7 @@ import { inlineMentions, skillMarkerText, tempSkillMarkerText } from "../inline-
 import { messageText, type RecallContext, withMemoryBlocks } from "../memory/mod.ts";
 import { CONTEXT_PART, contextPartDataSchema, contextText } from "../message-context.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
+import { CHAT_NOTE_NOTICE_PART } from "../chat-note-pins.ts";
 import {
 	SKILL_PART,
 	isTempSkillRef,
@@ -92,10 +93,13 @@ function contextPartAsText(ctx: ViewContext, m: Message): Message {
 }
 
 function notePartsAsText(ctx: ViewContext, m: Message): Message {
-	if (!m.parts.some((p) => p.type === NOTE_PART)) return m;
+	if (!m.parts.some((p) => p.type === NOTE_PART || p.type === CHAT_NOTE_NOTICE_PART)) return m;
 	return {
 		...m,
 		parts: m.parts.map((p) => {
+			if (p.type === CHAT_NOTE_NOTICE_PART && typeof p.data === "string") {
+				return { type: "text" as const, text: p.data };
+			}
 			if (p.type !== NOTE_PART) return p;
 			const parsed = notePartDataSchema.safeParse((p as { data?: unknown }).data);
 			if (!parsed.success) {

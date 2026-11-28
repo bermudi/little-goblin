@@ -64,6 +64,7 @@ import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NoteView } from "./NoteView.tsx";
 import { NotesIndex } from "./NotesIndex.tsx";
+import { ChatNotePins } from "./chat/ChatNotePins.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import {
@@ -882,7 +883,11 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		onError: setRowError,
 	});
 	const widthChoice = !phone && !columnCramped;
-	const chatTools = page === "chat" && (current !== null || widthChoice);
+	const notesChat = page === "rolling" && rollingId === rollingCurrent?.id
+		? rollingId
+		: page === "chat" && !currentConv?.archivedAt ? current : null;
+	const chatToolsId = page === "rolling" ? notesChat : page === "chat" ? current : null;
+	const chatTools = chatToolsId !== null || (page === "chat" && widthChoice);
 	const headerActions =
 		currentConv === undefined
 			? null
@@ -1368,17 +1373,21 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 					<div className="header-tools">
+					{notesChat !== null && (
+						<ChatNotePins key={notesChat} token={token} conversationId={notesChat}
+							phone={phone} rolling={page === "rolling"} onOpenNote={openNote} />
+					)}
 					{chatTools && (
 						<Menu onAction={(value) => {
-							if (current === null) return;
-							if (value === "context") openWindow(current);
+							if (chatToolsId === null) return;
+							if (value === "context") openWindow(chatToolsId);
 							else if (value === "sources") setSourcesOpen(true);
 						}}>
 							<MenuTrigger className="header-action" aria-label="Chat tools" title="Chat tools"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></MenuTrigger>
 							<MenuContent className="title-menu">
-								{current !== null && <MenuItem value="context">Context window</MenuItem>}
-								{current !== null && <MenuItem value="sources">From this thread</MenuItem>}
-								{widthChoice && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}
+								{chatToolsId !== null && <MenuItem value="context">Context window</MenuItem>}
+								{chatToolsId !== null && <MenuItem value="sources">From this thread</MenuItem>}
+								{page === "chat" && widthChoice && <MenuCheckboxItem value="wide" checked={chatWidth === "wide"} onCheckedChange={(checked) => setChatWidth(checked ? "wide" : "narrow")}>Wide column</MenuCheckboxItem>}
 							</MenuContent>
 						</Menu>
 					)}
@@ -1919,11 +1928,12 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					</DrawerContent>
 				</Drawer>
 			)}
-			{page === "chat" && sourcesOpen && current !== null && (
+			{sourcesOpen && chatToolsId !== null && (
 				<ThreadSourcesSheet
+					key={chatToolsId}
 					token={token}
-					conversationId={current}
-					title={currentTitle}
+					conversationId={chatToolsId}
+					title={page === "rolling" ? "Little Goblin" : currentTitle}
 					onClose={() => setSourcesOpen(false)}
 				/>
 			)}

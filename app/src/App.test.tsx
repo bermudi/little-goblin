@@ -6099,6 +6099,39 @@ describe("chat width selector", () => {
 	const wideItem = () =>
 		[...container.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((item) => item.textContent?.includes("Wide column"));
 
+	test("chat note pins use the header panel and update its count", async () => {
+		const fallback = globalThis.fetch;
+		const note = { id: "reading", title: "Reading list", rev: 2, owner: "Little Goblin" };
+		const writes: { noteId: string; pinned: boolean }[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			if (typeof input !== "string" || !input.startsWith("/api/app/conversations/fixture/note-pins")) {
+				return fallback(input, init);
+			}
+			if (init?.method === "PATCH") {
+				expect(new Headers(init.headers).get("content-type")).toBe("application/json");
+				writes.push(JSON.parse(String(init.body)) as { noteId: string; pinned: boolean });
+			}
+			return Promise.resolve(jsonResponse({
+				pins: writes.at(-1)?.pinned ? [{ ...note, changes: [] }] : [],
+				matches: input.includes("?q=") ? [note] : [],
+				truncated: false,
+			}));
+		}) as typeof fetch;
+		await mount();
+		const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+		const trigger = button("Notes");
+		expect(trigger?.nextElementSibling).toBe(button("Chat tools"));
+		await act(async () => trigger?.click());
+		await settle();
+		await act(async () => button("Pin Reading list")?.click());
+		await settle();
+		expect(button("Notes, 1 pinned")).not.toBeNull();
+		await act(async () => button("Unpin Reading list")?.click());
+		await settle();
+		expect(button("Notes")).not.toBeNull();
+		expect(writes).toEqual([{ noteId: "reading", pinned: true }, { noteId: "reading", pinned: false }]);
+	});
+
 	test("the chat tools menu flips the width, and the choice survives a remount", async () => {
 		await mount();
 		expect(container.querySelector("main > header h1")?.className).toBe("sr-only");

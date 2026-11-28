@@ -304,6 +304,31 @@ export async function handleConversationsRoute(
 	now: () => number = Date.now,
 ): Promise<Response | null> {
 	const path = url.pathname;
+	const pins = path.match(/^\/api\/app\/conversations\/([^/]+)\/note-pins$/);
+	if (pins !== null && (req.method === "GET" || req.method === "PATCH")) {
+		const address = conversationFromSegment(pins[1]!);
+		if (address instanceof Response) return address;
+		const { id } = address;
+		const query = req.method === "GET" ? url.searchParams.get("q") : null;
+		if (query !== null && query.length > 500) {
+			return Response.json({ error: "Search is too long" }, { status: 422, headers: NO_STORE });
+		}
+		const active = () => {
+			const conv = deps.store.get(id);
+			return conv !== null && conv.archivedAt === null &&
+				(!deps.store.isAppRoll(id) || deps.store.currentAppRoll()?.id === id);
+		};
+		if (req.method === "PATCH") {
+			const input = await parsedJson(req, z.strictObject({ noteId: z.string().min(1).max(200), pinned: z.boolean() }));
+			if (input instanceof Response) return input;
+			if (!active() || !deps.store.chatNotePins.set(id, input.noteId, input.pinned)) {
+				return Response.json({ error: "Chat or note is no longer available" }, { status: 404, headers: NO_STORE });
+			}
+		} else if (!active()) {
+			return Response.json({ error: "Chat is no longer available" }, { status: 404, headers: NO_STORE });
+		}
+		return Response.json(deps.store.chatNotePins.view(id, query), { headers: NO_STORE });
+	}
 	const { store, runtime } = deps;
 
 	const readMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/read$/);

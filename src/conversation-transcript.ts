@@ -5,6 +5,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { BotStore } from "./bots.ts";
+import type { ChatNotePins } from "./chat-note-pins.ts";
 import { parseEvent } from "./conversation-events.ts";
 import type { Message } from "./message.ts";
 import { log } from "./log.ts";
@@ -47,6 +48,7 @@ export function makeConversationTranscript(
 	deps: {
 		memoryQueue: MemoryQueue;
 		bots: Pick<BotStore, "membership">;
+		chatNotePins: Pick<ChatNotePins, "reanchorRetry">;
 		bump: (id: string, previousEpoch?: number) => number;
 		// The history view's message-id seam: resolve a durable event by
 		// its client message id before the rewind decides its fate.
@@ -67,7 +69,7 @@ export function makeConversationTranscript(
 		qDeleteWindows,
 		qDeleteClaudeSessions,
 	} = queries;
-	const { memoryQueue, bots, bump, messageEvent } = deps;
+	const { memoryQueue, bots, chatNotePins, bump, messageEvent } = deps;
 
 	function editUserMessage(id: string, messageId: string, message: Message): MessageEdit | null {
 		let unarchived = false;
@@ -86,6 +88,9 @@ export function makeConversationTranscript(
 			// delete: a rating or journal row addressed past the cut must
 			// never re-bind to the event the edit appends.
 			qRaiseSeqHighwater.run(id);
+			const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
+			const sameInput = original !== null && JSON.stringify(original) === JSON.stringify(message);
+			if (sameInput) chatNotePins.reanchorRetry(id, cut, seq);
 			// The projection sweep reads the events it matches — it runs
 			// before the event delete empties them.
 			const projections = Number(qRewindProjections.run(id, cut).changes);
@@ -98,8 +103,7 @@ export function makeConversationTranscript(
 			const compactions = Number(qRewindCompactions.run(id, cut, cut).changes);
 			const contexts = Number(qRewindContexts.run(id, cut).changes);
 			const ratings = Number(qRewindRatings.run(id, cut).changes);
-			const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
-			if (original === null || JSON.stringify(original) !== JSON.stringify(message)) {
+			if (!sameInput) {
 				stampArrival(id, message, new Date());
 			}
 			qInsertEvent.run(

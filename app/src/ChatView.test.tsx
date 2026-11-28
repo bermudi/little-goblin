@@ -3610,6 +3610,7 @@ describe("ChatView edit and branch", () => {
         },
         { type: "text", text: " please" },
         { type: "data-context", data: { id: "ctx-1", keep: true } },
+        { type: "data-chat-note-notices", data: "Note pinned. Reading list." },
       ],
     };
     globalThis.fetch = Object.assign(

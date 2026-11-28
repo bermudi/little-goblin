@@ -4,7 +4,7 @@ import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { NOTE_BODY_MAX } from "../notes.ts";
 import type { NoteEdit, NoteEditPage } from "../note-edit.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
-import type { AppNote, AppNoteBatch, AppNoteList } from "./app-wire.ts";
+import type { AppNote, AppNoteBatch, AppNoteList, ChatNotePinsView } from "./app-wire.ts";
 
 describe("app notes", () => {
 	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
@@ -26,6 +26,35 @@ describe("app notes", () => {
 		});
 	const create = (call: ReturnType<typeof setup>["call"], body: unknown) =>
 		postJson(call, "/api/app/notes", body);
+
+	test("chat note pins stay in their chat and survive compaction, with a fresh roll empty", async () => {
+		const { http, call, store, projects, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const roll = store.rollApp(configRef.current);
+			const pathFor = (id: string) => `/api/app/conversations/${id.slice(4)}/note-pins`;
+			const path = pathFor(roll.id);
+			const project = projects.create({ name: "Private project" });
+			const privateNote = (await (await create(call, { title: "Reading private", projectId: project.id })).json()) as AppNote;
+			const note = (await (await create(call, { title: "Reading list" })).json()) as AppNote;
+			const list = async (url: string) => await (await call(url)).json() as ChatNotePinsView;
+			expect((await list(`${path}?q=reading`)).matches.map(({ id }) => id)).toEqual([note.id]);
+			expect((await patchJson(call, path, { noteId: privateNote.id, pinned: true })).status).toBe(404);
+			expect((await patchJson(call, path, { noteId: note.id, pinned: true })).status).toBe(200);
+			expect((await list(path)).pins).toMatchObject([{ id: note.id, rev: 1, owner: "Little Goblin" }]);
+
+			const [seq] = store.append(roll.id, [{ id: "before-fold", role: "user", parts: [{ type: "text", text: "Hello" }] }]);
+			store.setCompaction(roll.id, { boundarySeq: seq!, summary: "Summary", tokensBefore: 10, model: "test/fake", createdAt: new Date().toISOString() });
+			expect((await list(path)).pins.map(({ id }) => id)).toEqual([note.id]);
+			const next = store.rollApp(configRef.current);
+			expect((await list(pathFor(next.id))).pins).toEqual([]);
+			expect((await patchJson(call, path, { noteId: note.id, pinned: true })).status).toBe(404);
+			expect((await patchJson(call, pathFor(next.id), { noteId: note.id, pinned: true })).status).toBe(200);
+			expect((await patchJson(call, pathFor(next.id), { noteId: note.id, pinned: false })).status).toBe(200);
+			expect((await list(pathFor(next.id))).pins).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
 
 	test("edit history records every content autosave while restore versions stay grouped", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });

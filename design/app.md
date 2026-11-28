@@ -1557,7 +1557,7 @@ summary. Two doc kinds ride one modal:
   still message-scoped (a card in history), and no separate registry was
   built.
 - **A file read is live and mutable.** Clicking a path chip opens the file
-  as it is *now* — same semantics as `read_file`, deliberately not the
+  as it is *now* — same semantics as reading it with `bash`, deliberately not the
   immutable kind. `GET /api/app/conversations/:id/file?path=` resolves
   inside that conversation's workdir (the workspace, or the bound
   project's dir via `projectWorkdir`) with the box-files realpath

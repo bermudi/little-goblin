@@ -5827,7 +5827,7 @@ test("moving and retiring a project chat keeps its request prefix and tool defin
 		expect(systemTexts[2]?.includes("Ship the thing.")).toBe(true);
 		const before = store.history(conv.id);
 		const plan = previewProjectRetirement(dbPath, [project.id]);
-		applyProjectRetirement(dbPath, [project.id], plan.approval);
+		applyProjectRetirement(dbPath, [project.id], plan.approval, new Date("2026-11-28T07:00:00Z"));
 		const retired = store.get(conv.id)!;
 		expect(retired.projectId).toBeNull();
 		expect(store.history(conv.id)).toEqual(before);

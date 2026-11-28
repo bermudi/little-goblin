@@ -52,7 +52,6 @@ function fixture(
 		steerMarkSeed: 3,
 		ownedInputSeqs: [1],
 		evidence: undefined,
-		skillWatch: undefined,
 		journal,
 		runId: "run-1",
 		saveStep: (patch: unknown) => patches.push(patch),

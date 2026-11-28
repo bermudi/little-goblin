@@ -394,19 +394,6 @@ async function boot() {
 		appDefaults: () => configRef.current,
 	};
 
-	// Turn-write attribution is independent of the reviewer — a manual
-	// skill authored mid-thread is provenance even when reviews are off.
-	// The same seam bumps the usage sidecar's patch counter (a draft
-	// write counts too — the name's engagement is real either way).
-	runtime.setSkillWatch({
-		skillsDir: paths.skills(),
-		proposedDir: paths.skillsProposed(),
-		record: (conversationId, skill) => {
-			skillSources.record(conversationId, skill, "turn");
-			noteSkillPatch(paths.skillUsage(), skill, new Date());
-		},
-	});
-
 	// The bot attaches in the init task kicked after HTTP and the
 	// scheduler stand — everything below boots on tg === null and binds
 	// to the live seams when getMe lands.
@@ -576,13 +563,14 @@ async function boot() {
 		desktops,
 		agents: agentChildren,
 		filterGuests: filterGuestTools,
-		// read_file of a catalog SKILL.md is a use — the curator's clock
-		// (design/skills.md → Self-authoring, /learn, curator). Only the
-		// SKILL.md itself counts: support files ride the body's use.
 		noteSkillRead: (abs) => {
 			const name = skillUnderPath([paths.skills()], abs);
 			if (name === null || abs !== join(paths.skills(), name, "SKILL.md")) return;
 			noteSkillUse(paths.skillUsage(), name, new Date());
+		},
+		noteSkillWrite: (conversationId, skill) => {
+			skillSources.record(conversationId, skill, "turn");
+			noteSkillPatch(paths.skillUsage(), skill, new Date());
 		},
 	});
 	// Every tool owner exists past here; the runtime refuses turns before this.

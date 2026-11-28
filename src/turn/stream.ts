@@ -30,7 +30,6 @@ import { measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
 import { compactTriggerTokens } from "./compact-trigger.ts";
 import { PreemptSignal, transportFailureText } from "./overflow.ts";
-import type { SkillWatch } from "./skill-attribution.ts";
 import type { StepRules } from "./step-rules.ts";
 import { type ForcedKind, type TurnState } from "./state.ts";
 import { convertSteeredMessage, type ViewContext } from "./view.ts";
@@ -393,7 +392,6 @@ export interface StreamDeps<M extends WireMember> {
 	overflowRecoverable: boolean;
 	rules: StepRules;
 	evidence: EvidenceLimits | undefined;
-	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
 	runId: string;
 	saveStep(patch: TurnCheckpointPatch): void;

@@ -38,7 +38,7 @@ export function buildLearnPrompt(request: string): string {
 		"do not stall.",
 		"",
 		"Do this:",
-		"1. Inventory every source with the tools you already have — read_file",
+		"1. Inventory every source with the tools you already have — bash",
 		"   for local files, fetch for URLs, this conversation's history for",
 		'   "what we just did", pasted text as-is. For a large source, map its',
 		"   chapters or major topics; never load a whole corpus into context —",

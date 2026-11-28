@@ -89,7 +89,7 @@ happened, so check current state before asking for the same action again;
 a repeated effectful call collides with the recorded execution only inside
 a continuation (overflow/fallback), where the recovery guard refuses it
 with a labeled `[turn-journal conflict]` naming the historical call ids.
-Safe reads (`read_file`, `history_search`, `memory_search`) just observe
+Safe reads (`history_search`, `memory_search`) just observe
 fresh state.
 
 ## Diagnostics and first-start acceptance

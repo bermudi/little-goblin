@@ -422,51 +422,7 @@ describe("navigation races: late completions", () => {
 		await waitFor(() => container.querySelector(".note-title") !== null, "new note");
 	});
 
-	test("a fenced note chat removes its row without staging the note in a composer", async () => {
-		notes = [noteRow("Shopping")];
-		win.history.replaceState(null, "", "/app/n/n-shopping");
-		await mount();
-		await waitFor(() => container.querySelector(".ProseMirror") !== null, "note editor");
-		const gate = hold();
-		convCreateHold = gate.promise;
-		await click(
-			[...container.querySelectorAll("button")].find(
-				(b) => b.textContent === "Chat with this note",
-			),
-		);
-		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
-		gate.resolve();
-		await settle();
-		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
-		expect(container.querySelector(".composer")!.textContent).not.toContain("Shopping");
-	});
-
-	test("a second chat start while the mint is held mints once — the first id wins", async () => {
-		notes = [noteRow("Shopping")];
-		noteBodies = { "n-shopping": "milk" };
-		win.history.replaceState(null, "", "/app/n/n-shopping");
-		await mount();
-		await waitFor(() => container.querySelector(".ProseMirror") !== null, "the note editor");
-		const chatButton = () =>
-			[...container.querySelectorAll(".note-flags button")].find(
-				(b) => b.textContent === "Chat with this note",
-			) as HTMLButtonElement;
-
-		const gate = hold();
-		convCreateHold = gate.promise;
-		await click(chatButton());
-		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
-		expect(chatButton().disabled).toBe(true);
-		await click(chatButton());
-		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
-		expect(chatButton().disabled).toBe(true);
-
-		gate.resolve();
-		await settle();
-		expect(win.location.pathname).toBe("/app/c/minted");
-	});
-
-	test("a note chat click during a fenced start's held cleanup fails loud, then succeeds once free", async () => {
+	test("a chat start during a fenced start's held cleanup waits, keeps the draft, then mints once free", async () => {
 		notes = [noteRow("Shopping")];
 		noteBodies = { "n-shopping": "milk" };
 		await mount();
@@ -509,21 +465,25 @@ describe("navigation races: late completions", () => {
 		await settle();
 		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
 
-		const chatButton = () =>
-			[...container.querySelectorAll(".note-flags button")].find(
-				(b) => b.textContent === "Chat with this note",
-			) as HTMLButtonElement;
-		await click(chatButton());
-		// The busy start refused loudly — a named error, and no second
-		// mint slipped through.
+		await click(container.querySelector('nav[aria-label="Sidebar"] button[aria-label="New side chat"]'));
+		await settle();
+		await typeInto(composer(), "again", win.HTMLTextAreaElement.prototype);
+		await act(async () => {
+			composer().dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		await settle();
 		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
-		expect(container.querySelector('p.error[role="alert"]')?.textContent).toContain(
-			"still starting",
-		);
+		expect(boxView(composer())?.state.doc.textContent).toBe("again");
 
 		delGate.resolve();
 		await settle();
-		await click(chatButton());
+		await act(async () => {
+			composer().dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
 		await waitFor(() => win.location.pathname === "/app/c/minted", "the chat opens");
 		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(2);
 	});

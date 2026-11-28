@@ -5,7 +5,7 @@ import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { NOTE_BODY_MAX } from "../notes.ts";
 import type { NoteEdit, NoteEditPage } from "../note-edit.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
-import type { AppNote, AppNoteBatch, AppNoteList, ChatNotePinsView } from "./app-wire.ts";
+import type { AppNote, AppNoteBatch, AppNoteList, ChatNotePinCandidates, ChatNotePinsView } from "./app-wire.ts";
 
 describe("app notes", () => {
 	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
@@ -52,6 +52,39 @@ describe("app notes", () => {
 			expect((await patchJson(call, pathFor(next.id), { noteId: note.id, pinned: true })).status).toBe(200);
 			expect((await patchJson(call, pathFor(next.id), { noteId: note.id, pinned: false })).status).toBe(200);
 			expect((await list(pathFor(next.id))).pins).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a new chat is created with its pinned notes, refused notes create nothing, and candidates follow the scope", async () => {
+		const { http, call, store, notes, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = projects.create({ name: "Private project" });
+			const privateNote = notes.create({ title: "Reading private", projectId: project.id });
+			const note = (await (await create(call, { title: "Reading list" })).json()) as AppNote;
+			const archived = (await (await create(call, { title: "Reading old" })).json()) as AppNote;
+			expect((await patchJson(call, `/api/app/notes/${archived.id}`, { archived: true })).status).toBe(200);
+			const candidates = async (query: string) =>
+				((await (await call(`/api/app/note-pin-candidates?${query}`)).json()) as ChatNotePinCandidates).matches.map(({ id }) => id);
+			expect(await candidates("q=reading")).toEqual([note.id]);
+			expect(await candidates("q=")).toEqual([note.id]);
+
+			const created = await postJson(call, "/api/app/conversations", { id: "pinned-chat", pinnedNoteIds: [note.id] });
+			expect(created.status).toBe(201);
+			const pins = (await (await call("/api/app/conversations/pinned-chat/note-pins")).json()) as ChatNotePinsView;
+			expect(pins.pins.map(({ id }) => id)).toEqual([note.id]);
+
+			const refused = await postJson(call, "/api/app/conversations", {
+				id: "refused-chat",
+				pinnedNoteIds: [note.id, privateNote.id, archived.id],
+			});
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toMatchObject({ noteIds: [privateNote.id, archived.id] });
+			expect(store.get("app/refused-chat")).toBeNull();
+			expect(store.get("app/pinned-chat")).not.toBeNull();
+
+			expect((await postJson(call, "/api/app/conversations", { pinnedNoteIds: [note.id, note.id] })).status).toBe(422);
 		} finally {
 			http.stop();
 		}
@@ -619,30 +652,6 @@ describe("app notes", () => {
 			expect((await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status).toBe(200);
 			expect((await call(`/api/app/notes/${note.id}`)).status).toBe(404);
 			expect((await call(`/api/app/notes/${note.id}/versions`)).status).toBe(422);
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("Chat with this note starts in the current owner's side chats", async () => {
-		const { http, call, store, notes } = setup({ token: APP_TOKEN_NAME });
-		try {
-			const main = store.resolve(appAddress("seed-main"), "/w");
-			const converted = store.bots.convertSideChat(main.id, "Workshop", Date.now(), () => false);
-			if (!("bot" in converted)) throw new Error("could not create test bot");
-			const note = notes.create({ title: "Saw repair", body: "Replace the cord." });
-			notes.batch([{ id: note.id, stateRev: note.stateRev }], {
-				action: "move", owner: { botId: converted.bot.id },
-			});
-			const start = (id: string, noteId: string) =>
-				postJson(call, "/api/app/conversations", { id, noteId });
-			expect((await start("unknown-note", "missing")).status).toBe(404);
-			expect(store.get("app/unknown-note")).toBeNull();
-			store.resolve(appAddress("existing-chat"), "/w");
-			expect((await start("existing-chat", note.id)).status).toBe(409);
-			expect(store.bots.membership("app/existing-chat")).toBeNull();
-			expect((await start("from-note", note.id)).status).toBe(201);
-			expect(store.bots.membership("app/from-note")).toEqual({ botId: converted.bot.id, mainOrdinal: null });
 		} finally {
 			http.stop();
 		}

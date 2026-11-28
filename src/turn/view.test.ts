@@ -741,7 +741,7 @@ describe("the steer variant", () => {
 		const view = await convertSteeredMessage(ctx, message);
 		expect(view).toHaveLength(1);
 		expect(texts(view)).toEqual([
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
 			"what is this",
 		]);
 	});
@@ -852,9 +852,9 @@ describe("inline chips in the model view", () => {
 		expect(texts(view)).toEqual([
 			"look at [image 1: a.png] and [file 1: report.pdf] and [note: Budget (id note-1)] plus [skill: deploy] and [skill: deploy] please",
 			"[image 1: a.png]",
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
 			"[file 1: report.pdf]",
-			"[attachment: /w/attachments/report.pdf — application/pdf, 99 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/report.pdf — application/pdf, 99 bytes. Read it with bash.]",
 			'Attached note "Budget" (id note-1, rev 3 as of this message):\n<note id="note-1" rev="3" title="Budget">\nthe note body\n</note>',
 			"[skill: deploy]",
 		]);
@@ -912,7 +912,7 @@ describe("inline chips in the model view", () => {
 		});
 		expect(texts(view)).toEqual([
 			"see this",
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
 			'Attached note "Budget" (id note-1, rev 3 as of this message):\n<note id="note-1" rev="3" title="Budget">\nthe note body\n</note>',
 			"[skill: deploy]",
 		]);
@@ -959,7 +959,7 @@ describe("inline chips in the model view", () => {
 		expect(texts(view)).toEqual([
 			"a [image 1: a.png] twice [image 1: a.png]ok",
 			"[image 1: a.png]",
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
 		]);
 	});
 
@@ -1003,9 +1003,9 @@ describe("inline chips in the model view", () => {
 		expect(texts(view)).toEqual([
 			"compare [image 1: a.png] with [image 2: b.jpg]",
 			"[image 1: a.png]",
-			"[attachment: /w/attachments/a.png — image/png, 3 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 3 bytes. Read it with bash.]",
 			"[image 2: b.jpg]",
-			"[attachment: /w/attachments/b.jpg — image/jpeg, 4 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/b.jpg — image/jpeg, 4 bytes. Read it with bash.]",
 		]);
 	});
 
@@ -1048,7 +1048,7 @@ describe("inline chips in the model view", () => {
 		expect(texts(view)).toEqual([
 			"[image 1: a.png][note: Budget (id note-1)]",
 			"[image 1: a.png]",
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
 			'Attached note "Budget" (id note-1, rev 3 as of this message):\n<note id="note-1" rev="3" title="Budget">\nthe note body\n</note>',
 		]);
 	});
@@ -1094,7 +1094,7 @@ describe("inline chips in the model view", () => {
 		expect(texts(view)).toEqual([
 			"check [image 1: a.png] now",
 			"[image 1: a.png]",
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
 		]);
 	});
 
@@ -1134,8 +1134,8 @@ describe("inline chips in the model view", () => {
 		expect(texts(view)).toEqual([
 			"this [image 1: a.png] plus a loose one",
 			"[image 1: a.png]",
-			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
-			"[attachment: /w/attachments/b.png — image/png, 8 bytes. Read it with read_file or bash tools.]",
+			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with bash.]",
+			"[attachment: /w/attachments/b.png — image/png, 8 bytes. Read it with bash.]",
 		]);
 	});
 });

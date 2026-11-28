@@ -143,7 +143,7 @@ export function applyProjectRetirement(
 	path: string,
 	toBot: readonly string[],
 	approval: string,
-	now = new Date(),
+	now: Date,
 ) {
 	using db = new Database(path, { readwrite: true, create: false });
 	db.run("PRAGMA foreign_keys = ON");

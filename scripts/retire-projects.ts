@@ -20,7 +20,7 @@ try {
 	const toBot = values["to-bot"] ?? [];
 	const plan = values.apply === undefined
 		? previewProjectRetirement(path, toBot)
-		: applyProjectRetirement(path, toBot, values.apply);
+		: applyProjectRetirement(path, toBot, values.apply, new Date());
 	process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
 } catch (error) {
 	process.stderr.write(`Project retirement failed: ${error instanceof Error ? error.message : String(error)}\n`);

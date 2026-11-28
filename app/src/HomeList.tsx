@@ -26,9 +26,18 @@ export type RenderRow = (
 	options?: RowOptions,
 ) => ReactNode;
 
+const SIDE_CHAT_PAGE_ROWS = 5;
+
+interface SideChatPage {
+	rows: ChatRow[];
+	hidden: number;
+	showMore: () => void;
+}
+
 export interface Home {
 	list: HomeListModel;
 	orderSignature: string;
+	sidePage: SideChatPage;
 }
 
 export function useHomeList(
@@ -36,17 +45,43 @@ export function useHomeList(
 	expandedBotId: string | null,
 ): Home {
 	const [hold, setHold] = useState<Hold | null>(null);
+	const [revealedHiddenRows, setRevealedHiddenRows] = useState(0);
 	const built = buildHome(input, hold);
 	if (built.hold !== hold) setHold(built.hold);
 
 	const { active, side, bots } = built.list;
+	const pagedSide = pageSideChats(side, revealedHiddenRows, built.list.openRow);
 	const orderSignature = JSON.stringify([
 		active.map((row) => row.id),
-		input.sideChatsOpen ? side.map((row) => row.id) : [],
+		input.sideChatsOpen ? pagedSide.rows.map((row) => row.id) : [],
 		bots.map(({ bot, side }) => [bot.id, ...(bot.id === expandedBotId ? side.map((row) => row.id) : [])]),
 	]);
 
-	return { list: built.list, orderSignature };
+	return {
+		list: built.list,
+		orderSignature,
+		sidePage: {
+			...pagedSide,
+			showMore: () => setRevealedHiddenRows((count) => count + SIDE_CHAT_PAGE_ROWS),
+		},
+	};
+}
+
+function pageSideChats(
+	rows: readonly ChatRow[],
+	revealedHidden: number,
+	open: string | null,
+): { rows: ChatRow[]; hidden: number } {
+	const base = new Set(rows.slice(0, SIDE_CHAT_PAGE_ROWS).map((row) => row.id));
+	let admitted = 0;
+	const visible = rows.filter((row) => {
+		const forced = row.mark !== null || row.conv.pinnedAt !== null || row.id === open;
+		if (base.has(row.id) || forced) return true;
+		if (admitted >= revealedHidden) return false;
+		admitted++;
+		return true;
+	});
+	return { rows: visible, hidden: rows.length - visible.length };
 }
 
 export function HomeList({
@@ -78,7 +113,8 @@ export function HomeList({
 	renderRow: RenderRow;
 	navRef?: Ref<HTMLUListElement>;
 }) {
-	const { rolling, active, side, bots } = home.list;
+	const { rolling, active, bots } = home.list;
+	const { sidePage } = home;
 	return (
 		<ConversationNav ref={navRef} loop={false}>
 			<RollingRow
@@ -90,16 +126,24 @@ export function HomeList({
 				onToggleSideChats={onToggleSideChats}
 				onOpen={onOpenRolling}
 			/>
-			{sideChatsOpen && side.map((row) => (
+			{sideChatsOpen && sidePage.rows.map((row) => (
 				<li key={row.id} data-flip={row.id} className="side-chat">
 					{renderRow(row.conv, { mark: row.mark, line: row.line })}
 				</li>
 			))}
-			{sideChatsOpen && (
-				<li className="side-chat new-side-chat">
-					<button type="button" onClick={onNewSideChat}>New side chat</button>
+			{sideChatsOpen && sidePage.hidden > 0 && (
+				<li className="side-chat side-chat-more">
+					<button type="button" onClick={(event) => {
+						sidePage.showMore();
+						if (sidePage.hidden <= SIDE_CHAT_PAGE_ROWS) {
+							event.currentTarget.closest("ul")?.querySelector<HTMLButtonElement>(".new-side-chat button")?.focus();
+						}
+					}}>Show more ({sidePage.hidden} left)</button>
 				</li>
 			)}
+			<li className="side-chat new-side-chat">
+				<button type="button" aria-label="New side chat" onClick={onNewSideChat}>New side chat</button>
+			</li>
 			{bots.length > 0 && <li className="rail-chats-label">Bots</li>}
 			{bots.map(({ bot, main, side }) => {
 				const open = bot.id === expandedBotId;

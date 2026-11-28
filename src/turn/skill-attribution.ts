@@ -1,21 +1,5 @@
-import { policyOf } from "../agent/tool-policy.ts";
 import { relative, sep } from "node:path";
-import { z } from "zod";
 import { skillNameSchema } from "../skill-provenance.ts";
-
-export interface SkillWatch {
-	skillsDir: string;
-	proposedDir: string;
-	record(conversationId: string, skill: string): void;
-}
-
-const writeOutputSchema = z.object({ path: z.string() }).passthrough();
-
-const scriptCallsSchema = z.object({
-	calls: z.array(
-		z.object({ tool: z.string(), args: z.string(), ok: z.boolean(), result: z.string() }),
-	),
-});
 
 export function skillUnderPath(dirs: string[], absPath: string): string | null {
 	for (const dir of dirs) {
@@ -27,40 +11,4 @@ export function skillUnderPath(dirs: string[], absPath: string): string | null {
 		return skillNameSchema.safeParse(name).success ? name : null;
 	}
 	return null;
-}
-
-function skillUnder(watch: SkillWatch, absPath: string): string | null {
-	return skillUnderPath([watch.skillsDir, watch.proposedDir], absPath);
-}
-
-function parseSummarized(value: string): unknown {
-	try {
-		return JSON.parse(value) as unknown;
-	} catch {
-		return null;
-	}
-}
-
-export function attributedSkills(watch: SkillWatch, tool: string, output: unknown): string[] {
-	const names = new Set<string>();
-	const collect = (callOutput: unknown): void => {
-		const out = writeOutputSchema.safeParse(callOutput);
-		if (!out.success) return;
-		const name = skillUnder(watch, out.data.path);
-		if (name !== null) names.add(name);
-	};
-	if (policyOf(tool).writesFiles && !policyOf(tool).composes) {
-		collect(output);
-		return [...names];
-	}
-	if (policyOf(tool).composes) {
-		const parsed = scriptCallsSchema.safeParse(output);
-		if (!parsed.success) return [];
-		for (const call of parsed.data.calls) {
-			if (!call.ok) continue;
-			if (policyOf(call.tool).writesFiles && !policyOf(call.tool).composes)
-				collect(parseSummarized(call.result));
-		}
-	}
-	return [...names];
 }

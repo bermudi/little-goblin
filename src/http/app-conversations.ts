@@ -17,10 +17,10 @@ import type { ConversationStore } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { ModelSettings } from "../conversation-settings.ts";
+import { NotePinsRefused } from "../chat-note-pins.ts";
 import { log } from "../log.ts";
 import { projectRollText } from "../rolling.ts";
 import { conversationWorkdir } from "../conversation-workdir.ts";
-import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { openRatings } from "../reply-ratings.ts";
 import { compactTriggerTokens } from "../turn/compact-trigger.ts";
 import {
@@ -65,7 +65,11 @@ const createBody = z.strictObject({
 	title: z.string().min(1).max(200).optional(),
 	memoryExcluded: z.boolean().optional(),
 	initialModelSettings: modelSettingsBody.optional(),
-	noteId: z.string().min(1).max(200).optional(),
+	pinnedNoteIds: z
+		.array(z.string().min(1).max(200))
+		.max(50)
+		.refine((ids) => new Set(ids).size === ids.length, "pinnedNoteIds must be unique")
+		.optional(),
 }) satisfies z.ZodType<AppConversationCreateRequest>;
 
 const branchBody = z.object({ messageId: z.string().min(1).max(200) });
@@ -301,6 +305,17 @@ export async function handleConversationsRoute(
 	now: () => number = Date.now,
 ): Promise<Response | null> {
 	const path = url.pathname;
+	if (path === "/api/app/note-pin-candidates") {
+		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const input = z.string().max(500).safeParse(url.searchParams.get("q") ?? "");
+		if (!input.success) {
+			return Response.json({ error: z.prettifyError(input.error) }, { status: 422, headers: NO_STORE });
+		}
+		return Response.json(
+			deps.store.chatNotePins.candidates(input.data),
+			{ headers: NO_STORE },
+		);
+	}
 	const pins = path.match(/^\/api\/app\/conversations\/([^/]+)\/note-pins$/);
 	if (pins !== null && (req.method === "GET" || req.method === "PATCH")) {
 		const address = conversationFromSegment(pins[1]!);
@@ -397,24 +412,13 @@ export async function handleConversationsRoute(
 			}
 			const appId = parsed.data.id ?? randomUUID();
 			const convId = `app/${appId}`;
-			const outcome = store.db.transaction(
+			const pinnedNoteIds = parsed.data.pinnedNoteIds ?? [];
+			const create = store.db.transaction(
 				():
 					| { kind: "ok"; conv: NonNullable<ReturnType<typeof store.get>> }
 					| { kind: "memoryConflict" }
-					| { kind: "noteMissing" }
-					| { kind: "noteOwnerConflict" }
 					| { kind: "settingsConflict" } => {
 					const existing = store.get(convId);
-					const noteId = parsed.data.noteId;
-					const note = noteId === undefined ? null : deps.notes.get(noteId);
-					if (noteId !== undefined && note === null) return { kind: "noteMissing" };
-					const owner = note?.botId ?? null;
-					const sideBot = owner === null || owner === LITTLE_GOBLIN_NOTE_OWNER ? null : owner;
-					if (sideBot !== null && store.bots.get(sideBot) === null) return { kind: "noteMissing" };
-					if (note !== null && existing !== null && note.botId !== null &&
-						(store.bots.membership(existing.id)?.botId ?? null) !== sideBot) {
-						return { kind: "noteOwnerConflict" };
-					}
 					if (existing !== null && parsed.data.memoryExcluded !== undefined &&
 						existing.memoryExcluded !== parsed.data.memoryExcluded) {
 						return { kind: "memoryConflict" };
@@ -433,20 +437,30 @@ export async function handleConversationsRoute(
 						paths.workspace(),
 						existing !== null || initialSettings === undefined ? cfg : { ...cfg, ...initialSettings },
 					);
-					if (existing === null && sideBot !== null) store.bots.attachSideChat(row.id, sideBot);
 					if (existing === null && parsed.data.memoryExcluded === true) {
 						store.setMeta(row.id, { memoryExcluded: true });
 					}
 					if (parsed.data.title !== undefined) {
 						store.setMeta(row.id, { title: parsed.data.title, titleImplicit: false });
 					}
+					if (existing === null) store.chatNotePins.pinAll(row.id, pinnedNoteIds);
 					return { kind: "ok", conv: store.get(row.id)! };
 				},
-			)();
-			if (outcome.kind === "noteMissing")
-				return Response.json({ error: "No such note." }, { status: 404, headers: NO_STORE });
-			if (outcome.kind === "noteOwnerConflict")
-				return Response.json({ error: "That note belongs to a different bot." }, { status: 409, headers: NO_STORE });
+			);
+			let outcome: ReturnType<typeof create>;
+			try {
+				outcome = create();
+			} catch (err) {
+				if (!(err instanceof NotePinsRefused)) throw err;
+				log.warn("app conversation create refused: notes not pinnable", {
+					conversation: convId,
+					notes: err.noteIds,
+				});
+				return Response.json(
+					{ error: "Some notes can't be pinned in this chat", noteIds: err.noteIds },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
 			if (outcome.kind === "memoryConflict") {
 				return Response.json(
 					{
@@ -464,6 +478,7 @@ export async function handleConversationsRoute(
 			const conv = outcome.conv;
 			log.info("app conversation opened", {
 				conversation: conv.id,
+				...(pinnedNoteIds.length > 0 ? { pinnedNotes: pinnedNoteIds.length } : {}),
 			});
 			const body: AppConversationCreate = {
 				id: conv.id,

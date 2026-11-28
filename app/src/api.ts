@@ -44,6 +44,7 @@ import type {
 	AppNoteRewriteResponse,
 	AppNoteVersion,
 	AppNoteVersionList,
+	ChatNotePinCandidates,
 	ChatNotePinsView,
 	AppProgramMutationResponse,
 	AppReplyRating,
@@ -593,6 +594,14 @@ export function listChatNotePins(
 ): Promise<ChatNotePinsView> {
 	const suffix = query === null ? "" : `?${new URLSearchParams({ q: query })}`;
 	return request(token, `/api/app/conversations/${seg(id)}/note-pins${suffix}`);
+}
+
+export function listNotePinCandidates(
+	token: string | null,
+	query: string,
+): Promise<ChatNotePinCandidates> {
+	const params = new URLSearchParams({ q: query });
+	return request(token, `/api/app/note-pin-candidates?${params}`);
 }
 
 export function setChatNotePin(

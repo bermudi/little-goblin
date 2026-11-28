@@ -5,7 +5,6 @@ import { log } from "../log.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import type { WindowCapture } from "../window-capture.ts";
-import type { SkillWatch } from "./skill-attribution.ts";
 import { replyMetadata } from "./reply-metadata.ts";
 import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
 import type { PromptSegments } from "./itemize.ts";
@@ -82,7 +81,6 @@ export interface RecorderDeps {
 	steerMarkSeed: number;
 	ownedInputSeqs: number[];
 	evidence: EvidenceLimits | undefined;
-	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
 	runId: string;
 	saveStep(patch: TurnCheckpointPatch): void;
@@ -169,7 +167,6 @@ export function openAttemptRecorder(
 	const eventsDeps = {
 		convId: deps.convId,
 		evidence: deps.evidence,
-		skillWatch: deps.skillWatch,
 		onCompleted: (tool: string, input: unknown, result: unknown, failed: boolean) =>
 			deps.state.noteCompletedCall(tool, input, result, failed),
 	};

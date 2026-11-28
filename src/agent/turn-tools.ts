@@ -40,7 +40,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
-import { noteHistoryAvailable, noteOwnerScope } from "./tools/note.ts";
+import { noteHistoryAvailable } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { Posts } from "../posts.ts";
@@ -88,10 +88,8 @@ export interface TurnToolsDeps {
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
-	/** Successful read_file resolved paths — the skill-usage watch
-	 *  (design/skills.md → Self-authoring, /learn, curator). Absent in
-	 *  tests. */
 	noteSkillRead?(abs: string): void;
+	noteSkillWrite?(conversationId: string, skill: string): void;
 }
 
 // The screenshot tool mounts only when BOTH gates pass (issue #606):
@@ -128,7 +126,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile, context) => {
+	return (conv, deliverVoice, recording, deliverFile) => {
 		const snapshot = store.promptSnapshot(conv.id);
 		const provider = conv.model === null
 			? undefined
@@ -138,9 +136,6 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
 		const channel = channelOf(conv.id);
-		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
-		// relative-path anchor, and delegation's workspaceDir — a
-		// vanished dir throws here and the turn fails at admission.
 		const workdir = conversationWorkdir(store, projects, conv, snapshot);
 		const bashDescriptionCwd = bashDeclarationWorkdir(workdir, snapshot);
 		const delegate = delegateDeps(conv, workdir);
@@ -162,8 +157,16 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				: undefined,
 			cwd: workdir,
 			bashDescriptionCwd,
-			...(context !== undefined ? { contextFill: context.contextFill } : {}),
-			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
+			...(deps.noteSkillRead !== undefined || deps.noteSkillWrite !== undefined
+				? {
+						onRead: deps.noteSkillRead,
+						skillWrites: {
+							dirs: [paths.skills(), paths.skillsProposed()],
+							conversation: conv.id,
+							record: (skill: string) => deps.noteSkillWrite?.(conv.id, skill),
+						},
+					}
+				: {}),
 			voice:
 				tts && !configRef.ttsDown && deliverVoice
 					? {
@@ -247,7 +250,6 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			note: {
 				notes, projects, conversation: conv.id, projectId: conv.projectId,
 				editHistory: noteHistoryAvailable(snapshot, provider?.kind),
-				ownerScope: conv.projectId === null && noteOwnerScope(snapshot),
 			},
 			// Threads are process-global; a model change drops them on the next call.
 			vision: visionDepsFor(conv),

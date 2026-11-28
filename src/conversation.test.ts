@@ -346,7 +346,7 @@ describe("history payload envelope", () => {
 		// wraps it.
 		store.db.run("UPDATE events SET data = json_extract(data, '$.message')");
 		expect(store.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
-			"[unreadable history row seq 1 — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]",
+			"[unreadable history row seq 1 — stored message failed validation. Any attachment it carried may still be readable with bash.]",
 		]);
 		store.close();
 		// Migration at open: wrap, and never re-wrap (idempotent).

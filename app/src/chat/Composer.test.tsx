@@ -12,7 +12,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
+import { useState } from "react";
 import { Composer } from "./Composer.tsx";
+import type { NotesTarget, StagedPin } from "./ComposerNotes.tsx";
 import { boxView } from "./MessageBox.tsx";
 import { draftText } from "./draft.ts";
 import { saveComposerDraft } from "../composerDraft.ts";
@@ -66,6 +68,18 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	const sent: UIMessage["parts"][] = [];
 	let sentModelSettings: { model: string; thinking: string } | undefined;
 	const configCalls: { url: string; method: string }[] = [];
+	const library: StagedPin[] = [
+		{ id: "n1", title: "Budget", owner: "Global" },
+		{ id: "n2", title: "Trip plan", owner: "Global" },
+		{ id: "n3", title: "Recipes", owner: "Global" },
+	];
+	let pinned: string[] = [];
+	let pinChanges: Record<string, { rev: number; actor: string; what: string; reason: string | null }[]> = {};
+	let pinCalls: { noteId: string; pinned: boolean }[] = [];
+	let candidateUrls: string[] = [];
+	const noteMatches = (q: string | null) => q === null
+		? []
+		: library.filter((note) => note.title.toLowerCase().includes(q.toLowerCase())).map((note) => ({ ...note, rev: 1 }));
 	let phoneWidth = false;
 	// Globals the React tree expects; installed per test, removed after.
 	let installed: string[] = [];
@@ -83,6 +97,10 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		container = div as unknown as HTMLElement;
 		uploads = [];
 		phoneWidth = false;
+		pinned = [];
+		pinChanges = {};
+		pinCalls = [];
+		candidateUrls = [];
 		sent.length = 0;
 		sentModelSettings = undefined;
 		configCalls.length = 0;
@@ -128,6 +146,26 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			}
 			// The mount-time config load answers immediately; uploads queue
 			// and settle only when the test says so — that is the overlap.
+			if (url.startsWith("/api/app/conversations/c1/note-pins")) {
+				if (init?.method === "PATCH") {
+					const change = JSON.parse(String(init.body)) as { noteId: string; pinned: boolean };
+					pinCalls.push(change);
+					pinned = change.pinned
+						? [...pinned.filter((id) => id !== change.noteId), change.noteId]
+						: pinned.filter((id) => id !== change.noteId);
+				}
+				const q = new URL(url, "http://goblin.test").searchParams.get("q");
+				return Promise.resolve(jsonResponse({
+					pins: pinned.map((id) => ({ ...library.find((note) => note.id === id)!, rev: 1, changes: pinChanges[id] ?? [] })),
+					matches: noteMatches(q),
+					truncated: false,
+				}));
+			}
+			if (url.startsWith("/api/app/note-pin-candidates")) {
+				candidateUrls.push(url);
+				const q = new URL(url, "http://goblin.test").searchParams.get("q");
+				return Promise.resolve(jsonResponse({ matches: noteMatches(q), truncated: false }));
+			}
 			if (url === "/api/app/attachments") {
 				const d = deferredUpload();
 				uploads.push(d);
@@ -180,6 +218,8 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		busy = false,
 		onStop,
 		quote,
+		notes,
+		onOpenNote,
 	}: {
 		onSend: (
 			parts: UIMessage["parts"],
@@ -191,11 +231,15 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		busy?: boolean;
 		onStop?: () => void;
 		quote?: { text: string; speaker: null; messageId?: string | null; n: number } | null;
+		notes?: NotesTarget;
+		onOpenNote?: (id: string) => void;
 	}) {
 		return (
 			<Composer
 				token={null}
 				draftScope={draftScope}
+				{...(notes === undefined ? {} : { notes })}
+				{...(onOpenNote === undefined ? {} : { onOpenNote })}
 				busy={busy}
 				{...(quote === undefined ? {} : { quote })}
 				{...(onStop === undefined ? {} : { onStop })}
@@ -205,7 +249,10 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		);
 	}
 
-	const mount = async (draftRestore: { messages: UIMessage["parts"][] } | null = null) => {
+	const mount = async (
+		draftRestore: { messages: UIMessage["parts"][] } | null = null,
+		extra: { notes?: NotesTarget; onOpenNote?: (id: string) => void } = {},
+	) => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(
@@ -215,6 +262,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 						sentModelSettings = settings;
 					}}
 					draftRestore={draftRestore}
+					{...extra}
 				/>,
 			);
 			await Promise.resolve();
@@ -325,10 +373,10 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await click(bar?.querySelector('button[aria-label="Add"]') ?? null);
 		expect(
 			[...win.document.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent?.trim()),
-		).toEqual(["Attach a file", "Attach a note", "Invoke a skill"]);
+		).toEqual(["Attach a file", "Invoke a skill"]);
 	});
 
-	test("phone add menu opens note and skill pickers and clicks the file input", async () => {
+	test("phone add menu opens the skill picker and clicks the file input", async () => {
 		phoneWidth = true;
 		await mount();
 		const fileInput = container.querySelector('input[type="file"]');
@@ -342,14 +390,172 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			);
 			await click(item === undefined ? null : (item as unknown as Element));
 		};
-		await choose("Attach a note");
-		expect(container.querySelector(".note-pick")).not.toBeNull();
-		expect(win.document.querySelector('[role="menuitem"]')).toBeNull();
 		await choose("Invoke a skill");
 		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 		await click(container.querySelector('button[aria-label="Close"]'));
 		await choose("Attach a file");
 		expect(fileClicks).toBe(1);
+	});
+
+	const chatNotes: NotesTarget = { kind: "chat", conversationId: "app/c1", rolling: false };
+	const settle = async (ms = 0) => {
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, ms));
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+	};
+	const notesButton = () => container.querySelector<HTMLButtonElement>(".composer-bar .notes-trigger");
+	const inDocument = (selector: string) => win.document.querySelector(selector) as unknown as HTMLElement | null;
+	const searchNotes = async (text: string) => {
+		const input = win.document.querySelector('input[aria-label="Search notes"]') as unknown as HTMLInputElement;
+		expect(input).not.toBeNull();
+		await act(async () => {
+			input.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(input, text);
+			input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			input.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event);
+		});
+		await settle(220);
+	};
+	const keyOnSearch = async (key: string) => {
+		const input = win.document.querySelector('input[aria-label="Search notes"]') as unknown as HTMLElement | null;
+		await act(async () => {
+			input?.dispatchEvent(new win.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+	};
+
+	test("desktop notes button shows the pinned count and lists the names on hover", async () => {
+		pinned = ["n1", "n2"];
+		await mount(null, { notes: chatNotes });
+		await settle();
+		expect(notesButton()?.getAttribute("aria-label")).toBe("Notes, 2 pinned");
+		expect(notesButton()?.querySelector(".notes-count")?.textContent).toBe("2");
+		expect(notesButton()?.getAttribute("title")).toBe("Pinned notes\n• Budget\n• Trip plan");
+	});
+
+	test("with nothing pinned the notes button invites a pin", async () => {
+		await mount(null, { notes: chatNotes });
+		await settle();
+		expect(notesButton()?.getAttribute("aria-label")).toBe("Notes");
+		expect(notesButton()?.getAttribute("title")).toBe("Pin a note");
+		expect(notesButton()?.querySelector(".notes-count")).toBeNull();
+	});
+
+	test("the notes panel pins and unpins without touching the draft", async () => {
+		pinned = ["n1"];
+		await mount(null, { notes: chatNotes });
+		await settle();
+		await type("hello");
+		await click(notesButton());
+		await settle();
+		const labels = [...win.document.querySelectorAll(".notes-group")].map((label) => label.textContent);
+		expect(labels).toEqual(["Pinned", "Recent notes"]);
+		await click(inDocument('button[aria-label="Pin Trip plan"]'));
+		await settle();
+		expect(pinCalls).toEqual([{ noteId: "n2", pinned: true }]);
+		expect(notesButton()?.getAttribute("aria-label")).toBe("Notes, 2 pinned");
+		await click(inDocument('button[aria-label="Unpin Budget"]'));
+		await settle();
+		expect(pinCalls.at(-1)).toEqual({ noteId: "n1", pinned: false });
+		expect(notesButton()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
+		expect(sent).toHaveLength(0);
+		expect(textareaValue()).toBe("hello");
+	});
+
+	test("Enter in the notes search pins the top match and never sends the draft", async () => {
+		await mount(null, { notes: chatNotes });
+		await settle();
+		await type("hello");
+		await click(notesButton());
+		await settle();
+		await searchNotes("recip");
+		await keyOnSearch("Enter");
+		expect(pinCalls).toEqual([{ noteId: "n3", pinned: true }]);
+		expect(sent).toHaveLength(0);
+		await keyOnSearch("Escape");
+		expect(inDocument(".notes-pop")).toBeNull();
+		expect(textareaValue()).toBe("hello");
+	});
+
+	test("a pinned row says who edited it and lists each change on hover", async () => {
+		pinned = ["n1"];
+		pinChanges = { n1: [
+			{ rev: 2, actor: "Operator", what: "Edited the body", reason: "fix typo" },
+			{ rev: 3, actor: "Scout", what: "Edited the title", reason: null },
+		] };
+		await mount(null, { notes: chatNotes });
+		await settle();
+		await click(notesButton());
+		await settle();
+		const meta = inDocument('[data-value="n1"] .notes-row-meta');
+		expect(meta?.textContent).toBe("Global · edited by Scout");
+		expect(meta?.getAttribute("title")).toBe("Operator · Edited the body (fix typo)\nScout · Edited the title");
+	});
+
+	test("Enter with an empty notes search changes nothing", async () => {
+		pinned = ["n1"];
+		await mount(null, { notes: chatNotes });
+		await settle();
+		await click(notesButton());
+		await settle();
+		await keyOnSearch("Enter");
+		expect(pinCalls).toEqual([]);
+		expect(sent).toHaveLength(0);
+	});
+
+	test("opening a note from the panel leaves its pin alone", async () => {
+		pinned = ["n1"];
+		const opened: string[] = [];
+		await mount(null, { notes: chatNotes, onOpenNote: (id) => opened.push(id) });
+		await settle();
+		await click(notesButton());
+		await settle();
+		await click(inDocument('button[aria-label="Open Budget"]'));
+		expect(opened).toEqual(["n1"]);
+		expect(pinCalls).toEqual([]);
+		expect(inDocument(".notes-pop")).toBeNull();
+	});
+
+	test("phone opens the notes sheet from the add menu, with the count on the menu", async () => {
+		phoneWidth = true;
+		pinned = ["n1", "n2"];
+		await mount(null, { notes: chatNotes });
+		await settle();
+		const add = container.querySelector('.composer-bar button[title="Add"]');
+		expect(add?.getAttribute("aria-label")).toBe("Add, 2 notes pinned");
+		await click(add);
+		const items = [...win.document.querySelectorAll('[role="menuitem"]')];
+		expect(items.map((item) => item.textContent?.trim())).toEqual(["Attach a file", "Notes · 2 pinned", "Invoke a skill"]);
+		await click(items[1] as unknown as Element);
+		await settle();
+		const sheet = inDocument(".notes-sheet");
+		expect(sheet?.textContent).toContain("Budget");
+		expect(sheet?.textContent).toContain("Trip plan");
+	});
+
+	test("a chat that does not exist yet stages pins locally from candidates", async () => {
+		const changes: StagedPin[][] = [];
+		function Staged() {
+			const [pins, setPins] = useState<StagedPin[]>([]);
+			return (
+				<ComposerHarness
+					onSend={(parts) => { sent.push(parts); }}
+					notes={{ kind: "staged", pins, onPinsChange: (next) => { changes.push(next); setPins(next); } }}
+				/>
+			);
+		}
+		root = createRoot(container);
+		await act(async () => root?.render(<Staged />));
+		await settle();
+		expect(candidateUrls).toEqual([]);
+		await click(notesButton());
+		await settle();
+		expect(candidateUrls[0]).toContain("/api/app/note-pin-candidates?q=");
+		await click(inDocument('button[aria-label="Pin Budget"]'));
+		expect(changes).toEqual([[{ id: "n1", title: "Budget", owner: "Global" }]]);
+		expect(pinCalls).toEqual([]);
+		expect(notesButton()?.getAttribute("aria-label")).toBe("Notes, 1 pinned");
 	});
 
 	test("phone keeps the supported voice-note button in the composer bar", async () => {
@@ -364,11 +570,12 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		expect(mic?.closest(".composer-bar")).not.toBeNull();
 	});
 
-	test("desktop keeps the three separate add buttons", async () => {
+	test("desktop keeps separate add buttons and has no attach-a-note mode", async () => {
 		await mount();
 		const bar = container.querySelector(".composer-bar");
 		expect(bar?.querySelector('button[aria-label="Attach"]')).not.toBeNull();
-		expect(bar?.querySelector('button[aria-label="Attach a note"]')).not.toBeNull();
+		expect(bar?.querySelector('button[aria-label="Attach a note"]')).toBeNull();
+		expect(bar?.querySelector(".notes-trigger")).toBeNull();
 		expect(bar?.querySelector('button[aria-label="Invoke a skill"]')).not.toBeNull();
 		expect(bar?.querySelector('button[aria-label="Add"]')).toBeNull();
 	});

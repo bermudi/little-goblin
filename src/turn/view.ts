@@ -61,7 +61,7 @@ function unconvertiblePlaceholder(m: Message): Message {
 		parts: [
 			{
 				type: "text",
-				text: `[this message could not be prepared for the model (${m.role} role) — it is kept in history; any attachment it carried may still be readable with read_file or bash tools]`,
+				text: `[this message could not be prepared for the model (${m.role} role) — it is kept in history; any attachment it carried may still be readable with bash]`,
 			},
 		],
 	};

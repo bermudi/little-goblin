@@ -26,18 +26,34 @@ export interface ChatNotePinsView {
 	truncated: boolean;
 }
 
-const available = (note: "n" | "NEW", conversation: string) => `
-	${note}.archived_at IS NULL AND EXISTS (
-		SELECT 1 FROM conversations c LEFT JOIN bot_chats bc ON bc.conversation_id = c.id
-		WHERE c.id = ${conversation} AND (
-			${note}.project_id = c.project_id OR (
-				${note}.project_id IS NULL AND (
-					${note}.bot_id IS NULL OR (
-						c.project_id IS NULL AND ${note}.bot_id = COALESCE(bc.bot_id, '${LITTLE_GOBLIN_NOTE_OWNER}')
-					)
-				)
+export class NotePinsRefused extends Error {
+	constructor(readonly noteIds: string[]) {
+		super(`notes not pinnable here: ${noteIds.join(", ")}`);
+	}
+}
+
+export interface ChatNotePinCandidates {
+	matches: PinNote[];
+	truncated: boolean;
+}
+
+const availableIn = (note: "n" | "NEW", project: string, bot: string) => `
+	${note}.archived_at IS NULL AND (
+		${note}.project_id = ${project} OR (
+			${note}.project_id IS NULL AND (
+				${note}.bot_id IS NULL OR (${project} IS NULL AND ${note}.bot_id = ${bot})
 			)
 		)
+	)`;
+
+const available = (note: "n" | "NEW", conversation: string) => `
+	EXISTS (
+		SELECT 1 FROM conversations c LEFT JOIN bot_chats bc ON bc.conversation_id = c.id
+		WHERE c.id = ${conversation} AND ${availableIn(
+			note,
+			"c.project_id",
+			`COALESCE(bc.bot_id, '${LITTLE_GOBLIN_NOTE_OWNER}')`,
+		)}
 	)`;
 
 export function ensureChatNotePinsSchema(db: Database): void {
@@ -173,6 +189,13 @@ export function openChatNotePins(db: Database) {
 		)
 		ORDER BY n.updated_at DESC, n.id LIMIT 51
 	`);
+	const candidates = db.query<PinNote, [string | null, string | null]>(`
+		SELECT ${noteSelect} FROM notes n ${ownerJoins}
+		WHERE ${availableIn("n", "NULL", `'${LITTLE_GOBLIN_NOTE_OWNER}'`)} AND (
+			?1 IS NULL OR n.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?2)
+		)
+		ORDER BY n.updated_at DESC, n.id LIMIT 51
+	`);
 	const changes = db.query<ChatNoteChange, [string, number, number]>(
 		`${changeSelect} AND e.rev <= ? ORDER BY e.rev`,
 	);
@@ -208,6 +231,18 @@ export function openChatNotePins(db: Database) {
 			AND json_extract(data, '$.message.id') = ?
 	`);
 
+	const set = db.transaction((conversation: string, id: string, pinned: boolean): boolean => {
+		const n = note.get(id, conversation);
+		if (pinned && n === null) return false;
+		const result = pinned ? add.run(conversation, id, n!.rev) : unpin.run(n?.rev ?? null, conversation, id);
+		if (result.changes > 0) log.info("chat note pin changed", { conversation, note: id, pinned });
+		return true;
+	});
+	const pinAll = db.transaction((conversation: string, ids: string[]): void => {
+		const refused = ids.filter((id) => !set(conversation, id, true));
+		if (refused.length > 0) throw new NotePinsRefused(refused);
+	});
+
 	return {
 		reanchorRetry(conversation: string, oldSeq: number, newSeq: number): void {
 			reanchor.run(newSeq, conversation, oldSeq);
@@ -225,13 +260,13 @@ export function openChatNotePins(db: Database) {
 				: search.all(conversation, match, match);
 			return { pins, matches: matches.slice(0, 50), truncated: matches.length > 50 };
 		},
-		set: db.transaction((conversation: string, id: string, pinned: boolean): boolean => {
-			const n = note.get(id, conversation);
-			if (pinned && n === null) return false;
-			const result = pinned ? add.run(conversation, id, n!.rev) : unpin.run(n?.rev ?? null, conversation, id);
-			if (result.changes > 0) log.info("chat note pin changed", { conversation, note: id, pinned });
-			return true;
-		}),
+		candidates(query: string): ChatNotePinCandidates {
+			const match = toFtsQuery(query);
+			const found = query.trim() !== "" && match === null ? [] : candidates.all(match, match);
+			return { matches: found.slice(0, 50), truncated: found.length > 50 };
+		},
+		set,
+		pinAll,
 		capture: db.transaction((conversation: string, seq: number, message: Message): Message => {
 			if (message.role !== "user" || message.parts.some((part) => part.type === CHAT_NOTE_NOTICE_PART)) {
 				return message;

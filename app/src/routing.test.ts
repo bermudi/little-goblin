@@ -6,7 +6,7 @@ describe("route conversion", () => {
 		"/app/",
 		"/app/c/abc",
 		"/app/c/abc/window",
-		"/app/p/abc",
+		"/app/b/abc",
 		"/app/n/abc",
 		"/app/settings",
 		"/app/archive",
@@ -15,7 +15,7 @@ describe("route conversion", () => {
 		expect(pathOfRoute(routeFromPath(path))).toBe(path);
 	});
 
-	test.each(["/app/nope", "/app/c/abc/extra"])("normalizes invalid path %s", (path) => {
+	test.each(["/app/nope", "/app/c/abc/extra", "/app/p/abc", "/app/projects"])("normalizes invalid path %s", (path) => {
 		expect(routeFromPath(path)).toEqual({ kind: "home", composing: false });
 	});
 

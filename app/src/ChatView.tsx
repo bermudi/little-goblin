@@ -29,7 +29,6 @@ import { placeSentMedia } from "./chat/sentMedia.ts";
 import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import { NotePicker } from "./chat/NotePicker.tsx";
 import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
 import {
   draftFromMessages,
@@ -41,7 +40,7 @@ import {
 } from "./chat/draft.ts";
 import { MessageBox, type MessageBoxHandle } from "./chat/MessageBox.tsx";
 import { useAttachments } from "./chat/useAttachments.ts";
-import { useSkillNoteStaging } from "./chat/useSkillNoteStaging.ts";
+import { useSkillStaging } from "./chat/useSkillStaging.ts";
 import {
   ActionBar,
   FoldMark,
@@ -217,16 +216,7 @@ function EditMessageBox({
     insertChips,
     dropTarget,
   });
-  const {
-    notePickerOpen,
-    setNotePickerOpen,
-    skillPickerOpen,
-    setSkillPickerOpen,
-    notePickRef,
-    noteBtnRef,
-    pickNote,
-    stageSkill,
-  } = useSkillNoteStaging({ insertChips });
+  const { skillPickerOpen, setSkillPickerOpen, stageSkill } = useSkillStaging({ insertChips });
   const currentUploadState = uploadState(editing.draft);
   return (
     <div
@@ -265,14 +255,6 @@ function EditMessageBox({
         <button type="button" aria-label="Attach a file" onClick={() => fileInput.current?.click()}>
           file
         </button>
-        <button
-          ref={noteBtnRef}
-          type="button"
-          aria-label="Attach a note"
-          onClick={() => setNotePickerOpen((open) => !open)}
-        >
-          note
-        </button>
         <button type="button" aria-label="Add a skill" onClick={() => setSkillPickerOpen(true)}>
           skill
         </button>
@@ -302,14 +284,6 @@ function EditMessageBox({
           save &amp; resend
         </button>
       </div>
-      {notePickerOpen && (
-        <NotePicker
-          pickRef={notePickRef}
-          token={token}
-          onPick={pickNote}
-          onClose={() => setNotePickerOpen(false)}
-        />
-      )}
       {skillPickerOpen && (
         <SkillPickerSheet
           token={token}
@@ -335,6 +309,7 @@ export function ChatView({
   focusSignal,
   rollDisabled,
   rolling = false,
+  notePins = false,
   onRollingAccepted,
   onFollowStarted,
   header,
@@ -357,6 +332,7 @@ export function ChatView({
   focusSignal?: number | undefined;
   rollDisabled?: boolean | undefined;
   rolling?: boolean;
+  notePins?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
   header?: ReactNode;
@@ -424,6 +400,7 @@ export function ChatView({
         focusSignal={focusOnce}
         rollDisabled={rollDisabled}
         rolling={rolling}
+        notePins={notePins}
         onRollingAccepted={onRollingAccepted}
         onFollowStarted={onFollowStarted}
         header={header}
@@ -453,6 +430,7 @@ function Chat({
   focusSignal,
   rollDisabled,
   rolling = false,
+  notePins = false,
   onRollingAccepted,
   onFollowStarted,
   header,
@@ -481,6 +459,7 @@ function Chat({
   focusSignal?: number | undefined;
   rollDisabled?: boolean | undefined;
   rolling?: boolean;
+  notePins?: boolean;
   onRollingAccepted?: ((id: string, rolled: boolean, messageId: string) => void) | undefined;
   onFollowStarted?: (() => void) | undefined;
   header?: ReactNode;
@@ -1516,6 +1495,7 @@ function Chat({
           busy={busy}
           liveCtx={liveCtx}
           onOpenNote={onOpenNote}
+          notes={notePins ? { kind: "chat", conversationId, rolling } : undefined}
           onGoToQuote={(messageId) => {
             const source = scrollRef.current?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
             if (!(source instanceof HTMLElement)) return false;

@@ -7,7 +7,7 @@ import type { AppConversationSummary } from "../conversation-read.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
 import type { NoteBatchAction, NoteSelection } from "../note-owner.ts";
-export type { ChatNotePinsView } from "../chat-note-pins.ts";
+export type { ChatNotePinCandidates, ChatNotePinsView } from "../chat-note-pins.ts";
 
 export interface AppBot {
 	id: string;
@@ -57,7 +57,7 @@ export interface AppConversationCreateRequest {
 	title?: string | undefined;
 	memoryExcluded?: boolean | undefined;
 	initialModelSettings?: AppModelSettings | undefined;
-	noteId?: string | undefined;
+	pinnedNoteIds?: string[] | undefined;
 }
 
 export interface AppConversationCreate {

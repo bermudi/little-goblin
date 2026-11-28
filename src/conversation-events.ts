@@ -84,7 +84,7 @@ export function corruptPlaceholder(seq: number, role: string): Message {
 		parts: [
 			{
 				type: "text",
-				text: `[unreadable history row seq ${seq} — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]`,
+				text: `[unreadable history row seq ${seq} — stored message failed validation. Any attachment it carried may still be readable with bash.]`,
 			},
 		],
 	};

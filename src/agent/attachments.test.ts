@@ -396,7 +396,7 @@ describe("materializeAttachments", () => {
 		expect(p.type).toBe("text");
 		const text = (p as { text: string }).text;
 		expect(text).toContain(`transcription failed: auth.jsonl: no secret named "mimo".`);
-		expect(text).toContain("Read it with read_file or bash tools.");
+		expect(text).toContain("Read it with bash.");
 	});
 
 	test("a transcript still wins over a recorded failure", async () => {

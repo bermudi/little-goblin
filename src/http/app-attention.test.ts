@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "../conversation.ts";
+import { appAddress } from "../conversation-address.ts";
+import { makeBotProposals } from "../bot-proposals.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { OutageTracker } from "../memory/outage.ts";
 import type { OutboxEntry } from "../mail-outbox.ts";
@@ -128,6 +130,23 @@ describe("app attention", () => {
 		block("exchange/app/chat-01/2/a", "app/chat-01", "HTTP 401", "2026-10-02T00:00:00.000Z");
 		block("exchange/app/gone/1/a", "app/gone", "HTTP 401", "2026-10-03T00:00:00.000Z");
 		block("exchange/app/chat-01/3/a", "app/chat-01", "HTTP 500", "2026-10-04T00:00:00.000Z");
+		memStore.resolve(appAddress("chat-01"), "/tmp");
+		const botProposals = makeBotProposals(
+			memStore.db,
+			memStore.bots,
+			memStore,
+			() => dirs,
+			() => ({ model: "zai/m", thinking: "medium" }),
+			() => new Date("2026-11-28T01:02:03Z"),
+		);
+		const botProposal = botProposals.propose({
+			conversationId: "app/chat-01",
+			name: "Research",
+			instructions: "Keep sources.",
+			model: null,
+			thinking: null,
+		});
+		if (botProposal === null) throw new Error("expected a proposal");
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			approvals: {
@@ -141,6 +160,7 @@ describe("app attention", () => {
 					pending: () => [draft, { ...draft, id: 10, target: "topic:-100:3" }],
 					decide: async () => ({ kind: "gone" }),
 				},
+				bot: botProposals,
 			},
 			operator: {
 				memory: {
@@ -251,6 +271,7 @@ describe("app attention", () => {
 					["program-approval:8", { kind: "page", page: "programs" }],
 					["mail-approval:9", { kind: "page", page: "programs" }],
 					["mail-approval:10", { kind: "page", page: "programs" }],
+					[`bot-approval:${botProposal.id}`, { kind: "conversation", conversationId: "app/chat-01" }],
 					["memory-blocked:HTTP 401", { kind: "page", page: "memory" }],
 					["memory-blocked:HTTP 500", { kind: "page", page: "memory" }],
 					["skill-proposal:radar", { kind: "page", page: "skills" }],
@@ -265,6 +286,7 @@ describe("app attention", () => {
 					["program-approval:8", null],
 					["mail-approval:9", "app/chat-01"],
 					["mail-approval:10", null],
+					[`bot-approval:${botProposal.id}`, "app/chat-01"],
 					["memory-blocked:HTTP 401", null],
 					["memory-blocked:HTTP 500", null],
 					["skill-proposal:radar", null],

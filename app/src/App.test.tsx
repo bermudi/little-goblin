@@ -231,6 +231,8 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 
 		const input = container.querySelector('input[type="file"]');
 		expect(input).not.toBeNull();
+		const composer = input?.closest("form");
+		if (composer == null) throw new Error("file input is not in the chat composer");
 		Object.defineProperty(input, "files", {
 			value: [
 				new File(["a"], "ready.jpg", { type: "image/jpeg" }),
@@ -253,11 +255,9 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		expect(container.textContent).toContain("pending.jpg");
 
 		await act(async () => {
-			container
-				.querySelector("form")
-				?.dispatchEvent(
-					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-				);
+			composer.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
 		});
 		expect(created).toBe(false);
 
@@ -270,11 +270,9 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 			});
 		});
 		await act(async () => {
-			container
-				.querySelector("form")
-				?.dispatchEvent(
-					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-				);
+			composer.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
 			await new Promise((r) => setTimeout(r, 30));
 		});
 		expect(created).toBe(true);
@@ -3182,7 +3180,7 @@ describe("app projects surface", () => {
 		await mount();
 		const profile = container.querySelector('nav[aria-label="Little Goblin\'s profile"]')!;
 		expect([...profile.querySelectorAll("a")].map((link) => link.textContent))
-			.toEqual(["Status", "Memory", "Skills", "Log"]);
+			.toEqual(["Settings", "Status", "Memory", "Skills", "Log"]);
 		expect(profile.querySelector('a[href="/app/memory"]')?.getAttribute("aria-current")).toBe("page");
 		await click(profile.querySelector('a[href="/app/log"]'));
 		expect(win.location.pathname).toBe("/app/log");
@@ -4724,7 +4722,7 @@ describe("app projects surface", () => {
 	}
 
 	test("Chat with this note on a bot's note pins it to that bot's chat and creates nothing", async () => {
-		listBots = [{ id: "bot-cook", name: "Cook", mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
+		listBots = [{ id: "bot-cook", name: "Cook", instructions: "", folder: null, model: null, thinking: null, mainConversationId: "app/cook-main", sideConversationIds: [], canMoveBack: false }];
 		convs = [convRow("Cook", { id: "app/cook-main" })];
 		notes = [noteRow("Recipes", { botId: "bot-cook" })];
 		win.history.replaceState(null, "", "/app/n/n-recipes");

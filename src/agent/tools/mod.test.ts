@@ -197,6 +197,11 @@ describe("toolNames ↔ makeTools", () => {
 			watch: {} as unknown as WatchToolDeps,
 			post: {} as unknown as PostToolDeps,
 			ask: { asks: {} as never, conversationId: "c" },
+			bot: {
+				proposals: {} as never,
+				conversationId: "c",
+				configRef: {} as never,
+			},
 			ui: true,
 		});
 		// Policy exhaustiveness, both ways: a mounted tool without a

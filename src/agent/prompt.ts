@@ -6,9 +6,11 @@
 // invalidates it.
 
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { botMemoryPath } from "../bot-memory.ts";
+import type { Bot } from "../bots.ts";
 import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
 import type { Conversation } from "../conversation-read.ts";
@@ -30,10 +32,13 @@ const lastSeen = new Map<string, string>();
 export const PROMPT_SECTIONS = {
 	environment: "## environment",
 	project: "## project — ",
+	botMemory: "## MEMORY.md — this bot's durable memory",
 	agents: "## AGENTS.md — your operating notes",
 	user: "## USER.md — your model of the operator",
 	skills: "## skills",
 } as const;
+
+export const BOT_TOOL_SOURCE = "bot-tool";
 
 function noteSource(source: string, content: string | null): void {
 	const digest =
@@ -119,13 +124,15 @@ interface PromptFile {
 function readOptional(path: string, cap: number): PromptFile | null {
 	let fd: number;
 	try {
-		fd = openSync(path, "r");
+		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
 	}
 	try {
-		const bytes = fstatSync(fd).size;
+		const file = fstatSync(fd);
+		if (!file.isFile()) throw new Error(`Read prompt file ${path}: not a regular file`);
+		const bytes = file.size;
 		const buf = Buffer.allocUnsafe(Math.min(bytes, MAX_PROMPT_FILE_BYTES));
 		let n = 0;
 		while (n < buf.length) {
@@ -228,6 +235,7 @@ export function buildSystemPrompt(
 	tools: readonly string[],
 	project?: Project | null,
 	notesIndex?: { id: string; title: string }[] | undefined,
+	memoryBot?: Pick<Bot, "id" | "folder"> | null,
 ): { text: string; sources: string[] } {
 	// A guest persona reads no operator files — nothing private in,
 	// nothing about the operator out — and is built before any file
@@ -282,6 +290,9 @@ export function buildSystemPrompt(
 			? null
 			: projectSection(project, notesIndex);
 	const projectAgents = projectContent?.agents ?? null;
+	const memoryPath = botMemoryPath(memoryBot?.folder ?? null);
+	const botMemory = memoryPath === null ? null : readCapped("MEMORY.md", memoryPath, MAX_PROMPT_FILE_CHARS);
+	if (memoryBot != null) noteSource(`bot:${memoryBot.id}:MEMORY.md`, botMemory);
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);
@@ -445,6 +456,12 @@ export function buildSystemPrompt(
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
 		...(projectContent?.lines ?? []),
+		...(memoryPath === null ? [] : [
+			"", PROMPT_SECTIONS.botMemory, "",
+			`Use ${JSON.stringify(memoryPath)} to keep what this bot learns across conversations.`,
+			"Update it when something should carry over. Read it fresh when you need the latest edits.",
+			...(botMemory?.trim() ? ["", botMemory.trim()] : []),
+		]),
 		...(agents ? ["", PROMPT_SECTIONS.agents, "", agents.trim()] : []),
 		...(user ? ["", PROMPT_SECTIONS.user, "", user.trim()] : []),
 		"",
@@ -452,6 +469,8 @@ export function buildSystemPrompt(
 	].join("\n");
 
 	const sources = ["SOUL.md"];
+	if (botMemory !== null) sources.push("MEMORY.md");
+	if (tools.includes("bot")) sources.push(BOT_TOOL_SOURCE);
 	if (project !== null && project !== undefined) {
 		sources.push("project");
 		if (projectAgents !== null) sources.push("project-AGENTS.md");
@@ -470,7 +489,7 @@ export function buildSystemPrompt(
 // Compaction clears the snapshot (runtime.ts): the history rewrite
 // busts the prefix anyway, so the refresh there is free.
 export function systemPromptFor(
-	store: Pick<ConversationStore, "promptSnapshot" | "savePromptSnapshot">,
+	store: Pick<ConversationStore, "promptSnapshot" | "savePromptSnapshot" | "bots">,
 	conv: Conversation,
 	tools: readonly string[],
 	project?: Project | null,
@@ -478,7 +497,9 @@ export function systemPromptFor(
 ): { text: string; sources: string[] } {
 	const frozen = store.promptSnapshot(conv.id);
 	if (frozen !== null) return frozen;
-	const built = buildSystemPrompt(conv, tools, project, notesIndex);
+	const membership = store.bots.membership(conv.id);
+	const bot = membership === null ? null : store.bots.get(membership.botId);
+	const built = buildSystemPrompt(conv, tools, project, notesIndex, bot);
 	store.savePromptSnapshot(conv.id, built.text, built.sources);
 	// The snapshot's birth is a cache write; the noteSource diffs above
 	// explain any source change since the last build.

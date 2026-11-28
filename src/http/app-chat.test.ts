@@ -19,6 +19,41 @@ const engineName = (make: (typeof adapters)[number]) =>
 	make === sdkScript ? "ai-sdk" : "claude-code";
 
 describe("app chat", () => {
+	test("asking for a bot preserves the frozen main chat and sends only after an explicit fresh start", async () => {
+		const { http, call, store, configRef, runtime } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const first = store.rollApp(configRef.current);
+			store.append(first.id, [{ id: "existing", role: "user", parts: [{ type: "text", text: "existing chat" }] }]);
+			const text = "unchanged sent prompt";
+			store.savePromptSnapshot(first.id, text, ["SOUL.md"]);
+			const ask = () => call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					rolling: true,
+					requireBotTool: true,
+					message: { id: "request-bot", role: "user", parts: [{ type: "text", text: "New bot: Keep a log" }] },
+				}),
+			});
+			const refused = await ask();
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toMatchObject({ error: expect.stringContaining("choose New conversation") });
+			expect(store.appRollChain(50).map((chat) => chat.id)).toEqual([first.id]);
+			expect(store.history(first.id).map((message) => message.id)).toEqual(["existing"]);
+			expect(store.promptSnapshot(first.id)?.text).toBe(text);
+			const manual = await call("/api/app/rolling/roll", { method: "POST" });
+			expect(manual.ok).toBe(true);
+			const second = store.currentAppRoll()!;
+			expect(second.id).not.toBe(first.id);
+			const accepted = await ask();
+			expect(accepted.status).toBe(202);
+			expect(await accepted.json()).toMatchObject({ conversationId: second.id, rolled: false });
+		} finally {
+			http.stop();
+			await runtime.shutdown();
+			store.close();
+		}
+	});
 	test("rolling roll is refused while the latest roll's turn runs", async () => {
 		const entered = deferred<void>();
 		const gate = deferred<void>();

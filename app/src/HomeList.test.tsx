@@ -46,6 +46,7 @@ const staticHome = (list: Home["list"]): Home => ({
 	list,
 	orderSignature: "",
 	sidePage: { rows: list.side, hidden: 0, showMore: () => {} },
+	botPages: new Map(list.bots.map(({ bot, side }) => [bot.id, { rows: side, hidden: 0, showMore: () => {} }])),
 });
 
 let win: Window | null = null;

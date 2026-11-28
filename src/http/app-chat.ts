@@ -19,7 +19,8 @@ import type { TurnDone } from "../turn/sink.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { noteSkillUse } from "../skill-usage.ts";
 import { paths } from "../home-layout.ts";
-import { projectRollText, rollLaneNow, routeLaneMessage, type RollLane, type RollDeps } from "../rolling.ts";
+import { projectRollText, rollLaneNow, routeLane, routeLaneMessage, type RollLane, type RollDeps } from "../rolling.ts";
+import { BOT_TOOL_SOURCE } from "../agent/prompt.ts";
 import {
 	type AppChannelDeps,
 	jsonBodyRefusal,
@@ -40,6 +41,7 @@ const chatBody = z
 	.object({
 		conversationId: conversationIdSchema.optional(),
 		rolling: z.literal(true).optional(),
+		requireBotTool: z.literal(true).optional(),
 		initialModelSettings: modelSettingsBody.optional(),
 		pinnedNoteIds: z
 			.array(z.string().min(1).max(200))
@@ -165,6 +167,9 @@ const chatBody = z
 				path: ["pinnedNoteIds"],
 				message: "pinnedNoteIds is only valid for a rolling send",
 			});
+		}
+		if (d.requireBotTool === true) {
+			ctx.addIssue({ code: "custom", path: ["requireBotTool"], message: "requireBotTool is only valid for a rolling send" });
 		}
 		if (d.initialModelSettings !== undefined) {
 			ctx.addIssue({
@@ -608,11 +613,19 @@ export async function handleChatRoute(
 			};
 			let result: Awaited<ReturnType<typeof routeLaneMessage>>;
 			try {
-				result = await routeLaneMessage(
-					rollDeps,
-					lane,
-					projectRollText(message.parts as Message["parts"]),
-				);
+				if (parsed.data.requireBotTool === true) {
+					const current = lane.current();
+					const snapshot = current === null ? null : store.promptSnapshot(current.id);
+					if (snapshot !== null && !snapshot.sources.includes(BOT_TOOL_SOURCE)) {
+						log.info("app bot request needs a fresh chat", { conversation: current?.id });
+						return Response.json({ error: "In Little Goblin’s main chat, choose New conversation, then send this request again." }, {
+							status: 409, headers: NO_STORE,
+						});
+					}
+					result = routeLane(rollDeps, lane, "current");
+				} else {
+					result = await routeLaneMessage(rollDeps, lane, projectRollText(message.parts as Message["parts"]));
+				}
 			} catch (err) {
 				if (!(err instanceof NotePinsRefused)) throw err;
 				log.warn("app rolling send refused: notes not pinnable", { refused: err.noteIds });

@@ -6,7 +6,7 @@ import type {
 	AppAttentionTarget,
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse } from "../../src/http/operator-wire.ts";
-import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
+import { BotApprovalCard, MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
 import { decideBlockedMemory, getMemoryStatus } from "./api.ts";
 import { RetryCard } from "./MemoryView.tsx";
 import { describe } from "./opsShared.tsx";
@@ -16,6 +16,7 @@ import { useLive } from "./useLive.tsx";
 
 const KIND_LABEL = {
 	"program-approval": "program",
+	"bot-approval": "bot",
 	"mail-approval": "mail",
 	"memory-blocked": "memory",
 	"memory-outage": "memory",
@@ -27,6 +28,7 @@ const KIND_LABEL = {
 
 const DECISION_KINDS: ReadonlySet<AppAttentionItem["kind"]> = new Set([
 	"program-approval",
+	"bot-approval",
 	"mail-approval",
 	"skill-proposal",
 ]);
@@ -277,6 +279,11 @@ export function AttentionView({
 
 	const decisionCard = (item: AppAttentionItem) => {
 		const [, key = ""] = /^[^:]+:(.*)$/.exec(item.id) ?? [];
+		if (item.kind === "bot-approval") {
+			const proposal = approvals.data?.bots.find((p) => String(p.id) === key);
+			if (proposal === undefined) return approvals.loading ? <p className="empty">Loading…</p> : null;
+			return <BotApprovalCard token={token} proposal={proposal} onDone={reloadAll} />;
+		}
 		if (item.kind === "program-approval") {
 			const proposal = approvals.data?.programs.find((p) => String(p.id) === key);
 			if (proposal === undefined)

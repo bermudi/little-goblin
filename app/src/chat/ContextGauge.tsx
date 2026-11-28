@@ -28,6 +28,7 @@ const SEGMENT_LABELS: Record<string, string> = {
 	environment: "Environment",
 	project: "Project",
 	agentsMd: "AGENTS.md",
+	botMemory: "Bot memory",
 	userMd: "USER.md",
 	skills: "Skills",
 	toolDefs: "Tool definitions",

@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { noteTool } from "../agent/tools/note.ts";
 import { appAddress, appIdOf } from "../conversation-address.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
@@ -94,6 +97,10 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 		expect(bot).toEqual({
 			id: expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
 			name: "Workshop",
+			instructions: "",
+			folder: null,
+			model: null,
+			thinking: null,
 			mainConversationId: chat.id,
 			sideConversationIds: [],
 			canMoveBack: true,
@@ -145,6 +152,91 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 	} finally {
 		http.stop();
 		store.close();
+	}
+});
+
+test("a bot's instructions and folder round-trip without a rename", async () => {
+	const { call, store, http } = setup({ token: APP_TOKEN_NAME });
+	try {
+		store.resolve(appAddress("bot-settings"), "/workshop");
+		const converted = await call("/api/app/conversations/bot-settings/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Workshop" }),
+		});
+		expect(converted.status).toBe(201);
+		const bot = (await converted.json()) as AppBot;
+		const update = (body: object) => call(`/api/app/bots/${bot.id}`, {
+			method: "PATCH", headers: jsonHeaders, body: JSON.stringify(body),
+		});
+		expect((await update({ folder: "../relative" })).status).toBe(422);
+		expect((await update({})).status).toBe(422);
+		const patch = { instructions: "  Keep the inventory.\n", folder: "/workshop/bot" };
+		const changed = await update(patch);
+		expect(changed.status).toBe(200);
+		expect(await changed.json()).toEqual({ ...bot, ...patch });
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({
+			bots: [{ ...bot, ...patch }],
+		});
+		const cleared = await update({ folder: null });
+		expect(cleared.status).toBe(200);
+		expect(await cleared.json()).toEqual({ ...bot, instructions: patch.instructions });
+	} finally {
+		http.stop();
+		store.close();
+	}
+});
+
+test("bot model and thinking settings validate, list, and clear", async () => {
+	const { call, store, http } = setup({ token: APP_TOKEN_NAME });
+	try {
+		store.resolve(appAddress("bot-model"), "/workshop");
+		const converted = await call("/api/app/conversations/bot-model/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Model bot" }),
+		});
+		const bot = await converted.json() as AppBot;
+		const patch = (body: object) => call(`/api/app/bots/${bot.id}`, {
+			method: "PATCH", headers: jsonHeaders, body: JSON.stringify(body),
+		});
+		expect((await patch({ model: "zai/m", thinking: "high" })).status).toBe(200);
+		expect(await (await call("/api/app/conversations")).json()).toMatchObject({
+			bots: [{ id: bot.id, model: "zai/m", thinking: "high" }],
+		});
+		expect((await patch({ model: "ghost/nope" })).status).toBe(422);
+		expect(store.bots.get(bot.id)?.model).toBe("zai/m");
+		expect((await patch({ thinking: "invalid" })).status).toBe(422);
+		expect((await patch({ model: null, thinking: null })).status).toBe(200);
+	} finally {
+		http.stop();
+		store.close();
+	}
+});
+
+test("bot memory returns null for an absent file and reads a present file", async () => {
+	const { call, store, http } = setup({ token: APP_TOKEN_NAME });
+	const root = mkdtempSync(join(tmpdir(), "goblin-bot-memory-"));
+	try {
+		store.resolve(appAddress("bot-memory"), "/workshop");
+		const converted = await call("/api/app/conversations/bot-memory/convert-to-bot", {
+			method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Memory bot" }),
+		});
+		const bot = await converted.json() as AppBot;
+		const memory = () => call(`/api/app/bots/${bot.id}/memory`);
+		expect(await (await memory()).json()).toEqual({ path: null, text: null });
+		const update = await call(`/api/app/bots/${bot.id}`, {
+			method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ folder: root }),
+		});
+		expect(update.status).toBe(200);
+		expect(await (await memory()).json()).toEqual({ path: join(root, "MEMORY.md"), text: null });
+		writeFileSync(join(root, "MEMORY.md"), "Remember the stockroom.");
+		expect(await (await memory()).json()).toEqual({
+			path: join(root, "MEMORY.md"), text: "Remember the stockroom.",
+		});
+		writeFileSync(join(root, "MEMORY.md"), "x".repeat(70 * 1024));
+		const truncated = await (await memory()).json() as { path: string; text: string };
+		expect(Buffer.byteLength(truncated.text)).toBe(64 * 1024);
+	} finally {
+		http.stop();
+		store.close();
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 

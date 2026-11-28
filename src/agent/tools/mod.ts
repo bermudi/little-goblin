@@ -4,6 +4,7 @@ import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
 import { type AskToolDeps, askTool } from "./ask.ts";
 import { type AskOperatorToolDeps, askOperatorTool } from "./ask-operator.ts";
+import { type BotToolDeps, botTool } from "./bot.ts";
 import { bashTool, type SkillWrites } from "./bash.ts";
 import { type ComputerToolDeps, computerTools } from "./computer.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
@@ -78,6 +79,7 @@ export interface MakeToolsOptions {
 	bashDescriptionCwd?: string;
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
+	bot?: BotToolDeps | undefined;
 	watch?: WatchToolDeps | undefined;
 	post?: PostToolDeps | undefined;
 	ask?: AskToolDeps | undefined;
@@ -117,6 +119,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		bashDescriptionCwd = cwd,
 		voice,
 		program,
+		bot,
 		watch,
 		post,
 		ask,
@@ -152,6 +155,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
+		...(bot ? { bot: botTool(bot) } : {}),
 		...(watch ? { watch: watchTool(watch) } : {}),
 		...(post ? { post: postTool(post) } : {}),
 		...(ask ? { ask: askTool(ask) } : {}),

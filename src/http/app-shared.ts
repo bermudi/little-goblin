@@ -17,6 +17,7 @@ import type { Runtime } from "../runtime.ts";
 import type { System1Client } from "../system1.ts";
 
 import type { MailApproval } from "../mail-approval.ts";
+import type { BotProposals } from "../bot-proposals.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { ProgramOps } from "../program-ops.ts";
 import type { AppPush } from "../app-push.ts";
@@ -98,6 +99,7 @@ export interface AppChannelDeps {
 	approvals?: {
 		program: Pick<ProgramApproval, "base" | "candidate" | "decide" | "pending">;
 		mail: Pick<MailApproval, "decide" | "pending">;
+		bot?: Pick<BotProposals, "approve" | "decline" | "pending">;
 	};
 	programOps?: ProgramOps;
 	push?: Pick<AppPush, "status" | "ensurePublicKey" | "register" | "unregister" | "notifyDone">;

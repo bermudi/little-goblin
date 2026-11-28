@@ -178,7 +178,7 @@ test("excluded tools are absent from Callable and unreachable inside the VM; scr
 	const description = descriptionOf(tools);
 	const callable = /- Callable: (.+?)\. Arguments/.exec(description)?.[1] ?? "";
 	expect(callable).toBe("tools.bash");
-	for (const excluded of ["speak", "mail", "vision", "delegate", "program", "ui"]) {
+	for (const excluded of ["speak", "mail", "vision", "delegate", "program", "bot", "ui"]) {
 		expect(callable).not.toContain(excluded);
 	}
 	const out = await exec(scriptToolOf(tools), { code: `await tools.mail({})` });

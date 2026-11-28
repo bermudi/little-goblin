@@ -21,6 +21,7 @@ import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
 import { projectWorkdir, type ProjectStore } from "../projects.ts";
 import type { ProgramsStore } from "../programs.ts";
+import type { BotProposals } from "../bot-proposals.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
 import type { MailApproval } from "../mail-approval.ts";
@@ -39,7 +40,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
-import { promptHasProject } from "./prompt.ts";
+import { BOT_TOOL_SOURCE, promptHasProject } from "./prompt.ts";
 import { noteHistoryAvailable } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
@@ -57,6 +58,7 @@ export interface TurnToolsDeps {
 	projects: ProjectStore;
 	notes: NoteStore;
 	programs: ProgramsStore;
+	botProposals?: BotProposals;
 	// DM-per-operator send for program hooks; conv-independent by
 	// construction. Absent when Telegram is disabled.
 	sendPrivate?(text: string): Promise<void>;
@@ -118,6 +120,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		projects,
 		notes,
 		programs,
+		botProposals,
 		sendPrivate,
 		memory,
 		transcribe,
@@ -199,6 +202,17 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 							requestApproval: async (proposal, signal) => {
 								await deps.programApproval.requestApproval(proposal, signal);
 							},
+						}
+					: undefined,
+			bot:
+				botProposals !== undefined && (snapshot === null
+					? channel === "app" && conv.persona !== "guest" && conv.agentType === null &&
+						conv.projectId === null && store.bots.membership(conv.id) === null
+					: snapshot.sources.includes(BOT_TOOL_SOURCE))
+					? {
+							proposals: botProposals,
+							conversationId: conv.id,
+							configRef,
 						}
 					: undefined,
 			file: deliverFile ? { deliver: deliverFile } : undefined,

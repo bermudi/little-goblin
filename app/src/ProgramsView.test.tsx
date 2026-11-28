@@ -114,6 +114,7 @@ test("the list is a table; opening a row replaces it with the detail and a back 
 		],
 		{
 			programs: [],
+			bots: [],
 			mail: [
 				{
 					id: 5,
@@ -168,7 +169,7 @@ test("schedule and run times share the server's zone (#187)", async () => {
 	// A cron at 07:00 server time with the server on UTC: the words, the zone
 	// label and the run columns must all say the same clock — before the fix
 	// the runs rendered in the browser's zone and disagreed by hours.
-	fakeServer([program({})], { programs: [], mail: [], serverTimeZone: "UTC" }, "UTC");
+	fakeServer([program({})], { programs: [], bots: [], mail: [], serverTimeZone: "UTC" }, "UTC");
 	root = createRoot(container);
 	await act(async () => root?.render(withLive(<ProgramsView token={null} now={NOW} />)));
 
@@ -186,7 +187,7 @@ test("a skipped occurrence shows its stamp in the detail view", async () => {
 				lastSkipReason: "beyond lateness grace",
 			}),
 		],
-		{ programs: [], mail: [], serverTimeZone: "UTC" },
+		{ programs: [], bots: [], mail: [], serverTimeZone: "UTC" },
 		"UTC",
 	);
 	root = createRoot(container);

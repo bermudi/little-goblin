@@ -7,6 +7,7 @@ import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { JSONObject, Message } from "../message.ts";
 import { declarationsOf, TOOLS_PART } from "./tool-declarations.ts";
+import { BOT_TOOL_SOURCE } from "./prompt.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
 import type { Desktops } from "../desktops.ts";
@@ -16,6 +17,7 @@ import type { Watches } from "../watches.ts";
 import { log, setLogFile, setLogWriter } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
+import type { BotProposals } from "../bot-proposals.ts";
 import type { NoteStore } from "../notes.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { openProjects, type ProjectStore } from "../projects.ts";
@@ -93,14 +95,22 @@ describe("hosted web_search mount", () => {
 		conv: Conversation,
 		snapshot: ReturnType<ConversationStore["promptSnapshot"]> = null,
 		noteSkillWrite?: (conversationId: string, skill: string) => void,
+		botProposals?: BotProposals,
 	) =>
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: { promptSnapshot: () => snapshot } as unknown as ConversationStore,
+			store: {
+				promptSnapshot: () => snapshot,
+				bots: {
+					membership: (id: string) =>
+						id === "app/bot-chat" ? { botId: "bot-1", mainOrdinal: 1 } : null,
+				},
+			} as unknown as ConversationStore,
 			projects: { get: () => ({ dir: tmpDir("goblin-turn-tools-project-") }) } as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
+			...(botProposals === undefined ? {} : { botProposals }),
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
@@ -115,7 +125,9 @@ describe("hosted web_search mount", () => {
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
 			desktops: null,
-			agents: null,
+			agents: conv.agentType === null
+				? null
+				: { allowlistFor: () => [], desktopFor: () => null } as unknown as AgentChildren,
 			filterGuests: (_c, t) => t,
 			...(noteSkillWrite !== undefined ? { noteSkillWrite } : {}),
 		});
@@ -227,6 +239,33 @@ describe("hosted web_search mount", () => {
 		expect(policyOf("ask")).toMatchObject({ guestChannel: false });
 	});
 
+	test("bot proposal mounts only on Little Goblin app chats", () => {
+		const config = cfgFor("off");
+		const app = { ...conv("zai/glm-5"), id: "app/parent" } as Conversation;
+		const botChat = { ...conv("zai/glm-5"), id: "app/bot-chat" } as Conversation;
+		const child = { ...app, agentType: "general" } as Conversation;
+		const telegram = conv("zai/glm-5");
+		const tools = (conversation: Conversation) => rigTools(config, conversation, null, undefined, {} as BotProposals)(conversation);
+		expect("bot" in tools(app)).toBe(true);
+		expect("bot" in tools(botChat)).toBe(false);
+		expect("bot" in tools(child)).toBe(false);
+		expect("bot" in tools(telegram)).toBe(false);
+		expect(policyOf("bot").guestChannel).toBe(false);
+	});
+
+	test("bot proposals leave the frozen non-incremental request prefix byte-identical", () => {
+		const config = cfgFor("off");
+		const app = { ...conv("zai/glm-5.3"), id: "app/main" } as Conversation;
+		const frozen = { text: "previously sent system text", sources: ["SOUL.md"] };
+		const proposals = {} as BotProposals;
+		const old = rigTools(config, app, frozen)(app);
+		const current = rigTools(config, app, frozen, undefined, proposals)(app);
+		const prefix = (tools: typeof old) => JSON.stringify({ system: frozen.text, tools: declarationsOf(tools) });
+		expect(prefix(current)).toBe(prefix(old));
+		expect("bot" in current).toBe(false);
+		expect("bot" in rigTools(config, app, null, undefined, proposals)(app)).toBe(true);
+		expect("bot" in rigTools(config, app, { ...frozen, sources: [BOT_TOOL_SOURCE] }, undefined, proposals)(app)).toBe(true);
+	});
 	test("guests keep web_search exactly like local search", () => {
 		expect(policyOf("web_search").guestSandbox).toBe(true);
 		expect(policyOf("search").guestSandbox).toBe(true);

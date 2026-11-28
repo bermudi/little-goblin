@@ -16,8 +16,11 @@ import type {
 	AppActivityResponse,
 	AppPostsResponse,
 	AppBot,
+	AppBotPatch,
+	AppBotMemory,
 	AppBotMoveBack,
 	AppBotName,
+	AppChatResponse,
 	AppCompactResponse,
 	AppRollResponse,
 	AppSuggestTitleResponse,
@@ -213,6 +216,22 @@ export function listConversations(token: string | null): Promise<AppConversation
 	return request(token, "/api/app/conversations");
 }
 
+export function requestBot(token: string | null, id: string, text: string): Promise<AppChatResponse> {
+	return request(token, "/api/app/chat", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			rolling: true,
+			requireBotTool: true,
+			message: { id, role: "user", parts: [{ type: "text", text: `New bot: ${text}` }] },
+		}),
+	});
+}
+
+export function getBotConfig(token: string | null, id: string): Promise<AppConfigView> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}/config`);
+}
+
 export function convertSideChat(token: string | null, id: string, body: AppBotName): Promise<AppBot> {
 	return request(token, `/api/app/conversations/${seg(id)}/convert-to-bot`, {
 		method: "POST",
@@ -227,6 +246,18 @@ export function renameBot(token: string | null, id: string, body: AppBotName): P
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 	});
+}
+
+export function patchBot(token: string | null, id: string, body: AppBotPatch): Promise<AppBot> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function getBotMemory(token: string | null, id: string): Promise<AppBotMemory> {
+	return request(token, `/api/app/bots/${encodeURIComponent(id)}/memory`);
 }
 
 export function moveBotChatBack(token: string | null, id: string): Promise<AppBotMoveBack> {
@@ -264,6 +295,7 @@ export function createConversation(
 	opts?: {
 		title?: string;
 		projectId?: string;
+		botId?: string;
 		memoryExcluded?: boolean;
 		initialModelSettings?: AppModelSettings;
 		pinnedNoteIds?: string[];
@@ -320,6 +352,14 @@ export function decideProgramApproval(
 	action: "approve" | "reject",
 ): Promise<AppApprovalDecisionResponse> {
 	return request(token, `/api/app/approvals/program/${id}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
+	});
+}
+
+export function decideBotApproval(token: string | null, id: number, action: "approve" | "decline"): Promise<AppApprovalDecisionResponse> {
+	return request(token, `/api/app/approvals/bot/${id}`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ action }),

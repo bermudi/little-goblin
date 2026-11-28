@@ -26,10 +26,11 @@ import { ArchiveView } from "./ArchiveView.tsx";
 import { ActivityView } from "./ActivityView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
 import { BotConversionDialog } from "./BotConversionDialog.tsx";
-import { BotSettingsView } from "./BotSettingsView.tsx";
+import { BotPage, LittleGoblinSettings } from "./BotPage.tsx";
 import {
 	ApiError,
 	clearToken,
+	requestBot,
 	createConversation,
 	deleteConversation,
 	listConversations,
@@ -290,6 +291,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
+	const [botRequestDraft, setBotRequestDraft] = useState("");
 	const [stagedPins, setStagedPins] = useState<Record<string, StagedPin[]>>({});
 	const [pinRefusal, setPinRefusal] = useState<string | null>(null);
 	const setStagedPinsFor = (scope: string, pins: StagedPin[]) =>
@@ -365,6 +367,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	}, [currentFolderId]);
 	const noteId = route.kind === "note" ? route.id : null;
 	const settingsBot = route.kind === "bot" ? bots.find((bot) => bot.id === route.id) : undefined;
+	const stagedBotId = route.kind === "home" ? route.botId : undefined;
+	const stagedBot = bots.find((bot) => bot.id === stagedBotId);
+	const stagedChatScope = stagedBotId === undefined ? "chat" : `bot-chat:${stagedBotId}`;
 	const windowConv = route.kind === "window" ? route.id : null;
 	const composeStaged = route.kind === "home" && route.composing;
 	const railCurrent = route.kind === "conversation" || route.kind === "window" ? route.id : null;
@@ -628,38 +633,37 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		projects: projectList.map(({ id, name, archivedAt }) => ({ id, name, archivedAt })),
 		attention: goblin.attention ?? [],
 		delegations: (goblin.delegations ?? []).map(({ appConversation, status }) => ({ appConversation, status })),
-		open: railCurrent ?? settingsBot?.mainConversationId ?? null,
+		open: railCurrent ?? settingsBot?.mainConversationId ?? stagedBot?.mainConversationId ?? null,
 		seen,
 		sideChatsOpen,
 	}, activeProjects, projectsOpen, expandedBotId);
-	const currentBot = settingsBot ?? (railCurrent === null ? undefined : home.list.botByChatId.get(railCurrent));
+	const currentBot = settingsBot ?? stagedBot ?? (railCurrent === null ? undefined : home.list.botByChatId.get(railCurrent));
 	const currentBotId = currentBot?.id;
 	const currentMainBot = currentBot?.mainConversationId === current ? currentBot : undefined;
 	const panelName = currentBot?.name ?? "Little Goblin";
-	const showPanel = page === "chat" || page === "rolling" || currentBot !== undefined;
+	const littleGoblinProfile = page === "status" || page === "memory" || page === "skills" || page === "log";
+	const showPanel = page === "chat" || page === "rolling" || page === "bot" || littleGoblinProfile;
 	const isBotChat = (id: string | null) => id !== null && home.list.botByChatId.get(id) === currentBot;
 	const panelConversations = currentBot === undefined
-		? [...all, ...rollingChain] : all.filter((chat) => isBotChat(chat.id));
+		? [...all.filter((chat) => isBotChat(chat.id)), ...rollingChain] : all.filter((chat) => isBotChat(chat.id));
 	const panelRolls = currentBot === undefined ? rollingChain.map((chat) => chat.id) : [];
 	const panelNotes = notes?.filter((note) => currentBot === undefined
 		? (note.botId ?? LITTLE_GOBLIN_NOTE_OWNER) === LITTLE_GOBLIN_NOTE_OWNER
 		: note.botId === currentBot.id || note.botId === null) ?? null;
-	let panelData = goblin;
-	if (currentBot !== undefined) {
-		const delegations = goblin.delegations?.filter((job) => isBotChat(job.appConversation)) ?? null;
-		const activity = goblin.activity === null ? null : {
-			busy: goblin.activity.busy.filter((chat) => isBotChat(chat.id)),
-			otherBusy: 0,
-			posts: goblin.activity.posts.filter((post) => isBotChat(post.conversation?.id ?? null)),
-		};
-		panelData = {
-			...goblin,
-			activity,
-			delegations,
-			programs: goblin.programs?.filter((program) => isBotChat(program.target)) ?? null,
-			working: workingCount(activity, delegations),
-		};
-	}
+	const panelDelegations = goblin.delegations?.filter((job) =>
+		job.appConversation === null ? currentBot === undefined : isBotChat(job.appConversation)) ?? null;
+	const panelActivity = goblin.activity === null ? null : {
+		busy: goblin.activity.busy.filter((chat) => isBotChat(chat.id)),
+		otherBusy: currentBot === undefined ? goblin.activity.otherBusy : 0,
+		posts: goblin.activity.posts.filter((post) => post.conversation === null ? currentBot === undefined : isBotChat(post.conversation.id)),
+	};
+	const panelData = {
+		...goblin,
+		activity: panelActivity,
+		delegations: panelDelegations,
+		programs: goblin.programs?.filter((program) => isBotChat(program.target)) ?? null,
+		working: workingCount(panelActivity, panelDelegations),
+	};
 	const inGoblin = page === "rolling" || home.list.openInGoblin;
 	const inProject = currentFolderId !== null;
 	const inBot = currentBot !== undefined;
@@ -696,9 +700,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	};
 
 	const openProject = (id: string) => navigate({ kind: "project", id });
-	const openPanelProfile = () => currentBot === undefined
-		? openPage("status")
-		: navigate({ kind: "bot", id: currentBot.id });
+	const openPanelProfile = () => navigate({ kind: "bot", id: currentBot?.id ?? "little-goblin", tab: "settings" });
+	const openLittleGoblinSettings = () => navigate({ kind: "bot", id: "little-goblin", tab: "settings" });
 	const openProjectsIndex = () => navigate({ kind: "page", page: "projects" });
 	const openArchive = () => navigate({ kind: "page", page: "archive" });
 	const openNotesIndex = () => navigate({ kind: "page", page: "notes" });
@@ -799,9 +802,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 	// created lazily, on the first send — an untouched composer never
 	// leaves an empty row in the store. On phone widths "+" is tapped from
 	// the chats list, so staging the composer is the mobile bit.
-	const newConversation = () => {
+	const newConversation = (botId?: string) => {
 		setComposerFocus((t) => t + 1);
-		void navigate({ kind: "home", composing: true });
+		void navigate({ kind: "home", composing: true, ...(botId === undefined ? {} : { botId }) });
 	};
 
 	const openConversation = (id: string) => {
@@ -817,6 +820,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		parts: UIMessage["parts"],
 		composerScope: string,
 		initialModelSettings?: AppModelSettings,
+		botId?: string,
 	): Promise<boolean> => {
 		if (!(await leaveDirty())) return false;
 		if (startBusyRef.current) {
@@ -832,6 +836,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 		try {
 			const created = await createConversation(token, {
 				...(projectId === null ? {} : { projectId }),
+				...(botId === undefined ? {} : { botId }),
 				memoryExcluded: stagedMemoryExcluded,
 				...(initialModelSettings === undefined ? {} : { initialModelSettings }),
 				...(pinned.length === 0 ? {} : { pinnedNoteIds: pinned.map((pin) => pin.id) }),
@@ -999,6 +1004,22 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			return err instanceof Error ? err.message : String(err);
 		}
 	};
+	const askForBot = async (text: string): Promise<boolean> => {
+		if (!(await leaveDirty())) return false;
+		const seq = navigationSeq.current;
+		const messageId = crypto.randomUUID();
+		const result = await requestBot(token, messageId, text);
+		if (!("conversationId" in result)) throw new Error("The request has no main chat.");
+		setBotRequestDraft((draft) => draft.trim() === text ? "" : draft);
+		if (seq === navigationSeq.current) {
+			setRollingViewing(null);
+			setRollingRouted(result.conversationId);
+			setRollingFollow({ conversationId: result.conversationId, messageId });
+			void navigate({ kind: "page", page: "rolling" }, { skipDirtyGuard: true });
+		}
+		void acted("conversations");
+		return true;
+	};
 	const renderHomeList = (navRef: (node: HTMLElement | null) => void) => (
 		<HomeList
 			home={home}
@@ -1012,6 +1033,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 			onToggleProjects={() => setProjectsOpen(!projectsOpen)}
 			onToggleSideChats={() => setSideChatsOpen(!sideChatsOpen)}
 			onNewSideChat={newConversation}
+			botRequest={{ draft: botRequestDraft, setDraft: setBotRequestDraft, submit: askForBot }}
 			onNewProject={() => setCreateProjectOpen(true)}
 			onOpenProject={(id) => void openProject(id)}
 			onOpenTarget={openAttentionTarget}
@@ -1250,7 +1272,6 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 									if (value === "pin") void headerActions.togglePinned();
 									else if (value === "rename") setHeaderRenaming(true);
 									else if (value === "convert-to-bot") setConvertSource(currentConv.id);
-									else if (value === "bot-settings") void openPanelProfile();
 									else if (value === "archive" || value === "unarchive")
 										void headerActions.toggleArchived();
 									else if (value === "delete") headerActions.remove();
@@ -1278,9 +1299,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 											<MenuItem value="pin">
 												{currentConv.pinnedAt === null ? "Pin" : "Unpin"}
 											</MenuItem>
-											{currentMainBot === undefined
-												? <MenuItem value="rename">Rename</MenuItem>
-												: <MenuItem value="bot-settings">Bot settings</MenuItem>}
+											{currentMainBot === undefined && <MenuItem value="rename">Rename</MenuItem>}
 											{currentBot === undefined && currentConv.projectId === null && currentConv.parentId === null && (
 												<MenuItem value="convert-to-bot">Convert to bot…</MenuItem>
 											)}
@@ -1330,6 +1349,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							↑ {flatTitle(parentConv.title) ?? "parent conversation"}
 						</a>
 					)}
+					{(page === "rolling" || (page === "chat" && (currentBot !== undefined || currentConv?.projectId === null))) && (
+						<button type="button" className="header-action bot-page-link" onClick={() => void openPanelProfile()}>Bot page</button>
+					)}
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
@@ -1373,7 +1395,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							<span className="header-title">Little Goblin</span>
 						))}
 					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
-					{page === "bot" && <span className="header-title">{settingsBot?.name}</span>}
+					{page === "bot" && <span className="header-title">{panelName}</span>}
 					{page === "notes" && <span className="header-title">Notes</span>}
 					{page === "note" && <span className="header-title">Note</span>}
 					{PAGES.some((p) => p.key === page) && (
@@ -1421,7 +1443,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 								className="header-action"
 								title="New side chat"
 								aria-label="New side chat"
-								onClick={newConversation}
+								onClick={() => newConversation()}
 							>
 								<svg
 									viewBox="0 0 24 24"
@@ -1496,8 +1518,8 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						onOpenNotes={() => void openNotesIndex()}
 					/>
 				)}
-				{(page === "status" || page === "memory" || page === "skills" || page === "log") && (
-					<GoblinProfileHeader page={page} working={goblin.working} onPage={openPage} />
+				{littleGoblinProfile && (
+					<GoblinProfileHeader page={page} working={panelData.working} onPage={openPage} onSettings={openLittleGoblinSettings} onMain={() => openPage("rolling")} />
 				)}
 				{page === "memory" && <MemoryView token={token} onConversation={openConversation} />}
 				{page === "delegations" && (
@@ -1618,16 +1640,27 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 				)}
 				{page === "bot" && (
 					settingsBot !== undefined ? (
-						<BotSettingsView
+						<BotPage
 							key={settingsBot.id}
 							token={token}
 							bot={settingsBot}
+							working={panelData.working}
+							onOpenMain={() => openConversation(settingsBot.mainConversationId)}
+							tab={route.kind === "bot" ? route.tab : "settings"}
+							onTab={(tab) => void navigate({ kind: "bot", id: settingsBot.id, tab })}
 							onChanged={() => acted("conversations")}
 							onMovedBack={(id) => {
 								if (routeRef.current === route) openConversation(id);
 								void acted("conversations");
 							}}
 						/>
+					) : route.kind === "bot" && route.id === "little-goblin" ? (
+						<div className="ops">
+							<GoblinProfileHeader page={route.tab} working={panelData.working} onPage={openPage} onSettings={openLittleGoblinSettings} onMain={() => openPage("rolling")} />
+							{route.tab === "settings"
+								? <LittleGoblinSettings token={token} openSettings={() => openPage("settings")} openFiles={() => openPage("files")} />
+								: <MemoryView token={token} onConversation={openConversation} />}
+						</div>
 					) : (
 						<div className="ops">
 							{convError !== null
@@ -1715,16 +1748,18 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							<Composer
 								key={`home-composer:${composerFocus}`}
 								token={token}
-								draftScope="new"
-								notes={stagedNotes("chat", null)}
+								{...(stagedBotId === undefined ? {} : { placeholder: `Message ${stagedBot?.name ?? "bot"}` })}
+								draftScope={stagedBotId === undefined ? "new" : stagedChatScope}
+								newBotId={stagedBotId}
+								notes={stagedBotId === undefined ? stagedNotes("chat", null) : undefined}
 								busy={starting}
 								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
 								onStagedMemoryToggle={setStagedMemoryExcluded}
 								focusSignal={composerFocus}
-								draftRestore={draftRestores.chat ?? null}
-								onDraftRestored={() => consumeRestore("chat")}
+								draftRestore={draftRestores[stagedChatScope] ?? null}
+								onDraftRestored={() => consumeRestore(stagedChatScope)}
 								onSend={(parts, _whenBusy, initialModelSettings) =>
-									startChat(null, parts, "chat", initialModelSettings).catch((err: unknown) => {
+									startChat(null, parts, stagedChatScope, initialModelSettings, stagedBotId).catch((err: unknown) => {
 										reportStartRefusal(err);
 										return false;
 									})
@@ -1913,6 +1948,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 					<GoblinPanel
 						variant="column"
 						botName={currentBot?.name}
+						botId={currentBot?.id}
+						token={token}
+						hasCustomBots={bots.length > 0}
 						data={panelData}
 						conversations={panelConversations}
 						openConversationId={railCurrent ?? openRoll}
@@ -1924,6 +1962,7 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						onOpenPage={openPage}
 						onOpenNote={openNote}
 						onOpenProfile={() => void openPanelProfile()}
+						onOpenBotMemory={() => void navigate({ kind: "bot", id: currentBot!.id, tab: "memory" })}
 					/>
 				</aside>
 			)}
@@ -1940,6 +1979,9 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 						<GoblinPanel
 							variant="sheet"
 							botName={currentBot?.name}
+							botId={currentBot?.id}
+							token={token}
+							hasCustomBots={bots.length > 0}
 							data={panelData}
 							conversations={panelConversations}
 							openConversationId={railCurrent ?? openRoll}
@@ -1965,6 +2007,10 @@ function AppBody({ token, onDeadToken }: { token: string | null; onDeadToken: ()
 							onOpenProfile={() => {
 								setGoblinSheetOpen(false);
 								void openPanelProfile();
+							}}
+							onOpenBotMemory={() => {
+								setGoblinSheetOpen(false);
+								void navigate({ kind: "bot", id: currentBot!.id, tab: "memory" });
 							}}
 						/>
 					</DrawerContent>

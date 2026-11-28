@@ -1,9 +1,25 @@
 import { z } from "zod";
+import { isAbsolute } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
+import { botMemoryPath } from "../bot-memory.ts";
 import { log } from "../log.ts";
+import { thinkingLevels } from "../config-schema.ts";
+import { configView, resolveModelSettings } from "./app-shared.ts";
 import { type AppChannelDeps, conversationFromSegment, NO_STORE, parsedJson } from "./app-shared.ts";
-import type { AppBot, AppBotMoveBack, AppBotName } from "./app-wire.ts";
+import type { AppBot, AppBotMemory, AppBotMoveBack, AppBotName } from "./app-wire.ts";
 
-const nameBody: z.ZodType<AppBotName> = z.object({ name: z.string().trim().min(1).max(200) }).strict();
+const name = z.string().trim().min(1).max(200);
+const nameBody: z.ZodType<AppBotName> = z.strictObject({ name });
+const settingsBody = z.strictObject({
+	name: name.optional(),
+	instructions: z.string().max(20_000).optional(),
+	folder: z.string().max(4096).refine((path) => isAbsolute(path) && !path.includes("\0"), {
+		message: "Use an absolute folder path.",
+	}).nullable().optional(),
+	model: z.string().min(1).nullable().optional(),
+	thinking: z.enum(thinkingLevels).nullable().optional(),
+}).refine((patch) => Object.values(patch).some((value) => value !== undefined));
 const botId = z.uuidv4();
 const emptyBody = z.strictObject({});
 
@@ -17,11 +33,58 @@ const conversionErrors = {
 export async function handleBotsRoute(
 	req: Request,
 	url: URL,
-	deps: Pick<AppChannelDeps, "store" | "runtime">,
+	deps: Pick<AppChannelDeps, "store" | "runtime" | "configRef">,
 	now = Date.now,
 ): Promise<Response | null> {
 	const settings = url.pathname.match(/^\/api\/app\/bots\/([^/]+)(\/move-back)?$/);
 	if (settings !== null) return handleBotSettings(req, settings[1]!, settings[2] !== undefined, deps);
+	const config = url.pathname.match(/^\/api\/app\/bots\/([^/]+)\/config$/);
+	if (config !== null) {
+		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const bot = deps.store.bots.get(config[1]!);
+		if (bot === null) return Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
+		const cfg = deps.configRef.current;
+		return Response.json(configView(cfg, { model: bot.model ?? cfg.model, thinking: bot.thinking ?? cfg.thinking }), {
+			headers: NO_STORE,
+		});
+	}
+	const memory = url.pathname.match(/^\/api\/app\/bots\/([^/]+)\/memory$/);
+	if (memory !== null) {
+		if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const bot = deps.store.bots.get(memory[1]!);
+		if (bot === null) return Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
+		const path = botMemoryPath(bot.folder);
+		let text: string | null = null;
+		let truncated = false;
+		if (path !== null) {
+			try {
+				const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+				try {
+					const file = fstatSync(fd);
+					if (!file.isFile()) throw new Error("not a regular file");
+					const contents = Buffer.alloc(Math.min(file.size, 64 * 1024));
+					let n = 0;
+					while (n < contents.length) {
+						const read = readSync(fd, contents, n, contents.length - n, n);
+						if (read === 0) break;
+						n += read;
+					}
+					const decoder = new StringDecoder("utf8");
+					text = decoder.write(contents.subarray(0, n));
+					if (n === file.size) text += decoder.end();
+					truncated = file.size > contents.length;
+				} finally {
+					closeSync(fd);
+				}
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+					log.error("app bot memory read failed", error, { bot: bot.id, path });
+					throw new Error(`read bot memory ${path}: ${String(error)}`, { cause: error });
+				}
+			}
+		}
+		return Response.json({ path, text, ...(truncated ? { truncated: true } : {}) } satisfies AppBotMemory, { headers: NO_STORE });
+	}
 
 	const match = url.pathname.match(/^\/api\/app\/conversations\/([^/]+)\/convert-to-bot$/);
 	if (match === null) return null;
@@ -56,7 +119,7 @@ async function handleBotSettings(
 	req: Request,
 	id: string,
 	moveBack: boolean,
-	{ store, runtime }: Pick<AppChannelDeps, "store" | "runtime">,
+	{ store, runtime, configRef }: Pick<AppChannelDeps, "store" | "runtime" | "configRef">,
 ): Promise<Response> {
 	const missing = () => Response.json({ error: "No such bot." }, { status: 404, headers: NO_STORE });
 	if (!botId.safeParse(id).success) return missing();
@@ -64,11 +127,20 @@ async function handleBotSettings(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 	if (!moveBack) {
-		const body = await parsedJson(req, nameBody);
+		const body = await parsedJson(req, settingsBody);
 		if (body instanceof Response) return body;
-		const bot = store.bots.rename(id, body.name);
+		let model = body.model;
+		if (model !== undefined && model !== null) {
+			const resolved = resolveModelSettings(configRef.current, {
+				model,
+				thinking: configRef.current.thinking,
+			});
+			if (resolved instanceof Response) return resolved;
+			model = resolved.settings.model;
+		}
+		const bot = store.bots.patch(id, { ...body, model });
 		if (bot === null) return missing();
-		log.info("app bot renamed", { bot: bot.id });
+		log.info("app bot settings changed", { bot: bot.id, fields: Object.keys(body) });
 		return Response.json(bot satisfies AppBot, { headers: NO_STORE });
 	}
 	const body = await parsedJson(req, emptyBody);

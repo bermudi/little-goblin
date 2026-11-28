@@ -30,6 +30,7 @@ export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 	"memory_reflect",
 	"note",
 	"program",
+	"bot",
 	"desktop",
 ]);
 

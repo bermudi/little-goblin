@@ -110,5 +110,26 @@ Goblin and retires the bot ID. Converting the chat again creates a new bot ID.
   wall needs a sandbox (same as one-assistant).
 - A closed bot hides its side chats. The mark on its row is what keeps their
   work visible, so a missing mark is a bug, not a style issue.
-- Goblin's profile pages (Status, Memory, Skills, Log) need a place on
-  Little Goblin's bot page. Not designed yet.
+
+### Bot pages and new bots
+
+Operator rulings, 2026-11-28 (#1005). The chat header and right panel link
+to **Bot page**. A custom bot's page has Settings and Memory; its settings
+hold the display name, default model and thinking, instructions, and the
+folder path. A converted chat can move back while eligible. Little Goblin
+shows the app defaults and links to its operator files, and has the
+existing Status, Memory, Skills and Log pages under the same header.
+
+The right panel has Activity, Scheduled, Memory and Library. **Needs you**
+still covers all bots. A custom bot's Memory shows `MEMORY.md` in its
+folder; a new prompt snapshot takes a bounded copy, just like `USER.md`.
+Little Goblin's Memory shows recent Hindsight entries. A custom bot can
+start a side chat with its own defaults. Starting a fresh conversation in
+its main chat is tracked separately (#1006).
+
+**Ask Little Goblin for a new bot** sends a request to its current main
+conversation. The `bot` tool records a proposal for the operator to
+approve or decline; it does not create a bot. Approval creates its folder
+and empty main chat. A conversation whose prompt was frozen before the
+tool became available keeps its original declaration. The app asks the
+operator to start a fresh main conversation instead of doing it for them.

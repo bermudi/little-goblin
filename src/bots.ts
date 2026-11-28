@@ -2,6 +2,10 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { appIdOf } from "./conversation-address.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "./note-owner.ts";
+import { clampThinkingFor } from "./agent/thinking.ts";
+import type { Config } from "./config-schema.ts";
+import type { ThinkingLevel } from "./config-schema.ts";
+import { paths } from "./home-layout.ts";
 
 export type BotId = string;
 export const LITTLE_GOBLIN_BOT_ID: BotId = LITTLE_GOBLIN_NOTE_OWNER;
@@ -9,10 +13,16 @@ export const LITTLE_GOBLIN_BOT_ID: BotId = LITTLE_GOBLIN_NOTE_OWNER;
 export interface Bot {
 	id: BotId;
 	name: string;
+	instructions: string;
+	folder: string | null;
+	model: string | null;
+	thinking: ThinkingLevel | null;
 	mainConversationId: string;
 	sideConversationIds: string[];
 	canMoveBack: boolean;
 }
+
+export type BotPatch = { [K in "name" | "instructions" | "folder" | "model" | "thinking"]?: Bot[K] | undefined };
 
 type BotRow = Omit<Bot, "canMoveBack" | "sideConversationIds"> & {
 	sideConversationIds: string;
@@ -45,9 +55,20 @@ export function ensureBotsSchema(db: Database): void {
 		CREATE TABLE IF NOT EXISTS bots (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
-			created_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL,
+			instructions TEXT NOT NULL DEFAULT '',
+			folder TEXT
 		)
 	`);
+	const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(bots)").all().map(({ name }) => name));
+	if (!columns.has("instructions")) {
+		db.run("ALTER TABLE bots ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
+	}
+	if (!columns.has("folder")) {
+		db.run("ALTER TABLE bots ADD COLUMN folder TEXT");
+	}
+	if (!columns.has("model")) db.run("ALTER TABLE bots ADD COLUMN model TEXT");
+	if (!columns.has("thinking")) db.run("ALTER TABLE bots ADD COLUMN thinking TEXT");
 	db.run("INSERT OR IGNORE INTO bots (id, name, created_at) VALUES (?, 'Little Goblin', 0)", [
 		LITTLE_GOBLIN_BOT_ID,
 	]);
@@ -57,6 +78,20 @@ export function ensureBotsSchema(db: Database): void {
 			bot_id TEXT NOT NULL REFERENCES bots(id),
 			main_ordinal INTEGER CHECK (main_ordinal > 0),
 			UNIQUE (bot_id, main_ordinal)
+		)
+	`);
+	db.run(`
+		CREATE TABLE IF NOT EXISTS bot_proposals (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			instructions TEXT NOT NULL,
+			model TEXT,
+			thinking TEXT,
+			state TEXT NOT NULL CHECK (state IN ('pending','approved','declined')),
+			created_at TEXT NOT NULL,
+			decided_at TEXT,
+			bot_id TEXT
 		)
 	`);
 }
@@ -74,14 +109,16 @@ export function makeBotStore(db: Database) {
 		SELECT bot_id AS botId, main_ordinal AS mainOrdinal FROM bot_chats WHERE conversation_id = ?
 	`);
 	const currentBots = `
-		SELECT bots.id, bots.name, bot_chats.conversation_id AS mainConversationId,
+		SELECT bots.id, bots.name, bots.instructions, bots.folder, bots.model, bots.thinking,
+			bot_chats.conversation_id AS mainConversationId,
 			(SELECT json_group_array(conversation_id ORDER BY conversation_id)
 				FROM bot_chats AS side
 				WHERE side.bot_id = bots.id AND side.main_ordinal IS NULL) AS sideConversationIds,
 			(bot_chats.main_ordinal = 1 AND NOT EXISTS (
 				SELECT 1 FROM bot_chats AS other
 				WHERE other.bot_id = bots.id AND other.conversation_id <> bot_chats.conversation_id
-			) AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.bot_id = bots.id)) AS canMoveBack
+			) AND NOT EXISTS (SELECT 1 FROM notes WHERE notes.bot_id = bots.id)
+			  AND NOT EXISTS (SELECT 1 FROM bot_proposals WHERE bot_id = bots.id)) AS canMoveBack
 		FROM bots JOIN bot_chats ON bot_chats.bot_id = bots.id
 		WHERE bot_chats.main_ordinal = (
 			SELECT MAX(main_ordinal) FROM bot_chats WHERE bot_id = bots.id
@@ -94,7 +131,12 @@ export function makeBotStore(db: Database) {
 	`);
 	const names = db.query<{ name: string }, [BotId]>("SELECT name FROM bots WHERE id = ?");
 	const insert = db.query("INSERT INTO bots (id, name, created_at) VALUES (?, ?, ?)");
-	const rename = db.query("UPDATE bots SET name = ? WHERE id = ?");
+	const create = db.query("INSERT INTO bots (id, name, created_at, instructions, folder, model, thinking) VALUES (?, ?, ?, ?, ?, ?, ?)");
+	const createConversation = db.query(`
+		INSERT INTO conversations (id, chat_id, thread_id, cwd, model, thinking, created_at)
+		VALUES (?, 0, NULL, ?, ?, ?, ?)
+	`);
+	const update = db.query("UPDATE bots SET name = ?, instructions = ?, folder = ?, model = ?, thinking = ? WHERE id = ?");
 	const detach = db.query("DELETE FROM bot_chats WHERE conversation_id = ? AND bot_id = ?");
 	const attachMain = db.query(`
 		INSERT INTO bot_chats (conversation_id, bot_id, main_ordinal) VALUES (?, ?, 1)
@@ -121,7 +163,7 @@ export function makeBotStore(db: Database) {
 			}
 			if (busy(id)) return { kind: "busy" };
 			const bot: Bot = {
-				id: randomUUID(), name, mainConversationId: id,
+				id: randomUUID(), name, instructions: "", folder: null, model: null, thinking: null, mainConversationId: id,
 				sideConversationIds: [], canMoveBack: true,
 			};
 			insert.run(bot.id, bot.name, createdAt);
@@ -129,11 +171,19 @@ export function makeBotStore(db: Database) {
 			return { kind: "converted", bot };
 		},
 	);
-	const renameActive = db.transaction((id: BotId, name: string): Bot | null => {
+	const patchActive = db.transaction((id: BotId, patch: BotPatch): Bot | null => {
 		const row = main.get(id);
 		if (row === null) return null;
-		rename.run(name, id);
-		return readBot({ ...row, name });
+		const next = {
+			...row,
+			name: patch.name ?? row.name,
+			instructions: patch.instructions ?? row.instructions,
+			folder: patch.folder === undefined ? row.folder : patch.folder,
+			model: patch.model === undefined ? row.model : patch.model,
+			thinking: patch.thinking === undefined ? row.thinking : patch.thinking,
+		};
+		update.run(next.name, next.instructions, next.folder, next.model, next.thinking, id);
+		return readBot(next);
 	});
 	const moveBack = db.transaction((id: BotId, busy: (id: string) => boolean): MoveBack => {
 		const row = main.get(id);
@@ -145,6 +195,33 @@ export function makeBotStore(db: Database) {
 	});
 
 	return {
+		create: db.transaction((input: {
+			id: string;
+			name: string;
+			instructions: string;
+			folder: string;
+			model: string | null;
+			thinking: ThinkingLevel | null;
+			createdAt: Date;
+		}, defaults: { model: string; thinking: ThinkingLevel; providers?: Config["providers"] }): Bot => {
+			const mainConversationId = `app/${randomUUID()}`;
+			const model = input.model ?? defaults.model;
+			const thinking = clampThinkingFor(defaults.providers ?? {}, model, input.thinking ?? defaults.thinking);
+			create.run(input.id, input.name, input.createdAt.getTime(), input.instructions, input.folder, input.model, input.thinking);
+			createConversation.run(mainConversationId, paths.workspace(), model, thinking, input.createdAt.toISOString());
+			attachMain.run(mainConversationId, input.id);
+			return {
+				id: input.id,
+				name: input.name,
+				instructions: input.instructions,
+				folder: input.folder,
+				model: input.model,
+				thinking: input.thinking,
+				mainConversationId,
+				sideConversationIds: [],
+				canMoveBack: false,
+			};
+		}).immediate,
 		membership: (id: string) => membership.get(id),
 		get: (id: BotId) => {
 			const row = main.get(id);
@@ -154,7 +231,7 @@ export function makeBotStore(db: Database) {
 		attachSideChat: (id: string, botId: BotId) => attachSide.run(id, botId),
 		list: () => list.all().map(readBot),
 		convertSideChat: convert.immediate,
-		rename: renameActive.immediate,
+		patch: patchActive.immediate,
 		moveBack: moveBack.immediate,
 	};
 }

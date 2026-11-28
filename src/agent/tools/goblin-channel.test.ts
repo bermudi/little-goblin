@@ -13,6 +13,8 @@ import { withGoblinCommands } from "./goblin-channel.ts";
 
 setLogFile("/dev/null");
 
+const waitForFile = (path: string): string => `for i in $(seq 1 500); do [ -e ${path} ] && break; sleep 0.02; done`;
+
 function setup(
 	allowed = true,
 	checkAuthority: () => void = () => {},
@@ -209,7 +211,9 @@ describe("goblin command channel at the bash boundary", () => {
 		try {
 			const resultPath = join(h.home, "late.result");
 			const codePath = join(h.home, "late.code");
-			await run(h, `(sleep 0.5; goblin note create --title LATE >${resultPath} 2>&1; echo $? >${codePath}) >/dev/null 2>&1 &`);
+			const goPath = join(h.home, "go");
+			await run(h, `(${waitForFile(goPath)}; goblin note create --title LATE >${resultPath} 2>&1; echo $? >${codePath}) >/dev/null 2>&1 &`);
+			writeFileSync(goPath, "");
 			await waitUntil(() => existsSync(codePath) && readFileSync(codePath, "utf8").trim() !== "", "late job finished", 10_000);
 			expect(h.notes.list({ project: "loose" }).some((note) => note.title === "LATE")).toBe(false);
 			expect(existsSync(resultPath)).toBe(true);
@@ -218,7 +222,7 @@ describe("goblin command channel at the bash boundary", () => {
 		} finally {
 			h.close();
 		}
-	});
+	}, 20_000);
 
 	test("a call accepted before bash exits finishes before bash returns", async () => {
 		let start!: () => void;
@@ -236,7 +240,7 @@ describe("goblin command channel at the bash boundary", () => {
 		accepted = join(h.home, "accepted");
 		try {
 			let settled = false;
-			const result = run(h, `goblin note create --title INFLIGHT >/dev/null 2>&1 & until [ -e ${accepted} ]; do sleep 0.05; done`).then((output) => {
+			const result = run(h, `goblin note create --title INFLIGHT >/dev/null 2>&1 & ${waitForFile(accepted)}`).then((output) => {
 				settled = true;
 				return output;
 			});
@@ -279,18 +283,21 @@ describe("goblin command channel at the bash boundary", () => {
 		});
 		const resultPath = join(h.home, "late.result");
 		const codePath = join(h.home, "late.code");
+		const readyPath = join(h.home, "ready");
+		const goPath = join(h.home, "go");
 		const controller = new AbortController();
 		try {
 			const startedAt = Date.now();
 			const result = run(
 				h,
-				`setsid /bin/bash -c 'sleep 0.5; goblin note create --title LATE >${resultPath} 2>&1; echo $? >${codePath}' >/dev/null 2>&1 & goblin note create --title HELD`,
+				`setsid /bin/bash -c ': >${readyPath}; ${waitForFile(goPath)}; goblin note create --title LATE >${resultPath} 2>&1; echo $? >${codePath}' >/dev/null 2>&1 & ${waitForFile(readyPath)}; goblin note create --title HELD`,
 				{ abortSignal: controller.signal },
 			);
 			await started;
 			controller.abort();
 			await result;
 			const returnedAfter = Date.now() - startedAt;
+			writeFileSync(goPath, "");
 			await waitUntil(() => existsSync(codePath) && readFileSync(codePath, "utf8").trim() !== "", "late job finished", 10_000);
 			expect(aborted).toBe(true);
 			expect(returnedAfter).toBeLessThan(5000);
@@ -298,9 +305,10 @@ describe("goblin command channel at the bash boundary", () => {
 			expect(readFileSync(resultPath, "utf8")).toContain("goblin: the bash call that owned this channel has ended");
 			expect(readFileSync(codePath, "utf8").trim()).toBe("75");
 		} finally {
+			writeFileSync(goPath, "");
 			h.close();
 		}
-	});
+	}, 20_000);
 
 	test("the commands-off bash output stays the legacy shape", async () => {
 		const off = bashTool("/tmp");

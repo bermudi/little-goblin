@@ -148,7 +148,9 @@ from a third party.
   On the next turn, a pin notice names the note, ID, and revision. One line
   per edit names the actor, change, and any reason. Unpinning or losing
   access produces a final notice. Archive, deletion, or loss of access
-  removes the pin. A restored note can be pinned again.
+  removes the pin. If moving a chat to or from a bot cuts off access to a
+  note, the pin is removed in the same transaction. The operator can pin
+  the note again once the chat can access it.
   The notice text and revision advance commit together at admission. The
   notice belongs to that turn's new input and replays at the same position.
   The body and diff remain available through the note tool.

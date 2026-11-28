@@ -66,6 +66,20 @@ export function ensureChatNotePinsSchema(db: Database): void {
 			WHERE note_id = OLD.id AND removed IS NULL;
 		END;
 	`);
+	for (const [event, membership] of [["INSERT", "NEW"], ["DELETE", "OLD"]] as const) {
+		db.run(`
+			CREATE TRIGGER IF NOT EXISTS chat_note_pins_membership_${event.toLowerCase()}
+			AFTER ${event} ON bot_chats
+			BEGIN
+				UPDATE chat_note_pins SET removed = 'unavailable'
+				WHERE conversation_id = ${membership}.conversation_id AND removed IS NULL
+					AND NOT EXISTS (
+						SELECT 1 FROM notes n WHERE n.id = chat_note_pins.note_id
+							AND ${available("n", "chat_note_pins.conversation_id")}
+					);
+			END;
+		`);
+	}
 }
 
 interface PinRow {

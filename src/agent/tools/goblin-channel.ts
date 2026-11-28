@@ -7,6 +7,7 @@ import { isHosted, zodInputJsonSchema } from "../../tool.ts";
 import { policyOf } from "../tool-policy.ts";
 import { summarize } from "../../reviewer-evidence.ts";
 import { log } from "../../log.ts";
+import { sleep } from "../../timing.ts";
 
 const MAX_REQUEST = 1024 * 1024;
 const MAX_CALLS = 50;
@@ -303,7 +304,7 @@ export function commandRuntime(opts: {
 						if (signal.aborted) resolve();
 						else signal.addEventListener("abort", () => resolve(), { once: true });
 					});
-			await Promise.race([all, aborted.then(() => Promise.race([all, Bun.sleep(ABORT_GRACE_MS)]))]);
+			await Promise.race([all, aborted.then(() => Promise.race([all, sleep(ABORT_GRACE_MS)]))]);
 			for (const call of running.values()) {
 				calls.push({ ...call, ok: false, result: "still running when the bash call ended; its result was not waited for" });
 				log.warn("goblin call abandoned after abort", { conversation: opts.conversation ?? "", tool: call.tool, parent: opts.toolCallId });

@@ -19,6 +19,7 @@ export interface NoteToolDeps {
 	conversation: string;
 	projectId: string | null;
 	editHistory?: boolean;
+	ownerScope?: boolean;
 }
 
 const listSchema = z.object({
@@ -145,6 +146,11 @@ const noteHistoryInputSchema = legacyInput
 
 export const NOTE_HISTORY_SOURCE = "note-edit-history";
 export const NOTE_HISTORY_DESCRIPTION = " For every write, provide `what` changed and the `reason` for it. Use history with id to see authors and messages; use its before cursor for earlier edits. Use diff with id and rev to read changed text, paging with nextOffset.";
+export const NOTE_OWNER_SCOPE_SOURCE = "note-owner-scope";
+
+export function noteOwnerScope(snapshot: { sources: string[] } | null): boolean {
+	return snapshot === null || snapshot.sources.includes(NOTE_OWNER_SCOPE_SOURCE);
+}
 
 export function noteHistoryAvailable(snapshot: { sources: string[] } | null, kind?: string): boolean {
 	return snapshot === null ||
@@ -192,7 +198,10 @@ function unavailable(id: string): { error: string } {
 export const noteTool = (deps: NoteToolDeps) =>
 	defineTool({
 		description:
-			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only. `where`/scope \"here\" means this conversation's project (loose notes when unbound)." +
+			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only." +
+			(deps.ownerScope
+				? " A new note belongs to this chat's bot. List with scope \"here\" for this bot's notes and Global notes; scope \"all\" includes other owners only if this chat can read them."
+				: " `where`/scope \"here\" means this conversation's project (loose notes when unbound).") +
 			(deps.editHistory ? NOTE_HISTORY_DESCRIPTION : ""),
 		input: deps.editHistory ? noteHistoryInputSchema : noteInputSchema,
 		execute: async (raw) => {

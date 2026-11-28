@@ -26,7 +26,6 @@ const conv = (id: string, parentId: string | null = null): Conv => ({
 const input = (conversations: Conv[], open: string | null = null): HomeInput => ({
 	conversations,
 	chain: [],
-	projects: [],
 	attention: conversations.some((row) => row.id === "app/needs") ? [{
 		id: "needs",
 		kind: "program-approval",
@@ -99,21 +98,15 @@ test("HomeList never renders subagents as chat rows", async () => {
 	setup();
 	function Fixture() {
 		const data = { ...input([parent, kid, secondKid, sibling], kid.id), sideChatsOpen: true };
-		const home = useHomeList(data, [], true, null);
+		const home = useHomeList(data, null);
 		return <HomeList
 			home={home}
-			projects={[]}
-			projectsOpen
-			currentFolderId={null}
 			currentConversationId={null}
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => {}}
 			onNewSideChat={() => {}}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}
@@ -141,18 +134,12 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 	]), sideChatsOpen: true }, null).list;
 	const html = renderToStaticMarkup(<HomeList
 		home={{ list, orderSignature: "" }}
-		projects={[]}
-		projectsOpen={false}
-		currentFolderId={null}
 		currentConversationId={null}
 		expandedBotId={null}
 		rollingCurrent={false}
 		sideChatsOpen
-		onToggleProjects={() => {}}
 		onToggleSideChats={() => {}}
 		onNewSideChat={() => {}}
-		onNewProject={() => {}}
-		onOpenProject={() => {}}
 		onOpenTarget={() => {}}
 		onOpenRolling={() => {}}
 		onOpenConversation={() => {}}
@@ -163,15 +150,12 @@ test("T22: each chat mark has its own shape and words; no mark, no data-mark", (
 				{...options}
 				current={null}
 				token={null}
-				moveTargets={[]}
 				onOpen={() => {}}
 				onRenamed={() => {}}
 				onToggleArchived={() => {}}
 				onTogglePinned={() => {}}
 				onDelete={() => {}}
 				onError={() => {}}
-				onMove={() => {}}
-				onMoveToNewProject={() => {}}
 			/>
 		)}
 	/>);
@@ -210,18 +194,12 @@ test("T-C1: side-chat disclosure, nested rows and new-side-chat action are visib
 	const render = (open: boolean) => (
 		<HomeList
 			home={{ list: buildHome({ ...input([main, side]), sideChatsOpen: open }, null).list, orderSignature: "" }}
-			projects={[]}
-			projectsOpen={false}
-			currentFolderId={null}
 			currentConversationId={null}
 			expandedBotId={null}
 			rollingCurrent={false}
 			sideChatsOpen={open}
-			onToggleProjects={() => {}}
 			onToggleSideChats={() => { toggles++; }}
 			onNewSideChat={() => { creates++; }}
-			onNewProject={() => {}}
-			onOpenProject={() => {}}
 			onOpenTarget={() => {}}
 			onOpenRolling={() => {}}
 			onOpenConversation={() => {}}

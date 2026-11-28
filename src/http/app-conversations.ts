@@ -19,8 +19,8 @@ import { flatLine } from "../conversation-events.ts";
 import type { ModelSettings } from "../conversation-settings.ts";
 import { log } from "../log.ts";
 import { projectRollText } from "../rolling.ts";
-import { type Project, projectWorkdir } from "../projects.ts";
-import { moveIntoProject } from "../conversation-move.ts";
+import { conversationWorkdir } from "../conversation-workdir.ts";
+import { LITTLE_GOBLIN_NOTE_OWNER } from "../note-owner.ts";
 import { openRatings } from "../reply-ratings.ts";
 import { compactTriggerTokens } from "../turn/compact-trigger.ts";
 import {
@@ -44,6 +44,7 @@ import type {
 	AppQuotaWindow,
 	AppConversationBranch,
 	AppConversationCreate,
+	AppConversationCreateRequest,
 	AppConversationList,
 	AppConversationListItem,
 	AppConversationReadRequest,
@@ -59,13 +60,13 @@ import type {
 } from "./app-wire.ts";
 import { versionedJson } from "./live-version.ts";
 
-const createBody = z.object({
+const createBody = z.strictObject({
 	id: appIdSchema.optional(),
 	title: z.string().min(1).max(200).optional(),
-	projectId: z.string().min(1).optional(),
 	memoryExcluded: z.boolean().optional(),
 	initialModelSettings: modelSettingsBody.optional(),
-});
+	noteId: z.string().min(1).max(200).optional(),
+}) satisfies z.ZodType<AppConversationCreateRequest>;
 
 const branchBody = z.object({ messageId: z.string().min(1).max(200) });
 
@@ -74,14 +75,10 @@ const convPatchBody = z
 		title: z.string().min(1).max(200).optional(),
 		archived: z.boolean().optional(),
 		pinned: z.boolean().optional(),
-		projectId: z.string().min(1).optional(),
 	})
 	.strict()
 	.refine(
-		(p) =>
-			p.projectId !== undefined
-				? p.title === undefined && p.archived === undefined && p.pinned === undefined
-				: p.title !== undefined || p.archived !== undefined || p.pinned !== undefined,
+		(p) => p.title !== undefined || p.archived !== undefined || p.pinned !== undefined,
 		{
 		message: "nothing to write",
 		},
@@ -403,30 +400,24 @@ export async function handleConversationsRoute(
 			const outcome = store.db.transaction(
 				():
 					| { kind: "ok"; conv: NonNullable<ReturnType<typeof store.get>> }
-					| { kind: "conflict"; bound: string | null }
 					| { kind: "memoryConflict" }
-					| { kind: "settingsConflict" }
-					| { kind: "noProject" }
-					| { kind: "archived" } => {
+					| { kind: "noteMissing" }
+					| { kind: "noteOwnerConflict" }
+					| { kind: "settingsConflict" } => {
 					const existing = store.get(convId);
-					if (existing !== null && existing.projectId !== (parsed.data.projectId ?? null)) {
-						return { kind: "conflict", bound: existing.projectId };
+					const noteId = parsed.data.noteId;
+					const note = noteId === undefined ? null : deps.notes.get(noteId);
+					if (noteId !== undefined && note === null) return { kind: "noteMissing" };
+					const owner = note?.botId ?? null;
+					const sideBot = owner === null || owner === LITTLE_GOBLIN_NOTE_OWNER ? null : owner;
+					if (sideBot !== null && store.bots.get(sideBot) === null) return { kind: "noteMissing" };
+					if (note !== null && existing !== null && note.botId !== null &&
+						(store.bots.membership(existing.id)?.botId ?? null) !== sideBot) {
+						return { kind: "noteOwnerConflict" };
 					}
-					// An explicit memory setting is a create-time assertion —
-					// silently dropping it on an existing row would let a
-					// caller believe a live conversation is excluded when it
-					// is not. Match the effective flag (project-off counts as
-					// excluded) or refuse.
-					if (existing !== null && parsed.data.memoryExcluded !== undefined) {
-						const projectMemory =
-							existing.projectId === null
-								? null
-								: (deps.projects.get(existing.projectId)?.memory ?? null);
-						const effectiveExcluded =
-							existing.memoryExcluded || projectMemory === "off";
-						if (effectiveExcluded !== parsed.data.memoryExcluded) {
-							return { kind: "memoryConflict" };
-						}
+					if (existing !== null && parsed.data.memoryExcluded !== undefined &&
+						existing.memoryExcluded !== parsed.data.memoryExcluded) {
+						return { kind: "memoryConflict" };
 					}
 					if (existing !== null && initialSettings !== undefined) {
 						const stored = store.readAppSettings(existing.id, cfg);
@@ -437,24 +428,13 @@ export async function handleConversationsRoute(
 							return { kind: "settingsConflict" };
 						}
 					}
-					let project: Project | null = null;
-					if (existing === null && parsed.data.projectId !== undefined) {
-						project = deps.projects.get(parsed.data.projectId);
-						if (project === null) return { kind: "noProject" };
-						if (project.archivedAt !== null) return { kind: "archived" };
-					}
 					const row = store.resolve(
 						appAddress(appId),
 						paths.workspace(),
 						existing !== null || initialSettings === undefined ? cfg : { ...cfg, ...initialSettings },
 					);
-					if (existing === null && project !== null) {
-						store.bindProject(row.id, project.id);
-					}
-					if (existing === null && project?.memory === "off") {
-						// The gate's stamp, marked so a re-open recomputes it.
-						store.setMeta(row.id, { memoryExcluded: true, memoryExcludedByProject: true });
-					} else if (existing === null && parsed.data.memoryExcluded === true) {
+					if (existing === null && sideBot !== null) store.bots.attachSideChat(row.id, sideBot);
+					if (existing === null && parsed.data.memoryExcluded === true) {
 						store.setMeta(row.id, { memoryExcluded: true });
 					}
 					if (parsed.data.title !== undefined) {
@@ -463,17 +443,10 @@ export async function handleConversationsRoute(
 					return { kind: "ok", conv: store.get(row.id)! };
 				},
 			)();
-			if (outcome.kind === "conflict") {
-				return Response.json(
-					{
-						error:
-							outcome.bound === null
-								? `conversation ${convId} has no project; use PATCH to move it into one`
-								: `conversation ${convId} is already in project ${outcome.bound}`,
-					},
-					{ status: 409, headers: NO_STORE },
-				);
-			}
+			if (outcome.kind === "noteMissing")
+				return Response.json({ error: "No such note." }, { status: 404, headers: NO_STORE });
+			if (outcome.kind === "noteOwnerConflict")
+				return Response.json({ error: "That note belongs to a different bot." }, { status: 409, headers: NO_STORE });
 			if (outcome.kind === "memoryConflict") {
 				return Response.json(
 					{
@@ -488,19 +461,9 @@ export async function handleConversationsRoute(
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			if (outcome.kind === "noProject") {
-				return Response.json({ error: "no such project" }, { status: 404, headers: NO_STORE });
-			}
-			if (outcome.kind === "archived") {
-				return Response.json(
-					{ error: "project is archived — unarchive it to open chats there" },
-					{ status: 422, headers: NO_STORE },
-				);
-			}
 			const conv = outcome.conv;
 			log.info("app conversation opened", {
 				conversation: conv.id,
-				...(conv.projectId !== null ? { project: conv.projectId } : {}),
 			});
 			const body: AppConversationCreate = {
 				id: conv.id,
@@ -520,12 +483,9 @@ export async function handleConversationsRoute(
 		if (conv === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const projectMemory =
-			conv.projectId === null ? null : (deps.projects.get(conv.projectId)?.memory ?? null);
 		if (req.method === "GET") {
 			const body: AppConversationMemoryView = {
 				memoryExcluded: conv.memoryExcluded,
-				projectMemory,
 			};
 			return Response.json(body, { headers: NO_STORE });
 		}
@@ -547,24 +507,12 @@ export async function handleConversationsRoute(
 				{ status: 422, headers: NO_STORE },
 			);
 		}
-		if (parsed.data.memoryExcluded === false && projectMemory === "off") {
-			return Response.json(
-				{ error: "project memory is off — switch the project to shared memory first" },
-				{ status: 409, headers: NO_STORE },
-			);
-		}
 		let cancelled = 0;
-		if (
-			parsed.data.memoryExcluded !== conv.memoryExcluded ||
-			(parsed.data.memoryExcluded && conv.memoryExcludedByProject)
-		) {
+		if (parsed.data.memoryExcluded !== conv.memoryExcluded) {
 			// A flag write, not a settings change: no epoch bump — a running
 			// turn finishes, its retention refused at the land-time gate.
-			// An operator decision also retires any project-gate stamp —
-			// confirming an already-stamped exclusion adopts it as theirs.
 			store.setMeta(convId.id, {
 				memoryExcluded: parsed.data.memoryExcluded,
-				memoryExcludedByProject: false,
 			});
 			if (parsed.data.memoryExcluded) {
 				cancelled = store.memoryQueue.cancelConversation(convId.id);
@@ -578,7 +526,6 @@ export async function handleConversationsRoute(
 		}
 		const body: AppConversationMemoryResponse = {
 			memoryExcluded: parsed.data.memoryExcluded,
-			projectMemory,
 			cancelled,
 		};
 		return Response.json(body, { headers: NO_STORE });
@@ -763,10 +710,8 @@ export async function handleConversationsRoute(
 		}
 		let workdir: string;
 		try {
-			workdir = projectWorkdir(deps.projects, conv);
+			workdir = conversationWorkdir(store, deps.projects, conv);
 		} catch (err) {
-			// A vanished project dir is a server-side environment failure,
-			// not something the request got wrong.
 			return Response.json(
 				{ error: err instanceof Error ? err.message : String(err) },
 				{ status: 500, headers: NO_STORE },
@@ -1073,22 +1018,6 @@ export async function handleConversationsRoute(
 		if (target === null) {
 			return Response.json({ error: "no such message" }, { status: 404, headers: NO_STORE });
 		}
-		let project: Project | null = null;
-		if (conv.projectId !== null) {
-			project = deps.projects.get(conv.projectId);
-			if (project === null) {
-				return Response.json(
-					{ error: "the conversation's project no longer exists" },
-					{ status: 409, headers: NO_STORE },
-				);
-			}
-			if (project.archivedAt !== null) {
-				return Response.json(
-					{ error: "project is archived — unarchive it to branch into it" },
-					{ status: 422, headers: NO_STORE },
-				);
-			}
-		}
 		const title = conv.title === null ? null : `${conv.title} (branch)`.slice(0, 200);
 		const forked = store.forkToApp(
 			convId.id,
@@ -1098,13 +1027,9 @@ export async function handleConversationsRoute(
 			store.readAppSettings(convId.id, deps.configRef.current),
 			{
 				throughSeq: target.seq,
-				projectId: conv.projectId,
 				titleImplicit: false,
 			},
 		);
-		if (project?.memory === "off" && !forked.memoryExcluded) {
-			store.setMeta(forked.id, { memoryExcluded: true });
-		}
 		log.info("app conversation branched", {
 			conversation: forked.id,
 			from: convId.id,
@@ -1191,64 +1116,6 @@ export async function handleConversationsRoute(
 					{ error: z.prettifyError(parsed.error) },
 					{ status: 422, headers: NO_STORE },
 				);
-			}
-			if (parsed.data.projectId !== undefined) {
-				const outcome = moveIntoProject(
-					{
-						store,
-						projects: deps.projects,
-						runtime: deps.runtime,
-						notes: deps.notes,
-						workspace: paths.workspace(),
-						rollingConfig: deps.configRef.current,
-					},
-					convId.id,
-					parsed.data.projectId,
-				);
-				switch (outcome.kind) {
-					case "moved":
-					case "unchanged":
-						return Response.json({}, { headers: NO_STORE });
-					case "botChat":
-						return Response.json(
-							{ error: "This conversation belongs to a bot." },
-							{ status: 409, headers: NO_STORE },
-						);
-					case "notFound":
-						return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
-					case "noProject":
-						return Response.json({ error: "no such project" }, { status: 404, headers: NO_STORE });
-					case "projectArchived":
-						return Response.json(
-							{ error: "cannot move a conversation into an archived project" },
-							{ status: 409, headers: NO_STORE },
-						);
-					case "alreadyBound":
-						return Response.json(
-							{ error: `conversation is already in project ${outcome.projectId}` },
-							{ status: 409, headers: NO_STORE },
-						);
-					case "busy":
-						return Response.json(
-							{ error: "cannot move a conversation while its turn is running" },
-							{ status: 409, headers: NO_STORE },
-						);
-					case "notApp":
-						return Response.json(
-							{ error: "only app conversations can move into a project" },
-							{ status: 422, headers: NO_STORE },
-						);
-					case "child":
-						return Response.json(
-							{ error: "child conversations cannot move into a project" },
-							{ status: 422, headers: NO_STORE },
-						);
-					case "rolling":
-						return Response.json(
-							{ error: "only the current rolling chat conversation can move into a project" },
-							{ status: 422, headers: NO_STORE },
-						);
-				}
 			}
 			if (parsed.data.archived === true) {
 				const membership = store.bots.membership(convId.id);

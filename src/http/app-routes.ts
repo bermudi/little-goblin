@@ -15,24 +15,21 @@ export const APP_PAGES = [
 	"skills",
 	"files",
 	"log",
-	"projects",
 	"notes",
 	"archive",
 	"rolling",
 ] as const;
 export type AppPageKey = (typeof APP_PAGES)[number];
 
-/** Conversation, project and note ids — the server's appIdSchema shape. */
 const ID = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}";
 
 const PAGE_RE = new RegExp(`^/(app|t)/(${APP_PAGES.join("|")})/?$`);
-const ID_ROUTE_RE = new RegExp(`^/app/(c|p|n|b)/(${ID})(/window)?$`);
+const ID_ROUTE_RE = new RegExp(`^/app/(c|n|b)/(${ID})(/window)?$`);
 
 export type AppPath =
 	| { kind: "page"; page: AppPageKey }
 	| { kind: "conversation"; id: string }
 	| { kind: "window"; id: string }
-	| { kind: "project"; id: string }
 	| { kind: "bot"; id: string }
 	| { kind: "note"; id: string };
 
@@ -51,5 +48,5 @@ export function parseAppPath(pathname: string, door: "app" | "t" = "app"): AppPa
 	if (m[1] === "c") return window ? { kind: "window", id } : { kind: "conversation", id };
 	if (window) return null;
 	if (m[1] === "b") return { kind: "bot", id };
-	return m[1] === "p" ? { kind: "project", id } : { kind: "note", id };
+	return { kind: "note", id };
 }

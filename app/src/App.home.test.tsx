@@ -113,7 +113,6 @@ describe("home screen", () => {
 			listVersion++;
 			return Response.json({ conversationId: "app/workshop" });
 		}
-		if (path === "/api/app/projects") return Response.json({ projects: [] });
 		if (path === "/api/app/notes") return Response.json({ notes: [], truncated: false });
 		if (path === "/api/app/approvals")
 			return Response.json({ programs: [], mail: [], serverTimeZone: "UTC" });
@@ -289,7 +288,7 @@ describe("home screen", () => {
 		container.querySelector(`.conv-main[href="/app/c/${id}"]`)?.closest(".conv")?.getAttribute("data-mark") ?? null;
 	const list = () => [...container.querySelectorAll(phone ? ".chatlist-screen li" : ".rail-body li")]
 		.map((item) => {
-			if (item.matches(".rail-chats-label, .rail-project-head")) return `# ${item.textContent}`;
+			if (item.matches(".rail-chats-label")) return `# ${item.textContent}`;
 			return item.querySelector(":scope > .conv .conv-title")?.textContent ?? null;
 		})
 		.filter((label) => label !== null);
@@ -330,7 +329,7 @@ describe("home screen", () => {
 		const settings = [...container.querySelectorAll('[role="menuitem"]')].find(
 			(item) => item.textContent === "Bot settings",
 		);
-		expect(list()).toEqual(["Little Goblin", "# Bots", "Repair workshop", "# Projects"]);
+		expect(list()).toEqual(["Little Goblin", "# Bots", "Repair workshop"]);
 		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Repair workshop");
 		expect(settings).toBeDefined();
 		await act(async () => {
@@ -345,7 +344,7 @@ describe("home screen", () => {
 		await click(".bot-settings .danger");
 		await waitFor(() => container.querySelector(".bot-row") === null, "the bot row to disappear");
 		expect(win.location.pathname).toBe("/app/c/workshop");
-		expect(list()).toEqual(["Little Goblin", "Repair workshop", "# Projects"]);
+		expect(list()).toEqual(["Little Goblin", "Repair workshop"]);
 		expect(container.querySelector(".goblin-column")?.getAttribute("aria-label")).toBe("Little Goblin");
 	});
 
@@ -494,13 +493,12 @@ describe("home screen", () => {
 	});
 
 	for (const width of ["desktop", "phone"] as const) {
-		test(`T20: ${width} order is Little Goblin, Active and Projects`, async () => {
+		test(`T20: ${width} order is Little Goblin then Active`, async () => {
 			phone = width === "phone";
 			chain = [conv("newest", { preview: "**bold** words" })];
 			conversations = [
 				conv("plain"),
 				conv("kid", { parentId: "app/plain" }),
-				conv("fresh", { projectId: "project", newReply: 2 }),
 				conv("pinned", { pinnedAt: "2026-11-02T00:00:00Z" }),
 			];
 			attention = [approval];
@@ -510,8 +508,6 @@ describe("home screen", () => {
 				"Little Goblin",
 				"# Active",
 				"Review program",
-				"fresh",
-				"# Projects",
 			]);
 			const rolling = container.querySelector(".rolling-row")!;
 			expect(rolling.querySelector(".rolling-avatar img")).not.toBeNull();
@@ -557,8 +553,9 @@ describe("home screen", () => {
 		expect(container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded")).toBe("true");
 	});
 
-	test("T-D2: a project chat folds the side chats, and the next side chat opens them", async () => {
-		conversations = [conv("side"), conv("other"), conv("work", { projectId: "project" })];
+	test("T-D2: a bot chat folds the side chats, and the next side chat opens them", async () => {
+		conversations = [conv("side"), conv("other"), conv("work")];
+		bots = [{ id: "work-bot", name: "Work", instructions: "", folder: null, mainConversationId: "app/work", sideConversationIds: [], canMoveBack: false }];
 		await open("/app/c/side");
 		const expanded = () => container.querySelector('[aria-label="Side chats"]')?.getAttribute("aria-expanded");
 		expect(expanded()).toBe("true");

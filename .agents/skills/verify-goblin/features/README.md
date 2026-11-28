@@ -11,7 +11,7 @@ How to reach and prove each feature from the user's point of view. Every entry h
 | Home screen: marks, Active, subagent folds, Goblin's face, the start page | [home.md](home.md) |
 | Live app state: lists update on a feed announcement, reconnect line | [live.md](live.md) |
 | Notes: create and rename | [notes.md](notes.md) |
-| Projects: create one | [projects.md](projects.md) |
+| Project retirement | [project-retirement.md](project-retirement.md) |
 | Rolling chat: continue and start a new conversation | [rolling.md](rolling.md) |
 | Settings: model services | [settings-accounts.md](settings-accounts.md) |
 | Settings: delegation agents | [settings-delegation.md](settings-delegation.md) |

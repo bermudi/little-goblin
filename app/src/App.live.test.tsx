@@ -33,20 +33,6 @@ const convList = (rows: AppConversationSummary[]): AppConversationList => ({
 	bots: [],
 });
 
-const projectFixture = (name: string) => {
-	const id = `p-${name.toLowerCase().replace(/ /g, "-")}`;
-	return {
-		id,
-		name,
-		slug: id,
-		dir: `/p/${id}`,
-		managed: true,
-		instructions: "",
-		memory: "shared",
-		createdAt: "2026-11-01T00:00:00Z",
-		archivedAt: null,
-	};
-};
 
 const emptyMessages = {
 	messages: [],
@@ -102,7 +88,6 @@ describe("app live feed", () => {
 
 	const topicPaths: [string, string, unknown][] = [
 		["/api/app/conversations", "conversations", convList([conv("one", "first chat")])],
-		["/api/app/projects", "projects", { projects: [] }],
 		["/api/app/notes", "notes", { notes: [], truncated: false }],
 		["/api/app/attention", "attention", { items: [], unavailable: [] }],
 		[
@@ -226,10 +211,6 @@ describe("app live feed", () => {
 			}
 			if (path === "/api/app/chat" && method === "POST")
 				return Promise.resolve(Response.json({ submitted: true }, { status: 202 }));
-			if (path === "/api/app/projects" && method === "POST") {
-				const body = JSON.parse(String(init?.body ?? "{}")) as { name: string };
-				return Promise.resolve(Response.json(projectFixture(body.name)));
-			}
 			if (path === "/api/app/conversations" && method === "POST")
 				return Promise.resolve(
 					Response.json({
@@ -394,7 +375,7 @@ describe("app live feed", () => {
 
 	test("C3: operator pages move on an announcement; an open detail stays; the notes filter survives", async () => {
 		await mount();
-		await emit({ conversations: "v1", projects: "v1", notes: "v1" });
+		await emit({ conversations: "v1", notes: "v1" });
 		await openDesktopPage(container, click, "Programs");
 		await settle();
 		expect(container.textContent).not.toContain("nightly");
@@ -678,7 +659,6 @@ describe("app live feed", () => {
 		await waitFor(() => feeds.length > 0, "the feed after the gate");
 		expect(feeds).toHaveLength(1);
 		const retained = [
-			"/api/app/projects",
 			"/api/app/notes",
 			"/api/app/attention",
 			"/api/app/activity",
@@ -745,59 +725,6 @@ describe("app live feed", () => {
 			"the three cards",
 		);
 		expect(requestsTo("/api/app/approvals")).toBe(1);
-	});
-
-	test("C9a: a row error clears when a move from the chat header lands", async () => {
-		bump("/api/app/projects", { projects: [projectFixture("Goblin Work")] });
-		await mount();
-		await emit({ conversations: "v1", projects: "v2" });
-		await click(rows().find((r) => r.getAttribute("href") === "/app/c/one"));
-		await waitFor(() => win.location.pathname === "/app/c/one", "the chat open");
-		await archiveFails();
-		const before = requestsTo("/api/app/conversations");
-		await click(container.querySelector(".title-trigger"));
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Move to project",
-			),
-		);
-		await click(
-			[...container.querySelectorAll('[role="menuitem"]')].find(
-				(item) => item.textContent === "Goblin Work",
-			),
-		);
-		await waitFor(() => requestsTo("/api/app/conversations") > before, "the move refresh");
-		expect(rowErrorText()).not.toContain("Couldn't archive");
-	});
-
-	test("C9b: a row error clears when a new project lands", async () => {
-		await mount();
-		await emit({ conversations: "v1" });
-		await click(rows().find((r) => r.getAttribute("href") === "/app/c/one"));
-		await waitFor(() => win.location.pathname === "/app/c/one", "the chat open");
-		await archiveFails();
-		const before = requestsTo("/api/app/projects");
-		await click(container.querySelector('button[aria-label="New project"]'));
-		const name = container.querySelector<HTMLInputElement>(".msheet input")!;
-		await act(async () => {
-			name.focus();
-			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
-				name,
-				"Beta",
-			);
-			name.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			name.dispatchEvent(
-				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
-			);
-		});
-		await settle();
-		await act(async () => {
-			container.querySelector(".msheet form")!.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await waitFor(() => requestsTo("/api/app/projects") > before, "the projects refetch");
-		expect(rowErrorText()).not.toContain("Couldn't archive");
 	});
 
 	test("C9c: a row error clears when a branch lands", async () => {

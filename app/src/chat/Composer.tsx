@@ -65,17 +65,11 @@ export function Composer({
 }: {
 	token: string | null;
 	conversationId?: string;
-	// Durable-draft key — one per composer home: the conversation id,
-	// the project id, "new" for the empty start state.
 	draftScope: string;
 	busy: boolean;
 	// The in-flight turn's window occupancy, streamed over the chat
 	// wire — the gauge's numbers while a turn runs.
 	liveCtx?: AppLiveContext | null;
-	// The not-yet-created conversation's memory choice — the conversation-
-	// less composers (new chat, project page) can't GET a flag that
-	// doesn't exist yet. `locked` means the destination already forces
-	// exclusion (a memory-off project): the toggle reads off, disabled.
 	stagedMemory?: { excluded: boolean; locked: boolean };
 	onStagedMemoryToggle?: (excluded: boolean) => void;
 	onSend: (
@@ -617,15 +611,11 @@ export function Composer({
 								: "Exclude this conversation from memory"
 						}
 						title={
-							memory.projectMemory === "off"
-								? "This project's memory is off"
-								: memory.memoryExcluded
-									? "Memory is excluded — click to include this conversation"
-									: "Memory is included — click to exclude this conversation"
+							memory.memoryExcluded
+								? "Memory is excluded — click to include this conversation"
+								: "Memory is included — click to exclude this conversation"
 						}
-						disabled={
-							busy || memorySaving || (memory.projectMemory === "off" && memory.memoryExcluded)
-						}
+						disabled={busy || memorySaving}
 						onClick={toggleMemory}
 					>
 						memory {memory.memoryExcluded ? "off" : "on"}
@@ -642,7 +632,7 @@ export function Composer({
 							}
 							title={
 								stagedMemory.locked
-									? "This project's memory is off"
+									? "Memory settings are available after the chat starts"
 									: stagedMemory.excluded
 										? "Memory is excluded — click to include this conversation"
 										: "Memory is included — click to exclude this conversation"

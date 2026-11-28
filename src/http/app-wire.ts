@@ -52,6 +52,14 @@ export interface AppConversationReadResponse {
 	ok: true;
 }
 
+export interface AppConversationCreateRequest {
+	id?: string | undefined;
+	title?: string | undefined;
+	memoryExcluded?: boolean | undefined;
+	initialModelSettings?: AppModelSettings | undefined;
+	noteId?: string | undefined;
+}
+
 export interface AppConversationCreate {
 	id: string;
 	title: string | null;
@@ -63,26 +71,9 @@ export interface AppConversationCreate {
 // one code path.
 export type AppConversationBranch = AppConversationCreate;
 
-export interface AppProject {
-	id: string;
-	name: string;
-	slug: string;
-	dir: string;
-	managed: boolean;
-	instructions: string;
-	memory: "shared" | "off";
-	createdAt: string;
-	archivedAt: string | null;
-}
-
-export interface AppProjectList {
-	projects: AppProject[];
-}
-
 export interface AppNoteCreate {
 	title: string;
 	body?: string | undefined;
-	projectId?: string | null | undefined;
 	conversation?: string | undefined;
 }
 
@@ -280,7 +271,6 @@ export interface AppConversationPatch {
 	title?: string;
 	archived?: boolean;
 	pinned?: boolean;
-	projectId?: string;
 }
 
 export interface AppSearchHit {
@@ -351,7 +341,6 @@ export interface AppConfigPatchResponse extends AppConfigView {
 
 export interface AppConversationMemoryView {
 	memoryExcluded: boolean;
-	projectMemory: "shared" | "off" | null;
 }
 
 export interface AppConversationMemoryResponse extends AppConversationMemoryView {

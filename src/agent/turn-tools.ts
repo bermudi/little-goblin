@@ -19,7 +19,8 @@ import { channelOf } from "../conversation-address.ts";
 import { paths } from "../home-layout.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
-import { projectWorkdir, type ProjectStore } from "../projects.ts";
+import type { ProjectStore } from "../projects.ts";
+import { bashDeclarationWorkdir, conversationWorkdir } from "../conversation-workdir.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
@@ -39,8 +40,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
-import { promptHasProject } from "./prompt.ts";
-import { noteHistoryAvailable } from "./tools/note.ts";
+import { noteHistoryAvailable, noteOwnerScope } from "./tools/note.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { Posts } from "../posts.ts";
@@ -133,8 +133,6 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		const provider = conv.model === null
 			? undefined
 			: configRef.current.providers?.[splitModelRef(conv.model).provider];
-		const toolProjectId =
-			snapshot === null || promptHasProject(snapshot) ? conv.projectId : null;
 		const { mail, desktops, agents } = deps;
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
@@ -143,8 +141,8 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
 		// relative-path anchor, and delegation's workspaceDir — a
 		// vanished dir throws here and the turn fails at admission.
-		const workdir = projectWorkdir(projects, conv);
-		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
+		const workdir = conversationWorkdir(store, projects, conv, snapshot);
+		const bashDescriptionCwd = bashDeclarationWorkdir(workdir, snapshot);
 		const delegate = delegateDeps(conv, workdir);
 		// A child conversation's bound desktop (computer type) — the
 		// engine's row is the source; null for parents and other types.
@@ -249,6 +247,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			note: {
 				notes, projects, conversation: conv.id, projectId: conv.projectId,
 				editHistory: noteHistoryAvailable(snapshot, provider?.kind),
+				ownerScope: conv.projectId === null && noteOwnerScope(snapshot),
 			},
 			// Threads are process-global; a model change drops them on the next call.
 			vision: visionDepsFor(conv),

@@ -4,7 +4,6 @@ import { listNotes } from "../api.ts";
 import type { AppNoteSummary } from "../../../src/http/app-wire.ts";
 
 // The composer's note picker — a search over the whole notes pool
-// (project "all"), debounced like the rail's. The list mechanics
 // (arrow-key highlight, Enter-to-run, listbox ARIA) come from
 // @ui-sdk/react's `command` primitive, with `filter={false}` because the
 // wire narrows the rows; the debounce, the truncation notice, and the
@@ -30,7 +29,7 @@ export function NotePicker({
 	useEffect(() => {
 		const n = ++seq.current;
 		const t = setTimeout(() => {
-			void listNotes(token, { project: "all", q: query }).then(
+			void listNotes(token, { q: query }).then(
 				(r) => {
 					if (n === seq.current) {
 						setNotes(r.notes);
@@ -97,7 +96,6 @@ export function NotePicker({
 						<CommandItem key={n.id} value={n.id} data-value={n.id}>
 							<button type="button">
 								{n.title}
-								{n.projectId !== null && <span className="note-proj"> · project</span>}
 							</button>
 						</CommandItem>
 					))}

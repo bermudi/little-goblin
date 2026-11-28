@@ -1,12 +1,9 @@
 # Projects & Notes — goblin design
 
-> **Amended (operator, 2026-11-24, not built):** projects become
-> [bots](../GLOSSARY.md#bot) after a first new bot works. Notes stay
-> ([decision](decisions/one-assistant.md)).
->
-> **Amended (operator, 2026-11-27, not built):** the projects feature goes
-> completely: no Projects section, no New project, no project page. Project
-> chats become side chats ([decision](decisions/bots-and-side-chats.md)).
+> Projects are retired. The project passages below describe legacy data,
+> not a current feature. For where conversations, notes and files go, see
+> the [decision](decisions/bots-and-side-chats.md#decision) and the
+> [project retirement runbook](../docs/operations.md#retiring-projects).
 
 ## Projects & Notes (ruling 2026-10-10)
 

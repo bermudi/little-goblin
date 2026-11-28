@@ -438,10 +438,6 @@ p code,
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
 }
-.conv-main.rail-project-main {
-	grid-template-columns: 18px minmax(0, 1fr);
-	column-gap: 6px;
-}
 .conv-mark {
 	flex: none;
 	align-self: center;
@@ -972,28 +968,6 @@ header:has(> .header-title-editor) .header-tools > :not(.goblin-panel-toggle) {
 	min-height: 0;
 	overflow-y: auto;
 }
-.rail-project-head {
-	display: flex;
-	align-items: center;
-	gap: 0.25rem;
-}
-.rail-section-toggle {
-	display: flex;
-	align-items: center;
-	gap: 0.25rem;
-	margin-right: auto;
-	color: inherit;
-	font: inherit;
-}
-.rail-section-toggle:hover {
-	color: var(--app-fg);
-}
-.rail-section-toggle .chev {
-	transition: transform 120ms ease;
-}
-.rail-section-toggle[aria-expanded="true"] .chev {
-	transform: rotate(90deg);
-}
 .rolling-disclosure {
 	display: grid;
 	place-items: center;
@@ -1046,7 +1020,6 @@ header:has(> .header-title-editor) .header-tools > :not(.goblin-panel-toggle) {
 	width: 28px;
 	height: 28px;
 }
-.rail-project-head,
 .rail-chats-label {
 	color: var(--app-fg-muted);
 	font-size: 11px;
@@ -6308,20 +6281,6 @@ select.ui-input option {
 	padding: 0.4rem 0.6rem;
 	outline: none;
 	width: 100%;
-}
-
-/* The breadcrumb above a project-bound chat. */
-.crumb {
-	align-self: flex-start;
-	margin: 0.4rem 0.9rem 0;
-	font-size: 11.5px;
-	color: var(--app-fg-muted);
-	border-radius: 6px;
-	padding: 0.15rem 0.45rem;
-}
-.crumb:hover {
-	background: var(--app-hover);
-	color: var(--app-accent);
 }
 
 /* ---------- notes ---------- */

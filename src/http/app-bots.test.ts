@@ -112,7 +112,7 @@ test("converting a side chat keeps its transcript, prompt, and settings through 
 			method: "PATCH",
 			headers: jsonHeaders,
 			body: JSON.stringify({ projectId: project.id }),
-		})).status).toBe(409);
+		})).status).toBe(422);
 		expect((await call("/api/app/conversations/workshop", {
 			method: "PATCH",
 			headers: jsonHeaders,

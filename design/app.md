@@ -200,8 +200,8 @@ newer text; memory pagination belongs to the loaded filter.
 
 **Composer drafts are durable (ruling 2026-10-20, operator ask: the
 Ctrl+W emacs habit closes the tab mid-composition).** The composer's
-text persists per scope — the conversation, the project page, the
-empty start state — in same-origin localStorage beside the note draft:
+text persists per scope — the conversation or the empty start state —
+in same-origin localStorage beside the note draft:
 restored on mount, stored on every change (no debounce — a close at
 any instant has the last keystroke), removed by an accepted send; a
 declined or fenced send keeps it, so it survives navigation and
@@ -404,7 +404,7 @@ See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
 One assistant card per reply: the waiting card shows only until the
 reply has a part to draw (#415).
 
-## Chat rail rows and project links (ruling 2026-11-21, #838; #894)
+## Chat rail rows (ruling 2026-11-21, #838; #894)
 
 Conversation rows are thread links with icon buttons on hover or keyboard
 focus: Pin or Unpin, Rename, Archive; archived rows show Rename, Unarchive,
@@ -415,31 +415,9 @@ Pressing and holding a row opens a sheet with those actions through ui-sdk
 title is a menu with the same actions, which is also the path without
 gestures. Swipe actions were considered and not taken. The list stays a
 list, not a listbox, and Rename stays inline.
-Move to project (ruling 2026-11-21, #859) sits in the hold sheet and the
-title menu, for loose, unarchived, non-child chats only: the sheet switches
-in place to the active projects and New project…, with Back; the title menu
-opens them as a sub-menu. Hover buttons have no Move. A move from the list
-stays on the list and reveals the Projects section. The current roll can
-move from the Rolling chat header (ruling 2026-11-25, #938); an older roll
-cannot, and the server refuses it.
-
-Each active project is one link row above the loose chats. It opens that
-project's page and is marked current on that page and in its chats. A project
-chat appears on the project page. It is in the sidebar only while it is
-pinned (ruling 2026-11-22, #894) or has a mark (ruling 2026-11-23, #919, see
-[Home screen](#home-screen-rulings-2026-11-23-919)). The Projects button controls whether the project links are shown; it
-starts closed when no preference is stored, and its open or closed state is
-kept per device in localStorage (ruling 2026-11-22, #889). The all-projects
-page is in the You menu, between Settings and Archive.
-A pinned project chat without a mark is at the top of Chats, with its
-project's name on the second line (ruling 2026-11-22, #894).
-Landing in a project or one of its chats, or successfully moving a chat into
-a project, reveals the section. There is no
-Projects pane: the You menu opens the all-projects page. Beside the Projects
-button, New project uses a folder-plus glyph so it never
-reads as New conversation (#862).
-These per-device preferences are like the chat width: when storage is
-unavailable the rail only forgets them.
+Projects no longer exist in the app. Old chats keep their links and now
+show as side chats or on Archive. See the
+[retirement decision](decisions/bots-and-side-chats.md).
 
 ## [Rolling chat](../GLOSSARY.md#rolling-chat) (ruling 2026-11-21, #840)
 
@@ -457,24 +435,13 @@ one roll at a time with a link to the previous one. Stitched scrolling across
 rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
-**Moving the current roll to a project (2026-11-25, #938).** The move is in
-place: the same conversation keeps its id, history, read state and settings,
-leaves `app_rolls`, and joins the project; one fresh roll is minted in the
-same transaction so the Rolling chat never lacks a current session. Because
-the moved conversation is no longer a roll, later wakes for work started
-there stay with it instead of retargeting to the newest roll. The operator
-lands in the moved project conversation. The move is refused while a turn
-runs, and only the current roll can move — an earlier roll is already part
-of the lane's history.
-
 **Wakes (2026-11-24, #923).** Work started in a roll wakes the newest roll
 while its source remains a roll: programs, delegation notices, subagent
 results and watches. A wake joins the newest roll and never starts one. The
 destination is read when the wake is delivered, not when the work starts. A
 durable wake moves in the transaction that appends its trigger; after that it
-stays where its trigger is, so a later roll cannot run it twice. A source
-moved to a project is no longer a roll, so its later wakes stay with it
-(#938). Mail and program approval notices stay beside their card, because
+stays where its trigger is, so a later roll cannot run it twice. Mail and
+program approval notices stay beside their card, because
 they start no turn. Ordinary app chats keep their own wakes.
 
 **Starting a new conversation by hand (2026-11-26, #957).** `/new` and
@@ -623,13 +590,11 @@ one-line note — the same fields on the app-defaults PATCH carry the clamp.
 write, never an epoch bump — a running turn finishes and
 its retention is refused at the live gates (design/memory.md → exclusion).
 The composer's toggle also shows before the conversation exists — the
-new-chat and project composers stage the choice locally and it rides into
+new-chat composer stages the choice locally and it rides into
 `POST /api/app/conversations` as `memoryExcluded`, so the flag is decided
 before the first message, not retroactively after it. The field is a
 create-time assertion: on an existing id a conflicting value is a 409,
-never a silent drop — matching the effective flag (project-off counts as
-excluded) reopens plainly. A memory-off project locks the staged toggle
-excluded, the same read the created row enforces.
+never a silent drop. A matching flag reopens plainly.
 
 **Model picker (ruling 2026-10-21).** The settings sheet lists the
 models.dev catalog for every configured provider — matched by exact
@@ -831,8 +796,8 @@ and silently re-bind stale rating and journal rows to new events.
 /api/app/conversations/:id/branch` with `{messageId}` creates a new app
 conversation holding the source's causal prefix through the selected event,
 then returns 201 and the client opens it. The source is never modified. A
-branch copies the source's project binding when the branch is created and
-also copies its memory exclusion, its settings, its contexts
+branch copies the source's bot ownership, working directory, memory
+exclusion, settings, contexts
 anchored at or below the cut, and the projections of the events it copies,
 and its compaction only when
 `boundary_seq < throughSeq` — a summary reaching past the cut describes
@@ -845,8 +810,7 @@ would race the lane's tail, and a branch would copy a half-written exchange
 or an answer still owed to an interrupted run. Editing also abandons
 interrupted runs whose anchor the cut drops before the store write, and
 refuses 409 if one cannot be abandoned; runs anchored before the cut
-survive. A project-bound source refuses to branch into an archived project
-(422) rather than creating a chat the project page would hide. Telegram is
+survive. Telegram is
 not in scope: `editMessageId` names a durable event, which only the app
 channel addresses.
 
@@ -873,15 +837,11 @@ chats screen or of New chat stays there: its history entry already carries the
 app's tag.
 
 **Desktop.** No glyph gutter. Three columns:
-- Left list: a search field and New side chat on top; then Little Goblin,
-  [Active](../GLOSSARY.md#active) and Projects (see [Home
-  screen](#home-screen-rulings-2026-11-23-919)). The collapsible Projects
-  section has project link rows that open their project pages and are marked
-  current on those pages and in their chats. Its Projects button folds the
-  section. New project
-  remains beside the Projects button. A **You** control at the bottom opens a
-  menu with Settings, Projects and Archive. The sidebar toggle still hides
-  the whole list.
+- Left list: search and New side chat on top; then Little Goblin,
+  [Active](../GLOSSARY.md#active) and Bots (see [Home
+  screen](#home-screen-rulings-2026-11-23-919)). A **You** control at the
+  bottom opens a menu with Settings and Archive. The sidebar toggle still
+  hides the whole list.
 - Centre: the chat, unchanged.
 - Right: the [Goblin panel](../GLOSSARY.md#goblin-panel), beside chat pages
   only. Non-chat pages keep the full pane width (#168). The panel can be
@@ -938,11 +898,9 @@ anywhere", so a tap on it opened a chat that was not the busy one. The list
 is now the home screen, and the avatar means only the agent.
 
 - **Order.** The Little Goblin row (always first), its side chats when open,
-  Active, Projects.
-- **[Active](../GLOSSARY.md#active)** holds every project chat with a mark,
-  with its project's name, and shows only when there is one: needs you, then
-  [new reply](../GLOSSARY.md#new-reply), then working, newest first inside
-  each. Side chats never enter it.
+  Active, Bots.
+- **[Active](../GLOSSARY.md#active)** holds items that need the operator
+  and do not belong to a listed chat. It shows only when there is an item.
 - **[Needs you](../GLOSSARY.md#needs-you)** (amber `!`). The second line is
   what waits. It stays until answered; opening the chat does not clear it. An
   approval or delegation question without a chat is a row of its own and opens
@@ -963,8 +921,8 @@ is now the home screen, and the avatar means only the agent.
 - **The list item carries `busy` and `newReply` together**, from one read, so
   a chat does not fall out of Active between "working" and "new reply".
 - **A row you open stays where it is until you leave it.** The client holds
-  the place the row had when it was opened. Pinning, archiving and moving to a
-  project still act at once.
+  the place the row had when it was opened. Pinning and archiving still
+  act at once.
 - **Subagents** never show in the chat list, pinned or not (operator,
   2026-11-26, #961). A running subagent still marks its parent working, and
   its question marks the parent needs you. The Goblin panel shows subagents
@@ -974,21 +932,18 @@ is now the home screen, and the avatar means only the agent.
 - **The Little Goblin row** shows the mark of any of its rolls (the newest 50)
   and opens the roll that has it, otherwise the newest.
 - **[Side chats](../GLOSSARY.md#side-chat) (2026-11-27, #978).** Every chat
-  outside a project is a side chat of Little Goblin. Side chats show under its
-  row only while the row is open. Marked side chats come first, by mark and
+  outside the main chat and other bots is a side chat of Little Goblin.
+  Side chats show under their bot's row only while the row is open. Marked side chats come first, by mark and
   then newest; then pinned chats; then the rest, newest first.
   - **Open and fold.** A chevron on the row opens and folds the side chats by
     hand, so a phone can reach them (lead's pick, 2026-11-27). Opening
-    Little Goblin's main chat or a side chat opens the row. Opening a project
-    chat or a project page folds it, since side chats show only inside
-    Little Goblin. A fold by hand stays until the operator goes to another
-    chat. The device remembers the last state.
+    a bot's main chat or a side chat opens that bot's row and folds the
+    others. A fold by hand stays until the operator goes to another chat.
+    The device remembers the last state for Little Goblin.
   - **Folded row.** The row carries the most urgent mark of its rolls and
     side chats. Its line names the side chat: "New reply in …" or
     "Working in …", or the question that waits. A click opens that side
     chat; a mark from a roll opens that roll, as before.
-  - **Project chats.** A project chat still enters Active when it has a mark.
-    A pinned project chat without a mark is not in the list.
   - Search still finds side chats.
 - **Row layout (operator, 2026-11-27, #984).** A row's mark, or its pin
   when it has no mark, sits between the title and the time, in every list:
@@ -1340,13 +1295,12 @@ The archive grows without bound, so it is a page, not a rail section.
 The rail (and the phone chats list) shows one `Archived N` link, shown
 only when something is archived; it opens `/app/archive` (an app page key
 in `app-routes.ts`, so it reloads). The page is a `.dtable` of every
-archived unbound chat, newest-archived first, grouped by archive month,
+archived non-child chat, newest-archived first, grouped by archive month,
 with a client-side filter over title and preview and 100 rows per slice
 ("Show more"). Each row: title (the open link) · archived · last active ·
 Unarchive · Delete. Rename is not offered there — open the chat to rename.
-Project-bound archived chats stay off the Chats pane; active project chats
-appear on their project pages, not in the sidebar. The rail's archived list, its disclosure
-state and the chevron are gone.
+Chats from archived projects also appear here. The rail's archived list,
+its disclosure state and the chevron are gone.
 Options not taken: a capped rail list with "Show all", and search-only
 (no browse).
 
@@ -1559,12 +1513,12 @@ summary. Two doc kinds ride one modal:
 - **A file read is live and mutable.** Clicking a path chip opens the file
   as it is *now* — same semantics as `read_file`, deliberately not the
   immutable kind. `GET /api/app/conversations/:id/file?path=` resolves
-  inside that conversation's workdir (the workspace, or the bound
-  project's dir via `projectWorkdir`) with the box-files realpath
+  inside that conversation's workdir (the workspace, the bot's folder,
+  or a directory kept from a retired project) with the box-files realpath
   containment: `..`, absolute escapes, symlink escapes, directories and
   over-cap reads all refuse. On top of the import boundary the reader
   refuses `auth.jsonl` anywhere (the State viewer ruling applies — a
-  linked project dir can sit outside `$GOBLIN_HOME`, so the deny rides on
+  working directory can sit outside `$GOBLIN_HOME`, so the deny rides on
   the resolved path, not the home) and anything inside `.git` (remote URLs
   carry credentials). The reader cap is the app byte budget (32 MiB), not
   the 100 MiB transfer bound. Served `content-disposition: attachment` +

@@ -98,6 +98,18 @@ export function ensureChatNotePinsSchema(db: Database): void {
 	}
 }
 
+export function reconcilePinsAfterOwnershipChange(db: Database, change: () => void): void {
+	if (!db.inTransaction) throw new Error("pin reconciliation needs a transaction");
+	db.run("DROP TRIGGER chat_note_pins_note_change");
+	db.run("DROP TRIGGER chat_note_pins_membership_insert");
+	db.run("DROP TRIGGER chat_note_pins_project_bind");
+	change();
+	ensureChatNotePinsSchema(db);
+	db.run(`UPDATE notes SET bot_id = bot_id WHERE id IN (
+		SELECT note_id FROM chat_note_pins WHERE removed IS NULL
+	)`);
+}
+
 interface PinRow {
 	noteId: string;
 	pinnedRev: number;

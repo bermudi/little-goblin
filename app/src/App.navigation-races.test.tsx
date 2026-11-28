@@ -12,7 +12,6 @@ import type {
 	AppConversationList,
 	AppNote,
 	AppNoteSummary,
-	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
 import { boxView } from "./chat/MessageBox.tsx";
@@ -29,7 +28,6 @@ import {
 // Late completions must not drive navigation: a held create dialog's
 // onCreated, a held note mint's onOpenNote, and a second note→chat
 // start all resolve after the operator has moved on. Full App mount
-// in happy-dom like App.test.tsx's projects surface — the wire is
 // faked at globalThis.fetch with test-owned hold gates.
 
 const jsonResponse = (body: unknown, status = 200): Response =>
@@ -45,18 +43,6 @@ const SETTINGS = parseConfig({
 	telegram: { model: "main/test", thinking: "medium" },
 });
 
-const projRow = (name: string, over: Partial<AppProject> = {}): AppProject => ({
-	id: `p-${name.split(" ")[0]!.toLowerCase()}`,
-	name,
-	slug: name.toLowerCase().replaceAll(" ", "-"),
-	dir: `/tmp/${name}`,
-	managed: true,
-	instructions: "",
-	memory: "shared",
-	createdAt: "2026-10-08T00:00:00.000Z",
-	archivedAt: null,
-	...over,
-});
 
 const noteRow = (title: string, over: Partial<AppNoteSummary> = {}): AppNoteSummary => ({
 	id: `n-${title.split(" ")[0]!.toLowerCase()}`,
@@ -84,7 +70,6 @@ describe("navigation races: late completions", () => {
 	let root: Root | null = null;
 	let installed: string[] = [];
 	let convs: AppConversationList["conversations"];
-	let projs: AppProject[];
 	let notes: AppNoteSummary[];
 	let noteBodies: Record<string, string>;
 	let posts: { url: string; body: unknown }[];
@@ -94,7 +79,6 @@ describe("navigation races: late completions", () => {
 	// never strand a pending mocked fetch.
 	let convCreateHold: Promise<void> | null;
 	let convDeleteHold: Promise<void> | null;
-	let projCreateHold: Promise<void> | null;
 	let noteCreateHold: Promise<void> | null;
 	let pendingGates: PromiseWithResolvers<void>[];
 	const realFetch = globalThis.fetch;
@@ -112,14 +96,12 @@ describe("navigation races: late completions", () => {
 		container = div as unknown as HTMLElement;
 		installed = [];
 		convs = [];
-		projs = [];
 		notes = [];
 		noteBodies = {};
 		posts = [];
 		deletedConversations = [];
 		convCreateHold = null;
 		convDeleteHold = null;
-		projCreateHold = null;
 		noteCreateHold = null;
 		pendingGates = [];
 		installGlobal("window", win);
@@ -180,19 +162,6 @@ describe("navigation races: late completions", () => {
 					return convCreateHold === null ? reply() : convCreateHold.then(reply);
 				}
 				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: [] } }));
-			}
-			if (url === "/api/app/projects") {
-				if (method === "POST") {
-					posts.push({ url, body });
-					const reply = () => {
-						const req = body as { name: string };
-						const project = projRow(req.name, { id: "p-new" });
-						projs.push(project);
-						return Promise.resolve(jsonResponse(project, 201));
-					};
-					return projCreateHold === null ? reply() : projCreateHold.then(reply);
-				}
-				return Promise.resolve(jsonResponse({ projects: projs }));
 			}
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
@@ -403,101 +372,6 @@ describe("navigation races: late completions", () => {
 		await settle();
 	};
 	const openPage = async (page: DesktopPage) => openDesktopPage(container, click, page);
-	const openProject = async (name: string) =>
-		click([...container.querySelectorAll<HTMLAnchorElement>(".rail-project-main")]
-			.find((link) => link.textContent?.trim() === name));
-
-	const submitNewProject = async (name: string) => {
-		await click(container.querySelector('.rail-project-head button[aria-label="New project"]'));
-		const sheet = container.querySelector(".msheet form")!;
-		expect(sheet).not.toBeNull();
-		await typeInto(sheet.querySelector("input")!, name, win.HTMLInputElement.prototype);
-		await act(async () => {
-			sheet.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
-		});
-		await settle();
-	};
-
-	test("a dismissed create dialog's held reply can't navigate or ask — the draft stays", async () => {
-		await mount();
-		const gate = hold();
-		projCreateHold = gate.promise;
-		await submitNewProject("Side Hustle");
-		expect(posts.some((p) => p.url === "/api/app/projects")).toBe(true);
-
-		// Dismiss mid-flight, then open Settings and dirty the editor.
-		await click(container.querySelector('.msheet-head button[aria-label="Close"]'));
-		expect(container.querySelector(".msheet")).toBeNull();
-		await openPage("Settings");
-		await waitFor(() => container.querySelector(".settings") !== null, "settings page");
-		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
-		);
-		// Dropping the only operator can never validate, so the draft
-		// stays dirty without a save POST.
-		await click(
-			container
-				.querySelector('[aria-label="add operator"]')
-				?.closest(".frow")
-				?.querySelector(".chip button"),
-		);
-		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty marker");
-
-		gate.resolve();
-		await settle();
-		// The late success never ran onCreated: Settings stays mounted,
-		// the draft survives, and the guard was never even asked.
-		expect(win.location.pathname).toBe("/app/settings");
-		expect(container.querySelector(".settings")).not.toBeNull();
-		expect(container.textContent).toContain("unsaved");
-		expect(confirmSheet(container)).toBeNull();
-		expect(projs.some((p) => p.id === "p-new")).toBe(true);
-	});
-
-	test("a live dialog's create still refreshes and lands on the new project", async () => {
-		await mount();
-		const gate = hold();
-		projCreateHold = gate.promise;
-		await submitNewProject("Side Hustle");
-		gate.resolve();
-		await settle();
-		expect(win.location.pathname).toBe("/app/p/p-new");
-		expect(container.querySelector(".msheet")).toBeNull();
-		await waitFor(
-			() => container.querySelector("main")!.textContent?.includes("Side Hustle") === true,
-			"the new project's page",
-		);
-	});
-
-	test("a held note create from a project page can't navigate after leaving", async () => {
-		projs = [projRow("Goblin")];
-		win.history.replaceState(null, "", "/app/p/p-goblin");
-		await mount();
-		expect(win.location.pathname).toBe("/app/p/p-goblin");
-		await waitFor(
-			() => [...container.querySelectorAll("button")].some((b) => b.textContent === "New note"),
-			"the project notes section",
-		);
-
-		const gate = hold();
-		noteCreateHold = gate.promise;
-		await click(
-			[...container.querySelectorAll("button")].find((b) => b.textContent === "New note"),
-		);
-		expect(posts.some((p) => p.url === "/api/app/notes")).toBe(true);
-
-		// The operator moves on while the mint is in flight — the
-		// ProjectNotes component unmounts with the page.
-		await openPage("Archive");
-		expect(win.location.pathname).toBe("/app/archive");
-		gate.resolve();
-		await settle();
-		expect(win.location.pathname).toBe("/app/archive");
-		expect(container.querySelector(".note-title")).toBeNull();
-		expect(notes.some((n) => n.id === "n-new")).toBe(true);
-	});
 
 	test("a held Notes-index create cannot interrupt dirty Settings after leaving", async () => {
 		win.history.replaceState(null, "", "/app/notes");
@@ -546,51 +420,6 @@ describe("navigation races: late completions", () => {
 		await settle();
 		expect(win.location.pathname).toBe("/app/n/n-new");
 		await waitFor(() => container.querySelector(".note-title") !== null, "new note");
-	});
-
-	test("a cancelled project start restores only its origin, preserves the destination draft, and removes its row", async () => {
-		projs = [projRow("Alpha"), projRow("Beta")];
-		win.history.replaceState(null, "", "/app/p/p-alpha");
-		await mount();
-		const gate = hold();
-		convCreateHold = gate.promise;
-		const composer = () => container.querySelector<HTMLElement>(".composer .message-box")!;
-		await typeInto(composer(), "Alpha message", win.HTMLTextAreaElement.prototype);
-		await act(async () => {
-			composer().dispatchEvent(
-				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
-			);
-		});
-		await settle();
-		await openProject("Beta");
-		await typeInto(composer(), "Beta draft", win.HTMLTextAreaElement.prototype);
-		gate.resolve();
-		await settle();
-		expect(boxView(composer())?.state.doc.textContent).toBe("Beta draft");
-		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
-		await openProject("Alpha");
-		expect(boxView(composer())?.state.doc.textContent).toBe("Alpha message");
-	});
-
-	test("restoration preserves edits typed in the originating composer after its send", async () => {
-		projs = [projRow("Alpha"), projRow("Beta")];
-		win.history.replaceState(null, "", "/app/p/p-alpha");
-		await mount();
-		const gate = hold();
-		convCreateHold = gate.promise;
-		const composer = () => container.querySelector<HTMLElement>(".composer .message-box")!;
-		await typeInto(composer(), "sent message", win.HTMLTextAreaElement.prototype);
-		await act(async () => {
-			composer().dispatchEvent(
-				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
-			);
-		});
-		await openProject("Beta");
-		await openProject("Alpha");
-		await typeInto(composer(), "newer draft", win.HTMLTextAreaElement.prototype);
-		gate.resolve();
-		await settle();
-		expect(boxView(composer())?.state.doc.textContent).toBe("newer draft");
 	});
 
 	test("a fenced note chat removes its row without staging the note in a composer", async () => {
@@ -697,15 +526,6 @@ describe("navigation races: late completions", () => {
 		await click(chatButton());
 		await waitFor(() => win.location.pathname === "/app/c/minted", "the chat opens");
 		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(2);
-	});
-
-	test("opening the Projects index twice does not add a duplicate history entry", async () => {
-		await mount();
-		await openPage("Projects");
-		await waitFor(() => win.location.pathname === "/app/projects", "Projects index");
-		const length = win.history.length;
-		await openPage("Projects");
-		expect(win.history.length).toBe(length);
 	});
 
 	test("a conversation highlight is cleared on Settings and restored by Back", async () => {

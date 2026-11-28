@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { AppConversationList, AppProjectList } from "../../src/http/app-wire.ts";
+import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { type LiveFeedStatus, LiveStore, type LiveTiming } from "./live.ts";
 
 const TIMING: LiveTiming = {
@@ -147,21 +147,6 @@ const list = (preview: string): AppConversationList => ({
 	bots: [],
 });
 
-const projects = (name: string): AppProjectList => ({
-	projects: [
-		{
-			id: name,
-			name,
-			slug: name,
-			dir: `/p/${name}`,
-			managed: true,
-			instructions: "",
-			memory: "shared",
-			createdAt: "t",
-			archivedAt: null,
-		},
-	],
-});
 
 async function until(fn: () => boolean, ms = 2000): Promise<void> {
 	const deadline = Date.now() + ms;
@@ -267,15 +252,15 @@ describe("LiveStore", () => {
 	});
 
 	test("S4: a GET with no version header fetches once per announced change", async () => {
-		const feed = await attach({ projects: "v1" });
-		const release = store.retain("projects");
-		await until(() => fake.getCount("/api/app/projects") === 1);
+		const feed = await attach({ conversations: "v1" });
+		const release = store.retain("conversations");
+		await until(() => fake.getCount("/api/app/conversations") === 1);
 		await sleep(10);
-		expect(fake.getCount("/api/app/projects")).toBe(1);
-		feed.push(versions({ projects: "v2" }));
-		await until(() => fake.getCount("/api/app/projects") === 2);
-		feed.push(versions({ projects: "v3" }));
-		await until(() => fake.getCount("/api/app/projects") === 3);
+		expect(fake.getCount("/api/app/conversations")).toBe(1);
+		feed.push(versions({ conversations: "v2" }));
+		await until(() => fake.getCount("/api/app/conversations") === 2);
+		feed.push(versions({ conversations: "v3" }));
+		await until(() => fake.getCount("/api/app/conversations") === 3);
 		release();
 	});
 
@@ -329,19 +314,19 @@ describe("LiveStore", () => {
 	test("S7: refresh newest wins, resolves after settle, never rejects", async () => {
 		const resolvers: ((res: Response) => void)[] = [];
 		fake.answer(
-			"/api/app/projects",
+			"/api/app/conversations",
 			() => new Promise<Response>((resolve) => resolvers.push(resolve)),
 		);
-		const p1 = store.refresh("projects");
-		const p2 = store.refresh("projects");
+		const p1 = store.refresh("conversations");
+		const p2 = store.refresh("conversations");
 		await until(() => resolvers.length === 2);
-		resolvers[1]!(json(projects("new"), "v2"));
+		resolvers[1]!(json(list("new"), "v2"));
 		await p2;
-		expect(store.topic("projects").data?.projects[0]?.name).toBe("new");
-		resolvers[0]!(json(projects("old"), "v1"));
+		expect(store.topic("conversations").data?.conversations[0]?.preview).toBe("new");
+		resolvers[0]!(json(list("old"), "v1"));
 		await p1;
 		await tick();
-		expect(store.topic("projects").data?.projects[0]?.name).toBe("new");
+		expect(store.topic("conversations").data?.conversations[0]?.preview).toBe("new");
 
 		fake.answer("/api/app/notes", () => Promise.resolve(json({}, undefined, 500)));
 		await store.refresh("notes");
@@ -349,22 +334,22 @@ describe("LiveStore", () => {
 	});
 
 	test("S8: a released topic ignores announcements; re-retaining shows cache then fetches", async () => {
-		fake.answer("/api/app/projects", (n) =>
-			Promise.resolve(n === 1 ? json(projects("one"), "v1") : json(projects("two"), "v2")),
+		fake.answer("/api/app/conversations", (n) =>
+			Promise.resolve(n === 1 ? json(list("one"), "v1") : json(list("two"), "v2")),
 		);
-		const release = store.retain("projects");
-		const feed = await attach({ projects: "v1" });
-		await until(() => fake.getCount("/api/app/projects") === 1);
+		const release = store.retain("conversations");
+		const feed = await attach({ conversations: "v1" });
+		await until(() => fake.getCount("/api/app/conversations") === 1);
 		release();
-		feed.push(versions({ projects: "v2" }));
+		feed.push(versions({ conversations: "v2" }));
 		await sleep(10);
-		expect(fake.getCount("/api/app/projects")).toBe(1);
+		expect(fake.getCount("/api/app/conversations")).toBe(1);
 
-		expect(store.topic("projects").data?.projects[0]?.name).toBe("one");
-		const release2 = store.retain("projects");
-		expect(store.topic("projects").data?.projects[0]?.name).toBe("one");
-		await until(() => fake.getCount("/api/app/projects") === 2);
-		await until(() => store.topic("projects").data?.projects[0]?.name === "two");
+		expect(store.topic("conversations").data?.conversations[0]?.preview).toBe("one");
+		const release2 = store.retain("conversations");
+		expect(store.topic("conversations").data?.conversations[0]?.preview).toBe("one");
+		await until(() => fake.getCount("/api/app/conversations") === 2);
+		await until(() => store.topic("conversations").data?.conversations[0]?.preview === "two");
 		release2();
 	});
 
@@ -372,16 +357,16 @@ describe("LiveStore", () => {
 		fake.answer("/api/app/conversations", (n) =>
 			Promise.resolve(n === 1 ? json(list("a"), "v1") : json(list("b"), "v2")),
 		);
-		const feed = await attach({ conversations: "v1", projects: "p1" });
+		const feed = await attach({ conversations: "v1", notes: "n1" });
 		const release = store.retain("conversations");
 		await until(() => fake.getCount("/api/app/conversations") === 1);
 		feed.close();
 		await until(() => fake.feeds.length === 2);
-		fake.feeds[1]!.push(versions({ conversations: "v1", projects: "p1" }));
+		fake.feeds[1]!.push(versions({ conversations: "v1", notes: "n1" }));
 		await sleep(15);
 		expect(fake.getCount("/api/app/conversations")).toBe(1);
-		expect(fake.getCount("/api/app/projects")).toBe(0);
-		fake.feeds[1]!.push(versions({ conversations: "v2", projects: "p1" }));
+		expect(fake.getCount("/api/app/notes")).toBe(0);
+		fake.feeds[1]!.push(versions({ conversations: "v2", notes: "n1" }));
 		await until(() => fake.getCount("/api/app/conversations") === 2);
 		await until(() => store.topic("conversations").data?.conversations[0]?.preview === "b");
 		release();

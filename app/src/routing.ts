@@ -1,9 +1,7 @@
 import { type AppPageKey, parseAppPath } from "../../src/http/app-routes.ts";
 
-// `project` and `note` carry ids parsed separately (/app/p/<id>,
-// /app/n/<id>) — the union holds the page key only.
 // Every page key is also a server shell path (src/http/app-routes.ts).
-export type Page = "chat" | "project" | "bot" | "note" | "window" | AppPageKey;
+export type Page = "chat" | "bot" | "note" | "window" | AppPageKey;
 export type Route =
 	| {
 			kind: "home";
@@ -13,7 +11,6 @@ export type Route =
 		}
 	| { kind: "conversation"; id: string }
 	| { kind: "window"; id: string }
-	| { kind: "project"; id: string }
 	| { kind: "bot"; id: string }
 	| { kind: "note"; id: string }
 	| { kind: "page"; page: AppPageKey };
@@ -25,7 +22,6 @@ export function routeFromPath(pathname: string): Route {
 		case "conversation":
 		case "window":
 			return { kind: parsed.kind, id: `app/${parsed.id}` };
-		case "project":
 		case "bot":
 		case "note":
 			return parsed;
@@ -50,8 +46,6 @@ export function pathOfRoute(route: Route): string {
 			return `/app/c/${route.id.slice("app/".length)}`;
 		case "window":
 			return `/app/c/${route.id.slice("app/".length)}/window`;
-		case "project":
-			return `/app/p/${route.id}`;
 		case "bot":
 			return `/app/b/${route.id}`;
 		case "note":
@@ -70,7 +64,6 @@ export function sameRoute(a: Route, b: Route): boolean {
 			return b.kind === "page" && a.page === b.page;
 		case "conversation":
 		case "window":
-		case "project":
 		case "bot":
 		case "note":
 			return b.kind === a.kind && a.id === b.id;
@@ -99,8 +92,6 @@ export function pageFromPath(pathname: string): Page | null {
 	return route?.kind === "page" ? route.page : null;
 }
 
-// /app/p/<projectId> — project ids are server-minted randomUUIDs, the
-// same url-safe shape the /app/c/ link checks.
 export function historyPosition(state: unknown): { index: number; segment: string } | null {
 	if (
 		typeof state !== "object" ||

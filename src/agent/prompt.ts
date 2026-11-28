@@ -15,6 +15,7 @@ import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
+import type { Bot } from "../bots.ts";
 import type { Project } from "../projects.ts";
 import { projectMoveTag } from "../tags.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
@@ -30,10 +31,13 @@ const lastSeen = new Map<string, string>();
 export const PROMPT_SECTIONS = {
 	environment: "## environment",
 	project: "## project — ",
+	bot: "## bot instructions",
 	agents: "## AGENTS.md — your operating notes",
 	user: "## USER.md — your model of the operator",
 	skills: "## skills",
 } as const;
+
+export const WORKDIR_SOURCE = "chat-workdir:";
 
 function noteSource(source: string, content: string | null): void {
 	const digest =
@@ -204,7 +208,7 @@ function readCapped(source: string, path: string, cap: number): string | null {
 
 // Same ceiling as the injected files; the notice points at the project
 // page, not a path (the source is a DB field).
-function capPromptText(source: string, text: string, cap: number): string {
+function capPromptText(source: string, text: string, cap: number, page = "project page"): string {
 	if (text.length <= cap) return text;
 	const headLen = Math.floor(cap * 0.7);
 	const tailLen = Math.min(text.length - headLen, Math.floor(cap * 0.2));
@@ -216,7 +220,12 @@ function capPromptText(source: string, text: string, cap: number): string {
 		dropped,
 	});
 	const tail = tailLen > 0 ? text.slice(-tailLen) : "";
-	return `${text.slice(0, headLen)}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — the project page holds the rest) …\n${tail}`;
+	return `${text.slice(0, headLen)}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — the ${page} holds the rest) …\n${tail}`;
+}
+
+interface ChatPromptScope {
+	bot: Pick<Bot, "id" | "name" | "instructions"> | null;
+	workdir: string;
 }
 
 // A bound conversation's identity and skill paths render absolute — a
@@ -228,6 +237,7 @@ export function buildSystemPrompt(
 	tools: readonly string[],
 	project?: Project | null,
 	notesIndex?: { id: string; title: string }[] | undefined,
+	scope?: ChatPromptScope,
 ): { text: string; sources: string[] } {
 	// A guest persona reads no operator files — nothing private in,
 	// nothing about the operator out — and is built before any file
@@ -272,20 +282,27 @@ export function buildSystemPrompt(
 	const catalog = loadCatalog(paths.skills());
 	const proposals = loadCatalog(paths.skillsProposed());
 	// Absolute links: from a project cwd a relative skills/… resolves inside the project.
+	const workdir = project?.dir ?? scope?.workdir ?? paths.workspace();
+	const separateWorkdir = project != null || workdir !== paths.workspace();
 	const skillsSection = formatSkillsSection(
 		catalog,
 		proposals,
-		project === null || project === undefined ? undefined : paths.workspace(),
+		separateWorkdir ? paths.workspace() : undefined,
 	);
 	const projectContent =
 		project === null || project === undefined
 			? null
 			: projectSection(project, notesIndex);
 	const projectAgents = projectContent?.agents ?? null;
+	const bot = scope?.bot;
+	const botInstructions = bot == null ? "" : capPromptText(
+		`bot:${bot.id}`, bot.instructions.trim(), MAX_PROMPT_FILE_CHARS, "bot page",
+	);
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);
 	noteSource("skills", skillsSection.join("\n"));
+	if (bot != null) noteSource(`bot:${bot.id}`, bot.instructions);
 	// Keyed per project — an unkeyed entry would log "changed" every
 	// time two projects alternate.
 	if (project !== null && project !== undefined) {
@@ -310,11 +327,11 @@ export function buildSystemPrompt(
 		PROMPT_SECTIONS.environment,
 		"",
 		`- You are talking to your operator via ${channel} (${conv.id}).`,
-		...(project === null || project === undefined
-			? [`- Working directory: ${paths.workspace()} — fixed, same for every chat.`]
-			: [
-					`- Working directory: ${project.dir} — this project's directory, the same for every chat in it.`,
-				]),
+		project != null
+			? `- Working directory: ${workdir} — this project's directory, the same for every chat in it.`
+			: separateWorkdir
+				? `- Working directory: ${workdir} — this chat's working directory.`
+				: `- Working directory: ${workdir} — fixed, same for every chat.`,
 		`- Time: each user message ends with a system stamp of when it arrived and`,
 		`  on which surface, like [YYYY-MM-DD HH:MM ±HH:MM · app]. Older messages may`,
 		`  have none. Gaps between stamps tell you what may be stale. For the time`,
@@ -413,7 +430,7 @@ export function buildSystemPrompt(
 					`  files, your notes, past conversations).`,
 				]
 			: []),
-		...(project === null || project === undefined
+		...(!separateWorkdir
 			? [
 					`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,
 					`  operating notes; USER.md is your model of the operator. You own all`,
@@ -445,6 +462,7 @@ export function buildSystemPrompt(
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
 		...(projectContent?.lines ?? []),
+		...(bot == null ? [] : ["", PROMPT_SECTIONS.bot, "", `This chat belongs to ${bot.name}.`, botInstructions]),
 		...(agents ? ["", PROMPT_SECTIONS.agents, "", agents.trim()] : []),
 		...(user ? ["", PROMPT_SECTIONS.user, "", user.trim()] : []),
 		"",
@@ -452,6 +470,8 @@ export function buildSystemPrompt(
 	].join("\n");
 
 	const sources = ["SOUL.md"];
+	if (bot != null) sources.push("bot");
+	if (project == null && separateWorkdir) sources.push(`${WORKDIR_SOURCE}${workdir}`);
 	if (project !== null && project !== undefined) {
 		sources.push("project");
 		if (projectAgents !== null) sources.push("project-AGENTS.md");
@@ -475,10 +495,11 @@ export function systemPromptFor(
 	tools: readonly string[],
 	project?: Project | null,
 	notesIndex?: { id: string; title: string }[] | undefined,
+	scope?: ChatPromptScope,
 ): { text: string; sources: string[] } {
 	const frozen = store.promptSnapshot(conv.id);
 	if (frozen !== null) return frozen;
-	const built = buildSystemPrompt(conv, tools, project, notesIndex);
+	const built = buildSystemPrompt(conv, tools, project, notesIndex, scope);
 	store.savePromptSnapshot(conv.id, built.text, built.sources);
 	// The snapshot's birth is a cache write; the noteSource diffs above
 	// explain any source change since the last build.

@@ -76,6 +76,11 @@ export function makeConversationFork<TConversation>(
 			// gate-written exclusion keeps its marker so the fork lifts
 			// with the same project re-open the source would.
 			const source = qGet.get(fromId);
+			if (source?.fixed_workdir != null) {
+				db.run("UPDATE conversations SET fixed_workdir = ?, cwd = ? WHERE id = ?", [
+					source.fixed_workdir, source.fixed_workdir, id,
+				]);
+			}
 			const bot = bots.membership(fromId);
 			if (bot !== null) bots.attachSideChat(id, bot.botId);
 			applyPatch(id, {

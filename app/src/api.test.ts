@@ -201,13 +201,13 @@ describe("notes", () => {
 		return requests;
 	};
 
-	test("the list encodes project/q/archived and carries the server's truncated flag verbatim", async () => {
+	test("the list encodes owner/q/archived and carries the server's truncated flag verbatim", async () => {
 		const requests = fakeFetch(() => Response.json({ notes: [], truncated: true }));
-		const res = await listNotes(null, { project: "p1", q: "pancake", archived: true });
+		const res = await listNotes(null, { owner: "little-goblin", q: "pancake", archived: true });
 		expect(res.truncated).toBe(true);
 		const url = new URL(requests[0]!.url);
 		expect(url.pathname).toBe("/api/app/notes");
-		expect(url.searchParams.get("project")).toBe("p1");
+		expect(url.searchParams.get("owner")).toBe("little-goblin");
 		expect(url.searchParams.get("q")).toBe("pancake");
 		expect(url.searchParams.get("archived")).toBe("1");
 	});

@@ -163,6 +163,7 @@ export interface ConversationStore extends ConversationReads {
 		createdAt: string,
 	): Conversation;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
+	fixedWorkdir(id: string): string | null;
 	bumpEpoch(id: string, previousEpoch?: number): number;
 	// Stop is a quiet no-op when the conversation row has already been deleted.
 	bumpEpochIfPresent(id: string): number | null;
@@ -232,6 +233,9 @@ export function openStore(dbPath: string): ConversationStore {
 	db.run("PRAGMA foreign_keys = ON");
 	ensureConversationSchema(db);
 	const bots = makeBotStore(db);
+	const fixedWorkdir = db.query<{ fixed_workdir: string | null }, [string]>(
+		"SELECT fixed_workdir FROM conversations WHERE id = ?",
+	);
 	const chatNotePins = openChatNotePins(db);
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
@@ -457,6 +461,8 @@ export function openStore(dbPath: string): ConversationStore {
 		setMeta(id, patch) {
 			applyPatch(id, patch);
 		},
+
+		fixedWorkdir: (id) => fixedWorkdir.get(id)?.fixed_workdir ?? null,
 
 		bumpEpoch(id, previousEpoch) {
 			return bump(id, previousEpoch);

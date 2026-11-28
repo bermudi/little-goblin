@@ -17,13 +17,13 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@ui-sdk/react/dialog";
-import type { AppBot, AppNoteList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
+import type { AppBot, AppNoteList, AppNoteSummary } from "../../src/http/app-wire.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER, type NoteBatchAction } from "../../src/note-owner.ts";
 import { batchNotes, createNote, listNotes } from "./api.ts";
 import { relTime } from "./memoryShared.tsx";
 import { useLiveVersion } from "./useLive.tsx";
 
-function OwnerOptions({ projects, bots }: { projects: AppProject[]; bots: AppBot[] }) {
+function OwnerOptions({ bots }: { bots: AppBot[] }) {
 	return (
 		<>
 			<option value="global">Global</option>
@@ -37,15 +37,6 @@ function OwnerOptions({ projects, bots }: { projects: AppProject[]; bots: AppBot
 					))}
 				</optgroup>
 			)}
-			{projects.length > 0 && (
-				<optgroup label="Projects">
-					{projects.map((project) => (
-						<option key={project.id} value={project.id}>
-							{project.name}
-						</option>
-					))}
-				</optgroup>
-			)}
 		</>
 	);
 }
@@ -54,14 +45,12 @@ const actions = { move: "Moved", archive: "Archived", restore: "Restored", delet
 
 export function NotesIndex({
 	token,
-	projects,
 	bots = [],
 	onOpen,
 	onChanged,
 	onSettings,
 }: {
 	token: string | null;
-	projects: AppProject[];
 	bots?: AppBot[];
 	onOpen: (id: string) => void;
 	onChanged?: () => void;
@@ -88,15 +77,11 @@ export function NotesIndex({
 	const count = selection.length;
 	const botOwner = (id: string) => bots.find((bot) => bot.id === id);
 	const ownerName = (note: AppNoteSummary) =>
-		note.projectId === null
-			? note.botId === null
-				? "Global"
-				: note.botId === undefined || note.botId === LITTLE_GOBLIN_NOTE_OWNER
-					? "Little Goblin"
-					: (botOwner(note.botId)?.name ?? "Bot")
-			: (projects.find((project) => project.id === note.projectId)?.name ?? "Project");
+		note.botId === null ? "Global"
+			: note.botId === undefined || note.botId === LITTLE_GOBLIN_NOTE_OWNER
+				? "Little Goblin"
+				: (botOwner(note.botId)?.name ?? "Bot");
 	const destinationBot = botOwner(destination);
-	const filterIsOwner = filter === "global" || filter === LITTLE_GOBLIN_NOTE_OWNER || botOwner(filter) !== undefined;
 
 	useEffect(() => {
 		mounted.current = true;
@@ -108,8 +93,7 @@ export function NotesIndex({
 	useEffect(() => {
 		let cancelled = false;
 		const timer = setTimeout(() => {
-			const scope = filterIsOwner ? { owner: filter } : { project: filter };
-			void listNotes(token, { ...scope, q: query, archived }).then(
+			void listNotes(token, { ...(filter === "all" ? {} : { owner: filter }), q: query, archived }).then(
 				(next) => {
 					if (cancelled) return;
 					setList(next);
@@ -127,7 +111,7 @@ export function NotesIndex({
 			cancelled = true;
 			clearTimeout(timer);
 		};
-	}, [query, filter, filterIsOwner, archived, token, notesVersion, reload]);
+	}, [query, filter, archived, token, notesVersion, reload]);
 
 	function resetFilters() {
 		setList(null);
@@ -168,13 +152,7 @@ export function NotesIndex({
 		setBusy(true);
 		setError(null);
 		try {
-			const project = projects.find(
-				(entry) => entry.id === filter && entry.archivedAt === null,
-			);
-			const note = await createNote(token, {
-				title: "Untitled note",
-				...(project === undefined ? {} : { projectId: project.id }),
-			});
+			const note = await createNote(token, { title: "Untitled note" });
 			onChanged?.();
 			if (mounted.current) onOpen(note.id);
 		} catch (err) {
@@ -226,7 +204,7 @@ export function NotesIndex({
 					}}
 				>
 					<option value="all">All owners</option>
-					<OwnerOptions projects={projects} bots={bots} />
+					<OwnerOptions bots={bots} />
 				</select>
 				<select
 					aria-label="Filter notes by status"
@@ -266,12 +244,7 @@ export function NotesIndex({
 									onChange={(event) => setDestination(event.target.value)}
 								>
 									<option value="">Choose an owner</option>
-									<OwnerOptions
-										projects={projects.filter(
-											(project) => project.archivedAt === null,
-										)}
-										bots={bots}
-									/>
+									<OwnerOptions bots={bots} />
 								</select>
 							</label>
 							{destination === "global" && (
@@ -290,12 +263,7 @@ export function NotesIndex({
 									className="addbtn proj-btn"
 									disabled={destination === ""}
 									onClick={() => {
-										const owner =
-											destination === "global"
-												? { botId: null }
-												: destination === LITTLE_GOBLIN_NOTE_OWNER || destinationBot !== undefined
-													? { botId: destination }
-													: { projectId: destination };
+										const owner = { botId: destination === "global" ? null : destination };
 										void mutate({ action: "move", owner });
 									}}
 								>

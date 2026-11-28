@@ -68,7 +68,7 @@ describe("GET /api/app/conversations/:id/file", () => {
 		}
 	});
 
-	test("a project-bound conversation reads its own dir, not the workspace's", async () => {
+	test("a retired project chat still reads its own dir, not the workspace's", async () => {
 		const s = setup();
 		try {
 			// A linked project dir lives outside goblin's home.
@@ -81,8 +81,9 @@ describe("GET /api/app/conversations/:id/file", () => {
 			await s.call("/api/app/conversations", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ id: "proj-01", projectId: project.id }),
+				body: JSON.stringify({ id: "proj-01" }),
 			});
+			s.store.db.run("UPDATE conversations SET fixed_workdir = ? WHERE id = ?", [project.dir, "app/proj-01"]);
 			const own = await get(s, "proj-01", "proj.md");
 			expect(own.status).toBe(200);
 			expect(await own.text()).toBe("project file");

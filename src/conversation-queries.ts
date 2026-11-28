@@ -11,6 +11,7 @@ export interface Row {
 	title: string | null;
 	title_implicit: number;
 	cwd: string; // kept: column exists in existing DBs; never read into Conversation
+	fixed_workdir: string | null;
 	model: string | null;
 	thinking: string | null;
 	voice: number;

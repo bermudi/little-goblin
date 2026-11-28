@@ -252,6 +252,35 @@ have all passed — so a deploy-initiated restart is distinguishable from a
 spontaneous one, and a rollout that started but never finished is visible as
 a `restarting` line with no `accepted` after it.
 
+### Retiring projects
+
+Before rolling out the first release without Projects, run the read-only
+preview from that release. Pass `--to-bot` once for each project ID named
+by the operator; every other project goes to Little Goblin:
+
+```sh
+bun scripts/retire-projects.ts --database "$DB" --to-bot "$PROJECT_ID" --dry-run
+```
+
+Review the entire output with the operator, by ID. It says which bot will
+own each project, which chat and note IDs move, what is archived or kept out
+of memory, the working directory, and where instructions go. The output can
+contain private names and paths: do not put it in GitHub.
+
+Only after approval of the mapping and the maintenance window, drain and stop
+the old service. Leave it stopped during the migration. Use the same arguments
+with `--apply "$APPROVAL"` in place of `--dry-run`; `APPROVAL` is the hash from
+the reviewed output. If the plan changed, get a fresh preview and approval.
+The command takes and checks a SQLite backup in a private directory beside
+the database before it changes rows, then prints the backup path. It commits
+all changes together. A successful repeat changes nothing. The new release
+refuses to boot with unretired projects.
+
+Keep the backup until the operator accepts the rollout. A code rollback alone
+does not restore projects or their bindings. With the service stopped, preserve
+the migrated database and its sidecars and ask the operator before restoring
+the backup, since restoring it drops writes made after retirement.
+
 ### Post-deploy proof (new surfaces)
 
 After a deploy that changes these surfaces, run each check against the live

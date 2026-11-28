@@ -28,6 +28,7 @@ import type {
 	AppContextView,
 	AppConversationBranch,
 	AppConversationCreate,
+	AppConversationCreateRequest,
 	AppConversationList,
 	AppConversationMemoryResponse,
 	AppConversationMemoryView,
@@ -45,10 +46,8 @@ import type {
 	AppNoteVersionList,
 	ChatNotePinsView,
 	AppProgramMutationResponse,
-	AppProject,
 	AppReplyRating,
 	AppReplyRatingResponse,
-	AppProjectList,
 	AppPushPublicKeyResponse,
 	AppPushRegisterResponse,
 	AppPushStatus,
@@ -260,12 +259,7 @@ export function branchConversation(
 
 export function createConversation(
 	token: string | null,
-	opts?: {
-		title?: string;
-		projectId?: string;
-		memoryExcluded?: boolean;
-		initialModelSettings?: AppModelSettings;
-	},
+	opts?: AppConversationCreateRequest,
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",
@@ -348,42 +342,6 @@ export function closeAsk(
 	});
 }
 
-export function listProjects(token: string | null): Promise<AppProjectList> {
-	return request(token, "/api/app/projects");
-}
-
-export function createProject(
-	token: string | null,
-	body: { name: string; instructions?: string; memory?: "shared" | "off"; dir?: string },
-): Promise<AppProject> {
-	return request(token, "/api/app/projects", {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-}
-
-export function getProject(token: string | null, id: string): Promise<AppProject> {
-	return request(token, `/api/app/projects/${encodeURIComponent(id)}`);
-}
-
-export function patchProject(
-	token: string | null,
-	id: string,
-	patch: {
-		name?: string;
-		instructions?: string;
-		memory?: "shared" | "off";
-		archived?: boolean;
-	},
-): Promise<AppProject> {
-	return request(token, `/api/app/projects/${encodeURIComponent(id)}`, {
-		method: "PATCH",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(patch),
-	});
-}
-
 // ---------- notes ----------
 // The editor's etag is the rev — If-Match guards content writes;
 // flag writes (pin/archive/move) go bare. A 409 carries the live note
@@ -396,10 +354,9 @@ export class NoteConflictError extends ApiError {
 
 export function listNotes(
 	token: string | null,
-	filter: { project?: string; owner?: string; q?: string; archived?: boolean } = {},
+	filter: { owner?: string; q?: string; archived?: boolean } = {},
 ): Promise<AppNoteList> {
 	const params = new URLSearchParams();
-	if (filter.project !== undefined && filter.project !== "") params.set("project", filter.project);
 	if (filter.owner !== undefined) params.set("owner", filter.owner);
 	if (filter.q !== undefined && filter.q !== "") params.set("q", filter.q);
 	if (filter.archived === true) params.set("archived", "1");
@@ -439,7 +396,6 @@ export async function patchNote(
 	patch: {
 		title?: string;
 		body?: string;
-		projectId?: string | null;
 		pinned?: boolean;
 		archived?: boolean;
 		// 'rewrite' marks the accepted proposal so the version names it.

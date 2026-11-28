@@ -12,7 +12,6 @@ import type {
 	AppNote,
 	AppNoteVersion,
 	AppNoteVersionMeta,
-	AppProject,
 } from "../../src/http/app-wire.ts";
 import { LITTLE_GOBLIN_NOTE_OWNER } from "../../src/note-owner.ts";
 import {
@@ -252,7 +251,6 @@ function ArchivedDraft({ noteId }: { noteId: string }) {
 export function NoteView({
 	token,
 	noteId,
-	projects,
 	bots = [],
 	onChat,
 	onDeleted,
@@ -262,10 +260,8 @@ export function NoteView({
 }: {
 	token: string | null;
 	noteId: string;
-	projects: AppProject[];
 	bots?: AppBot[];
 	// Starts a conversation carrying this note as an attachment —
-	// bound to the note's project when it has one.
 	onChat: (note: AppNote) => void | Promise<void | boolean>;
 	onDeleted: () => void;
 	onChanged?: () => void;
@@ -518,7 +514,7 @@ export function NoteView({
 	if (note === null) return <div className="loading">…</div>;
 
 	const flag = (
-		patch: { projectId?: string | null; pinned?: boolean; archived?: boolean },
+		patch: { pinned?: boolean; archived?: boolean },
 		verb: string,
 	) => {
 		setBusy(true);
@@ -722,30 +718,11 @@ export function NoteView({
 				{archived && <span className="pill">archived</span>}
 			</div>
 			<div className="row note-flags">
-				<label className="note-proj">
-					<span>Owner</span>
-					<select
-						value={note.projectId ?? (note.botId === null ? "global" : note.botId === undefined || note.botId === LITTLE_GOBLIN_NOTE_OWNER ? "" : note.botId)}
-						disabled={busy || rewriteBusy || chatBusy}
-						aria-label="Note owner"
-						onChange={(e) =>
-							flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
-						}
-					>
-						<option value="">Little Goblin</option>
-						{note.projectId === null && note.botId === null && <option value="global" disabled>Global</option>}
-						{note.projectId === null && note.botId != null && note.botId !== LITTLE_GOBLIN_NOTE_OWNER && (
-							<option value={note.botId} disabled>
-								{bots.find((bot) => bot.id === note.botId)?.name ?? "Bot"}
-							</option>
-						)}
-						{projects.map((p) => (
-							<option key={p.id} value={p.id}>
-								{p.name}
-							</option>
-						))}
-					</select>
-				</label>
+				<span className="note-proj">
+					Owner: {note.botId === null ? "Global"
+						: note.botId === undefined || note.botId === LITTLE_GOBLIN_NOTE_OWNER
+							? "Little Goblin" : (bots.find((bot) => bot.id === note.botId)?.name ?? "Bot")}
+				</span>
 				<button
 					type="button"
 					className="ghost"

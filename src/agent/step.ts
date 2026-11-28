@@ -9,6 +9,7 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
+import { conversationWorkdir } from "../conversation-workdir.ts";
 import { agentChildSystemPrompt, agentTypeUncapped } from "../agent-types.ts";
 import { paths } from "../home-layout.ts";
 import type { NoteStore } from "../notes.ts";
@@ -20,7 +21,7 @@ import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
-import { NOTE_HISTORY_DESCRIPTION, NOTE_HISTORY_SOURCE, noteTool } from "./tools/note.ts";
+import { NOTE_HISTORY_DESCRIPTION, NOTE_HISTORY_SOURCE, NOTE_OWNER_SCOPE_SOURCE, noteTool } from "./tools/note.ts";
 import { toToolSet } from "../turn/ai-sdk-tools.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
@@ -60,7 +61,9 @@ export function makeStepBuilder(
 	const promptStore = {
 		promptSnapshot: (id: string) => store.promptSnapshot(id),
 		savePromptSnapshot: (id: string, text: string, sources: string[]) =>
-			store.savePromptSnapshot(id, text, [...sources, NOTE_HISTORY_SOURCE]),
+			store.savePromptSnapshot(id, text, [
+				...sources, NOTE_HISTORY_SOURCE, ...(sources.includes("project") ? [] : [NOTE_OWNER_SCOPE_SOURCE]),
+			]),
 	};
 	// Both a turn and a cache-prefix summary use this one API-lane
 	// construction, so model setup cannot drift between their requests.
@@ -179,6 +182,8 @@ export function makeStepBuilder(
 				carriesMedia(kind, mediaType, position, pipeBase);
 			const level = conv.thinking as ThinkingLevel;
 			const project = conv.projectId === null ? null : projects.get(conv.projectId);
+			const membership = store.bots.membership(conv.id);
+			const bot = membership === null ? null : store.bots.get(membership.botId);
 			// A native-subagent child's prompt is its agent type's body,
 			// frozen through the same snapshot seam as every conversation
 			// (agent-types.ts); everything else builds the goblin prompt.
@@ -191,6 +196,7 @@ export function makeStepBuilder(
 							toolNames(tools),
 							project,
 							project === null ? undefined : notes.index(project.id),
+							{ bot, workdir: conversationWorkdir(store, projects, conv) },
 						);
 			const uncapped = agentTypeUncapped(conv, paths.agentTypes());
 			log.info("model step", {

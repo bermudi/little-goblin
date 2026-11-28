@@ -327,7 +327,6 @@ export function ChatView({
   title,
   seed,
   followAfter,
-  noteProjectId,
   onSeeded,
   onSendAccepted,
   onOpenNote,
@@ -348,8 +347,6 @@ export function ChatView({
   // being created — delivered once, on mount.
   seed: UIMessage["parts"] | null;
   followAfter?: string | undefined;
-  // The conversation's project — a note-card "New note" binds to it.
-  noteProjectId?: string | null | undefined;
   onSeeded: () => void;
   onSendAccepted?: (() => void) | undefined;
   // Note chips + fenced note cards navigate to the note page in-app.
@@ -419,7 +416,6 @@ export function ChatView({
         initialCompactions={initial.compactions}
         seed={seed}
         followAfter={followAfter}
-        noteProjectId={noteProjectId}
         onSeeded={onSeeded}
         onSendAccepted={onSendAccepted}
         onOpenNote={onOpenNote}
@@ -449,7 +445,6 @@ function Chat({
   initialCompactions,
   seed,
   followAfter,
-  noteProjectId,
   onSeeded,
   onSendAccepted,
   onOpenNote,
@@ -477,7 +472,6 @@ function Chat({
   initialCompactions: AppCompactionMark[];
   seed: UIMessage["parts"] | null;
   followAfter?: string | undefined;
-  noteProjectId?: string | null | undefined;
   onSeeded: () => void;
   onSendAccepted?: (() => void) | undefined;
   onOpenNote?: ((id: string) => void) | undefined;
@@ -1297,7 +1291,6 @@ function Chat({
                           <MessageParts
                             parts={m.parts}
                             token={token}
-                            noteProjectId={noteProjectId}
                             onOpenNote={onOpenNote}
                             clipFences
                           />
@@ -1321,7 +1314,6 @@ function Chat({
                       <MessageParts
                         parts={m.parts}
                         token={token}
-                        noteProjectId={noteProjectId}
                         messages={hasUiPart(m.parts) ? displayed : undefined}
                         onOpenNote={onOpenNote}
                       />
@@ -1348,7 +1340,6 @@ function Chat({
                       <MessageParts
                         parts={m.parts}
                         token={token}
-                        noteProjectId={noteProjectId}
                         messages={hasUiPart(m.parts) ? displayed : undefined}
                         onOpenNote={onOpenNote}
                       />
@@ -1362,7 +1353,6 @@ function Chat({
                           parts={unlanded.reply}
                           sentMedia={placedMedia.byReply.get(m.id)}
                           token={token}
-                          noteProjectId={noteProjectId}
                           messages={hasUiPart(unlanded.reply) ? displayed : undefined}
                           onOpenNote={onOpenNote}
                           ended
@@ -1410,7 +1400,6 @@ function Chat({
                       parts={m.parts}
                       sentMedia={placedMedia.byReply.get(m.id)}
                       token={token}
-                      noteProjectId={noteProjectId}
                       busy={busy}
                       working={m.id === liveReplyId}
                       streaming={

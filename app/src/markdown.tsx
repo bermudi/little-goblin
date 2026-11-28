@@ -503,7 +503,6 @@ function NoteAppendCard({
 	title,
 	body,
 	token,
-	noteProjectId,
 	onOpenNote,
 	unfinished,
 	streaming,
@@ -512,8 +511,6 @@ function NoteAppendCard({
 	title: string | null;
 	body: string;
 	token: string | null;
-	// A project-bound conversation files new notes in its project.
-	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
 	// The fence never closed — the body may be a prefix. It only
 	// withholds the append affordance while the message is still
@@ -542,7 +539,7 @@ function NoteAppendCard({
 		if (!open) return;
 		const seq = ++searchSeq.current;
 		const t = setTimeout(() => {
-			void listNotes(token, { project: "all", q: query }).then(
+			void listNotes(token, { q: query }).then(
 				(r) => {
 					if (seq !== searchSeq.current) return;
 					setNotes(r.notes);
@@ -580,8 +577,7 @@ function NoteAppendCard({
 		void createNote(token, {
 			title: title ?? "untitled",
 			body,
-			...(noteProjectId != null ? { projectId: noteProjectId } : {}),
-			...(noteProjectId == null && conversation !== null ? { conversation } : {}),
+			...(conversation !== null ? { conversation } : {}),
 		}).then(
 			(n) => {
 				setStatus("done");
@@ -604,7 +600,6 @@ function NoteAppendCard({
 				<Markdown
 					text={body}
 					token={token}
-					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
 					streaming={streaming}
 					clipFences={clipFences}
@@ -681,20 +676,17 @@ function NoteAppendCard({
 }
 
 // What a `note` fence card needs from its host: the caller's auth, the
-// conversation's project (a card-created note binds to it), and note
 // navigation — threaded through every markdown-rendering container.
 export interface MarkdownNoteContext {
 	// An unfinished note fence cannot append until its stream settles.
 	streaming?: boolean | undefined;
 	token?: string | null | undefined;
-	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
 }
 
 export function Markdown({
 	text,
 	token,
-	noteProjectId,
 	onOpenNote,
 	streaming,
 	clipFences,
@@ -759,7 +751,6 @@ export function Markdown({
 							title={titled?.[1] ?? null}
 							body={body}
 							token={token ?? null}
-							noteProjectId={noteProjectId}
 							onOpenNote={onOpenNote}
 							unfinished={!closed}
 							streaming={streaming}
@@ -839,7 +830,6 @@ export function Markdown({
 					<Markdown
 						text={body.join("\n")}
 						token={token}
-						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}
 						streaming={streaming}
 						clipFences={clipFences}

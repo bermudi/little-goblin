@@ -24,10 +24,9 @@ import type {
 } from "./app-wire.ts";
 import { versionedJson } from "./live-version.ts";
 
-const noteCreateBody: z.ZodType<AppNoteCreate> = z.object({
+const noteCreateBody: z.ZodType<AppNoteCreate> = z.strictObject({
 	title: z.string().trim().min(1).max(200),
 	body: z.string().max(NOTE_BODY_MAX).optional(),
-	projectId: z.string().min(1).nullish(),
 	conversation: z.string().refine((id) => appIdOf(id) !== null, "expected an app conversation id").optional(),
 });
 
@@ -35,7 +34,6 @@ const notePatchBody = z
 	.object({
 		title: z.string().trim().min(1).max(200).optional(),
 		body: z.string().optional(),
-		projectId: z.string().min(1).nullable().optional(),
 		pinned: z.boolean().optional(),
 		archived: z.boolean().optional(),
 		source: z.enum(["app", "rewrite"]).optional(),
@@ -46,7 +44,6 @@ const notePatchBody = z
 		(p) =>
 			p.title !== undefined ||
 			p.body !== undefined ||
-			p.projectId !== undefined ||
 			p.pinned !== undefined ||
 			p.archived !== undefined,
 		{ message: "nothing to write" },
@@ -56,10 +53,7 @@ const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX) });
 
 const NOTE_LIST_LIMIT = 1000;
 
-const noteOwner = z.union([
-	z.strictObject({ botId: z.string().min(1).max(200).nullable() }),
-	z.strictObject({ projectId: z.string().min(1) }),
-]);
+const noteOwner = z.strictObject({ botId: z.string().min(1).max(200).nullable() });
 
 const noteBatch = z.object({
 	selection: z.array(z.object({ id: z.string().min(1).max(200), stateRev: z.number().int().positive() }))
@@ -148,7 +142,6 @@ function ifMatchRev(req: Request): number | null {
 }
 
 export interface NoteListQuery {
-	project: string;
 	owner?: NoteOwner | undefined;
 	q: string | null;
 	archivedOnly: boolean;
@@ -159,7 +152,6 @@ export function noteListBody(
 	query: NoteListQuery,
 ): AppNoteList {
 	const rows = deps.notes.list({
-		project: query.project,
 		owner: query.owner,
 		...(query.q !== null && query.q !== "" ? { q: query.q } : {}),
 		...(query.archivedOnly ? { archived: true } : {}),
@@ -173,8 +165,8 @@ export function noteListBody(
 
 export function noteListVersioned(deps: Pick<AppChannelDeps, "notes">): unknown {
 	return {
-		active: noteListBody(deps, { project: "all", q: null, archivedOnly: false }),
-		archived: noteListBody(deps, { project: "all", q: null, archivedOnly: true }),
+		active: noteListBody(deps, { q: null, archivedOnly: false }),
+		archived: noteListBody(deps, { q: null, archivedOnly: true }),
 	};
 }
 
@@ -187,13 +179,6 @@ export async function handleNotesRoute(
 
 	if (path === "/api/app/notes") {
 		if (req.method === "GET") {
-			const projectParam = url.searchParams.get("project");
-			const project =
-				projectParam === null || projectParam === "all"
-					? "all"
-					: projectParam === "loose"
-						? "loose"
-						: projectParam;
 			const q = url.searchParams.get("q");
 			const archivedOnly = url.searchParams.get("archived") === "1";
 			const ownerParam = url.searchParams.get("owner");
@@ -206,15 +191,14 @@ export async function handleNotesRoute(
 			if (ownerParam !== null && owner === undefined) {
 				return Response.json({ error: "invalid note owner" }, { status: 422, headers: NO_STORE });
 			}
-			const body = noteListBody(deps, { project, owner, q, archivedOnly });
+			const body = noteListBody(deps, { owner, q, archivedOnly });
 			if (body.truncated) {
 				log.warn("app note list truncated", {
-					project,
 					q: q ?? null,
 					archived: archivedOnly,
 				});
 			}
-			return project === "all" && owner === undefined && q === null && archivedOnly === false
+			return owner === undefined && q === null && archivedOnly === false
 				? versionedJson(body, noteListVersioned(deps))
 				: Response.json(body, { headers: NO_STORE });
 		}

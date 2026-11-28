@@ -96,6 +96,7 @@ export function NotesIndex({
 					: (botOwner(note.botId)?.name ?? "Bot")
 			: (projects.find((project) => project.id === note.projectId)?.name ?? "Project");
 	const destinationBot = botOwner(destination);
+	const filterIsOwner = filter === "global" || filter === LITTLE_GOBLIN_NOTE_OWNER || botOwner(filter) !== undefined;
 
 	useEffect(() => {
 		mounted.current = true;
@@ -107,10 +108,7 @@ export function NotesIndex({
 	useEffect(() => {
 		let cancelled = false;
 		const timer = setTimeout(() => {
-			const scope =
-				filter === "global" || filter === LITTLE_GOBLIN_NOTE_OWNER || botOwner(filter) !== undefined
-					? { owner: filter }
-					: { project: filter };
+			const scope = filterIsOwner ? { owner: filter } : { project: filter };
 			void listNotes(token, { ...scope, q: query, archived }).then(
 				(next) => {
 					if (cancelled) return;
@@ -129,7 +127,7 @@ export function NotesIndex({
 			cancelled = true;
 			clearTimeout(timer);
 		};
-	}, [query, filter, archived, token, notesVersion, reload]);
+	}, [query, filter, filterIsOwner, archived, token, notesVersion, reload]);
 
 	function resetFilters() {
 		setList(null);

@@ -243,7 +243,7 @@ export function formatSkillsSection(
 		"",
 		`Skills are directories under \`${skillsRoot}/\` — each a SKILL.md (frontmatter:`,
 		"name, description) with instructions plus any scripts/files it needs.",
-		"When a request matches one, read_file its SKILL.md and follow it, even",
+		"When a request matches one, read its SKILL.md with bash (cat) and follow it, even",
 		"for work you already know how to do — the skill is how it is done",
 		"here. Save what you learn: after a hard or iterative task, when the",
 		"operator corrects you, or when a loaded skill proves wrong or",

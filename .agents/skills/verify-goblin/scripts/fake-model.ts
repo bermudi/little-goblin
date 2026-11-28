@@ -277,8 +277,8 @@ function workReply(step: number, thinkOnly: boolean): Response {
 			}
 			if (thinkOnly) controller.enqueue(enc.encode(chunk({ content: "verify-think: done" }, null)));
 			else {
-				const name = step === 0 ? "bash" : "read_file";
-				const args = step === 0 ? { command: "sleep 4 && sed -n 1p ../state/goblin.log" } : { path: "../state/goblin.log" };
+				const name = "bash";
+				const args = step === 0 ? { command: "sleep 4 && sed -n 1p ../state/goblin.log" } : { command: "tail -n 1 ../state/goblin.log" };
 				controller.enqueue(enc.encode(chunk({ tool_calls: [{ index: 0, id: `call-verify-work-${step}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, null)));
 			}
 			controller.enqueue(enc.encode(chunk({}, thinkOnly ? "stop" : "tool_calls")));
@@ -421,7 +421,7 @@ const server = Bun.serve({
 			const step = parsed.data.messages.slice(lastUserIndex + 1).filter((m) => m.role === "tool").length;
 			const path = "verify-sent-media.txt";
 			if (step === 0) {
-				return toolCallResponse("write_file", { path, content: "Verification file.\n" }, true);
+				return toolCallResponse("bash", { command: `printf 'Verification file.\\n' > ${path}` }, true);
 			}
 			if (step === 1 || step === 2) {
 				return toolCallResponse(
@@ -441,8 +441,8 @@ const server = Bun.serve({
 			if (toolsSinceUser < 2) {
 				await Bun.sleep(1000);
 				return toolCallResponse(
-					"read_file",
-					{ path: "../state/goblin.log", offset: -(toolsSinceUser + 2) },
+					"bash",
+					{ command: `tail -n ${toolsSinceUser + 2} ../state/goblin.log | head -n 1` },
 					true,
 					`call-verify-long-${toolsSinceUser}`,
 				);

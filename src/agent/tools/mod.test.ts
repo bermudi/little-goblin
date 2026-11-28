@@ -121,9 +121,6 @@ describe("toolNames ↔ makeTools", () => {
 										image: image ? ({} as ImageToolDeps) : undefined,
 									});
 									expect(toolNames(tools)).toEqual([
-										"read_file",
-										"write_file",
-										"edit_file",
 										"bash",
 										...(voice ? ["speak"] : []),
 										...(transcribe ? ["transcribe"] : []),

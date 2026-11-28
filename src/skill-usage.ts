@@ -6,11 +6,6 @@
 // keyed by skill name, never frontmatter — telemetry never touches
 // SKILL.md files. One process writes it; no locking.
 //
-// Bump points sit at the doors and seams that observe a real use — the
-// data-skill submit doors, the read_file hook, the turn-write
-// attribution seam — never the resolver: a retry rebuilds the view and
-// would double-count one invocation.
-
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";

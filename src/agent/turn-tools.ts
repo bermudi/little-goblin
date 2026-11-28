@@ -88,10 +88,8 @@ export interface TurnToolsDeps {
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
-	/** Successful read_file resolved paths — the skill-usage watch
-	 *  (design/skills.md → Self-authoring, /learn, curator). Absent in
-	 *  tests. */
 	noteSkillRead?(abs: string): void;
+	noteSkillWrite?(conversationId: string, skill: string): void;
 }
 
 // The screenshot tool mounts only when BOTH gates pass (issue #606):
@@ -128,7 +126,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile, context) => {
+	return (conv, deliverVoice, recording, deliverFile) => {
 		const snapshot = store.promptSnapshot(conv.id);
 		const provider = conv.model === null
 			? undefined
@@ -140,9 +138,6 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
 		const channel = channelOf(conv.id);
-		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
-		// relative-path anchor, and delegation's workspaceDir — a
-		// vanished dir throws here and the turn fails at admission.
 		const workdir = projectWorkdir(projects, conv);
 		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
 		const delegate = delegateDeps(conv, workdir);
@@ -164,8 +159,16 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				: undefined,
 			cwd: workdir,
 			bashDescriptionCwd,
-			...(context !== undefined ? { contextFill: context.contextFill } : {}),
-			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
+			...(deps.noteSkillRead !== undefined || deps.noteSkillWrite !== undefined
+				? {
+						onRead: deps.noteSkillRead,
+						skillWrites: {
+							dirs: [paths.skills(), paths.skillsProposed()],
+							conversation: conv.id,
+							record: (skill: string) => deps.noteSkillWrite?.(conv.id, skill),
+						},
+					}
+				: {}),
 			voice:
 				tts && !configRef.ttsDown && deliverVoice
 					? {

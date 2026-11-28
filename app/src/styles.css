@@ -9113,3 +9113,98 @@ button.goblin-panel-row:hover {
 	align-self: flex-start;
 	margin-top: 0.75rem;
 }
+
+.header-action.chat-notes-trigger {
+	width: auto;
+	gap: 5px;
+	padding-inline: 7px;
+	font-size: 12px;
+}
+.chat-notes-count {
+	display: inline-grid;
+	place-items: center;
+	min-width: 16px;
+	padding-inline: 3px;
+	font-variant-numeric: tabular-nums;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	border-radius: 4px;
+}
+.chat-notes-popover,
+.chat-notes-sheet {
+	padding: 14px;
+	color: var(--app-fg);
+	background: var(--app-bg);
+}
+.chat-notes-popover {
+	z-index: 32;
+	width: min(340px, calc(100vw - 24px));
+	max-height: min(560px, 74dvh);
+	overflow: auto;
+	border: 1px solid var(--app-control-border);
+	border-radius: 10px;
+}
+.chat-notes-head,
+.chat-notes-list > li {
+	display: flex;
+	justify-content: space-between;
+	align-items: start;
+	gap: 10px;
+}
+.chat-notes-head {
+	align-items: center;
+	margin-bottom: 10px;
+}
+.chat-notes-head > :first-child {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+}
+.chat-notes-body {
+	font-size: 13px;
+}
+.chat-notes-help,
+.chat-notes-owner {
+	color: var(--app-fg-muted);
+}
+.chat-notes-owner {
+	display: block;
+	font-size: 12px;
+}
+.chat-notes-list,
+.chat-notes-changes {
+	padding: 0;
+	margin: 0;
+	list-style: none;
+}
+.chat-notes-list > li {
+	border-bottom: 1px solid var(--app-divider);
+	padding: 8px 0;
+}
+.chat-notes-list > li > div {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.chat-notes-list > li > button {
+	flex: none;
+}
+.chat-notes-title {
+	text-align: start;
+}
+.chat-notes-changes > li {
+	margin: 5px 0;
+}
+.chat-notes-search {
+	display: block;
+	margin: 12px 0 2px;
+}
+.chat-notes-search > input {
+	display: block;
+	width: 100%;
+	margin-top: 5px;
+	padding: 7px;
+	background: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 5px;
+	color: var(--app-fg);
+}

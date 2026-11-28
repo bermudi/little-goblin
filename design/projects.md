@@ -128,7 +128,7 @@ conversation (Telegram included; guests never). Results ride fenced like
 other operator data; note bodies are the operator's words, not instructions
 from a third party.
 
-**How chats see notes** (operator ruling: index + attach).
+**How chats see notes.**
 
 - **Project conversations** get a notes index in the frozen `## project`
   section; current text is a `note read` away.
@@ -141,6 +141,17 @@ from a third party.
   through `note read`, never by rewriting the old message.
 - "Chat with a note" is a new conversation with that note attached to its
   first message. No separate mechanism.
+- **Pin to a chat** (operator, 2026-11-27, #982). Notes in the chat header
+  opens a desktop panel or phone sheet. Search active notes in the chat's
+  scope, see pinned notes and recent edits, and unpin from the same place.
+  A new roll starts with no pins. Compaction keeps the existing pins.
+  On the next turn, a pin notice names the note, ID, and revision. One line
+  per edit names the actor, change, and any reason. Unpinning or losing
+  access produces a final notice. Archive, deletion, or loss of access
+  removes the pin. A restored note can be pinned again.
+  The notice text and revision advance commit together at admission. The
+  notice belongs to that turn's new input and replays at the same position.
+  The body and diff remain available through the note tool.
 
 **Refresh without push.** No socket, no new push channel (Streaming members'
 "parked" ruling stands). In v1 a note and a chat never share a screen, so no

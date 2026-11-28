@@ -5,6 +5,7 @@ import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
 import { ensureClaudeSessionsSchema } from "./claude-sessions.ts";
 import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
+import { ensureChatNotePinsSchema } from "./chat-note-pins.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { ensureRatingsSchema } from "./reply-ratings.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
@@ -43,6 +44,7 @@ export function ensureConversationSchema(db: Database): void {
 	ensureProjectsSchema(db);
 	ensureBotsSchema(db);
 	ensureNotesSchema(db);
+	ensureChatNotePinsSchema(db);
 	// Companion schemas whose rows reference conversations: ensured here
 	// so deleteConversation's anchor check and wake sweep always find
 	// their tables on this handle, and the FK chain is complete from the

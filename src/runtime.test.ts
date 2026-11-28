@@ -82,6 +82,72 @@ import type { ScriptCall, ScriptedModel } from "./testkit/turn-script.ts";
 const engines = [sdkScript, claudeScript] as const;
 const engineName = (make: (typeof engines)[number]) => make === sdkScript ? "ai-sdk" : "claude-code";
 
+test("chat note pins add durable tail notices without resending the note", async () => {
+	const script = sdkScript();
+	for (let i = 0; i < 8; i++) script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	const { store, conv, runtime } = rig({ script, addr: appAddress("note-pins") });
+	const notes = openNotes(store, { projects: openProjects(store) });
+	const note = notes.create({ title: "Reading list", body: "the note body marker" });
+	async function turn(text: string) {
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		expect((await sink.done).kind).toBe("completed");
+		return script.requests().at(-1)!;
+	}
+	try {
+		const first = await turn("Before pinning");
+		const prior = store.lastEntry(conv.id, "user")!;
+		expect(store.chatNotePins.set(conv.id, note.id, true)).toBe(true);
+		const pinned = await turn("What is pinned?");
+		expect(pinned.startsWith(first.slice(0, -1))).toBe(true);
+		expect(pinned).toContain("Note pinned.");
+		expect(pinned).toContain(note.id);
+		expect(pinned).toContain("revision 1");
+		expect(pinned).not.toContain("the note body marker");
+		expect(store.lastEntry(conv.id, "user")?.seq).not.toBe(prior.seq);
+		expect(store.historyEntries(conv.id).find(({ seq }) => seq === prior.seq)?.message).toEqual(prior.message);
+
+		notes.write(note.id, { body: "updated note body marker" }, "app", { reason: "Finished the book" });
+		notes.write(note.id, { title: "Books" }, "app");
+		notes.write(note.id, { body: "another note body marker" }, "agent", {
+			conversation: conv.id, what: "Added a recommendation", reason: "For the next meeting",
+		});
+		const edited = await turn("Show the changes");
+		expect(edited.startsWith(pinned.slice(0, -1))).toBe(true);
+		expect(edited).toContain("revision 2");
+		expect(edited).toContain("Finished the book");
+		expect(edited).toContain("revision 3");
+		expect(edited).toContain("Edited the title");
+		expect(edited).toContain("Little Goblin");
+		expect(edited).toContain("Added a recommendation");
+		expect(edited).toContain("For the next meeting");
+		expect(edited).not.toContain("updated note body marker");
+		const quiet = await turn("Carry on");
+		expect(quiet.split("Chat note updates")).toHaveLength(3);
+		notes.write(note.id, { body: "body marker before unpin" }, "app", { reason: "Before unpinning" });
+		expect(store.chatNotePins.set(conv.id, note.id, false)).toBe(true);
+		notes.write(note.id, { body: "body marker after unpin" }, "app", { reason: "While not pinned" });
+		const unpinned = await turn("After unpinning");
+		expect(unpinned).toContain("Note unpinned.");
+		expect(unpinned).toContain("Before unpinning");
+		expect(unpinned).not.toContain("While not pinned");
+		expect(store.chatNotePins.set(conv.id, note.id, true)).toBe(true);
+		const repinned = await turn("Pinned again");
+		expect(repinned.split("Note pinned.")).toHaveLength(3);
+
+		notes.setArchived(note.id, true);
+		notes.setArchived(note.id, false);
+		const lost = await turn("After the restore");
+		expect(lost).toContain("is no longer available");
+		expect(store.chatNotePins.view(conv.id, null).pins).toEqual([]);
+		const after = await turn("Carry on again");
+		expect(after.split("is no longer available")).toHaveLength(2);
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
+});
+
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
 

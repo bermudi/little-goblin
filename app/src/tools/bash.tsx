@@ -44,8 +44,13 @@ export const bashView: ToolView = {
           ? "no exit"
           : `exit ${o.data.exit_code}`;
     const bad = o.data.timed_out === true || o.data.exit_code !== 0;
+    const failedCalls = (o.data.calls ?? []).filter((call) => !call.ok).length;
     return {
-      summary: joinSummary(hint, verdict),
+      summary: joinSummary(
+        hint,
+        verdict,
+        failedCalls > 0 ? `${failedCalls} call${failedCalls === 1 ? "" : "s"} failed` : null,
+      ),
       detail: (
         <div className="tool-body">
           {cmd !== "" && (

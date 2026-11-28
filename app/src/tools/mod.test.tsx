@@ -294,6 +294,8 @@ describe("ToolRun", () => {
     );
     expect(html).toContain("note");
     expect(html).toContain('(failed)');
+    expect(html).toContain("exit 0 · 1 call failed");
+    expect(html).not.toContain("tool-sum err");
     expect(html).toContain('{&quot;action&quot;:&quot;create&quot;,&quot;title&quot;:&quot;T&quot;}');
     expect(html).toContain('{&quot;id&quot;:&quot;n1&quot;}');
     const old = renderToStaticMarkup(
@@ -308,6 +310,7 @@ describe("ToolRun", () => {
     );
     expect(old).toContain("old");
     expect(old).not.toContain("(failed)");
+    expect(old).not.toContain("failed");
   });
 
   test("an unknown tool name renders the generic row, never crashes", () => {
